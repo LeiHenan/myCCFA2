@@ -15,8 +15,9 @@
 
 - **主线 1 条**：#6 投机算力分配（Speculative Compute Allocation）。
 - **备线 2 条**：#4 收窄版（多分支 SSM 快照内存放大 + 淘汰，需过复核门）、#12（MoE EP 不均衡，非投机对冲，2 周时间盒）。
+- **备线 C（待判定）**：#7 per-adapter KV 配额——先跑离散度探针（≤1 周），<5 个百分点即归档。
 - **判定探针 2 个**：#1 E1（1 天，唯一的有效否决权）、#3 约束解码扫描（1 周，低概率彩票）。
-- **归档 14 项**，其中 #2 的归档理由是**基线反证**（`TTL-300s` 与 `LRU-leaf` 逐字节相同），不是"被谁占了"。
+- **归档 14 项**（20 = 14 归档 + 6 存活），其中 #2 的归档理由是**基线反证**（`TTL-300s` 与 `LRU-leaf` 逐字节相同），不是"被谁占了"。
 
 ## 目录导览
 
@@ -24,7 +25,7 @@
 EXECUTION_PLAN.md   唯一权威执行依据（门槛 / 清单 / W1-W3 / 判据 / 引用纪律）
 README.md           本文件
 docs/               方案与评估文档（5 份上游）+ evidence/ 证据扫描 + reviews/ 评审记录
-probes/             实验 runbook：e1 / c3 / frontier_drafter / gate_hybrid_state
+probes/             实验 runbook：p01-e1 / p03-grammar-scan / p04-hybrid-gate / p06-frontier / p07-adapter-dispersion / aux-c1,c2（命名见 docs/GLOSSARY.md）
 notes/              decision_log.md（决策历史）+ prereg/（预登记杀判据）
 results/            实验产物（默认不入库，只保留 README 与 .gitkeep）
 upstream/           引擎源码检出位置（不入库；快照见 archive/）
@@ -53,10 +54,10 @@ prior_art_fetch/    【冻结，不入库】vLLM / SGLang 源码快照 tar
 less EXECUTION_PLAN.md
 
 # 2) 跑今天的探针（runbook）
-less probes/e1_uncommitted_kv/README.md
+less probes/p01-e1-uncommitted-kv/README.md
 
 # 3) 产物落到 results/<probe>/<date>/，结论回写 notes/decision_log.md
-mkdir -p results/e1_uncommitted_kv/$(date +%F)
+mkdir -p results/p01-e1-uncommitted-kv/$(date +%F)
 ```
 
 ## 体积与版本控制

@@ -1,7 +1,7 @@
 # E1 — 未提交投机 KV 占比测量（#1 投机 KV 分级的生死判定）
 
 **时间盒**：1 天 ｜ **硬件**：单卡即可 ｜ **前置**：无（`arXiv 2606.29223` 已于 2026-09-11 关闭，见 `EXECUTION_PLAN.md` §3.1）
-**预登记**：`notes/prereg/e1.md`
+**预登记**：`notes/prereg/p01-e1-uncommitted-kv.md`
 
 ## 1. 测什么
 
@@ -52,7 +52,7 @@ R(t) = 未提交（rejected / 尚未 commit）草稿 token 占用的 KV 字节
 ## 6. 产物
 
 ```
-results/e1_uncommitted_kv/<YYYY-MM-DD>/
+results/p01-e1-uncommitted-kv/<YYYY-MM-DD>/
 ├── summary.md        # 结论 + 数字表（每格 p50/p95/峰值/占用时长）+ 陷阱回答
 ├── ratio.csv         # 原始逐步数据
 ├── run.log

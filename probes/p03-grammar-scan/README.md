@@ -1,6 +1,6 @@
 # C3 — 约束解码 dynamic × complex × concurrent 扫描（#3 判定探针）
 
-**时间盒**：1 周 ｜ **硬件**：单卡 ｜ **不改引擎代码** ｜ **预登记**：`notes/prereg/c3.md`
+**时间盒**：1 周 ｜ **硬件**：单卡 ｜ **不改引擎代码** ｜ **预登记**：`notes/prereg/p03-grammar-scan.md`
 
 > **定位：低概率彩票，不是主线。** 任何结论都必须同时写出下面的先验。
 
@@ -39,7 +39,7 @@
 ## 4. 产物
 
 ```
-results/c3_constrained_scan/<YYYY-MM-DD>/
+results/p03-grammar-scan/<YYYY-MM-DD>/
 ├── summary.md     # 先验 + 数字表 + "结构性"三条回答 + 结论
 ├── grid.csv
 ├── grammars/      # 4 类语法定义（可复现）

@@ -28,7 +28,7 @@ cd upstream/vllm && git checkout <pin>
 
 - 引擎版本 / commit hash
 - 是否含关键 PR：vLLM `#53614`（MERGED 2026-09-06）、`#55760`（MERGED 2026-09-08）、`#50172` / `#56142` / RFC `#55697` + `#55873-6`（均 OPEN）
-- 模型与 drafter 家族及层数（见 `probes/frontier_drafter/README.md` §1）
+- 模型与 drafter 家族及层数（见 `probes/p06-frontier/README.md` §1）
 - 关键开关：`mamba_cache_mode`、`prefix_cache_retention_interval`、`num_speculative_tokens`
 
 ## 数据

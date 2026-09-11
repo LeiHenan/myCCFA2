@@ -1,6 +1,6 @@
 # Frontier — drafter 算力分配前沿扫描（**#6 主线决胜实验**）
 
-**时间盒**：2 周 ｜ **硬件**：1–2 卡 ｜ **预登记**：`notes/prereg/frontier.md`
+**时间盒**：2 周 ｜ **硬件**：1–2 卡 ｜ **预登记**：`notes/prereg/p06-frontier.md`
 
 **赢则成文，输则一周半永久关方向。两种结果都值。**
 
@@ -67,7 +67,7 @@ DSpark 生产路径已 ship 的**置信度调度 + STS 校准 + 离线 SPS 成�
 ## 7. 产物
 
 ```
-results/frontier_drafter/<YYYY-MM-DD>/
+results/p06-frontier/<YYYY-MM-DD>/
 ├── summary.md          # 判据三条 + 基线差异句 + DEX 替换测试
 ├── frontier.csv        # (depth, width, bs, ctx) → tok/s, draft_ms, accept_len
 ├── figures/            # 等高线 / 反转点图

@@ -59,7 +59,7 @@ vllm serve $TARGET --speculative-config '{"model":"<eagle3-draft-ckpt>","num_spe
 - ③ 失败不影响 E1 的**结论有效性**，但必须在 `summary.md` 标注 drafter 家族（ngram ≠ EAGLE-3，回滚/预留行为不同）。
 - 记录每个配置的 `--block-size`（默认 16）与 `max_num_seqs`。
 
-### 0.4 冻结测量量（写进 `notes/prereg/e1.md`）
+### 0.4 冻结测量量（写进 `notes/prereg/p01-e1-uncommitted-kv.md`）
 
 | 量 | 定义 | 为什么要分开 |
 |---|---|---|
@@ -130,7 +130,7 @@ huggingface-cli login            # 若模型是 gated
 | 存在可行点 p95 ≥10% 且是真实部署配置 | 进入机制设计 |
 | 5–10% | 补测 `H` 与峰值占用后再判 |
 
-写 `results/e1_uncommitted_kv/<date>/summary.md`（四段：量/区间/基线、数字、判据对照、结论）。
+写 `results/p01-e1-uncommitted-kv/<date>/summary.md`（四段：量/区间/基线、数字、判据对照、结论）。
 
 ---
 
@@ -153,14 +153,14 @@ huggingface-cli login            # 若模型是 gated
 
 ### Step 2.3 C3 扫描（1 周，与 2.1/2.2 并行）
 
-- 语法类落 `results/c3_constrained_scan/<date>/grammars/`：class-1 JSON schema、class-2 嵌套 JSON+regex、class-3 C++ 子集、**class-4 Python 变体/Bython 类**。
+- 语法类落 `results/p03-grammar-scan/<date>/grammars/`：class-1 JSON schema、class-2 嵌套 JSON+regex、class-3 C++ 子集、**class-4 Python 变体/Bython 类**。
 - 网格：`batch{1,8,32,128,256} × 4 类 × spec{on,off}`，每格 3 次。
 - 记录相对**无约束**吞吐比、mask 耗时、CPU 占用、TTFT/TPOT。
-- 判据与先验（≤6%）按 `notes/prereg/c3.md`。
+- 判据与先验（≤6%）按 `notes/prereg/p03-grammar-scan.md`。
 
 ### Step 2.4 DEX 替换测试（2 h，纯写作）
 
-按 `probes/frontier_drafter/README.md` §6 的模板写两段，结论三选一：继续 / 改措辞 / 改方向。
+按 `probes/p06-frontier/README.md` §6 的模板写两段，结论三选一：继续 / 改措辞 / 改方向。
 
 ---
 
@@ -179,7 +179,7 @@ Go = **内点最优** ∧ **(bs,ctx) 平面配置反转** ∧ **≥8%**（相对
 
 ### Step 3.3 #4 复核门（2 h，无 GPU）
 
-按 `probes/gate_hybrid_state/README.md`：读 `archive/engine_prs.md`（`#53614`/`#50172`/`#55760`/`#56142`/`#55697`+`#55873-6`/SGLang `#30393`）与 `archive/probe_c/atom.md`，产出 `notes/gap_hybrid_state.md`。
+按 `probes/p04-hybrid-gate/README.md`：读 `archive/engine_prs.md`（`#53614`/`#50172`/`#55760`/`#56142`/`#55697`+`#55873-6`/SGLang `#30393`）与 `archive/probe_c/atom.md`，产出 `notes/gap_hybrid_state.md`。
 gap 若仍是"checkpoint 边界 / 提交语义" ⇒ **归档**；只有"多分支 SSM 快照内存放大 + 淘汰"才通过。
 
 ### Step 3.4 回退表（提前想好，别在失败当天想）
