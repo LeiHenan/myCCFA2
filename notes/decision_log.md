@@ -50,6 +50,8 @@
 
 | 29 | **独立核查外部审计报告 → 修正 7 类**：① `decision_log` 三节结构被上一轮"整块排序"破坏（标题被排到块尾、两节只剩表头）→ 重建；② §1 门槛② 明确"按判定阶段计"的卡数适用范围；③ §4 #3 归档条件"且"→"或"（原为 Go 判据补集的错写）；④ §5.2 必答项 ② 改为 vLLM 口径（SGLang 仅旁证）并把"三个"改为"四个"；⑤ §7 门改用真名 StreamEP + 加"正文不可得"fallback、删除未核实的"并入 FlashInfer"事实引用；⑥ §8.1 补 24 GB 分支与灰区判据；§8.2 语法类以 pre-reg 为唯一来源；⑦ 归档台账与日期锚点补入本日志 | 外部审计 21 条中经原文核对**确认 12 条为真**（含 2 条由我上一轮引入），其余为措辞/归属问题或已由既有批注覆盖 | `EXECUTION_PLAN.md` v1.11、`notes/decision_log.md`、`notes/prereg/p06-frontier.md`、`notes/prereg/p03-grammar-scan.md`、`notes/p06-family-codecheck.md` |
 
+| 30 | **解冻条件改为有序三步**：② pin + 多层 drafter 核对 → ① 租卡 → ③ smoke test；② 扩展为含"该 vLLM pin 上是否存在可跑的多层 drafter"（否则卡型与主线都会选错） | 原"三选一"写法掩盖了依赖：卡型取决于多层 drafter 是否可得（`#6` 家族前提） | `README.md`、`EXECUTION_PLAN.md` v1.12 |
+
 ## 四、归档台账（14 项）
 
 > 满足"任何方向的生与死都要记一条"的规则；逐项理由见 `EXECUTION_PLAN.md` §9，此处只留一行索引。

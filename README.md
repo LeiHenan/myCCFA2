@@ -2,13 +2,18 @@
 
 本工作区用于**选定并执行一条 MLSys 论文主线**。当前阶段：**⏸ 停工等卡** —— 无卡工作（文献/引擎/仓库审计）已收尾；下一步必须用 GPU。
 
-**解冻条件（三选一即可开工）**：① 拿到 1 张 24 GB 卡 → 跑 `p01` 的 E1（1 天）；② 给出 vLLM 的 pin commit → 我按该版本核对仪器化锚点；③ 跑通三层 smoke test。
+**解冻顺序（按实验设计的依赖；**不是"三选一"**）**：
+
+1. **② 先做**（无卡、最便宜、且**决定其余**）：给出 vLLM 的 **pin commit** → 我按该版本 (i) 核对 `e1_patch.py` 的注入锚点，(ii) **核对该 pin 上是否存在可跑的「多层 drafter」**（`vllm-project/speculators` 的 DSpark/DFlash，见 `EXECUTION_PLAN.md` §5.1 家族前提），并估算显存需求。
+   **两种结局都是净收益**：有 ⇒ 卡型按显存需求定；**没有 ⇒ `#6` 降级**（深度旋钮不存在），卡型退到 24 GB 即可，主线改为 E1 + `#7`。
+2. **① 租卡**：卡型由第 1 步的结论决定 —— 这就是"② 必须先做"的**唯一理由**：避免租错卡。
+3. **③ smoke test**（需卡）：三层验证（无投机 → `method:"ngram"` → 真 drafter）。EAGLE-3 加载失败**不影响 E1 的结论有效性**，但须在 `summary.md` 标注 drafter 家族。
 
 ## 入口
 
 | 想看什么 | 打开 |
 |---|---|
-| **现在到底做什么、判据是什么** | **[`EXECUTION_PLAN.md`](EXECUTION_PLAN.md)** ← 唯一权威执行依据 |
+| **现在到底做什么、判据是什么** | **[`EXECUTION_PLAN.md`](EXECUTION_PLAN.md)** ← 唯一权威执行依据 ｜ 解冻顺序见本文 §"解冻顺序" |
 | 候选是怎么被筛出来的（论证与证据） | [`docs/`](docs/README.md) |
 | 每个实验怎么跑、何时杀 | [`probes/`](probes/README.md) 与 [`notes/prereg/`](notes/prereg/) |
 | **一步步怎么操作**（命令/注入点/回退表） | [`docs/EXPERIMENT_GUIDE.md`](docs/EXPERIMENT_GUIDE.md) |
