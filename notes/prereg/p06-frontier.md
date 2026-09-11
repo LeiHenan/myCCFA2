@@ -50,12 +50,14 @@
 
 1. **T1 = 1 家族 × 1 引擎（vLLM）**，先拿主假设的答案。
 2. **自动触发扩展**：T1 出现**反转但幅度在噪声边缘**，或**共线且效应量 ≥ 8%** ⇒ 在**同一预登记**下**追加第二家族**（DFlash ↔ DSpark）；**不自动追加第二引擎**（除非 vLLM 格已跑通且 SGLang 已验证多层 drafter 可承载）。
+   **bs 扩展条件（补齐 T1 的已知盲区）**：T1 的 `bs{1}` 只为最便宜地看信号；**若反转只在高 bs 出现**，则 Go 判据的"(bs,ctx) 区域反转"无法在 T1 判定 ⇒ **必须按本条在同一预登记下扩到 `bs{1,8,32}` 再判，不得据 T1 阴性直接杀**。
 3. **降级形态**：机制主张死亡**且共线在两家族都成立** ⇒ 启动**新的、独立预登记的测量论文实验**（新 prereg、新数据）；**不得**把旧数据重新解读成测量论文。
 
 ## 必答项（任一不过即不 Go）
 
 1. **与已 ship 控制器的差异**：它们调的是 `speculative_num_steps` / `num_speculative_tokens_per_batch_size`（长度轴）；本主线主张的是 drafter **网络层数/宽度**（深度轴）。
-2. **为什么不能直接复用已 ship 控制器**：SGLang 控制器**逐字拒绝多层 worker** —— `enable_multi_layer_eagle=True is not supported (MultiLayerEagleWorkerV2 does not implement adaptive)`。
+2. **为什么不能把 vLLM 的 per-batch K 查表（`num_speculative_tokens_per_batch_size`）扩到深度轴** —— 本线跑在 vLLM，这才是审稿人会问的那一问。
+   SGLang 控制器逐字拒绝多层 worker（`enable_multi_layer_eagle=True is not supported`）只是**旁证**，不构成答案。
    **必须给出结构性理由**（例如深度轴的"接受率—成本"关系与步数轴不同、最优深度随 (bs, ctx) 反转），否则本工作退化为 plumbing。
 3. **增量对照**：每个 (bs, ctx) 格上必须做 **adaptive-steps-only vs adaptive-steps+depth** 的对照；只有后者胜出且 ≥8%，深度轴才算独立贡献。
 4. **动机抗辩（新增，针对 MLSys '26 PRISM）**：必须回答"既然 PRISM 主张容量可与推理成本**架构性解耦**，为什么仍需要运行时分配？"

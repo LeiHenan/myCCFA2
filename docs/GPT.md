@@ -1,5 +1,12 @@
 # GPT — 对 GPT 提案的审核与候选筛选
 
+> ⚠️ **本文档是冻结的历史记录；下列结论已被后续决定作废。** 执行依据一律以 [`../EXECUTION_PLAN.md`](../EXECUTION_PLAN.md) 与 [`../notes/decision_log.md`](../notes/decision_log.md) 为准。
+>
+> - §10 的"必须关闭"缺口表**已过期**：`arXiv 2606.29223` 已关闭（decision #9）、MLSys/ASPLOS/SOSP '26 已扫描（decision #24/#25）；现状见 `../EXECUTION_PLAN.md` §11。
+> - 其"引擎增量 2–3%"仅适用于**工具投机**方向，**不得**用于 `#5` 的量级（本文件 §4-A 自标为 O8 估计）。
+
+
+
 **日期**：2026-09-11
 **审核对象**：一份 GPT 生成的选题提案（9 个方向 + 5 个推荐 + 1 个合并愿景「Speculation-Aware LLM Inference Runtime」）
 **审核方法**：① 逐条核实引用；② 与本轮已有击杀台账（47 条击杀理由，见 `old.md`）对齐；③ 对从中提取的每一个耦合做针对性对抗性筛查（三轮，报告在 `subfield_scan/r3_*.md`）

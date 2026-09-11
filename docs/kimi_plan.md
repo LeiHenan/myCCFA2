@@ -1,5 +1,13 @@
 # kimi_plan — MLSys 选题独立评估报告
 
+> ⚠️ **本文档是冻结的历史记录；下列结论已被后续决定作废。** 执行依据一律以 [`../EXECUTION_PLAN.md`](../EXECUTION_PLAN.md) 与 [`../notes/decision_log.md`](../notes/decision_log.md) 为准。
+>
+> - **§1/§7 的三条"引用不实"裁定全部作废**：SpecTool `2512.15834`、AngelSpec `2607.25852`、LibraSpec `2608.08721` 均为真实工作；**"找不到出处就删除"的建议不得执行**（decision #6/#7）。
+> - **`#4` 已暂缓**（复核门不通过，decision #19）：本文把它列为"主线候选 B"并安排 W2 受控扫描的排序**已失效**。
+> - `#12` 的 `3.28×`/`80×` 属未核实转述（decision #23、`../docs/reviews/2026-09-11-verdict-02-specdec-adaptive-survey.md`）；"三个独立检索通道"无产物（decision #6）。
+
+
+
 **日期**：2026-09-11
 **输入**：`plan.md`（20 候选 + 9 探针）＋ 本地证据库（V41/GPT/old/archive/subfield_scan）＋ **本轮新增：2026-09-11 实时 arXiv/会议文献扫描**（三个独立检索通道，覆盖全部 20 个候选所在赛道）
 **目标**：选出一篇**真正有价值**的 MLSys 论文方向

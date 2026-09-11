@@ -31,7 +31,7 @@
 
 **适用规则（修正版，必须按此执行）**
 
-- ① ② **对所有条目必过**；
+- ① ② **对所有条目必过**。**② 的卡数按"判定阶段"计**：主线与判定探针必须在 ≤2 卡内拿到可信数字；备线/对冲若**判定阶段**本身需要更多卡（如 `#12` 的残余不均衡判定与 4–8 卡 EP 实验），必须在 §7 之类位置写明**卡数、门槛与"先判定、后上卡"的次序**，否则不得进入清单。
 - ③ **对主线与备线必过**；
 - **探针可零量级入场**，但必须同时带：≤2 周换成实测的路径 + 预登记杀判据（`notes/prereg/`）；
 - 任何"量级不足 / 量级足够"的判定**必须自测**；算术值与拼接值只能用于**设计实验**，不能用于**判定方向**。
@@ -72,7 +72,7 @@
 |---|---|---|---|
 | **D1 上午** | ~~关闭 `2606.29223`~~ ✅ 已完成（§3.1） | — | 结论存档 |
 | **D1** | **#1 E1**：instrument `vllm serve` + EAGLE-3，逐步统计未提交草稿 KV / 已提交 KV，扫 ctx × batch × γ{3,5,7} + 一个 draft-tree 配置 | 全部 HBM 可行点上 p95 比值 **<5% ⇒ 按实测定死** | 比值表 + 生死结论 |
-| **W1** | **#3 扫描**（batch 1→256 × 4 语法类 × spec on/off，不改代码） | class-4 @batch≥32 **>0.85×** 且瓶颈非结构性 ⇒ 归档 | 语法类成本曲线 |
+| **W1** | **#3 扫描**（batch 1→256 × 4 语法类 × spec on/off，不改代码；语法类定义以 `notes/prereg/p03-grammar-scan.md` 为唯一来源） | class-4 @batch≥32 **>0.85×** **或**瓶颈非结构性 ⇒ 归档（Go 的补集） | 语法类成本曲线 |
 | **W1** | **#6 可行性前置**：确认可跑的**多层并行 drafter**、per-step draft 成本仪器；写 DEX 替换测试 | 若只有 EAGLE-3 可用 ⇒ #6 降级（深度旋钮不存在，§5.1） | 家族确认 + 测试段落 |
 | **W2** | **#6 frontier map**：`bs × ctx × depth × width`，对最佳固定配置 | 无内点最优 / 无 (bs,ctx) 配置反转 / <8% ⇒ 杀 | frontier 图 |
 | ~~W2~~ **已完成（09-11）** | **#4 复核门** | 判据：gap 是否是已占证据的子集 ⇒ **是（不通过）** | `notes/gap_hybrid_state.md` |
@@ -102,7 +102,7 @@
 - **定位**：`Speculative Compute Allocation`（**内部叫法、非既有术语**，见 §12 D4）— 每步决定给这一轮投机投多少算力；`depth × width × draft length × verify budget` 是同一预算的不同形态。
 - **网格**：`depth × width × **γ{1,3,5,7}** × batch{1,8,32} × ctx{4k,32k,128k,185k}`，spec on/off 对照。**γ 因子不可省**——正交性检验必须同扫 depth 与 length（至少在 `width=默认树` 子集上）。
 - **指标**：tok/s、per-step draft 成本、平均接受长度、相对**最佳固定配置**的端到端比。
-- **Go（主假设：drafter capacity 与 draft length 正交）**：存在 (bs,ctx) 区域使最优 (depth, γ) 发生**非共线反转** **且** 存在内点最优 **且** 相对最佳固定配置 ≥8% **且** 三个必答项全部通过：① 与已 ship 控制器（`adaptive_spec_params`，调 `speculative_num_steps`）的差异；② 为什么不能直接复用它（它逐字拒绝多层 worker：`enable_multi_layer_eagle=True is not supported (MultiLayerEagleWorkerV2 does not implement adaptive)`）——**须给结构性理由，否则退化为 plumbing**；③ 每个 (bs,ctx) 格做 **adaptive-steps-only vs adaptive-steps+depth** 增量对照；④ **动机抗辩**：为什么在 PRISM（容量⟂成本的架构解耦，MLSys '26 oral）之后仍需要运行时分配——落点必须是 PRISM 不处理的**上下文相关成本**（如 185k 全上下文重扫）。
+- **Go（主假设：drafter capacity 与 draft length 正交）**：存在 (bs,ctx) 区域使最优 (depth, γ) 发生**非共线反转** **且** 存在内点最优 **且** 相对最佳固定配置 ≥8% **且** **四个必答项**全部通过：① 与已 ship 控制器（`adaptive_spec_params`，调 `speculative_num_steps`）的差异；② **为什么不能把 vLLM 的 per-batch K 查表（`num_speculative_tokens_per_batch_size`）扩到深度轴** —— 本线跑在 vLLM，这才是审稿人会问的那一问；SGLang 拒绝多层 worker（`enable_multi_layer_eagle=True is not supported`）只是**旁证**；须给**结构性**理由，否则退化为 plumbing；③ 每个 (bs,ctx) 格做 **adaptive-steps-only vs adaptive-steps+depth** 增量对照；④ **动机抗辩**：为什么在 PRISM（容量⟂成本的架构解耦，MLSys '26 oral）之后仍需要运行时分配——落点必须是 PRISM 不处理的**上下文相关成本**（如 185k 全上下文重扫）。
 - **No-Go**：收益只出现在 185k 角落；或与已 ship 的置信度/成本表调度器无法区分；或 **`optimal depth ≈ f(optimal γ)`（共线）⇒ 退化为"另一个 adaptive draft length 实现" ⇒ 杀或并入 `#7`/`#12`**。
 - **三级加速判定（决策级 ≠ 论文级）**：T0 旋钮验证（半天）→ **T1 反转探针**（`depth{1,3,5} × γ{1,3,7} × ctx{4k,128k} × bs{1}` ≈18 格，半天–1 天）→ T2 增量对照（1–2 天）。**T1 判主假设存废、T2 出最终 go/no-go；通过后才需要 2 周全网格**。注意 T1 的**不对称性**（截断只给下界）。详见 `notes/prereg/p06-frontier.md`。
 - **基线纪律（与 §12 D1 一致）**：T1/T2 **固定跑 vLLM**，基线 = ① spec off（AR）② **最佳固定配置** ③ DSpark 生产调度器（置信度头 + STS + 离线 SPS 成本表 + ragged-verify）④ **vLLM `num_speculative_tokens_per_batch_size`**（per-batch K 查表）。SGLang `adaptive_spec_params` **逐字拒绝多层 worker**，不能充当 T2 对照（仅可作静态基线）。
@@ -147,8 +147,8 @@
 - 定位：**非投机**推理系统对冲（非算术解、问题被生产验证）。
 - **量级证据更正（2026-09-11）**：引用链里的"最硬数字"实为三类不同强度的证据 —— ① `3.28×` 归一层延迟是**读图得到的投影**（`archive/subfield_scan/rea1/k3/FORENSIC_REPORT.md`：IF 轴是 swept/constructed 参数，原文未说明数据如何产生，"Treat as a PROJECTION, not a production measurement"）；② `19%` all-to-all 是硬件实测，但路由被构造成**完全均衡** ⇒ 只是**下界**；③ `80×` 是 **Llama-4-Maverick（128 专家 top-1）的极端尾巴**（DeepSeek-V3 10–20×、Qwen3 ≲10；"所有前沿 MoE 都严重偏斜"不成立）。
 - **最直接的竞争者（SOSP '26，正文待发表）**：**StreamEP: Straggler-Tolerant MoE Decoding without Communication Barriers**（USC & SNU & Google DeepMind & UT Austin）—— 标题即本方向的处境，**判定前第一优先要读**。
-- **机制已被占（五重以上）**：① **DA-MoE** `2607.23099` **正文已读**——计算侧的"路由偏斜 → tile padding → 内核选择"已占，带实测 1.16×/1.29× geomean（**注**：`docs/kimi_plan.md` 称其"合入 FlashInfer"在正文中无依据，未核实）；② **SOSP '26 MorphKernel**（跨 SM 融合，明确针对 MoE expert activation，1.3×）；③ MLSys '26 三篇（CRAFT / Layered Prefill / MoE Serving Tax）；④ **SOSP '26 Barrier-Free EP**（Tier B，待读）；⑤ dispatch 半边由 **SGLang + NVIDIA 的 LPLB**（[2026-06-26 博客](https://lmsys.org/blog/2026-06-26-waterfill-lplb/)，per-layer dispatch LP，**2 个 Hopper 节点**，+0.84%–7.34%）ship；padding 半边由 **DA-MoE**（并入 FlashInfer）等占。
-- **门（≤3 天，不上 4–8 卡）**：**先读 SOSP '26 Barrier-Free EP 正文**（确认是否已覆盖你的半边），再在你自己的 model + workload 上测 **EPLB/LPLB 之后残余的 per-rank 不均衡**；残余 <8% ⇒ **归档**；≥8% 且可归因 ⇒ 才进入 2 周实验。
+- **机制已被占（五重以上）**：① **DA-MoE** `2607.23099` **正文已读**——计算侧的"路由偏斜 → tile padding → 内核选择"已占，带实测 1.16×/1.29× geomean（**注**：`docs/kimi_plan.md` 称其"合入 FlashInfer"在正文中无依据，未核实）；② **SOSP '26 MorphKernel**（跨 SM 融合，明确针对 MoE expert activation，1.3×）；③ MLSys '26 三篇（CRAFT / Layered Prefill / MoE Serving Tax）；④ **SOSP '26 Barrier-Free EP**（Tier B，待读）；⑤ dispatch 半边由 **SGLang + NVIDIA 的 LPLB**（[2026-06-26 博客](https://lmsys.org/blog/2026-06-26-waterfill-lplb/)，per-layer dispatch LP，**2 个 Hopper 节点**，+0.84%–7.34%）ship；padding 半边由 **DA-MoE** 等占。
+- **门（≤3 天，不上 4–8 卡）**：① 若 SOSP '26 **StreamEP** 正文已公开（真名；社区清单的 "Barrier-Free Expert Parallelism" 为**误标**），先读它确认是否已覆盖你的半边；**若届时仍不可得（SOSP 会后才有）⇒ 直接执行第 ② 步并在结论中标注该不确定性**，不得因"读不到"而停摆；② 在你自己的 model + workload 上测 **EPLB/LPLB 之后残余的 per-rank 不均衡**：残余 <8% ⇒ **归档**；≥8% 且可归因 ⇒ 才进入 2 周实验。
 - 必须做到其一：**与 DA-MoE 正面区分的机制**，或把"体积降 20% → 时间降 9%"的转化率推上去。
 - 到期未达标 ⇒ **归档，不续期**（避免对冲仓变沉没成本）。
 - 注意：需多卡 EP，成本高于表格标注。
@@ -160,14 +160,14 @@
 ### 8.1 #1 E1（1 天）
 
 - **测什么**：逐步的 `未提交草稿 KV 字节 / 已提交 KV 字节`（p50 与 p95）。
-- **网格**：ctx × batch × γ{3,5,7} + 一个 draft-tree 配置。
-- **杀判据**：全部 HBM 可行点上 p95 比值 **<5%**。
+- **网格**：ctx × batch × γ{3,5,7} + 一个 draft-tree 配置。**硬件分支（预登记）**：24 GB 卡 ⇒ ctx 改 `{4k,16k,32k}`（或换 ≤4B target / 2×24 GB TP=2）；80 GB ⇒ `{4k,32k,128k}`。
+- **判据三档**：全部可行点 p95 **<5% ⇒ 定死归档**；某可行点 **≥10% ⇒ 进入机制设计**；**5% ≤ p95 < 10% ⇒ 灰区，不结论**（补测释放延迟与峰值占用后再判）。细则与 D3 支线见 `notes/prereg/p01-e1-uncommitted-kv.md`。
 - **为什么值得做**：这是全组合里**唯一能产出有效 V2 型击杀**的探针——1 天成本买的不是方案，是一个可信的否定权。且该比值**全库无人测过**（`docs/evidence/r4_graded_kv_tiers.md` 第 9 条）。
 - **已知风险**：SpecMemo 的高精度约束；相对已 ship 二值处理只宽一步。
 
 ### 8.2 #3 约束解码扫描（1 周，不改代码）
 
-- **网格**：batch{1,8,32,128,256} × 4 语法类（JSON / C++ / Python 变体 / Bython 类） × spec on/off。
+- **网格**：batch{1,8,32,128,256} × 4 语法类 × spec on/off。**语法类定义以 `notes/prereg/p03-grammar-scan.md` 为唯一来源**（class-1 JSON schema／class-2 嵌套 JSON+regex／class-3 C++ 子集／class-4 Python 变体-Bython 类），本文件不再另列以免漂移。
 - **Go**：class-4 @batch≥32 **≤0.85×** 无约束 **且** 瓶颈是结构性的。
 - **先验（必须写进结论）**：`docs/evidence/constrained_decoding.md` T5 的字段级端到端余量 **≤6%**，"entering now means arriving after the result"。
 - **定位**：低概率彩票，**不是主线**。
@@ -277,4 +277,5 @@
 | v1.7 | 2026-09-11 | **无卡工作收尾**：SOSP 官方程序页核实 StreamEP 真名（社区清单标题有误）并转为 ⏳ 待发表；ATC/SC 入口受阻、ISCA 仅索引、**新发现 NSDI '26 漏在清单外（SwiftEP）**；§11 按「已关闭 / ⏳待发表 / ⛔入口受阻 / 📦仅影响已归档」四类收尾。 |
 | v1.8 | 2026-09-11 | 新增 **§12 待决策项**（D1 测量论文降级形态 / D2 网格是否扩大 / D3 `R_reserve` 分支 / D4 名称标签，含默认建议与"降级须新预登记"的安全前提）；§0 补**结构风险**（主线候选仅 `#6` 一条）；`#6` 邻居表补 `2511.12031`（compute-vs-copy 配比，Tier B）。 |
 | v1.9 | 2026-09-11 | **D1–D4 拍板**：D1 = (a) + 预登记的扩展条款（T1 固定 vLLM；扩展优先家族、不自动加引擎；降级须新预登记）；D2 = (a)；D3 = (b)；D4 = 标注内部叫法。§12 由"待决策"改为"决策记录" |
+| v1.11 | 2026-09-11 | **独立核查后修正 7 类**：② 门槛的卡数适用范围；§4 #3 归档条件"且"→"或"；§5.2 必答项 ② 改为 **vLLM 口径**并把"三个"改为"四个"；§7 门改用真名 **StreamEP** 并加"正文不可得"的 fallback、删除未核实的"并入 FlashInfer"事实引用；§8.1 补 24 GB 分支与灰区判据；§8.2 语法类以 pre-reg 为唯一来源；`notes/decision_log.md` 重建三节结构 + 归档台账 + 日期锚点 |
 | v1.10 | 2026-09-11 | 审计修正：§5.2 基线纪律与 **D1 决定同步**（固定 vLLM，基线改为 vLLM per-batch K 查表）+ 澄清"两个 8% 是不同比较"；§0 加"当前阶段"；README 入口表补 `docs/EXPERIMENT_GUIDE.md` 与 `docs/reviews/`；`upstream/README` 登记锚点核对副本；清理 `results/_patchtest`（草稿） |

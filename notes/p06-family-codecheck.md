@@ -20,7 +20,7 @@
 
 ## 三、对 #6 的三条硬约束（已写入 `notes/prereg/p06-frontier.md`）
 
-1. **不得自称"投机算力分配"泛称**：draft 长度（`speculative_num_steps` / `speculative_num_draft_tokens`）与 verify 预算的自适应**已 ship**；draft **树**深度已被 Graft / DDo / ECHO 占。
+1. **不得自称"投机算力分配"泛称**：draft 长度（`speculative_num_steps` / `speculative_num_draft_tokens`）与 verify 预算的自适应**已 ship**；draft **树**深度已被 Graft / DDD / ECHO 占。
 2. **唯一可主张的轴**：drafter **网络自身**的层数 / 宽度在运行时的弹性缩放（DSpark 证明该轴是活的，但只做离线静态选择）。
 3. **必须回答**：与 `adaptive_spec_params` 的差异是什么（它换"步数"，我们换"网络深度"；两者耦合时谁更优）。此条作为 frontier 的**必答项**，写进 `summary.md`。
 

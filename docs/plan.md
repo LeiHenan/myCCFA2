@@ -1,5 +1,15 @@
 # plan — 候选方案综合评估
 
+> ⚠️ **本文档是冻结的历史记录；下列结论已被后续决定作废。** 执行依据一律以 [`../EXECUTION_PLAN.md`](../EXECUTION_PLAN.md) 与 [`../notes/decision_log.md`](../notes/decision_log.md) 为准。
+>
+> - **`#2` 的"未被占的是服务端机制本身"已被推翻**（decision #10）：真杀手是**基线反证**（`TTL-300s` ≡ `LRU-leaf`）；W1 的"#2 轨迹回放"已不在执行计划内。
+> - **`#6` 的"从未调过 drafter 的深度"过强**：DSpark 已离线扫过层数（decision #22、`../notes/p06-family-codecheck.md`）。
+> - **`#12` 的"证据最硬"不成立**：`3.28×` 是读图投影、`19%` 是均衡路由下的下界、`80×` 仅 Llama-4-Maverick top-1（decision #23）。
+> - **`#3` 的 Go 判据与 `evidence/constrained_decoding.md` 的 T5（余量 ≤6%）冲突**；执行层已以 T5 为先验（`../EXECUTION_PLAN.md` §8.2）。
+> - §4 的证据缺口表**已过期**：现状见 `../EXECUTION_PLAN.md` §11。
+
+
+
 **日期**：2026-09-11
 **输入**：`V41.md`（本轮幸存候选 23 项） + `GPT.md`（GPT 提案审核后的 8 个不同对象）
 **方法**：每个方案从**创新性**、**可行性**、**文献综述**三个维度独立评估，再给综合建议。
