@@ -8,21 +8,24 @@
 
 ---
 
-## 0. 结论（**已按修正后的标准重判**）
+## 0. 结论（统一标准下的最终判定）
 
-> **这份审核的第一版用了与 `V41.md` 不一致的标准，把 3 个耦合直接写成 "DEAD"。按本轮复审确立的标准重判后：A 为 NARROWED、B 与 C 为 UNDECIDED——三个都缺一次自测，都不是 VALID 击杀。**
+> **初版用了一套与 `V41.md` 不一致的、更松的标准，把 9 个方向判成"全死"。按本轮复审确立的同一套标准重判后：**
 >
-> **9 个方向里，2 个（② ⑧）是**有效**击杀（方向 B：tracker 已拥挤）；① 为 NARROWED；③④⑤⑥⑦ 需要重判；⑨ 仍然不是研究问题。**
+> | 判定 | 数量 | 对象 |
+> |---|---|---|
+> | ✅ **VALID KILL** | **2** | ② ④（**两条都是靠"方向 B：同一决策上 ≥2 个并行开放提案"**） |
+> | **NARROWED** | **3** | ① ⑧ A |
+> | **UNDECIDED** | **6** | ③ ⑤ ⑥ ⑦ B C |
+> | ❌ 不是可证伪命题 | 1 | ⑨ |
+>
+> **⇒ 没有任何一条击杀成立于 V1 或 V2。** 这与 REA-2 在另一簇里的发现**完全对称**：*"两簇里没有任何一条击杀成立于 V2——没有一条被筛选者自己对部署基线的测量所支持。"*
+>
+> **而且：`V41.md` 的候选与这里的 6 个 UNDECIDED 处在完全相同的认识论位置**——都是"在先工作占了大部分、幸存增量需要一个便宜的自测来判定"。**两份清单应当合并排序**（见 §6），而不是一份被当作候选、另一份被当作否决。
 
-**判定标准（与 `V41.md` 完全一致，见 `old.md` §5–§6）**：
-- **V1**：所提的**确切机制**已被发表/已 ship，**且剩余增量是一个 flag 或一个 bug fix**。
-- **V2**：在**真实部署的基线**下，**我自己实测**端到端效应 <5%。—— **二手数字与依赖假设的算术都不构成 V2。**
-- **方向 B**：该决策上已有 ≥2 个并行开放提案 ⇒ 出局（这条是有效判据）。
-- **UNDECIDED**：证据不足以判——**这一档在初版里被我整个丢掉了**，是这次不一致的主要来源。
+**判据（与 `V41.md` / `old.md` 一致）**：VALID KILL = V1｜V2｜**方向 B**。不构成判据的：O1"有论文"、O2"引擎 ship 了个窄版本"、O3"相对理想化基线 headroom 小"、O4"已有钩子"、O7"机制混淆"、O8"依赖假设的算术"。
 
-它的引用**基本真实**（9 条全部解析成功，无 phantom），问题不在引用，而在**它对现状的定性**——三处关键错误恰好都指向它自己的立论基础（§1）。
-
----
+它的引用**基本真实**（9 条全部解析成功，无 phantom），问题在于**它对现状的定性**——三处关键错误恰好都指向它自己的立论基础（§1）。而**我的初版审核又犯了一个对称的错误**：用更松的标准去判它（§9）。
 
 ## 1. 引用核查结果
 
@@ -53,20 +56,36 @@
 
 ---
 
-## 2. 逐方向判定（9/9 死）
+## 2. 逐方向判定（统一标准重判）
 
-| # | 它的方向 | 判定 | 杀死它的具体依据 |
+**判据（与 `V41.md` / `old.md` 完全一致）**：
+**VALID KILL** = V1（确切机制已 ship/已发表 **且** 剩余增量是 flag 或 bugfix）｜V2（**我自测**相对**部署基线** <5%）｜**方向 B**（同一决策上 ≥2 个并行开放提案）。
+**NARROWED** = 在先工作占了大部分，但有明确且未被覆盖的增量。
+**UNDECIDED** = 证据不足以判——**初版把这一档整个丢掉了**，是不一致的主要来源。
+❌ 不构成判据：O1"有论文"、O2"引擎 ship 了个窄版本"、O3"相对理想化调好的基线 headroom 小"、O4"已有钩子"、O7"机制混淆"、O8"依赖假设的算术"。
+
+| # | 它的方向 | **重判** | 判据与依据 |
 |---|---|---|---|
-| **①** | Tool/Agent-aware Speculative Decoding | ⚠️ **重判：NARROWED**（初版写"死"，属 O1/O2） | 初版依据是"SpecTool/PASTE/SPORK/vllm-omni 已存在"——**"有论文/有 PR"不构成击杀**（O1/O2）。压到"确切机制 + 剩余增量"后：**engine 提交语义与概率化准入确实都已被占**（SpecTool §3.2、PASTE 的 *"admits speculative work when it is likely to hide exposed tool time"*、Speculative Actions Thms 3–5、vllm-omni `#4909` DRAFT 的 COW KV fork + rollback）。**幸存增量见 §4-A** |
-| **②** | Adaptive SpecDec / "K 改成计算预算" | ❌ **有效击杀**（方向 B） | 该决策上确有 **≥2 个并行开放提案**（`#54749`、`#54801`、`#47111`），且 vLLM `#54749` 逐字：*"Six different signals are being proposed for this one decision right now. Batch size is what ships."* 叠加 LibraSpec `2608.08721` 的 *"marginal criterion"*、SparseSpec-L `2607.27735` 的 *"marginal acceptance probability falls below the relative drafting cost"*。⇒ 这是本表里**依据最扎实的两条之一** |
-| **③** | Speculative KV Cache | ⚠️ **精度轴重判见 §4-B** | 容量/预留轴由 SpecMemo `2506.01986`、Nightjar、MemSpec `2608.10362`、TransKV 占——但这同样是 O1 式依据，**精度轴的重判见 §4-B** |
-| **④** | KV **Placement** 而非 Eviction | ❌ **有效击杀**（方向 B；且非特例） | 不是"有个版本已 ship"（那会是 O2）——而是**该决策本身已被裁决**：vLLM `TieringOffloadingSpec` + 策略钩子、**Dynamo KVBM 的 G1–G4 + TinyLFU/CMS（`frequency≥2` 过滤器默认开启）**、Mooncake/LMCache/SGLang HiCache（7 种驱逐策略 + 11 种存储后端），**且 RFC `#54779` 已含完整 cost-aware TinyLFU 设计 + 原型 `#54327` 开放**。它的"预测未来 reuse"正是其中已被覆盖的部分 |
-| **⑤⑥** | 预测性 attention 预取 / KV prefetch | ❌ **死** | tracker 拥挤（SGLang `#21846` 的 `PREFETCH`/`DEMOTE`/`PIN`、vLLM `#48445`/`#52113`/`#51428`）、SGLang 已 ship `--hicache-storage-prefetch-policy`、AAAI 2026 已有异步 KV 预取。**算术上限 2–8%** |
-| **⑦** | Attention + 投机联合 | ❌ **死** | **Vegas（ICML 2026）**；**BudgetDraft `2606.00144`**（标题字面 *"**Acceptance-Aware** … Sparse-KV Speculative Decoding"*）；**且已是 flag**（vLLM `enable_adaptive_verification`）。详见 §4-C |
-| **⑧** | Speculation Scheduler | ❌ **死** | YieldSched 已被击杀（四条轴全部已实现）。而这个公式**正是 vLLM `#54749` 作者造出来、并在唯一一次头对头测试中输给一张实测表的那个模型**：*"…it selects K=0 at the high-batch tier at every context … would not have found the cell worth 29–36%"* |
-| **⑨** | 合并愿景 | ❌ **不是研究问题** | 它是 ②③④⑤⑧ 的并集，**每一块都已被占**。本轮的中心发现正是"把 N 个已被占的机制组合起来"是密度杀死你的地方（K7 即实例，残余 1.1–1.3×） |
+| **①** | Tool/Agent-aware Speculative Decoding | **NARROWED** | 机制与准入**确实都已被占**（SpecTool §3.2 的 engine 提交语义；PASTE 的 *"admits speculative work when it is likely to hide exposed tool time"*；Speculative Actions Thms 3–5；vllm-omni `#4909` DRAFT 的 COW KV fork + rollback）——但这是"增量被占"，不是 V1（**剩余增量不是 flag**）。幸存增量与决定性实验见 **§4-A** |
+| **②** | Adaptive SpecDec / "K 改成计算预算" | ✅ **VALID KILL（方向 B）** | **同一决策上 ≥2 个并行开放提案**：`#54749`、`#54801`、`#47111`。叠加 `#54749` 逐字 *"Six different signals are being proposed for this one decision right now. Batch size is what ships."*，以及 LibraSpec 的 *"marginal criterion"*、SparseSpec-L 的 *"marginal acceptance probability falls below the relative drafting cost"* |
+| **③** | Speculative KV Cache（容量/tiering） | **UNDECIDED**（待 `r4_graded_kv_tiers`） | 二分结构（committed vs speculative）已被 TransKV/SpecMemo/MemSpec/Nightjar 占；**按重要度分档**被 MiKV/QuantSpec/QSpec/"Don't Waste Bits!" 占。**但"由 `P(commit)` 驱动的分级晋升/降级"是否被占，尚无证据**——初版拿"MiKV 已占"判死属 O7/O1 |
+| **④** | KV **Placement** 而非 Eviction | ✅ **VALID KILL（方向 B）** | **不是**"有个版本已 ship"（那会是 O2）——而是**同一决策上 ≥2 个并行提案**：vLLM RFC `#54779` + 原型 `#54327`、SGLang `#21846`（`PREFETCH`/`DEMOTE`/`PIN`）、vLLM `#48445`/`#52113`/`#51428`。叠加 Dynamo KVBM 已 ship G1–G4 + TinyLFU/CMS（`frequency≥2` 默认开启） |
+| **⑤** | Compute-before-Attention | **UNDECIDED**（待 `r4_kv_prefetch`） | **初版判死用错了对象**：找到的 tracker 拥挤是**存储层预取**（host/NVMe → HBM），而本候选是**计算侧 KV page 预测**（HBM → SRAM/L2 或 kernel 内 block 索引）——**这可能是 O7**。而"2–8% 天花板"是**我自己的算术**，属 O8，不构成 V2。**两半都需重核** |
+| **⑥** | KV Prefetching | **UNDECIDED**（待 `r4_kv_prefetch`） | 同 ⑤。它的论证"预测错只损失带宽、不牺牲准确率"是真实优点，且**没有任何测量被引用来否证它** |
+| **⑦** | Attention + 投机联合 | **UNDECIDED** | 初版两条依据都不合格：① **O4**——`enable_adaptive_verification` 是 flag，而钩子只拿走工程学分；② **O7**——那个 flag 管的是**验证长度（top-B over survival scores）**，不是 **attention 预算**。Vegas 很近（*"as a byproduct of verification"*），但它选的是**哪些 KV 条目**，不是**每位置多少预算**。差异是否足以支撑论文：**无证据** |
+| **⑧** | Speculation Scheduler | **NARROWED** | 初版依据"YieldSched 已被击杀"**是复用了我在 REA-4 中已判定为 OVER-REACH 的击杀**（其"ICLR 2026 逐字预占"支柱在记录里不存在；Libra 至今 UNRESOLVED）。REA-4 给出的幸存增量：**token-yield × KV-retention 联合分配（两种货币）**，量级单位数 % |
+| **⑨** | 合并愿景 | ❌ **仍不成立**（但**性质不同**） | 这**不是占位判定**，而是**它不是可证伪的命题**——是 ②③④⑤⑧ 的并集，自身没有单一待验证主张（它自己也承认需要"收敛成一个具体、可证伪的 research question"）。**这一条我维持原判，但它不属于"被占"** |
 
----
+### 2.1 重判后的分布
+
+| 判定 | 数量 | 对象 |
+|---|---|---|
+| ✅ **VALID KILL** | **2** | ② ④（**都是方向 B**） |
+| **NARROWED** | **3** | ① ⑧ A |
+| **UNDECIDED** | **6** | ③ ⑤ ⑥ ⑦ B C |
+| ❌ 不是研究问题 | 1 | ⑨ |
+
+**⇒ 与初版"9/9 死"相差极大。而且关键一点：`V41.md` 的候选与这里的 UNDECIDED 项处在完全相同的认识论位置——都是"在先工作占了大部分、幸存增量需要一个便宜的自测来判定"。两份清单应当合并排序，而不是一份被当作候选、另一份被当作否决。**
 
 ## 3. 它的"不太推荐"四项——我逐条同意
 
@@ -161,15 +180,26 @@
 
 ---
 
-## 6. 仅存的残余（不是候选）
+## 6. 合并排序：GPT 提案的 UNDECIDED 项 + `V41.md` 的候选
 
-筛查给出一个**唯一未被覆盖**的残余：
+**两份清单用同一把尺子后，可执行的增量合成一张表**，按"决定性实验的便宜程度"排序。
 
-> **多租户下、跨*并发*投机分支的准入 + KV 容量调度。** 现有全部准入规则都是**逐会话（per-session）**的，而 vllm-omni 的实测（**37 GiB/branch，H200 上约 2 个分支**）说明**扇出会被 KV 直接杀死**。
+| 优先 | 增量 | 来源 | 决定性实验 | 判据 | 成本 |
+|---|---|---|---|---|---|
+| **1** | **约束解码 dynamic × complex × concurrent** | V41-A1 | batch 1–256 × 4 个语法类 × spec on/off，**不改代码** | class-4 @batch≥32 **≤0.85×** 无约束 ⇒ 杀 | **1 周** |
+| **2** | **跨并发投机分支的准入 + KV 容量调度** | GPT-A | 多租户多分支下测 **KV 是否绑定约束**（vllm-omni 的 37 GiB/branch 是现成仪器） | KV 非绑定 ⇒ 杀 | 1–2 周 |
+| **3** | **hybrid Mamba/GDN 下的前缀保留 × 投机** | V41-A2 | 对 hybrid 类关掉边界丢弃，测命中率与 goodput | **全库零论文**；须自测 | 1–2 卡，2 周 |
+| **4** | **投机 KV 的分级状态（`P(commit)` 驱动晋升/降级）** | GPT-③ | 测未提交投机 token 实际占 KV 字节比例 + 被提交 token 的输出偏移 | 占比 <10% 或偏移不可忽略 ⇒ 杀 | 待 `r4_graded_kv_tiers` |
+| **5** | **计算侧 KV page 预测 + 预取**（"不牺牲准确率"） | GPT-⑤⑥ | 先分离"存储层预取"与"计算侧预取"两个决策，再定量 | 待 `r4_kv_prefetch` | 待筛查 |
+| **6** | **接受概率 → 每位置 attention 预算** | GPT-⑦/C | 先测"接受概率"与"该位置需要多少 attention 精度"**是否存在相关性** | 无相关 ⇒ 杀 | 2 周 |
+| **7** | **投机不确定度 → KV 精度** | GPT-B | 同上（占比 + 输出偏移） | 同上 | 2 周 |
+| **8** | **rank-imbalance-aware dispatch + padding-aware all-to-all** | V41-A3 | 人为 skew 下 A/B padding 感知的 all-to-all | 20% 体积削减转化不成 >9% 时间 ⇒ 杀 | 2 周 |
+| **9** | **drafter 内部深度自适应** | V41-A4 | 185k 格子（DFlash DT=4 有 4.4× 实测损失） | 须自测 | 1–2 卡，2 周 |
+| 10 | token-yield × KV-retention 联合分配 | GPT-⑧ | — | 量级单位数 % | — |
 
-**但它不是候选**：量级风险为**单位数百分比**，且需要先测"KV 是否是绑定约束"。筛查自己的建议是：**先测 KV bindingness**，再决定要不要做。
+**已判死、不应再投入**：②（K 改成预算）、④（KV placement）、⑨（合并愿景）。
 
----
+**这张表取代初版 §6 的"仅存残余"。**
 
 ## 7. 我在这份审核里犯的错（留档）
 
