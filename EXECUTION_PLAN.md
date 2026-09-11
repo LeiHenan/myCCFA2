@@ -92,13 +92,15 @@
 
 ⇒ **frontier 必须跑在多层的并行 drafter 上（DFlash / DSpark 类）**；只有 EAGLE-3 可用时，#6 直接降级。
 
+**多层 drafter 的取数路径（W1 先看这里）**：`vllm-project/speculators`（DSpark/DFlash 上游实现）+ HF 权重（如 `mgoin/GLM-5.2-speculator.dspark-block16`）。有它，W2 的租卡才有意义；没有它，`#6` 因"只有 EAGLE-3"直接降级。
+
 ### 5.2 实验设计
 
 - **定位**：`Speculative Compute Allocation` — 每步决定给这一轮投机投多少算力；`depth × width × draft length × verify budget` 是同一预算的不同形态。
-- **网格**：`depth × width × batch{1,8,32} × ctx{4k,32k,128k,185k}`，spec on/off 对照。
+- **网格**：`depth × width × **γ{1,3,5,7}** × batch{1,8,32} × ctx{4k,32k,128k,185k}`，spec on/off 对照。**γ 因子不可省**——正交性检验必须同扫 depth 与 length（至少在 `width=默认树` 子集上）。
 - **指标**：tok/s、per-step draft 成本、平均接受长度、相对**最佳固定配置**的端到端比。
-- **Go**：存在内点最优 **且** 在 (bs,ctx) 平面上出现**配置反转** **且** 相对最佳固定配置 ≥8% **且** 三个必答项全部通过：① 与已 ship 控制器（`adaptive_spec_params`，调 `speculative_num_steps`）的差异；② 为什么不能直接复用它（它逐字拒绝多层 worker：`enable_multi_layer_eagle=True is not supported (MultiLayerEagleWorkerV2 does not implement adaptive)`）——**须给结构性理由，否则退化为 plumbing**；③ 每个 (bs,ctx) 格做 **adaptive-steps-only vs adaptive-steps+depth** 增量对照。
-- **No-Go**：收益只出现在 185k 角落；或与已 ship 的置信度/成本表调度器无法区分。
+- **Go（主假设：drafter capacity 与 draft length 正交）**：存在 (bs,ctx) 区域使最优 (depth, γ) 发生**非共线反转** **且** 存在内点最优 **且** 相对最佳固定配置 ≥8% **且** 三个必答项全部通过：① 与已 ship 控制器（`adaptive_spec_params`，调 `speculative_num_steps`）的差异；② 为什么不能直接复用它（它逐字拒绝多层 worker：`enable_multi_layer_eagle=True is not supported (MultiLayerEagleWorkerV2 does not implement adaptive)`）——**须给结构性理由，否则退化为 plumbing**；③ 每个 (bs,ctx) 格做 **adaptive-steps-only vs adaptive-steps+depth** 增量对照。
+- **No-Go**：收益只出现在 185k 角落；或与已 ship 的置信度/成本表调度器无法区分；或 **`optimal depth ≈ f(optimal γ)`（共线）⇒ 退化为"另一个 adaptive draft length 实现" ⇒ 杀或并入 `#7`/`#12`**。
 - **基线纪律**：三个基线都不是空白 —— ① DSpark 生产调度器（置信度头 + STS + 离线 SPS 成本表 + ragged-verify）；② **SGLang `adaptive_spec_params`（已 ship 的运行时自适应：batch 1/8/32/64 → 候选步数 `[1,3,5,7]/[0,1,3]/[0,1]/[0]` + 迟滞 + 多套 CUDA-graph 原子切换）**。高 batch 下"少投机"已被它解决，深度轴必须在**这个**基线上仍有增量。
 
 ### 5.3 DEX 替换测试（书面交付物，W1 完成）
@@ -218,7 +220,8 @@
 
 | 项 | 影响 | 处置 |
 |---|---|---|
-| ASPLOS / ISCA / ATC / SOSP / SC / MLSys '26 论文集 | #14 / #12 | 架构会议方向结论仍属暂定；涉及该方向时不得宣称"空缺" |
+| ASPLOS / ISCA / ATC / SOSP / SC '26 论文集 | #14 / #12 | 架构会议方向结论仍属暂定；涉及该方向时不得宣称"空缺" |
+| **MLSys '26** | #6 / #12 | **有入口、尚未系统扫描**：`proceedings.mlsys.org/paper_files/paper/2026/hash/...` 形式**不存在（404）**，正确入口为 `mlsys.org/virtual/2026/`。已定位 3 篇投机解码相关（ReSpec `poster/3613`、Sparse Self-Speculative Decoding `poster/3510`、Beat the long tail `oral/3766`），**均不占 #6 的轴** |
 | TransKV 正文（TechRxiv 403） | #1 | "二值"刻画仅据摘要；引用时标注 Tier B |
 | PrefixShield / Continuum 正文精读 | #2（已归档） | 仅影响归档理由的完整性，不阻塞执行 |
 | DA-MoE（`2607.23099`）正文 | #12 | 2 周时间盒内一并精读 |
@@ -235,3 +238,4 @@
 | v1.1 | 2026-09-11 | 命名统一：实验目录改 `probes/pNN-*`、辅助探针 `probes/aux-cN-*`，新增 `docs/GLOSSARY.md`；补入漏列的 **#7**（备线 C + 离散度探针）；明确 20 = 14 归档 + 6 存活。 |
 | v1.2 | 2026-09-11 | **无卡复核两项**：`#4` 复核门**不通过** → 降为「暂缓」（带重开触发）；`#6` 代码层家族检查**通过**但定位收紧为"drafter 网络深度/宽度"（`adaptive_spec_params` 已 ship 步数自适应）。备线重排：A=`#12`、B=`#7`；20 = 14 归档 + 1 暂缓 + 5 存活。 |
 | v1.3 | 2026-09-11 | **数据采集前**收紧 #6：新增基线 ④（SGLang `adaptive_spec_params`，且它对 `enable_multi_layer_eagle` 明确不实现）、三个必答项、adaptive-steps-only 增量对照与两条杀判据；新增 `notes/p06-dex-differentiation.md`（与 DEX 的三轴区分 + 三条判死条件）。 |
+| v1.4 | 2026-09-11 | 采纳外部文献调研的可核部分：**主假设升级为正交性**（drafter capacity ⟂ draft length）、网格加 `γ` 因子、No-Go 加"共线即杀"、基线补 vLLM per-batch K 查表；§5.1 加多层 drafter 取数路径（`vllm-project/speculators` + HF 权重）；§11 MLSys '26 由"未覆盖"改为"有入口、尚未系统扫描"（原 proceedings 链接 404）；新增 `docs/reviews/2026-09-11-verdict-02-*.md`。 |

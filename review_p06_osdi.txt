@@ -1,0 +1,485 @@
+我专门检索了 **OSDI / NSDI / SOSP / MLSys 以及 arXiv 中 speculative decoding、adaptive scheduling、drafter optimization 相关方向**。先给结论：
+
+> **#6 “Speculative Compute Allocation（动态分配 drafter 网络算力：depth/width）”这个大方向还没有被充分占据，但它周围已经非常拥挤。**
+>
+> 真正危险的不是“有人做过完全一样的”，而是：
+>
+> **已有大量论文在做 speculative decoding 的 adaptive control，只是主要调 draft length / tree structure / acceptance，而不是 drafter 本身的网络容量。**
+
+所以 #6 仍然有机会，但必须把 novelty 卡得非常精准。
+
+---
+
+# 一、目前已经有人做了什么？
+
+## 方向1：Adaptive draft length（已经很拥挤）
+
+这是最接近你的方向。
+
+例如：
+
+### AdaEAGLE
+
+核心：
+
+> 根据输入动态预测最佳 draft length。
+
+它认为：
+
+固定 draft length 不合理，不同输入需要不同 speculative 长度。
+
+([arXiv][1])
+
+但是它控制的是：
+
+```
+draft tokens 数量
+```
+
+不是：
+
+```
+drafter 网络规模
+```
+
+区别：
+
+|      | AdaEAGLE     | 你的#6             |
+| ---- | ------------ | ---------------- |
+| 控制变量 | draft length | drafter capacity |
+| 粒度   | token数量      | 网络计算量            |
+| 问题   | 投多少token     | 用多少模型            |
+
+所以：
+
+AdaEAGLE 不直接 kill #6。
+
+---
+
+# 二、Adaptive draft structure（部分重叠）
+
+例如：
+
+## OPT-Tree
+
+它做：
+
+> 动态改变 speculative tree structure。
+
+根据当前输入选择：
+
+* tree depth
+* tree branching
+
+目标：
+
+最大化 acceptance length。
+
+([麻省理工学院出版][2])
+
+它解决：
+
+```
+同一个 drafter
+不同 tree configuration
+```
+
+你的：
+
+```
+不同 drafter capacity
+```
+
+区别：
+
+OPT-Tree:
+
+```
+固定模型
+↓
+改变搜索空间
+```
+
+#6:
+
+```
+改变模型计算预算
+↓
+改变draft能力
+```
+
+仍然有空间。
+
+---
+
+# 三、Adaptive speculative runtime（最大风险来源）
+
+这里是你最需要注意的。
+
+最近大量工作开始做：
+
+> runtime 自适应 speculative decoding。
+
+例如：
+
+## AdaSD
+
+动态调整：
+
+* generation length
+* acceptance threshold
+
+([arXiv][3])
+
+---
+
+## AdaptiveSD
+
+甚至已经提出：
+
+* runtime monitor
+* adaptive draft controller
+* policy engine
+
+([arXiv][4])
+
+---
+
+## MemSpec
+
+更接近系统：
+
+它做：
+
+> adaptive draft scheduling
+
+但是核心是：
+
+多个 draft model 的选择和驻留管理。
+
+([arXiv][5])
+
+也就是说：
+
+它回答：
+
+> 选哪个 drafter？
+
+你的回答：
+
+> 当前 drafter 应该多大？
+
+这是关键区别。
+
+---
+
+# 四、目前最接近 #6 的论文是什么？
+
+我认为有三个。
+
+---
+
+## 1. MemSpec（最近）
+
+它提出：
+
+```
+prompt/context
+       ↓
+predict draft effectiveness
+       ↓
+choose draft model
+```
+
+([arXiv][5])
+
+如果你的论文写：
+
+> We dynamically select among drafter sizes
+
+那会被 MemSpec 强烈攻击。
+
+但是如果写：
+
+> We dynamically resize a single speculative model's computation graph
+
+区别巨大。
+
+---
+
+## 2. DSpark / DFlash
+
+这是另一个重要背景。
+
+现在 speculative decoding 正从：
+
+EAGLE：
+
+```
+autoregressive drafter
+```
+
+转向：
+
+DFlash/DSpark：
+
+```
+parallel drafter
+```
+
+([GitHub][6])
+
+这反而增强 #6 的机会。
+
+因为：
+
+以前 drafter 是固定小模型。
+
+现在：
+
+DFlash/DSpark：
+
+天然存在：
+
+* layer 数
+* block 数
+* width
+* head
+
+这些 knob。
+
+你的问题变成：
+
+> parallel drafter 出现以后，如何动态分配它的计算预算？
+
+这是新的系统问题。
+
+---
+
+# 五、OSDI / NSDI / SOSP / MLSys 有没有完全一样？
+
+我的搜索结果：
+
+目前没有发现：
+
+> “runtime adaptive allocation of drafter neural network depth/width in speculative decoding”
+
+这种明确方向。
+
+MLSys 最近论文更多集中：
+
+### SpecGen
+
+MLSys 2026：
+
+做：
+
+* self-speculation
+* scheduler
+* KV management
+
+([MLSys 会议论文集][7])
+
+### ReSpec
+
+MLSys 2026：
+
+做：
+
+* RL training speculative decoding
+* dynamic tuning SD configurations
+
+([MLSys 会议论文集][8])
+
+### DAS
+
+MLSys 2026：
+
+做：
+
+* distribution-aware speculative decoding
+
+([MLSys 会议论文集][9])
+
+这些都说明：
+
+**adaptive speculative decoding 是热点。**
+
+但是：
+
+目前热点集中：
+
+```
+when to speculate?
+how many tokens?
+which tree?
+which draft?
+```
+
+而不是：
+
+```
+how much compute should the drafter receive?
+```
+
+---
+
+# 六、所以 #6 现在最大的创新点在哪里？
+
+我认为必须从：
+
+❌ 不要写：
+
+> Adaptive speculative decoding
+
+这个已经太泛。
+
+应该写：
+
+## Speculative Compute Allocation
+
+核心定义：
+
+> Given a fixed latency/compute budget, dynamically allocate computation between draft generation and target verification.
+
+也就是说：
+
+不是：
+
+```
+choose speculation parameters
+```
+
+而是：
+
+```
+allocate compute resources
+```
+
+---
+
+你的数学模型应该类似：
+
+每一步：
+
+预算：
+
+$$
+B=C_{draft}+C_{verify}
+$$
+
+选择：
+
+$$
+(depth,width)
+$$
+
+最大化：
+
+$$
+Throughput=
+\frac{AcceptedTokens}
+{C_{draft}+C_{verify}}
+$$
+
+这个比调参数高级很多。
+
+---
+
+# 七、我的风险重新评估
+
+之前我给 #6 五星。
+
+现在查完文献，我会调整：
+
+| 方向  | 之前    | 现在    |
+| --- | ----- | ----- |
+| #6  | ★★★★★ | ★★★★☆ |
+| #12 | ★★★★☆ | ★★★★☆ |
+| #7  | ★★★☆  | ★★★   |
+| #1  | ★     | ★     |
+
+原因：
+
+#6 最大风险：
+
+如果实验发现：
+
+```
+optimal depth ≈ optimal draft length
+```
+
+那么创新性下降。
+
+---
+
+# 八、我建议下一步必须做一个“文献撞车测试”
+
+在正式投入前，不要马上写代码。
+
+先做：
+
+## 实验：
+
+固定：
+
+DFlash/DSpark
+
+扫描：
+
+```
+depth:
+1,2,3,4,5
+
+width:
+small,medium,large
+
+draft length:
+1,3,5,7
+```
+
+观察：
+
+是否存在：
+
+```
+context A:
+depth=5 length=3
+
+context B:
+depth=2 length=7
+```
+
+这种正交关系。
+
+如果存在：
+
+#6 非常有价值。
+
+如果不存在：
+
+它会退化成：
+
+> adaptive draft length 的另一个实现。
+
+---
+
+所以我的最终判断：
+
+**#6 不是“没人想到”的蓝海，而是处于一个非常好的窗口：周围已经大量研究 adaptive speculative decoding，但“计算预算分配到 drafter结构本身”这一格还没有被明显占据。**
+
+它现在最像 MLSys 论文的问题，但成败取决于你能不能证明：
+
+> drafter capacity 是一个独立于 draft length 的控制维度。
+
+如果这个证明成立，我认为它比普通 KV cache idea 更有顶会相。
+
+[1]: https://arxiv.org/abs/2412.18910?utm_source=chatgpt.com "AdaEAGLE: Optimizing Speculative Decoding via Explicit Modeling of Adaptive Draft Structures"
+[2]: https://direct.mit.edu/tacl/article/doi/10.1162/tacl_a_00735/128189/OPT-Tree-Speculative-Decoding-with-Adaptive-Draft?utm_source=chatgpt.com "OPT-Tree: Speculative Decoding with Adaptive Draft Tree Structure | Transactions of the Association for Computational Linguistics | MIT Press"
+[3]: https://arxiv.org/abs/2512.11280?utm_source=chatgpt.com "AdaSD: Adaptive Speculative Decoding for Efficient Language Model Inference"
+[4]: https://arxiv.org/abs/2607.03876?utm_source=chatgpt.com "AdaptiveSD A Stability-Aware, Runtime-Adaptive Speculative Decoding Framework with Multi-Policy Orchestration for CPU-Constrained LLM Inference"
+[5]: https://arxiv.org/abs/2608.10362?utm_source=chatgpt.com "MemSpec: Memory-Aware Runtime for Adaptive Draft Scheduling in Speculative Decoding on Edge Devices"
+[6]: https://github.com/vllm-project/speculators/blob/main/docs/user_guide/algorithms/dspark.md?utm_source=chatgpt.com "speculators/docs/user_guide/algorithms/dspark.md at main · vllm-project/speculators · GitHub"
+[7]: https://proceedings.mlsys.org/paper_files/paper/2026/hash/66a026c0d17040889b50f0dfa650e5e0-Abstract-Conference.html?utm_source=chatgpt.com "Accelerating Large-Scale Reasoning Model Inference with Sparse Self-Speculative Decoding"
+[8]: https://proceedings.mlsys.org/paper_files/paper/2026/hash/dcb38c6ad7911842ab31081be9540b89-Abstract-Conference.html?utm_source=chatgpt.com "ReSpec: Towards Optimizing Speculative Decoding in Reinforcement Learning Systems"
+[9]: https://proceedings.mlsys.org/paper_files/paper/2026/hash/cbc4ab80cd77aa0eb87da062fbcddb46-Abstract-Conference.html?utm_source=chatgpt.com "Beat the long tail: Distribution-Aware Speculative Decoding for RL Training"

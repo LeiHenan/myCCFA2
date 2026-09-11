@@ -5,6 +5,7 @@
 | 文件 | 评审对象 | 结论 |
 |---|---|---|
 | [`2026-09-11-verdict-01-ranking-review.md`](2026-09-11-verdict-01-ranking-review.md) | `docs/plan.md` vs `docs/kimi_plan.md` | plan.md 的排序水平明显更高；kimi_plan 抓到 2 个真问题（#2 占位、#6 的 DSpark/Graft 边界），但制造 3 处硬错误（SpecTool / AngelSpec / LibraSpec 的"引用不实"裁定全部作废） |
+| [`2026-09-11-verdict-02-specdec-adaptive-survey.md`](2026-09-11-verdict-02-specdec-adaptive-survey.md) | 外部「投机解码自适应控制」调研报告 | 核心判断成立（#6 周围拥挤但本轴未占）；MLSys '26 三条链接 404 但论文真实（改记 `mlsys.org/virtual/2026`）；漏引擎侧证据；**#6 维持主线**，主假设升级为正交性 |
 
 ## 评审已确认的事实（供后来者免于重复核查）
 
