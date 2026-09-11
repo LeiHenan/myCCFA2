@@ -17,6 +17,7 @@
 ## 统一约定
 
 1. **预登记先行**：开跑前写 `notes/prereg/<与实验目录同名>.md`（量 / 区间 / 基线 / 杀判据 / 截止），之后改判据必须留痕。
+   **例外**：`p04-hybrid-gate` 是"门"而非探针（不采集数据），判据在执行前即冻结在 `probes/p04-hybrid-gate/README.md` §3 与 `EXECUTION_PLAN.md` §6，故**无** `notes/prereg/` 条目（已执行完毕，结论见 `notes/gap_hybrid_state.md`）。
 2. **产物落地**：`results/<实验目录名>/<YYYY-MM-DD>/`，至少含 `summary.md`、原始数字表、`run.log`、生成脚本。
 3. **结论回写**：无论生死，`notes/decision_log.md` 追加一条；死亡也要写。
 4. **基线纪律**：对**部署中实际在跑的配置**比较，不对理想化基线；<8% 即止。

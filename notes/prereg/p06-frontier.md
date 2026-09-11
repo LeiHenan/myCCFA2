@@ -7,6 +7,8 @@
 
 > **drafter capacity（网络层数/宽度）是与 draft length 正交的独立控制维度。**
 
+> 注：本方向在方案内的叫法「投机算力分配 / Speculative Compute Allocation」是**内部标签、非既有术语**（已检索无同名论文）；论文措辞需另定。
+
 即：不存在一个能把两者互相替代的单一配置——在某些 (bs, ctx) 区域，最优组合必须**同时**调整 depth 与 γ，且方向相反。
 若该主假设不成立（两者共线），本工作就退化为"另一个 adaptive draft length 实现" ⇒ 见 §杀判据。
 
@@ -81,6 +83,7 @@
 | DSpark `2607.05147` | 离线**静态** depth/block 选择（2 层胜 5 层） | 证明该轴"活"，但非运行时 |
 | Graft `2605.20104` | draft **树**深度（§4.4 因 CUDA-graph 静态形状放弃动态深度） | 类比而非先例 |
 | MLSys '26：ReSpec / Sparse Self-Speculative Decoding / Beat the long tail | RL 训练侧、self-speculation、分布感知 | 均不占本轴 |
+| **Compute-vs-Copy** `2511.12031`《Striking the Right Balance between Compute and Copy: Improving LLM Inferencing Under Speculative Decoding》 | **投机解码下 compute 与 copy 的配比** | **未读正文（Tier B）**；与 `#10`（recompute-vs-load）及本线的"预算"叙述相邻，引用前须读 |
 | **TLT** `2511.16665`（ASPLOS '26；Tier B） | 训练期训 adaptive drafter + "**select speculative-decoding strategies per input batch**"（RL 长尾） | **不占格**：策略/长度轴 + 训练侧，不是运行时分配 drafter 网络容量 |
 | **PRISM** `2602.01762`（MLSys '26 oral） | **训练期架构重构**：把每步计算拆到不同参数集，"**decouple model capacity from inference cost**" | **不占格，但攻击动机**：若容量不必按成本付费，运行时分配还解决什么？见必答项 ④ |
 | **HELIOS** `2504.10724`（MLSys '26 oral） | early-exit 家族：**多模型动态切换** + 只加载可能用到的层 + 实时 profiler | **不占格，但挤压叙述**：运行时自适应深度已有人卖（1.48× 吞吐 / 15.14× batch） |

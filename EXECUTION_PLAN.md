@@ -251,3 +251,4 @@
 | v1.5 | 2026-09-11 | **MLSys '26 全量扫描**（`docs/evidence/mlsys2026_scan.md`）：§11 该缺口关闭；`#6` 邻居清单加 PRISM/HELIOS/SpecDiff-2/"Performance or Illusion?"，并新增**必答项 ④ 动机抗辩**；`#12` 拥挤度获独立确认（CRAFT / Layered Prefill / MoE Serving Tax）。ASPLOS/ISCA/ATC/SOSP/SC '26 仍未扫。 |
 | v1.6 | 2026-09-11 | **ASPLOS '26 + SOSP '26 扫描**（`docs/evidence/venue_scan_2026.md`）与 **DA-MoE 正文精读**：`#12` 占位证据升到五重以上（+ MorphKernel、Barrier-Free EP[Tier B]、DA-MoE 实测量级），门槛加"先读 Barrier-Free EP"；`#6` 邻居加 TLT（训练期 adaptive drafter，策略轴）。ATC/ISCA/SC '26 仍未扫；§11 已清理两处被取代/过期的行。 |
 | v1.7 | 2026-09-11 | **无卡工作收尾**：SOSP 官方程序页核实 StreamEP 真名（社区清单标题有误）并转为 ⏳ 待发表；ATC/SC 入口受阻、ISCA 仅索引、**新发现 NSDI '26 漏在清单外（SwiftEP）**；§11 按「已关闭 / ⏳待发表 / ⛔入口受阻 / 📦仅影响已归档」四类收尾。 |
+| v1.8 | 2026-09-11 | 新增 **§12 待决策项**（D1 测量论文降级形态 / D2 网格是否扩大 / D3 `R_reserve` 分支 / D4 名称标签，含默认建议与"降级须新预登记"的安全前提）；§0 补**结构风险**（主线候选仅 `#6` 一条）；`#6` 邻居表补 `2511.12031`（compute-vs-copy 配比，Tier B）。 |
