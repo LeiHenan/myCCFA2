@@ -283,3 +283,4 @@
 | v1.11 | 2026-09-11 | **独立核查后修正 7 类**：② 门槛的卡数适用范围；§4 #3 归档条件"且"→"或"；§5.2 必答项 ② 改为 **vLLM 口径**并把"三个"改为"四个"；§7 门改用真名 **StreamEP** 并加"正文不可得"的 fallback、删除未核实的"并入 FlashInfer"事实引用；§8.1 补 24 GB 分支与灰区判据；§8.2 语法类以 pre-reg 为唯一来源；`notes/decision_log.md` 重建三节结构 + 归档台账 + 日期锚点 |
 | v1.12 | 2026-09-11 | 解冻条件由"三选一"改为**有依赖的三步**（② pin + 多层 drafter 核对 → ① 租卡 → ③ smoke test），并把 ② 扩展为含"该 pin 上是否有可跑多层 drafter"的核对（`#6` 家族前提），使卡型选择有依据 |
 | v1.13 | 2026-09-12 | **解冻 ② 完成**（pin = vLLM main `9a35c08`）：E1 锚点全部命中（补丁无需改）、多层 drafter 可得（含 `Qwen3-4B-speculator.dflash2`）、深度为 config 旋钮；新增 `notes/p06-toolchain-check.md`（含显存算术与卡型建议：24 GB 起步，80 GB 仅当 8B/185k/bs>1） |
+| v1.14 | 2026-09-12 | 更正 `notes/prereg/p06-frontier.md` 的过时显存估算（128k 的 "KV ≈7 GB" → **18.0 GiB FP16 / 9.0 GiB FP8**，按 Qwen3-4B 实测配置），并写明 T0 ≥16 GB、T1 ≥24 GB、T0/T1 不需多卡、须同 KV dtype |

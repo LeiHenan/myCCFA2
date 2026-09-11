@@ -54,6 +54,8 @@
 
 | 31 | **解冻步骤 ② 完成**（pin = vLLM main `9a35c08`）：E1 锚点全部命中 ⇒ 补丁无需修改；多层 drafter **可得**（`DFlashDraftModel`/`DFlash2DraftModel` 已注册、`qwen3_dspark.py` 存在；HF 有 `Qwen3-4B-speculator.dflash2` 等 6 个权重）；深度为 **config 旋钮**（`num_hidden_layers` / 训练侧 `--num-layers`）⇒ T0 便宜 | "用最新 main"后按设计执行 ②：核对锚点 + 家族可得性 + 显存算术，结论是**无需为 #6 租 80 GB**（24 GB 起步，FP8 KV 覆盖 128k） | `notes/p06-toolchain-check.md`；`README.md` 解冻顺序；`EXECUTION_PLAN.md` §5.1 与 v1.13 |
 
+| 32 | **更正 pre-reg 的显存估算**：128k 的 `KV ≈7 GB` → **18.0 GiB（FP16）/ 9.0 GiB（FP8）**，并补 T0 ≥16 GB / T1 ≥24 GB / T0-T1 不需多卡 / 同 KV dtype 四条约束 | 该数字写在拿到 Qwen3-4B 真实配置之前，照它执行会误以为"24 GB 卡跑 128k 无需 FP8"，直接影响租卡决策 | `notes/prereg/p06-frontier.md`、`EXECUTION_PLAN.md` v1.14 |
+
 ## 四、归档台账（14 项）
 
 > 满足"任何方向的生与死都要记一条"的规则；逐项理由见 `EXECUTION_PLAN.md` §9，此处只留一行索引。
