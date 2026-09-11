@@ -29,7 +29,7 @@
 | **hybrid gate** | #4 | 2 小时文献/PR 复核门（**不是实验**） | 2 小时 |
 | **frontier** | #6 | `depth × width × bs × ctx → tok/s` 前沿图（**主线决胜**） | 2 周 |
 | **adapter dispersion** | #7 | per-adapter prefix 命中率离散度探针 | ≤1 周 |
-| **EP imbalance** | #12 | MoE expert-parallel 不均衡 + dispatch 对冲实验 | 2 周时间盒 |
+| **EP imbalance** | #12 | MoE expert-parallel 不均衡 + dispatch 对冲实验 | 先 ≤3 天判定 → 2 周 |
 
 ## 3. 辅助探针 `C1`–`C9`
 

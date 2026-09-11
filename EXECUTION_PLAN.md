@@ -8,7 +8,7 @@
 ## 0. 一句话
 
 **主线 1 条**：#6 投机算力分配（Speculative Compute Allocation）。
-**备线 2 条**：`#12`（MoE EP 对冲，2 周时间盒）、`#7`（per-adapter KV 配额，待离散度探针判定）。
+**备线 2 条**：`#12`（MoE EP 对冲；**先过 ≤3 天残余不均衡判定**，再过才做 2 周）、`#7`（per-adapter KV 配额，待离散度探针判定）。
 **暂缓 1 项**：`#4` —— 复核门**不通过**（见 §6 与 `notes/gap_hybrid_state.md`），带重开触发条件。
 **主线定位收紧**：`#6` 只能是 **drafter 网络自身的层数/宽度**弹性（draft 长度与 verify 预算的自适应已 ship，见 `notes/p06-family-codecheck.md`）。
 **判定探针 2 个**：#1 E1（1 天）、#3 约束解码扫描（1 周）。
@@ -228,7 +228,7 @@
 | **MLSys '26** | #6 / #12 | **有入口、尚未系统扫描**：`proceedings.mlsys.org/paper_files/paper/2026/hash/...` 形式**不存在（404）**，正确入口为 `mlsys.org/virtual/2026/`。已定位 3 篇投机解码相关（ReSpec `poster/3613`、Sparse Self-Speculative Decoding `poster/3510`、Beat the long tail `oral/3766`），**均不占 #6 的轴** |
 | TransKV 正文（TechRxiv 403） | #1 | "二值"刻画仅据摘要；引用时标注 Tier B |
 | PrefixShield / Continuum 正文精读 | #2（已归档） | 仅影响归档理由的完整性，不阻塞执行 |
-| DA-MoE（`2607.23099`）正文 | #12 | 2 周时间盒内一并精读 |
+| DA-MoE（`2607.23099`）正文 | #12 | 在 #12 的 ≤3 天判定与 2 周实验内一并精读 |
 | Nightjar DOI 不一致 | #13（已归档） | 不阻塞 |
 | Libra（OpenReview `WhxNwgGkAS`）403 | #19（已归档） | 不阻塞 |
 
