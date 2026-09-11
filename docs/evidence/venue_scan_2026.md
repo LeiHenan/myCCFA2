@@ -52,3 +52,32 @@
 - **`#6`**：ASPLOS/SOSP/MLSys '26 三处扫描后，**机制格仍未被占**；新增邻居 **TLT**（训练期 adaptive drafter + 按 batch 选策略），仍属**策略/长度轴**，不改主假设，但继续加厚"必须证明 depth ⟂ length"的必要性。
 - **`#12`**：占位证据从"三重"升到**五重以上** —— LPLB（已 ship）+ MLSys '26 CRAFT / Layered Prefill / MoE Serving Tax + **SOSP '26 MorphKernel** + **DA-MoE 正文**（计算侧 padding 已占且带量级）+ **SOSP '26 Barrier-Free EP（Tier B，待读）**。⇒ 维持"先过 ≤3 天残余不均衡判定、否则归档"的门槛，且判定前**必须先读 Barrier-Free EP 正文**。
 - 仍未扫描：**ATC / ISCA / SC '26**。
+
+---
+
+## 五、SOSP 2026 官方日程核实（2026-09-11 追加）
+
+**社区清单的标题有误。** 官方 accepted/schedule 页给出真名：
+
+> **StreamEP: Straggler-Tolerant MoE Decoding without Communication Barriers**
+> Yizhuo Liang, Shaoyu Wang (USC), Jaeyong Song (SNU), Yanqi Zhou (Google DeepMind), Geon-Woo Kim (UT Austin), Guangrong He, Seo Jin Park (USC)
+> 场次：Session 2B "AI Workflows and Performance Tuning"，10 月 1 日 10:40–12:00
+
+**为什么这条最重要**：标题本身即 `#12` 的问题陈述 —— **straggler-tolerant（= per-rank 不均衡）+ without communication barriers（= 去掉 all-to-all 同步屏障）**，且作者含 Google DeepMind 与 USC（Seo Jin Park 组）。
+
+**⚠️ 正文不可得**：SOSP 2026 会期为 **9 月 29 – 10 月 2 日**，论文未上 arXiv（多轮检索无果），ACM DL 未开放。
+⇒ **状态：标题/作者/场次 = Tier A（官方程序页）；内容 = 不可得。**
+⇒ **重检触发**：会后（约 10 月 2 日）或 ACM DL / arXiv 出现时，**这是判定 `#12` 之前第一优先要读的正文**。
+
+**同会场另两条相关**：LLM-42《Enabling Determinism in LLM Inference with **Verified Speculation**》（MSR & UW，Session 3B）—— 即本仓库 RefShape 探针引用过的 LLM-42；MorphKernel（跨 SM 融合，Session 3D）。
+
+## 六、ATC / ISCA / SC '26 与其它会议的入口状态
+
+| 会议 | 入口状态 | 结论 |
+|---|---|---|
+| **USENIX ATC '26** | `usenix.org/conference/atc26/technical-sessions` **取不到**（fetch failed，与既有记录一致） | **入口受阻，非选择性跳过** |
+| **ISCA '26** | 有索引页（Dagstuhl `einstein.dagstuhl.de/db/conf/isca/isca2026.html`），未展开 | 硬件方向，对本方案（`#12`/`#14`）优先级最低 |
+| **SC '26** | 未找到程序/录用页（仅见零散新闻） | **入口受阻** |
+| **NSDI '26**（此前**不在**本方案的会议清单里） | `usenix.org/conference/nsdi26/` 可访问 | ⚠️ **新发现**：**SwiftEP《Accelerating MoE Inference with Buffer Fusion and TMA Offloading》**（NSDI '26）—— 又一篇 MoE EP 工作，压在 `#12` 的通信侧 |
+
+⇒ **方法论收获**：本方案原先的会议清单（MLSys/OSDI/SOSP/ASPLOS/ISCA/ATC/SC）**漏了 NSDI**；`#12` 相关的 MoE-EP 工作在 NSDI 上也有。

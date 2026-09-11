@@ -142,6 +142,7 @@
 
 - 定位：**非投机**推理系统对冲（非算术解、问题被生产验证）。
 - **量级证据更正（2026-09-11）**：引用链里的"最硬数字"实为三类不同强度的证据 —— ① `3.28×` 归一层延迟是**读图得到的投影**（`archive/subfield_scan/rea1/k3/FORENSIC_REPORT.md`：IF 轴是 swept/constructed 参数，原文未说明数据如何产生，"Treat as a PROJECTION, not a production measurement"）；② `19%` all-to-all 是硬件实测，但路由被构造成**完全均衡** ⇒ 只是**下界**；③ `80×` 是 **Llama-4-Maverick（128 专家 top-1）的极端尾巴**（DeepSeek-V3 10–20×、Qwen3 ≲10；"所有前沿 MoE 都严重偏斜"不成立）。
+- **最直接的竞争者（SOSP '26，正文待发表）**：**StreamEP: Straggler-Tolerant MoE Decoding without Communication Barriers**（USC & SNU & Google DeepMind & UT Austin）—— 标题即本方向的处境，**判定前第一优先要读**。
 - **机制已被占（五重以上）**：① **DA-MoE** `2607.23099` **正文已读**——计算侧的"路由偏斜 → tile padding → 内核选择"已占，带实测 1.16×/1.29× geomean（**注**：`docs/kimi_plan.md` 称其"合入 FlashInfer"在正文中无依据，未核实）；② **SOSP '26 MorphKernel**（跨 SM 融合，明确针对 MoE expert activation，1.3×）；③ MLSys '26 三篇（CRAFT / Layered Prefill / MoE Serving Tax）；④ **SOSP '26 Barrier-Free EP**（Tier B，待读）；⑤ dispatch 半边由 **SGLang + NVIDIA 的 LPLB**（[2026-06-26 博客](https://lmsys.org/blog/2026-06-26-waterfill-lplb/)，per-layer dispatch LP，**2 个 Hopper 节点**，+0.84%–7.34%）ship；padding 半边由 **DA-MoE**（并入 FlashInfer）等占。
 - **门（≤3 天，不上 4–8 卡）**：**先读 SOSP '26 Barrier-Free EP 正文**（确认是否已覆盖你的半边），再在你自己的 model + workload 上测 **EPLB/LPLB 之后残余的 per-rank 不均衡**；残余 <8% ⇒ **归档**；≥8% 且可归因 ⇒ 才进入 2 周实验。
 - 必须做到其一：**与 DA-MoE 正面区分的机制**，或把"体积降 20% → 时间降 9%"的转化率推上去。
@@ -226,14 +227,15 @@
 |---|---|---|
 | ~~**MLSys '26**~~ ✅ **已扫描（09-11）** | #6 / #12 | **缺口关闭**。135/504 = 26.8%；Speculative Decoding 分区 4 篇**均不占 #6 的机制格**，但两篇 oral 构成挤压：**PRISM**（`2602.01762`，训练期架构重构，主张 "decouple model capacity from inference cost" ⇒ 攻击动机）、**HELIOS**（`2504.10724`，early-exit 多模型动态切换 + 实时 profiler ⇒ 挤压叙述）。`#12` 的"已被占"获第三重证据（CRAFT 专家副本 / Layered Prefill / MoE Serving Tax）。详见 `docs/evidence/mlsys2026_scan.md` |
 | ~~**ASPLOS '26 / SOSP '26**~~ ✅ **已扫描（09-11）** | #6 / #12 / #17 | **缺口关闭**。ASPLOS（152/1048）：SD 分区 DFVG + SwiftSpec（→ `#17` 草稿放置/异构已被占）；**TLT** `2511.16665` 为训练期 adaptive drafter + 按 batch 选策略（策略轴，不占 `#6`）。SOSP（62/390）：**MorphKernel**（跨 SM 融合，明确针对 MoE expert activation 等不均衡算子，1.3×）、**Barrier-Free Expert Parallelism**（Tier B，待读）。详见 `docs/evidence/venue_scan_2026.md` |
-| **ATC / ISCA / SC '26** | #12 / #14 | **仍未扫描**；涉及该方向时不得宣称"空缺" |
-| **SOSP '26 Barrier-Free EP 正文** | #12 | **Tier B（仅标题级）**：`Democratizing MoE LLM Decoding via Barrier-Free Expert Parallelism`（USC & Google DeepMind & UT Austin）—— **判定 `#12` 生死前必须先读** |
-| **TLT `2511.16665` 正文** | #6 | Tier B（标题 + 会议一句话）；读它可确认"按 batch 选策略"是否已覆盖 depth 轴 |
+| ⛔ **ATC / SC '26 入口受阻**；ISCA '26 仅索引 | #12 / #14 | 非选择性跳过：ATC 程序页取不到、SC 未找到程序页、ISCA 为硬件方向（优先级最低）。涉及该方向时不得宣称"空缺" |
+| ⚠️ **NSDI '26（原清单遗漏）** | #12 | 该会议此前**不在**本方案清单内；已发现 **SwiftEP**（MoE 推理的 buffer 融合 + TMA offload） |
+| ⏳ **StreamEP 正文**（SOSP '26） | #12 | **真名已从官方程序页核实**：**StreamEP: Straggler-Tolerant MoE Decoding without Communication Barriers**（USC & SNU & Google DeepMind & UT Austin，Session 2B）—— 社区清单标题有误。**正文不可得**（SOSP 会期 9/29–10/2，未上 arXiv）。**判定 `#12` 前第一优先要读**；重检触发：会后或 ACM DL/arXiv 出现 |
+| **TLT `2511.16665` 正文** | #6 | Tier B；**非阻塞**（只影响引用准确度，不影响主假设；读它可确认"按 batch 选策略"是否已覆盖 depth 轴） |
 | TransKV 正文（TechRxiv 403） | #1 | "二值"刻画仅据摘要；引用时标注 Tier B |
-| PrefixShield / Continuum 正文精读 | #2（已归档） | 仅影响归档理由的完整性，不阻塞执行 |
+| PrefixShield / Continuum 正文精读 | #2（已归档） | **仅影响已归档项**，不阻塞 |
 | ~~DA-MoE（`2607.23099`）正文~~ ✅ **已精读（09-11，Tier A）** | #12 | 计算侧「路由偏斜 → tile padding → 内核选择」**已被占**，实测 1.16×(DSV3)/1.29×(Kimi K2) geomean；kimi 称其「合入 FlashInfer」在正文中**无依据** |
-| Nightjar DOI 不一致 | #13（已归档） | 不阻塞 |
-| Libra（OpenReview `WhxNwgGkAS`）403 | #19（已归档） | 不阻塞 |
+| Nightjar DOI 不一致 | #13（已归档） | **仅影响已归档项**，不阻塞 |
+| Libra（OpenReview `WhxNwgGkAS`）403 | #19（已归档） | **仅影响已归档项**，不阻塞 |
 
 ---
 
@@ -248,3 +250,4 @@
 | v1.4 | 2026-09-11 | 采纳外部文献调研的可核部分：**主假设升级为正交性**（drafter capacity ⟂ draft length）、网格加 `γ` 因子、No-Go 加"共线即杀"、基线补 vLLM per-batch K 查表；§5.1 加多层 drafter 取数路径（`vllm-project/speculators` + HF 权重）；§11 MLSys '26 由"未覆盖"改为"有入口、尚未系统扫描"（原 proceedings 链接 404）；新增 `docs/reviews/2026-09-11-verdict-02-*.md`。 |
 | v1.5 | 2026-09-11 | **MLSys '26 全量扫描**（`docs/evidence/mlsys2026_scan.md`）：§11 该缺口关闭；`#6` 邻居清单加 PRISM/HELIOS/SpecDiff-2/"Performance or Illusion?"，并新增**必答项 ④ 动机抗辩**；`#12` 拥挤度获独立确认（CRAFT / Layered Prefill / MoE Serving Tax）。ASPLOS/ISCA/ATC/SOSP/SC '26 仍未扫。 |
 | v1.6 | 2026-09-11 | **ASPLOS '26 + SOSP '26 扫描**（`docs/evidence/venue_scan_2026.md`）与 **DA-MoE 正文精读**：`#12` 占位证据升到五重以上（+ MorphKernel、Barrier-Free EP[Tier B]、DA-MoE 实测量级），门槛加"先读 Barrier-Free EP"；`#6` 邻居加 TLT（训练期 adaptive drafter，策略轴）。ATC/ISCA/SC '26 仍未扫；§11 已清理两处被取代/过期的行。 |
+| v1.7 | 2026-09-11 | **无卡工作收尾**：SOSP 官方程序页核实 StreamEP 真名（社区清单标题有误）并转为 ⏳ 待发表；ATC/SC 入口受阻、ISCA 仅索引、**新发现 NSDI '26 漏在清单外（SwiftEP）**；§11 按「已关闭 / ⏳待发表 / ⛔入口受阻 / 📦仅影响已归档」四类收尾。 |
