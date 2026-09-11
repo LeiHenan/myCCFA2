@@ -16,7 +16,8 @@
 |---|---|
 | **量** | 端到端 `tok/s`、per-step draft 成本 (ms)、平均接受长度、**相对最佳固定配置与相对"已 ship 自适应"的端到端比** |
 | **区间** | depth {1..N} × width {窄链式, 默认树, 宽树} × **γ {1,3,5,7}** × batch {1,8,32} × ctx {4k,32k,128k,185k}，每格 ≥3 次重复。**γ 因子是正交性检验的必需项**：至少在 `width=默认树` 子集上与 depth 同扫 |
-| **基线** | ① spec off（AR）② **最佳固定配置** ③ **DSpark 生产调度器**（置信度头 + STS + 离线 SPS 成本表 + ragged-verify）④ **SGLang `adaptive_spec_params`**（已 ship 的运行时自适应）⑤ **vLLM `num_speculative_tokens_per_batch_size`**（per-batch K 查表，`dynamic_sd_lookup`）—— ④⑤ 按实际使用的引擎择一，**不得省略** |
+| **引擎** | **T1/T2 固定 `vLLM`**（只有它同时有"已 ship 的 K 自适应基线"与"多层 drafter"） |
+| **基线** | ① spec off（AR）② **最佳固定配置** ③ **DSpark 生产调度器**（置信度头 + STS + 离线 SPS 成本表 + ragged-verify）④ **vLLM `num_speculative_tokens_per_batch_size`**（per-batch K 查表，`dynamic_sd_lookup`）—— **不得省略**。SGLang `adaptive_spec_params` 逐字拒绝多层 worker，**不能**充当 T2 对照（仅可作静态基线） |
 | **家族前提** | 必须 ≥1 个**多层并行 drafter**（DFlash 5 层 / DSpark 3 层 MoE）。**EAGLE-3 只有 1 层 ⇒ 无深度旋钮，只能作基线**。取数路径：`vllm-project/speculators`（DSpark/DFlash 上游实现）+ HF 权重（如 `mgoin/GLM-5.2-speculator.dspark-block16`） |
 | **截止** | W2 结束（≤2 周） |
 | **附带交付物** | `notes/p06-dex-differentiation.md` 的定稿（三轴对照 + 三条判死条件的实测结果） |
@@ -44,6 +45,12 @@
 - **测不出任何东西** ⇒ **提示性但非决定性**（可能是截断的锅）⇒ 必须补一个**已发布的浅层 checkpoint**（如 DSpark 2 层 vs DFlash 5 层；家族不同但层数是真的）再判一次，**不得据此直接杀**。
 
 **硬件**：T1 只需 `ctx{4k,128k}`；若 target 为 ≤4B 级，**单张 24 GB 卡足够**（KV ≈7 GB + 权重 ≈8 GB）。前提是能找到与该 target 配套的已发布 drafter（见 §家族前提 的取数路径）。
+
+## 扩展条款（预登记，2026-09-11 决定；**改动即事后调整**）
+
+1. **T1 = 1 家族 × 1 引擎（vLLM）**，先拿主假设的答案。
+2. **自动触发扩展**：T1 出现**反转但幅度在噪声边缘**，或**共线且效应量 ≥ 8%** ⇒ 在**同一预登记**下**追加第二家族**（DFlash ↔ DSpark）；**不自动追加第二引擎**（除非 vLLM 格已跑通且 SGLang 已验证多层 drafter 可承载）。
+3. **降级形态**：机制主张死亡**且共线在两家族都成立** ⇒ 启动**新的、独立预登记的测量论文实验**（新 prereg、新数据）；**不得**把旧数据重新解读成测量论文。
 
 ## 必答项（任一不过即不 Go）
 
@@ -97,3 +104,4 @@
 | 2026-09-11 | 加基线 ④、三个必答项、增量对照、两条杀判据 | 数据采集前 |
 | 2026-09-11 | **主假设升级为正交性**；网格加 **γ 因子**（正交性检验必需）；基线补 ⑤ vLLM per-batch K 查表；加"共线即杀"；补拥挤邻居清单（含 MLSys '26 三篇与 DSpark 上游可用性） | **数据采集前**（本工作区尚无任何 frontier 数据） |
 | 2026-09-11 | **MLSys '26 全量扫描后**加入 PRISM / HELIOS / SpecDiff-2 / "Performance or Illusion?" 到邻居清单，并新增**必答项 ④（动机抗辩）** | **数据采集前** |
+| 2026-09-11 | **引擎固定为 vLLM**（SGLang 的自适应基线对多层不可用）；新增**扩展条款**（优先家族、不自动加引擎；降级须新预登记） | **数据采集前** |
