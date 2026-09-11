@@ -49,6 +49,8 @@
 2. **为什么不能直接复用已 ship 控制器**：SGLang 控制器**逐字拒绝多层 worker** —— `enable_multi_layer_eagle=True is not supported (MultiLayerEagleWorkerV2 does not implement adaptive)`。
    **必须给出结构性理由**（例如深度轴的"接受率—成本"关系与步数轴不同、最优深度随 (bs, ctx) 反转），否则本工作退化为 plumbing。
 3. **增量对照**：每个 (bs, ctx) 格上必须做 **adaptive-steps-only vs adaptive-steps+depth** 的对照；只有后者胜出且 ≥8%，深度轴才算独立贡献。
+4. **动机抗辩（新增，针对 MLSys '26 PRISM）**：必须回答"既然 PRISM 主张容量可与推理成本**架构性解耦**，为什么仍需要运行时分配？"
+   **唯一站得住的落点**：PRISM 是**训练期静态**设计，不处理**上下文相关**的成本 —— 例如 DFlash 在 ~185k 的**全上下文重扫**（`#54691` 实测 16 vs 71 tok/s），那是"每步扫描范围"问题，不是"参数规模"问题。回答不出来 ⇒ 退化为 plumbing。
 
 ## 杀判据
 
@@ -79,6 +81,9 @@
 | DSpark `2607.05147` | 离线**静态** depth/block 选择（2 层胜 5 层） | 证明该轴"活"，但非运行时 |
 | Graft `2605.20104` | draft **树**深度（§4.4 因 CUDA-graph 静态形状放弃动态深度） | 类比而非先例 |
 | MLSys '26：ReSpec / Sparse Self-Speculative Decoding / Beat the long tail | RL 训练侧、self-speculation、分布感知 | 均不占本轴 |
+| **PRISM** `2602.01762`（MLSys '26 oral） | **训练期架构重构**：把每步计算拆到不同参数集，"**decouple model capacity from inference cost**" | **不占格，但攻击动机**：若容量不必按成本付费，运行时分配还解决什么？见必答项 ④ |
+| **HELIOS** `2504.10724`（MLSys '26 oral） | early-exit 家族：**多模型动态切换** + 只加载可能用到的层 + 实时 profiler | **不占格，但挤压叙述**：运行时自适应深度已有人卖（1.48× 吞吐 / 15.14× batch） |
+| SpecDiff-2 `2511.00606`（MLSys '26）；Speculative Decoding: Performance or Illusion? `2601.11580`（MLSys '26 oral） | 扩散 drafter 对齐；生产引擎上的系统测量 | 否；后者是"高 batch 下投机收益缩水"的权威佐证 |
 
 ## 修订记录
 
@@ -87,3 +92,4 @@
 | 2026-09-11 | 初版 | 数据采集前 |
 | 2026-09-11 | 加基线 ④、三个必答项、增量对照、两条杀判据 | 数据采集前 |
 | 2026-09-11 | **主假设升级为正交性**；网格加 **γ 因子**（正交性检验必需）；基线补 ⑤ vLLM per-batch K 查表；加"共线即杀"；补拥挤邻居清单（含 MLSys '26 三篇与 DSpark 上游可用性） | **数据采集前**（本工作区尚无任何 frontier 数据） |
+| 2026-09-11 | **MLSys '26 全量扫描后**加入 PRISM / HELIOS / SpecDiff-2 / "Performance or Illusion?" 到邻居清单，并新增**必答项 ④（动机抗辩）** | **数据采集前** |

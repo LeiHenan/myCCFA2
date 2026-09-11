@@ -50,6 +50,16 @@
 
 ---
 
+## 4. `mlsys2026_scan.md` — MLSys 2026 论文集扫描（#6 / #12 / §11 缺口）
+
+**执行**：2026-09-11（无卡）｜ **结论**：`#6` 的机制格**未被占**，但两篇 oral 从两侧挤压 —— **PRISM** `2602.01762`（训练期架构重构，主张容量与成本解耦 ⇒ 攻击动机；已转为 pre-reg 的**必答项 ④**）、**HELIOS** `2504.10724`（early-exit 多模型切换 + 实时 profiler ⇒ 挤压叙述）；`#12` 的"已被占"获得第三重证据（CRAFT / Layered Prefill / MoE Serving Tax）。
+
+**入口更正**：`proceedings.mlsys.org/paper_files/paper/2026/hash/...` **404**；正确入口 `mlsys.org/virtual/2026/`（oral/poster 编号页）。规模 135/504 = 26.8%。
+
+**仍未覆盖**：ASPLOS / ISCA / ATC / SOSP / SC '26。
+
+---
+
 ## 使用纪律
 
 1. 三份文件都是**副本**；修改原件请改源目录，改完重新同步副本，并在 `notes/decision_log.md` 记录。
