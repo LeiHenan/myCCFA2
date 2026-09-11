@@ -60,6 +60,14 @@
 
 ---
 
+## 5. `venue_scan_2026.md` — ASPLOS / SOSP 2026 扫描 + DA-MoE 正文精读
+
+**执行**：2026-09-11（无卡）｜ **要点**：ASPLOS（152/1048）SD 分区为 DFVG + SwiftSpec（`#17` 相关）；**TLT** `2511.16665`（训练期 adaptive drafter，策略轴，**不占 `#6`**）。SOSP（62/390）：**MorphKernel**（跨 SM 融合，针对 MoE expert activation，1.3×）与 **Barrier-Free Expert Parallelism**（**Tier B，仅标题，判定 `#12` 前必读**）。**DA-MoE `2607.23099` 正文精读**：计算侧"路由偏斜→tile padding→内核选择"已占，实测 1.16×/1.29× geomean；`docs/kimi_plan.md` 称其"合入 FlashInfer"在正文中**无依据**。
+
+**仍未覆盖**：ATC / ISCA / SC '26。
+
+---
+
 ## 使用纪律
 
 1. 三份文件都是**副本**；修改原件请改源目录，改完重新同步副本，并在 `notes/decision_log.md` 记录。

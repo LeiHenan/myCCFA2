@@ -81,6 +81,7 @@
 | DSpark `2607.05147` | 离线**静态** depth/block 选择（2 层胜 5 层） | 证明该轴"活"，但非运行时 |
 | Graft `2605.20104` | draft **树**深度（§4.4 因 CUDA-graph 静态形状放弃动态深度） | 类比而非先例 |
 | MLSys '26：ReSpec / Sparse Self-Speculative Decoding / Beat the long tail | RL 训练侧、self-speculation、分布感知 | 均不占本轴 |
+| **TLT** `2511.16665`（ASPLOS '26；Tier B） | 训练期训 adaptive drafter + "**select speculative-decoding strategies per input batch**"（RL 长尾） | **不占格**：策略/长度轴 + 训练侧，不是运行时分配 drafter 网络容量 |
 | **PRISM** `2602.01762`（MLSys '26 oral） | **训练期架构重构**：把每步计算拆到不同参数集，"**decouple model capacity from inference cost**" | **不占格，但攻击动机**：若容量不必按成本付费，运行时分配还解决什么？见必答项 ④ |
 | **HELIOS** `2504.10724`（MLSys '26 oral） | early-exit 家族：**多模型动态切换** + 只加载可能用到的层 + 实时 profiler | **不占格，但挤压叙述**：运行时自适应深度已有人卖（1.48× 吞吐 / 15.14× batch） |
 | SpecDiff-2 `2511.00606`（MLSys '26）；Speculative Decoding: Performance or Illusion? `2601.11580`（MLSys '26 oral） | 扩散 drafter 对齐；生产引擎上的系统测量 | 否；后者是"高 batch 下投机收益缩水"的权威佐证 |
