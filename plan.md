@@ -20,123 +20,137 @@
 
 **评级刻度**：创新性 ★1–5 ｜ 可行性 ★1–5 ｜ 文献密度 低/中/高（**低 = 机会，高 = 需找差异**）
 
-### 0.2 只有两件事会真正否掉一个方案
+### 0.2 只有三件事会真正否掉一个方案
 
 1. **V1**：确切机制已 ship，**且剩余增量是一个 flag 或一个 bug fix**；
 2. **V2**：**自测**相对**部署基线** <5%；
-3. 以及**方向 B**：同一决策上 ≥2 个**并行**开放提案（这是引擎侧的拥挤，有效）。
+3. **方向 B**：同一决策上 ≥2 个**并行**开放提案（引擎侧拥挤，有效）。
 
 **其余一切"有人做过"都只降低创新性评分，不构成否决。**
 
 ---
 
-## 1. 候选总表（按综合建议排序）
+## 1. 候选总表
 
-| # | 方案 | 来源 | 创新性 | 可行性 | 文献密度 | 综合建议 |
+**排序键（显式定义，逐级 tie-break）**：
+1. **建议等级**（立即判定 → 优先 → 可做 → 需先判定 → 暂缓 → 不做）——**同等级连成整块**
+2. **可行性 ★ 降序**（本规划原则是"先判定、后投入"，同等级内越便宜越前）
+3. **文献密度 升序**（越稀疏 = 空间越大）
+4. **创新性 ★ 降序**
+
+| # | 方案 | 来源 | 创新性 | 可行性 | 文献密度 | 建议 |
 |---|---|---|---|---|---|---|
-| 1 | **投机 KV 分级 state**（位置 commit 剖面驱动） | GPT-③ | ★★★ | ★★★★★ | 中 | **立即判定（1 天 E1）** |
-| 2 | **约束解码 dynamic × complex × concurrent** | V41-A1 | ★★★★ | ★★★★★ | 中高 | **优先** |
-| 3 | **hybrid Mamba/GDN 前缀保留 × 投机** | V41-A2 | ★★★★ | ★★★★ | **低**（零论文） | **优先** |
-| 4 | **server 端多租户保留准入** | V41-B10 | ★★★★ | ★★★★★ | 中 | **优先**（有 665K 轨迹） |
-| 5 | **drafter 内部深度/宽度自适应** | V41-A4 | ★★★★ | ★★★ | 低 | **优先** |
-| 6 | **跨并发投机分支的准入 + KV 容量调度** | GPT-① | ★★★★ | ★★★★ | 中高 | **优先** |
-| 7 | **per-adapter KV 准入 + 驱逐策略** | V41-B5 | ★★★★ | ★★★ | 中 | 优先（次级） |
-| 8 | **branch group 可撤销 / KV 记账** | V41-B6 | ★★★★ | ★★★ | 低 | 可做（1.5–3×） |
-| 9 | **recompute-vs-load 显式调度** | V41-B7 | ★★★ | ★★★★ | 中 | 可做（5–20% TTFT） |
-| 10 | **长 CoT 检查点/恢复** | V41-B3 | ★★★ | ★★★★ | 中 | 可做（1.3–2×） |
-| 11 | **注意力感知预测 → 片上 KV 预取** | GPT-⑤⑥ | ★★★★ | ★★★ | 中高 | 需先判定 |
-| 12 | **接受概率 → 每位置 attention 预算** | GPT-⑦ | ★★★ | ★★★ | 中高 | 需先判定 |
-| 13 | **投机不确定度 → KV 精度** | GPT-B | ★★ | ★★★ | 高 | 需先判定（与 #1 并测） |
-| 14 | **dLLM 去同步 denoise 循环** | V41-B4 | ★★★ | ★★★★ | 中 | 可做（1.12–1.4×） |
-| 15 | **rank-imbalance dispatch + padding-aware all-to-all** | V41-A3 | ★★★ | ★★★ | 中 | 可做（证据最硬） |
-| 16 | **elastic prefix-aware 投机 KV 预留** | V41-B2 | ★★★ | ★★ | 中 | 可做（需 8×H200） |
-| 17 | **草稿放置（prefill/decode/拆分）** | V41-B8 | ★★★ | ★★ | 中高 | 需先判定 |
-| 18 | **逐请求生成前准入 + ragged K** | V41-B1 | ★★ | ★★★ | **高** | 暂缓（须赢 2-D 表） |
-| 19 | **token-yield × KV-retention 联合分配** | GPT-⑧ | ★★ | ★★★ | 高 | 暂缓（单位数 %） |
-| 20 | **block-aware 多节点放置** | V41-B9 | ★★ | ★★ | 高 | 暂缓（1.1–1.3×，基线须自建） |
+| **1** | **投机 KV 分级 state**（位置 commit 剖面驱动） | GPT-③ | ★★★ | ★★★★★ | 中 | **立即判定（1 天 E1）** |
+| **2** | **server 端多租户保留准入** | V41-B10 | ★★★★ | ★★★★★ | 中 | **优先**（有 665K 轨迹） |
+| **3** | **约束解码 dynamic × complex × concurrent** | V41-A1 | ★★★★ | ★★★★★ | 中高 | **优先** |
+| **4** | **hybrid Mamba/GDN 前缀保留 × 投机** | V41-A2 | ★★★★ | ★★★★ | **低**（零论文） | **优先** |
+| **5** | **跨并发投机分支的准入 + KV 容量调度** | GPT-① | ★★★★ | ★★★★ | 中高 | **优先** |
+| **6** | **drafter 内部深度/宽度自适应** | V41-A4 | ★★★★ | ★★★ | 低 | **优先** |
+| **7** | **per-adapter KV 准入 + 驱逐策略** | V41-B5 | ★★★★ | ★★★ | 中 | **优先** |
+| **8** | **长 CoT 检查点/恢复** | V41-B3 | ★★★ | ★★★★ | 中 | 可做（1.3–2×） |
+| **9** | **dLLM 去同步 denoise 循环** | V41-B4 | ★★★ | ★★★★ | 中 | 可做（1.12–1.4×） |
+| **10** | **recompute-vs-load 显式调度** | V41-B7 | ★★★ | ★★★★ | 中 | 可做（5–20% TTFT） |
+| **11** | **branch group 可撤销 / KV 记账** | V41-B6 | ★★★★ | ★★★ | 低 | 可做（1.5–3×） |
+| **12** | **rank-imbalance dispatch + padding-aware all-to-all** | V41-A3 | ★★★ | ★★★ | 中 | 可做（**证据最硬**） |
+| **13** | **elastic prefix-aware 投机 KV 预留** | V41-B2 | ★★★ | ★★ | 中 | 可做（需 8×H200） |
+| **14** | **注意力感知预测 → 片上 KV 预取** | GPT-⑤⑥ | ★★★★ | ★★★ | 中高 | 需先判定 |
+| **15** | **接受概率 → 每位置 attention 预算** | GPT-⑦ | ★★★ | ★★★ | 中高 | 需先判定 |
+| **16** | **投机不确定度 → KV 精度** | GPT-B | ★★ | ★★★ | 高 | 需先判定（与 #1 并测） |
+| **17** | **草稿放置（prefill/decode/拆分）** | V41-B8 | ★★★ | ★★ | 中高 | 需先判定 |
+| **18** | **逐请求生成前准入 + ragged K** | V41-B1 | ★★ | ★★★ | **高** | 暂缓（须赢 2-D 表） |
+| **19** | **token-yield × KV-retention 联合分配** | GPT-⑧ | ★★ | ★★★ | 高 | 暂缓（单位数 %） |
+| **20** | **block-aware 多节点放置** | V41-B9 | ★★ | ★★ | 高 | 暂缓（1.1–1.3×，基线须自建） |
 | — | K 改成计算预算 | GPT-② | ★ | — | 高 | ❌ **不做**（方向 B 有效） |
 | — | KV placement 多 tier | GPT-④ | ★★ | — | 高 | ❌ **不做**（方向 B 有效） |
 | — | 合并愿景 | GPT-⑨ | — | — | — | ❌ 非可证伪命题 |
 | C1–C9 | 九个辅助探针 | V41-C | 各异 | ★★★★★ | 各异 | 见 §2.6（合计约 1 周） |
 
+**档次边界**：#1 立即判定 ｜ #2–#7 优先 ｜ #8–#13 可做 ｜ #14–#17 需先判定 ｜ #18–#20 暂缓。
+**§2 的分组与本节逐行一致。**
+
 ---
 
 ## 2. 逐项详评
 
-### 2.1 第一梯队：一周内可判定，且增量明确
+### 2.1 第一梯队（#1–#7）：一到两周内可判定，增量明确
 
 #### #1 投机 KV 分级 state（GPT-③）
 
-- **创新性 ★★★**：**没有任何工作让 commit 概率去选内存层级**。最近的三个各持一块——**TransKV** 是**二值**（*"rejected KV is discarded without rollback"*，信号 = 已实现的 accept 事件、只在 commit 时一次）；**OasisKV** `2608.08097`（Microsoft）用 **draft token 的注意力质量**（relevance，非 P(commit)）做跨层预取；**VIA-SD** `2606.12243`（ICML 2026）的三态机器分档的是**验证算力、不是 KV 字节**。**⇒ 增量真实存在，但被三处证据压窄**：SpecMemo 要求投机行*"must retain high numerical precision to pass cumulative verification"*（压缩档破坏无损性）；未提交 KV 占比**从无测量**；分级相对"先原样留一步、再交给已 ship 的 tiering"的优势**只有一步宽**。
+- **创新性 ★★★**：**没有任何工作让 commit 概率去选内存层级**。最近的三个各持一块——**TransKV** 是**二值**（*"rejected KV is discarded without rollback"*，信号 = 已实现的 accept 事件、只在 commit 时一次）；**OasisKV** `2608.08097`（Microsoft）用 **draft token 的注意力质量**（relevance，非 P(commit)）做跨层预取；**VIA-SD** `2606.12243`（ICML 2026）的三态机器分档的是**验证算力、不是 KV 字节**。**⇒ 增量真实存在，但被三处证据压窄**：SpecMemo 要求投机行 *"must retain high numerical precision to pass cumulative verification"*（压缩档破坏无损性）；未提交 KV 占比**从无测量**；分级相对"先原样留一步、再交给已 ship 的 tiering"的优势**只有一步宽**。
 - **可行性 ★★★★★**：**整套里最便宜**。E1 只需 instrument 现成 `vllm serve` + EAGLE-3，逐步统计未提交草稿 KV 字节 / 已提交 KV 字节，扫 context × batch × γ{3,5,7}。**~1 天，不用建任何东西**，且能产出**有效的 V2 型证据**（本轮唯一一个）。
-- **文献综述**：密度**中**。占位者：TransKV（Tier B，正文从未读到）、OasisKV、VIA-SD、CONF-KV `2605.24786`。引擎侧：`TieringOffloadingSpec`（N tier + 命名晋升与级联）、`cache_policy_module_path`、`kv_cache_dtype_skip_layers`、TRT-LLM `TokenRangeRetentionConfig` —— **但 tiering 路径里没有任何东西能看到 accept 信号**（≈80% 可用配置表达，**0% 可用概率表达**）。⚠️ **`2606.29223`《Depth Exploration for LLM Decoding》可能是藏身处**（摘要提及 "commit position" 与收缩 "exploration lattice"），PDF 取不到，**必须关闭**。
+- **文献综述**：密度**中**。占位者：TransKV（Tier B，正文从未读到）、OasisKV、VIA-SD、CONF-KV `2605.24786`。引擎侧：`TieringOffloadingSpec`（N tier + 命名晋升与级联）、`cache_policy_module_path`、`kv_cache_dtype_skip_layers`、TRT-LLM `TokenRangeRetentionConfig`——**但 tiering 路径里没有任何东西能看到 accept 信号**（≈80% 可用配置表达，**0% 可用概率表达**）。⚠️ **`2606.29223`《Depth Exploration for LLM Decoding》可能是藏身处**（摘要提及 "commit position" 与收缩 "exploration lattice"），PDF 取不到，**必须关闭**。
 - **判定**：**先做 E1**。falsifier：p95 比值在全部 HBM 可行点上 <5% ⇒ 按实测定死。
 
-#### #2 约束解码 dynamic × complex × concurrent（V41-A1）
-
-- **创新性 ★★★★**：**该交集是空的**。XGrammar 2 是唯一动态引擎但**从未离开简单 JSON**；PSC 解决复杂语法但价格是 *"half to one minute per schema"* + 每 schema **3–6 GiB**（对逐请求动态语法不可支付）；CFGzip 只支持离线（自述 *"negates the advantages in dynamic contexts"*）；Gram2Token 只支持确定性语法。**同引擎实测差距**：JSON **+5.3%** → C++ **+50.7%** → Bython **+802.9%**。
-- **可行性 ★★★★★**：**1 周，不改代码**，单卡。batch 1/8/32/128/256 × 4 个语法类 × spec on/off。
-- **文献综述**：密度**中高**但方向不同——8+ 篇 2026 工作集中在**简单或离线**语法。**场地契合**：**XGrammar 是 MLSys 2025**（`proceedings.mlsys.org`），"目标会议 0 篇"已被证为**假阴性**。
-- **判定**：**Go 判据**：class-4 在 batch ≥32 时 ≤0.85× 无约束。
-
-#### #3 hybrid Mamba/GDN 前缀保留 × 投机（V41-A2）
-
-- **创新性 ★★★★**：**全库零论文**——11 次 arXiv API 查询中**五次精确短语在全库返回字面 0**（`all:"EAGLE" AND all:"prefix cache"` → 0；`all:"radix attention" AND all:"speculative"` → 0）。而机制在**最高代价的模型类上被显式禁用**：`unified_tree_core.py:402` `self.is_eagle = params.is_eagle and ComponentType.MAMBA not in components`。
-- **可行性 ★★★★**：1–2 卡，2 周。**`#53670` 的三臂消融就跑在 dual RTX 5090 上**——硬件门槛很低。
-- **文献综述**：**密度低，但工程痕迹密集**。SGLang 的 bigram radix key **已 ship**（`radix_cache.py:59-60`）；vLLM 侧 RFC `#50438` **被维护者接管**（原作者公开抗议协调）、PR `#50897` **needs-rebase**、11 位 code owner 待审、另有第二个 RFC `#52817`。⚠️ **不得引用 "~20%"**（`#43559` 的 68 条时间线显示实测为 −0.67%/−2%/−4.8%）。
-- **判定**：**优先**。幸存增量收窄为三条：(i) hybrid 类；(ii) 复用-vs-重算保留策略；(iii) MLA。
-
-#### #4 server 端多租户保留准入（V41-B10）
+#### #2 server 端多租户保留准入（V41-B10）
 
 - **创新性 ★★★★**：Khailo 全文 `GPU: 0`、`cluster: 0`——它是**客户端计时器**，没有引擎/调度器/租户；TraceLab 只做观测。**"外部性被命名 ≠ 机制被建出来"**。
 - **可行性 ★★★★★**：**1 节点，≤2 周**，且**已有资产**：`data/syfi_coding_trace.duckdb`（665,453 轮）。
 - **文献综述**：密度**中**。已被占的是"空闲预测 + 保留定价"（Khailo `2607.19214`、`2608.00101`、TraceLab `2606.30560`）；**未被占的是服务端机制本身**。轨迹数字：**28.4% 的会话 → 98.65% 的可避免成本**；断崖在 **5 分钟**（Anthropic TTL 边界）。
 - **判定**：**优先**。对手：LRU / TTL / gap-aware 三臂对比。
 
-#### #5 drafter 内部深度/宽度自适应（V41-A4）
+#### #3 约束解码 dynamic × complex × concurrent（V41-A1）
 
-- **创新性 ★★★★**：**经核验的空缺**——AdaEDL、SpecDec++、Pacer、SVIP **全部只调长度/停止，从未调过 drafter 的深度**。且**与 self-speculation 有结构性区别**：DEL/SpecBound/DSSD/LayerSkip 退的是**目标模型自己的浅层**，其机制（复用 verifier 的计算前缀）**无法迁移**到独立 drafter。
-- **可行性 ★★★**：1–2 卡，2 周。
-- **文献综述**：密度**低**（该具体机制）。对应格子有实测：**DFlash DT=4 在 ~185k 上下文下 16.0 tok/s vs 关掉投机 71 tok/s（4.4× 损失）**（`#54691`），其中 drafter 全上下文重扫占 **~182 ms 的 FA**。
-- **判定**：**优先**。
+- **创新性 ★★★★**：**该交集是空的**。XGrammar 2 是唯一动态引擎但**从未离开简单 JSON**；PSC 解决复杂语法但价格是 *"half to one minute per schema"* + 每 schema **3–6 GiB**（对逐请求动态语法不可支付）；CFGzip 只支持离线（自述 *"negates the advantages in dynamic contexts"*）；Gram2Token 只支持确定性语法。**同引擎实测差距**：JSON **+5.3%** → C++ **+50.7%** → Bython **+802.9%**。
+- **可行性 ★★★★★**：**1 周，不改代码**，单卡。batch 1/8/32/128/256 × 4 个语法类 × spec on/off。
+- **文献综述**：密度**中高**但方向不同——8+ 篇 2026 工作集中在**简单或离线**语法。**场地契合**：**XGrammar 是 MLSys 2025**（`proceedings.mlsys.org`），"目标会议 0 篇"已被证为**假阴性**。
+- **判定**：**Go 判据**：class-4 在 batch ≥32 时 ≤0.85× 无约束。
 
-#### #6 跨并发投机分支的准入 + KV 容量调度（GPT-①）
+#### #4 hybrid Mamba/GDN 前缀保留 × 投机（V41-A2）
+
+- **创新性 ★★★★**：**全库零论文**——11 次 arXiv API 查询中**五次精确短语在全库返回字面 0**（`all:"EAGLE" AND all:"prefix cache"` → 0；`all:"radix attention" AND all:"speculative"` → 0）。而机制在**最高代价的模型类上被显式禁用**：`unified_tree_core.py:402` `self.is_eagle = params.is_eagle and ComponentType.MAMBA not in components`。
+- **可行性 ★★★★**：1–2 卡，2 周。**`#53670` 的三臂消融就跑在 dual RTX 5090 上**——硬件门槛很低。
+- **文献综述**：**密度低，但工程痕迹密集**。SGLang 的 bigram radix key **已 ship**（`radix_cache.py:59-60`）；vLLM 侧 RFC `#50438` **被维护者接管**（原作者公开抗议协调）、PR `#50897` **needs-rebase**、11 位 code owner 待审、另有第二个 RFC `#52817`。⚠️ **不得引用 "~20%"**（`#43559` 的 68 条时间线显示实测为 −0.67%/−2%/−4.8%）。
+- **判定**：**优先**。幸存增量收窄为三条：(i) hybrid 类；(ii) 复用-vs-重算保留策略；(iii) MLA。
+
+#### #5 跨并发投机分支的准入 + KV 容量调度（GPT-①）
 
 - **创新性 ★★★★**：**现有全部准入规则都是逐会话（per-session）的**——包括 PASTE 的 `EnginePressure = DecodeLoad + γ·KVLoad`；而并发分支之间存在真实资源耦合（vllm-omni 实测 **37 GiB/branch，H200 上约 2 个分支**）。**"会话独立"这个隐含假设是缺口。**
 - **可行性 ★★★★**：先测 KV 是否绑定约束（vllm-omni 的 37 GiB/branch 是现成仪器），1–2 周。
 - **文献综述**：密度**中高**——engine 侧已占：SpecTool §3.2（engine 内 KV 提交/回滚，vLLM 实测 +196 tok/s）、PASTE `2603.18897`（in-engine 调度钩子 + 概率化准入）、SPORK `2607.03333`（fork KV + vLLM proposer）、Speculative Actions `2510.04371`（Thms 3–5 准入规则）。**但它们都是单会话视角。**
 - **判定**：先测 KV bindingness；非绑定 ⇒ 杀。
 
-### 2.2 第二梯队：可做，但需明确差异
+#### #6 drafter 内部深度/宽度自适应（V41-A4）
+
+- **创新性 ★★★★**：**经核验的空缺**——AdaEDL、SpecDec++、Pacer、SVIP **全部只调长度/停止，从未调过 drafter 的深度**。且**与 self-speculation 有结构性区别**：DEL/SpecBound/DSSD/LayerSkip 退的是**目标模型自己的浅层**，其机制（复用 verifier 的计算前缀）**无法迁移**到独立 drafter。
+- **可行性 ★★★**：1–2 卡，2 周。
+- **文献综述**：密度**低**（该具体机制）。对应格子有实测：**DFlash DT=4 在 ~185k 上下文下 16.0 tok/s vs 关掉投机 71 tok/s（4.4× 损失）**（`#54691`），其中 drafter 全上下文重扫占 **~182 ms 的 FA**。
+- **判定**：**优先**。
+
+#### #7 per-adapter KV 准入 + 驱逐策略（V41-B5）
+
+- **创新性 ★★★★**：SGLang `#2929` 的 **21 个打勾项全是适配器权重/算子/API，无一项关于 KV 池**；per-adapter prefix keying 只覆盖 **KEY**；**两引擎都无配额/分区/准入策略**。
+- **可行性 ★★★**：2 周。判据：per-adapter 命中率离散度 <5% ⇒ 杀。
+- **文献综述**：密度**中**。⚠️ **四篇"看似占位"的（ForkKV/aLoRA/ICaRus/LRAgent）全是"共享"机制、不是配额策略**——这是本轮 O7 混淆的一个实例。量级 **1.2–2× goodput**。
+
+### 2.2 第二梯队（#8–#13）：可做，但需明确差异
 
 | # | 方案 | 创新性 | 可行性 | 文献综述要点 |
 |---|---|---|---|---|
-| **#7** | **per-adapter KV 准入 + 驱逐** | ★★★★ | ★★★ | SGLang `#2929` 的 **21 个打勾项全是适配器权重/算子/API，无一项关于 KV 池**；per-adapter prefix keying 只覆盖 **KEY**；**两引擎都无配额/分区/准入策略**。⚠️ 四篇"看似占位"的（ForkKV/aLoRA/ICaRus/LRAgent）**全是"共享"机制、不是配额策略**。判据：per-adapter 命中率离散度 <5% ⇒ 杀。1.2–2× goodput |
-| **#8** | **branch group 可撤销 / KV 记账** | ★★★★ | ★★★ | TAPER 管的是**准入**、不是 fork 出去那部分 KV 的**记账**；SGLang 至今**直接 abort**——源码逐字 *"Beam groups cannot be retracted, so they are aborted instead of being requeued."* **1.5–3×** |
-| **#9** | **recompute-vs-load 显式调度** | ★★★ | ★★★★ | vLLM `#53485` 的实际提案是 load-vs-**store** 的延迟 EMA 背压——**"recompute" 在它里面根本没出现**。**符号会随投机解码翻转**。判据：>5% 请求落在已 ship 默认的错误一侧。5–20% TTFT |
-| **#10** | **长 CoT 检查点/恢复** | ★★★ | ★★★★ | **SGLang 并未默认 ship 部分抢占**——`schedule_batch.py::release_req` 把 host-KV 备份门控在 `disaggregation_mode == "decode"`，默认 `"null"` ⇒ **完整重算，与 vLLM 相同**。60k token 重算 ~20s vs 240MB PCIe 往返 ~10ms ⇒ **1.3–2×** |
-| **#14** | **dLLM 去同步 denoise 循环** | ★★★ | ★★★★ | 关键背景：dLLM 的 **7 个已合并机制互不组合**（`dllm_hook.py` 强制关闭 overlap scheduler/HiCache/LMCache/FlexKV/流水并行/LoRA/分离式）。增量：`done.tolist()` 每步同步 + Python 循环。判据：f = h/(t_fwd+h)；<5% 杀、**≥10% 可发表**。1.12–1.4× |
-| **#15** | **rank-imbalance dispatch + padding-aware all-to-all** | ★★★ | ★★★ | **证据最硬的一项**（真实 trace，非算术）：per-rank skew **5–25×**（Llama-4-Maverick >80×）→ **3.28× 归一化解码层延迟**；EPLB **两引擎都默认关闭**；现成 kernel **padding 到最大 rank**；已测转化率 **消息体积降 20% → 时间只降 9%**。**非投机论文** |
-| **#16** | **elastic prefix-aware 投机 KV 预留** | ★★★ | ★★ | SGLang 每请求每步预留 **8 个 slot 而实际只需 1**。需 8×H200。判据：命中率与 goodput 变动 <5% ⇒ 杀 |
+| **8** | 长 CoT 检查点/恢复 | ★★★ | ★★★★ | **SGLang 并未默认 ship 部分抢占**——`release_req` 把 host-KV 备份门控在 `disaggregation_mode == "decode"`，默认 `"null"` ⇒ **完整重算，与 vLLM 相同**。60k token 重算 ~20s vs 240MB PCIe 往返 ~10ms ⇒ **1.3–2×** |
+| **9** | dLLM 去同步 denoise 循环 | ★★★ | ★★★★ | **7 个已合并机制互不组合**（`dllm_hook.py` 强制关闭 overlap scheduler/HiCache/LMCache/FlexKV/流水并行/LoRA/分离式）。增量：`done.tolist()` 每步同步 + Python 循环。判据：f = h/(t_fwd+h)；<5% 杀、**≥10% 可发表**。1.12–1.4× |
+| **10** | recompute-vs-load 显式调度 | ★★★ | ★★★★ | vLLM `#53485` 的实际提案是 load-vs-**store** 的延迟 EMA 背压——**"recompute" 在它里面根本没出现**；**符号会随投机解码翻转**。判据：>5% 请求落在已 ship 默认的错误一侧。5–20% TTFT |
+| **11** | branch group 可撤销 / KV 记账 | ★★★★ | ★★★ | TAPER 管的是**准入**、不是 fork 出去那部分 KV 的**记账**；SGLang 至今**直接 abort**——逐字 *"Beam groups cannot be retracted, so they are aborted instead of being requeued."* **1.5–3×** |
+| **12** | rank-imbalance dispatch + padding-aware all-to-all | ★★★ | ★★★ | **证据最硬**（真实 trace 非算术）：per-rank skew **5–25×**（Llama-4-Maverick >80×）→ **3.28× 归一层延迟**；EPLB **两引擎默认关闭**；现成 kernel **padding 到最大 rank**；已测转化率 **体积降 20% → 时间只降 9%**。**非投机论文** |
+| **13** | elastic prefix-aware 投机 KV 预留 | ★★★ | ★★ | SGLang 每请求每步预留 **8 个 slot 而实际只需 1**。需 8×H200。判据：命中率与 goodput 变动 <5% ⇒ 杀 |
 
-### 2.3 第三梯队：需先判定（增量真实但证据不足）
+### 2.3 第三梯队（#14–#17）：增量真实但证据不足，需先判定
 
 | # | 方案 | 创新性 | 为何只到"需先判定" |
 |---|---|---|---|
-| **#11** | **注意力感知预测 → 片上 KV 预取**（GPT-⑤⑥） | ★★★★ | **空单元格已精确定义**（两个决策分开：存储层**有**预测 / 计算侧**无**预测；空的是"预测 → 片上"）。**但反向证据很重**：Levy `2603.13430` §5.3 已发表失败记录（*"essentially failing at this approach"*）；AAAI-26 的**非预测版实测**是 **+15%/+7%/−2~−5%**（7:1 GQA 那档为负）；而 stall 分解显示**权重流量 58% > KV 32.7%**。**先测"KV stall 占长上下文 decode 墙钟的比例"——无人测过** |
-| **#12** | **接受概率 → 每位置 attention 预算**（GPT-⑦/C） | ★★★ | Vegas（ICML 2026）*"identifies critical KV cache entries as a byproduct of verification"* 很近，但它选的是**哪些 KV 条目**、不是**每位置多少预算**。**逐位置稀疏在成本上可证明中性**（Σsᵢ ≥ k·s_min）⇒ 只能靠"同算力下提质"。**先测相关性是否存在** |
-| **#13** | **投机不确定度 → KV 精度**（GPT-B） | ★★ | MiKV/QuantSpec/QSpec/"Don't Waste Bits!" 已占**按重要度分档**；候选的信号是 `P(commit)`（前瞻）vs 重要度（回溯）——**信号不同，但收益被"被拒 token 的 KV 本就丢弃"这条结构论证压住**。与 #1 并测即可 |
-| **#17** | **草稿放置（prefill/decode/拆分）** | ★★★ | 靶心是 **vLLM `#42109`（OPEN，未合并）**《Disaggregated SD with Standalone Parallel Draft Model》，POC **1.4× TPOT**。**转移成本算术被更正了 30×**：草稿 KV = **112 KiB/token** vs 目标 128–320 ⇒ 真实比值 ~1.14:1。⚠️ **不得主张"没人搬草稿状态"**——SwiftSpec `2506.11309`、StarSD `2601.21622` 已占 |
+| **14** | 注意力感知预测 → 片上 KV 预取 | ★★★★ | **空单元格已精确定义**（存储层**有**预测 / 计算侧**无**预测；空的是"预测 → 片上"）。**但反向证据很重**：Levy `2603.13430` §5.3 已发表失败记录（*"essentially failing at this approach"*）；AAAI-26 非预测版实测 **+15%/+7%/−2~−5%**（7:1 GQA 那档为负）；stall 分解显示**权重流量 58% > KV 32.7%**。**先测"KV stall 占长上下文 decode 墙钟比例"——无人测过** |
+| **15** | 接受概率 → 每位置 attention 预算 | ★★★ | Vegas（ICML 2026）*"identifies critical KV cache entries as a byproduct of verification"* 很近，但它选**哪些 KV 条目**、不是**每位置多少预算**。**逐位置稀疏在成本上可证明中性**（Σsᵢ ≥ k·s_min）⇒ 只能靠"同算力下提质"。**先测相关性是否存在** |
+| **16** | 投机不确定度 → KV 精度 | ★★ | MiKV/QuantSpec/QSpec/"Don't Waste Bits!" 已占**按重要度分档**；候选信号是 `P(commit)`（前瞻）vs 重要度（回溯）——**信号不同，但收益被"被拒 token 的 KV 本就丢弃"这条结构论证压住**。与 #1 并测即可 |
+| **17** | 草稿放置（prefill/decode/拆分） | ★★★ | 靶心是 **vLLM `#42109`（OPEN，未合并）**《Disaggregated SD with Standalone Parallel Draft Model》，POC **1.4× TPOT**。**转移成本算术被更正 30×**：草稿 KV **112 KiB/token** vs 目标 128–320 ⇒ 真实 ~1.14:1。⚠️ **不得主张"没人搬草稿状态"**——SwiftSpec `2506.11309`、StarSD `2601.21622` 已占 |
 
-### 2.4 暂缓（增量存在但量级或成本不划算）
+### 2.4 暂缓（#18–#20：增量存在但量级或成本不划算）
 
 | # | 方案 | 原因 |
 |---|---|---|
-| **#18** | 逐请求生成前准入 + ragged K | 文献密度**高**（CAST/CaDDTree/GLANCE/AngelSpec/LibraSpec/BanditSpec + `#54749` 的**六个并行信号**）。**量级未知**（既无"3–16%"支撑——那是我自己的拼接——也无 <5% 反证）。**必须打赢 2-D (bs,ctx) 表**（`#48944` 实测值 **1.29–1.36×**） |
-| **#19** | token-yield × KV-retention 联合分配 | REA-4 给出的幸存增量，量级**单位数 %** |
-| **#20** | block-aware 多节点放置 | **两个已发表半边的组合**（Epoch 构建 block plan 但明确拒绝喂给 placement；CAP 做了消费它的放置）。1.1–1.3×，且**基线 Epoch+EPLB 需自建** |
+| **18** | 逐请求生成前准入 + ragged K | 文献密度**高**（CAST/CaDDTree/GLANCE/AngelSpec/LibraSpec/BanditSpec + `#54749` 的**六个并行信号**）。**量级未知**（既无"3–16%"支撑——那是我自己的拼接——也无 <5% 反证）。**必须打赢 2-D (bs,ctx) 表**（`#48944` 实测值 **1.29–1.36×**） |
+| **19** | token-yield × KV-retention 联合分配 | REA-4 给出的幸存增量，量级**单位数 %** |
+| **20** | block-aware 多节点放置 | **两个已发表半边的组合**（Epoch 构建 block plan 但明确拒绝喂给 placement；CAP 做了消费它的放置）。1.1–1.3×，且**基线 Epoch+EPLB 需自建** |
 
-### 2.5 不做（仅有两条是有效判定）
+### 2.5 不做（仅有这两条是有效判定）
 
 | 方案 | 依据 |
 |---|---|
@@ -144,6 +158,7 @@
 | **KV placement 多 tier**（GPT-④） | **方向 B**：RFC `#54779` + 原型 `#54327`、SGLang `#21846`、vLLM `#48445`/`#52113`/`#51428` —— **同一决策**上的多个并行提案；且 Dynamo KVBM 已 ship G1–G4 + TinyLFU/CMS |
 
 > **注意**：这两条**不是**因为"有人做过"——而是因为**引擎侧已有多个并行的、相互竞争的提案在推进同一决策**。
+> **另**：GPT-⑨（合并愿景）也不做，但性质不同——它**不是可证伪的命题**，不是被占。
 
 ### 2.6 辅助探针 C1–C9（合计约 1 周）
 
@@ -165,12 +180,12 @@
 
 | 周 | 动作 | 产出 |
 |---|---|---|
-| **W1** | 并发跑三个**判定性**探针：**#1 E1**（1 天）+ **#2 约束解码扫描**（1 周，不改代码）+ **#4 轨迹回放**（1 节点） | 三个可信数字 + 至少一次**有效的 V2 判定** |
-| **W2** | **#3 hybrid**（1–2 卡）与 **#5 drafter 深度**（1–2 卡）的受控扫描；同时关闭 §4 的证据缺口 | 两个方向的实测 headroom |
-| **W3** | 按 W1–W2 结果**收敛到 1–2 个**方向；启动 **#6/#7/#8** 中数据最好的一项 | 选定主线 |
+| **W1** | 并发跑三个**判定性**探针：**#1 E1**（1 天）+ **#3 约束解码扫描**（1 周，不改代码）+ **#2 轨迹回放**（1 节点） | 三个可信数字 + 至少一次**有效的 V2 判定** |
+| **W2** | **#4 hybrid** 与 **#6 drafter 深度**的受控扫描；同时关闭 §4 的证据缺口 | 两个方向的实测 headroom |
+| **W3** | 按 W1–W2 结果**收敛到 1–2 个**方向；启动 **#5 / #7 / #11** 中数据最好的一项 | 选定主线 |
 | **W4–W6** | 主线做机制 + 基线；备线保留 | 第一个可投稿的结果 |
 
-**资源**：W1–W2 全部可在 **1–2 卡**上完成；W3 起按需租（`#16` 需 8×H200，`#17` 需 2 节点，`#20` 需 4 节点）。
+**资源**：W1–W2 全部可在 **1–2 卡**完成；W3 起按需租（#13 需 8×H200，#17 需 2 节点，#20 需 4 节点）。
 
 ---
 
@@ -178,11 +193,11 @@
 
 | 项 | 影响 | 为什么重要 |
 |---|---|---|
-| **arXiv `2606.29223`《Depth Exploration for LLM Decoding》** | #1 / #13 | 摘要提到 *"commit position"* 与收缩 *"exploration lattice"* 到 *"retain only reusable branch states"*——**分级 KV 状态最可能的藏身处**；PDF 取不到 |
-| **ASPLOS / ISCA / ATC / SOSP / SC / MLSys '26 论文集** | #11 / #15 | **未覆盖**（ACM DL、CSDL 被拦）⇒ **#11 的"空单元格"结论在架构会议方向只是暂定** |
+| **arXiv `2606.29223`《Depth Exploration for LLM Decoding》** | #1 / #16 | 摘要提到 *"commit position"* 与收缩 *"exploration lattice"* 到 *"retain only reusable branch states"*——**分级 KV 状态最可能的藏身处**；PDF 取不到 |
+| **ASPLOS / ISCA / ATC / SOSP / SC / MLSys '26 论文集** | #14 / #12 | **未覆盖**（ACM DL、CSDL 被拦）⇒ **#14 的"空单元格"结论在架构会议方向只是暂定** |
 | **TransKV 正文** | #1 | 从未读到（techrxiv 403），其"二值"刻画**仅据摘要** |
 | **Libra**（ICLR 2026，OpenReview `WhxNwgGkAS`） | #18 / #19 | **UNRESOLVED**（403）；二手来源称其做"下一层专家激活的投机预测 + 热专家复制" |
-| Nightjar DOI 不一致 | #16 | 实际返回 `S1383762126002079`，与记录的 `10.1016/j.sysarc.2026.103889` 不符 |
+| Nightjar DOI 不一致 | #13 | 实际返回 `S1383762126002079`，与记录的 `10.1016/j.sysarc.2026.103889` 不符 |
 | OSDI '26 / ACL 2026 | — | **已全量覆盖，无占位者** |
 
 ---
@@ -193,7 +208,7 @@
 2. **<8% 即止**：相对**部署中实际在跑的配置**（不是理想化"调好的"基线）的 headroom <8% ⇒ 终止。
 3. **一次有效的 V2 胜过十次论证**：本轮 47 条击杀里 **38 条是越界**，根本原因是**没有一条建立在自己的测量上**。凡判"量级不足"，必须自测。
 4. **"有人做过"只降创新性评分，不构成否决**——除非是 V1（确切机制已 ship 且剩余增量是 flag/bugfix）或方向 B（≥2 个并行开放提案）。
-5. **机制混淆是双向错误**：既不要把 self-speculation 当独立 drafter（#5），也不要把存储层预取当计算侧预取（#11）。
+5. **机制混淆是双向错误**：既不要把 self-speculation 当独立 drafter（#6），也不要把存储层预取当计算侧预取（#14）。
 6. **每个方向开工前先写清"它测的是哪个量、在哪个区间、对哪个基线"**——这一条能避免本轮全部六次"量搞错了"。
 
 ---
