@@ -68,7 +68,7 @@
 |---|---|---|---|
 | **①** | Tool/Agent-aware Speculative Decoding | **NARROWED** | 机制与准入**确实都已被占**（SpecTool §3.2 的 engine 提交语义；PASTE 的 *"admits speculative work when it is likely to hide exposed tool time"*；Speculative Actions Thms 3–5；vllm-omni `#4909` DRAFT 的 COW KV fork + rollback）——但这是"增量被占"，不是 V1（**剩余增量不是 flag**）。幸存增量与决定性实验见 **§4-A** |
 | **②** | Adaptive SpecDec / "K 改成计算预算" | ✅ **VALID KILL（方向 B）** | **同一决策上 ≥2 个并行开放提案**：`#54749`、`#54801`、`#47111`。叠加 `#54749` 逐字 *"Six different signals are being proposed for this one decision right now. Batch size is what ships."*，以及 LibraSpec 的 *"marginal criterion"*、SparseSpec-L 的 *"marginal acceptance probability falls below the relative drafting cost"* |
-| **③** | Speculative KV Cache（容量/tiering） | **UNDECIDED**（待 `r4_graded_kv_tiers`） | 二分结构（committed vs speculative）已被 TransKV/SpecMemo/MemSpec/Nightjar 占；**按重要度分档**被 MiKV/QuantSpec/QSpec/"Don't Waste Bits!" 占。**但"由 `P(commit)` 驱动的分级晋升/降级"是否被占，尚无证据**——初版拿"MiKV 已占"判死属 O7/O1 |
+| **③** | Speculative KV Cache（分级 state） | **NARROWED**（`r4_graded_kv_tiers` 已判） | **没有工作让 commit 概率去选内存层级**——最近的几个各持一块：**TransKV** 是**二值**（*"separates stable committed KV state from a packed speculative KV buffer… rejected KV is discarded without rollback"*，信号 = 已实现的 accept 事件、只在 commit 时一次）；**OasisKV** `2608.08097`（Microsoft）用**draft token 的注意力质量**做跨层预取，信号是 **relevance 不是 P(commit)**；**VIA-SD** `2606.12243`（ICML 2026）确实有三态置信度机器，但分档的是**验证算力不是 KV 字节**；**CONF-KV** `2605.24786` 按置信度调每步保留预算。⚠️ **三处反向证据**：① **SpecMemo 的约束**逐字 *"Each speculative decoding head must retain high numerical precision to pass cumulative verification"* ⇒ **压缩档会破坏无损性**，阶梯塌成 驻留→host→丢弃；② 未提交投机 KV 的占比**没有任何测量**，且其量级是 O(batch×window) vs committed O(batch×context)，**随 1/context 缩小**；③ 最关键的一条：**分级相对"先原样留一步、再交给已 ship 的 tiering"的优势只有一步宽**。⇒ 幸存增量被压到很窄：**以部署中 drafter 的\*位置\* commit 剖面（α₁>α₂>…>α_k）为谓词的三态，中间档 = 只对 top-m 前沿做无损 host 暂存，O(1) 元数据/步** |
 | **④** | KV **Placement** 而非 Eviction | ✅ **VALID KILL（方向 B）** | **不是**"有个版本已 ship"（那会是 O2）——而是**同一决策上 ≥2 个并行提案**：vLLM RFC `#54779` + 原型 `#54327`、SGLang `#21846`（`PREFETCH`/`DEMOTE`/`PIN`）、vLLM `#48445`/`#52113`/`#51428`。叠加 Dynamo KVBM 已 ship G1–G4 + TinyLFU/CMS（`frequency≥2` 默认开启） |
 | **⑤** | Compute-before-Attention | **NARROWED**（`r4_kv_prefetch` 已判） | **O7 混淆已被证实**：两个决策必须分开——（a）存储层 host/remote→HBM **有**预测（InfiniGen OSDI'24、OasisKV、SparDA、FlashMemory-DS-V4）；（b）计算侧 HBM→**片上** **无**预测（**Dong et al., AAAI-26 `2504.06319`** → L2，用 PTX `cp.async.bulk.prefetch.L2`；PRESERVE；Kelle MICRO'25 → eDRAM；Levy → LLC）。**"非预测的 HBM→L2 预取"已被发表且已实测**，所以只有 **预测 → 片上** 这个合取幸存。⚠️ 但该合取**已有一条已发表的失败记录**：Levy `2603.13430` §5.3 逐字 *"we achieved results only slightly better than keeping the previous step's top-k in memory, **essentially failing at this approach**."* **T3 修正**：**存储层版本的"层前预取"脚手架正在众目睽睽之下施工**——vLLM PR `#49123`（`"state":"OPEN"`、`mergedTime:null`，**未合并**）逐字：*"Uses the existing `wait_for_layer_load()` **per-layer connector hook**, which matches the timing needed for layer-ahead prefetch"*、*"**This PR does not add the Forecast projection model implementation yet**"*、*"Adding an **experimental** SparDALookaheadConnector"*，目标是 CPU→GPU offload。⇒ **每层时序钩子已存在，调度原语不是障碍**；但该 PR **未合并、无预测器、且属存储层**。**计算侧（HBM→L2/SMEM）仍无任何 flag 或钩子。** 风险：存储层版本先落地，可能吸走"层前预取"的新颖性 |
 | **⑥** | KV Prefetching | **NARROWED（近乎退化）** | predict-then-prefetch **已被发表 4 次**（见 ⑤ 的 (a) 列），且在某 fork 里已是 env flag；**全部在 host/remote→HBM 层**。而它宣称的核心优点"**预测错只损失带宽、不牺牲准确率**"——**在文献中已被否证**。⇒ 只剩"非前序 query 的信号（draft/lookahead token 或 next-layer rehearsal）→ L2/SMEM"这一小条 |
@@ -186,10 +186,10 @@
 
 | 优先 | 增量 | 来源 | 决定性实验 | 判据 | 成本 |
 |---|---|---|---|---|---|
-| **1** | **约束解码 dynamic × complex × concurrent** | V41-A1 | batch 1–256 × 4 个语法类 × spec on/off，**不改代码** | class-4 @batch≥32 **≤0.85×** 无约束 ⇒ 杀 | **1 周** |
-| **2** | **跨并发投机分支的准入 + KV 容量调度** | GPT-A | 多租户多分支下测 **KV 是否绑定约束**（vllm-omni 的 37 GiB/branch 是现成仪器） | KV 非绑定 ⇒ 杀 | 1–2 周 |
-| **3** | **hybrid Mamba/GDN 下的前缀保留 × 投机** | V41-A2 | 对 hybrid 类关掉边界丢弃，测命中率与 goodput | **全库零论文**；须自测 | 1–2 卡，2 周 |
-| **4** | **投机 KV 的分级状态（`P(commit)` 驱动晋升/降级）** | GPT-③ | 测未提交投机 token 实际占 KV 字节比例 + 被提交 token 的输出偏移 | 占比 <10% 或偏移不可忽略 ⇒ 杀 | 待 `r4_graded_kv_tiers` |
+| **2** | **约束解码 dynamic × complex × concurrent** | V41-A1 | batch 1–256 × 4 个语法类 × spec on/off，**不改代码** | class-4 @batch≥32 **≤0.85×** 无约束 ⇒ 杀 | **1 周** |
+| **3** | **跨并发投机分支的准入 + KV 容量调度** | GPT-A | 多租户多分支下测 **KV 是否绑定约束**（vllm-omni 的 37 GiB/branch 是现成仪器） | KV 非绑定 ⇒ 杀 | 1–2 周 |
+| **4** | **hybrid Mamba/GDN 下的前缀保留 × 投机** | V41-A2 | 对 hybrid 类关掉边界丢弃，测命中率与 goodput | **全库零论文**；须自测 | 1–2 卡，2 周 |
+| **1** | **投机 KV 分级状态（位置 commit 剖面驱动）** | GPT-③ | **E1（~1 天，不用建任何东西）**：instrument 现成 `vllm serve` + EAGLE-3，逐步统计**未提交草稿 KV 字节 / 已提交 KV 字节**；扫 context × batch × num_speculative_tokens{3,5,7} + 一个 draft-tree 配置 | **p95 比值在全部 HBM 可行点上 <5% ⇒ 按实测定死（这是有效的 V2 型击杀）** | **~1 天** |
 | **5** | **注意力感知预测 → 片上（L2/SMEM）KV 预取** | GPT-⑤⑥ | 按 **GQA 比**分档，在 FA3 基线上测 | 已发表失败记录（Levy §5.3 *"essentially failing"*）与实测上限（AAAI-26 的 **+15%/+7%/−2…−5%**）都把界压在这里；**须先测 KV stall 占长上下文 decode 墙钟的比例**（无人测过） | 2 周 |
 | **6** | **接受概率 → 每位置 attention 预算** | GPT-⑦/C | 先测"接受概率"与"该位置需要多少 attention 精度"**是否存在相关性** | 无相关 ⇒ 杀 | 2 周 |
 | **7** | **投机不确定度 → KV 精度** | GPT-B | 同上（占比 + 输出偏移） | 同上 | 2 周 |
@@ -270,3 +270,18 @@
 `V41.md` 的候选**经历过对抗性复审的反向压力**——复审的任务是"找出误杀"，所以存活下来的候选被反复锤炼过标准。而 `GPT.md` 的候选**没有经历过反向压力**：我直接拿筛查结论往下判，**筛查的任务是"杀死"，它的输出天然偏向 DEAD**。
 
 ⇒ **新增规则：对新提案做评估时，必须施加与存量候选同等的反向压力——即先假设"这是一条误杀"，再去找幸存增量。** 否则新提案会系统性地被更严地判死，而存量候选被更宽地保留。
+
+---
+
+## 10. 材料性未验证项（`r4` 两轮筛查留下的，必须在投入前关闭）
+
+| 项 | 状态 | 影响 |
+|---|---|---|
+| **arXiv `2606.29223`《Depth Exploration for LLM Decoding》** | 摘要提到 *"commit position"* 与把 *"the exploration lattice"* 收缩到 *"retain only reusable branch states"*，**但 PDF 取不到**（000 / ezproxy cookie wall） | **这是分级状态机制最可能的藏身处——发表前必须先关闭** |
+| **TransKV 正文** | 从未读到（techrxiv 403 ×多法）；其**二值**刻画**仅据摘要** | ③ 的最近占位者只算元数据级 |
+| **ASPLOS / ISCA / ATC / SOSP / SC / MLSys '26 论文集** | **未覆盖**（ACM DL、CSDL 被拦；ATC26 URL 404） | **⑤⑥ 的"空单元格"结论在架构会议这个方向只是暂定** |
+| Nightjar DOI | 实际返回 `S1383762126002079`，与简报里的 `10.1016/j.sysarc.2026.103889` **不一致，未对账** | ③ 的占位者之一 |
+| CXL-SpecKV `2512.11920` | PDF 为 CID 字体，不可读 | ③ |
+| OSDI '26 与 ACL 2026 | **已全量覆盖**，无占位者 | — |
+
+**另**：`r4_graded_kv_tiers` 给出的 E1 是**整套里最便宜的决定性实验（~1 天，无需构建任何东西）**，且它能产出**有效的 V2 型击杀**——这与本轮"没有任何一条击杀成立于 V2"的总体状况形成对照：**这是唯一一个能自己造出 V2 证据的探针。**
