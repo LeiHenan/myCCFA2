@@ -97,9 +97,9 @@
 - **定位**：`Speculative Compute Allocation` — 每步决定给这一轮投机投多少算力；`depth × width × draft length × verify budget` 是同一预算的不同形态。
 - **网格**：`depth × width × batch{1,8,32} × ctx{4k,32k,128k,185k}`，spec on/off 对照。
 - **指标**：tok/s、per-step draft 成本、平均接受长度、相对**最佳固定配置**的端到端比。
-- **Go**：存在内点最优 **且** 在 (bs,ctx) 平面上出现**配置反转** **且** 相对最佳固定配置 ≥8%。
+- **Go**：存在内点最优 **且** 在 (bs,ctx) 平面上出现**配置反转** **且** 相对最佳固定配置 ≥8% **且** 三个必答项全部通过：① 与已 ship 控制器（`adaptive_spec_params`，调 `speculative_num_steps`）的差异；② 为什么不能直接复用它（它逐字拒绝多层 worker：`enable_multi_layer_eagle=True is not supported (MultiLayerEagleWorkerV2 does not implement adaptive)`）——**须给结构性理由，否则退化为 plumbing**；③ 每个 (bs,ctx) 格做 **adaptive-steps-only vs adaptive-steps+depth** 增量对照。
 - **No-Go**：收益只出现在 185k 角落；或与已 ship 的置信度/成本表调度器无法区分。
-- **基线纪律**：DSpark 生产调度器（置信度头 + STS 校准 + 离线 SPS 成本表 + ragged-verify）是**基线**，不是空白。
+- **基线纪律**：三个基线都不是空白 —— ① DSpark 生产调度器（置信度头 + STS + 离线 SPS 成本表 + ragged-verify）；② **SGLang `adaptive_spec_params`（已 ship 的运行时自适应：batch 1/8/32/64 → 候选步数 `[1,3,5,7]/[0,1,3]/[0,1]/[0]` + 迟滞 + 多套 CUDA-graph 原子切换）**。高 batch 下"少投机"已被它解决，深度轴必须在**这个**基线上仍有增量。
 
 ### 5.3 DEX 替换测试（书面交付物，W1 完成）
 
@@ -107,6 +107,8 @@
 
 - 若答案是"能"⇒ delta 只落在模型替换上 ⇒ **改措辞或改方向**。
 - 必须写清的区分轴：① 独立 drafter 网络深度（非目标模型 early-exit / self-speculation）；② **调度器级、跨请求**的分配（非 per-commit-position）；③ 与验证预算耦合。
+
+**差异轴与判死条件已预登记**：`notes/p06-dex-differentiation.md`（2026-09-11，**数据采集前**）——三条区分轴（对象=独立 drafter 网络深度 / 粒度=调度器级跨请求 / 预算=与 verify 耦合）+ 三条判死条件。
 
 ---
 
@@ -232,3 +234,4 @@
 | v1.0 | 2026-09-11 | 首版。合并 `docs/plan.md` 与 `docs/kimi_plan.md` 的排序冲突，采纳三条硬门槛；关闭 `2606.29223`；将 #2 归档理由由"被占"更正为"基线反证"；#6 主线化并加入 DEX 替换测试与 drafter 家族层数约束；#4 收窄并加复核门；#12 加 2 周时间盒。 |
 | v1.1 | 2026-09-11 | 命名统一：实验目录改 `probes/pNN-*`、辅助探针 `probes/aux-cN-*`，新增 `docs/GLOSSARY.md`；补入漏列的 **#7**（备线 C + 离散度探针）；明确 20 = 14 归档 + 6 存活。 |
 | v1.2 | 2026-09-11 | **无卡复核两项**：`#4` 复核门**不通过** → 降为「暂缓」（带重开触发）；`#6` 代码层家族检查**通过**但定位收紧为"drafter 网络深度/宽度"（`adaptive_spec_params` 已 ship 步数自适应）。备线重排：A=`#12`、B=`#7`；20 = 14 归档 + 1 暂缓 + 5 存活。 |
+| v1.3 | 2026-09-11 | **数据采集前**收紧 #6：新增基线 ④（SGLang `adaptive_spec_params`，且它对 `enable_multi_layer_eagle` 明确不实现）、三个必答项、adaptive-steps-only 增量对照与两条杀判据；新增 `notes/p06-dex-differentiation.md`（与 DEX 的三轴区分 + 三条判死条件）。 |

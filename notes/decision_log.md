@@ -38,6 +38,7 @@
 | 18 | **补入 #7**（per-adapter KV 配额）为**备线 C（待判定）**，配 ≤1 周离散度探针 | 上一版 §2 存活清单漏列 #7，导致 14+5=19 账不平 | 20 = 14 归档 + 6 存活 |
 | 19 | **#4 复核门不通过 → 降为「暂缓」**（无卡，2 小时） | 主张的 gap 是已占证据的子集：ATOM（shipped）已实装 ladder + 需求驱动 rung + LRU 淘汰 + 成本记账 + 每请求 `1+num_speculative_tokens` 回滚 slot；共存半场由 vLLM `#50172`（OPEN，交付物=正确性）在办 | `notes/gap_hybrid_state.md`；重开触发①`#50172` 关闭或停滞 ②其落地后暴露结构性缺陷 |
 | 20 | **#6 代码层家族检查通过，但定位收紧**（无卡） | 多层 drafter 存在且层数可配置（`multi_layer_eagle_*`、`dflash.py` 的 `draft_config.num_hidden_layers`）；但 `adaptive_spec_params.py` 已 ship "runtime 调整 `speculative_num_steps`" + 多套 CUDA-graph 原子切换 ⇒ 不再以"算力分配"泛称，只主张 **drafter 网络深度/宽度** | `notes/p06-family-codecheck.md`；备线重排 A=`#12`、B=`#7`；20 = 14 归档 + 1 暂缓 + 5 存活 |
+| 21 | **#6 预登记在数据采集前收紧**（无卡）：新增基线 ④ `adaptive_spec_params`、三个必答项、`adaptive-steps-only` 增量对照、两条杀判据；新增与 DEX 的三轴区分声明 | 新证据：已 ship 的自适应控制器**逐字拒绝多层 worker**（`MultiLayerEagleWorkerV2 does not implement adaptive`）⇒ 深度轴的空白更明确，但也要求结构性理由而非 plumbing | `notes/prereg/p06-frontier.md`（修订记录已标注"数据采集前"）、`notes/p06-dex-differentiation.md` |
 
 ## 待决策（按到期顺序）
 
