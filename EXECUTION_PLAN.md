@@ -15,6 +15,8 @@
 **判定探针 2 个**：#1 E1（1 天）、#3 约束解码扫描（1 周）。
 **其余 14 项归档**（§9），其中 #2 的归档理由不是"被占"而是**基线反证**（见 §9）。
 
+**当前阶段**：⏸ **停工等卡**（见 [`README.md`](README.md) 顶部的三个解冻条件）。
+
 **命名法**：`#N` = 候选方向；`probes/pNN-<slug>/` = 第 NN 号方向的实验；`probes/aux-cN-<slug>/` = 辅助探针（与候选无关）。完整词表见 [`docs/GLOSSARY.md`](docs/GLOSSARY.md)。
 
 ---
@@ -103,7 +105,8 @@
 - **Go（主假设：drafter capacity 与 draft length 正交）**：存在 (bs,ctx) 区域使最优 (depth, γ) 发生**非共线反转** **且** 存在内点最优 **且** 相对最佳固定配置 ≥8% **且** 三个必答项全部通过：① 与已 ship 控制器（`adaptive_spec_params`，调 `speculative_num_steps`）的差异；② 为什么不能直接复用它（它逐字拒绝多层 worker：`enable_multi_layer_eagle=True is not supported (MultiLayerEagleWorkerV2 does not implement adaptive)`）——**须给结构性理由，否则退化为 plumbing**；③ 每个 (bs,ctx) 格做 **adaptive-steps-only vs adaptive-steps+depth** 增量对照；④ **动机抗辩**：为什么在 PRISM（容量⟂成本的架构解耦，MLSys '26 oral）之后仍需要运行时分配——落点必须是 PRISM 不处理的**上下文相关成本**（如 185k 全上下文重扫）。
 - **No-Go**：收益只出现在 185k 角落；或与已 ship 的置信度/成本表调度器无法区分；或 **`optimal depth ≈ f(optimal γ)`（共线）⇒ 退化为"另一个 adaptive draft length 实现" ⇒ 杀或并入 `#7`/`#12`**。
 - **三级加速判定（决策级 ≠ 论文级）**：T0 旋钮验证（半天）→ **T1 反转探针**（`depth{1,3,5} × γ{1,3,7} × ctx{4k,128k} × bs{1}` ≈18 格，半天–1 天）→ T2 增量对照（1–2 天）。**T1 判主假设存废、T2 出最终 go/no-go；通过后才需要 2 周全网格**。注意 T1 的**不对称性**（截断只给下界）。详见 `notes/prereg/p06-frontier.md`。
-- **基线纪律**：三个基线都不是空白 —— ① DSpark 生产调度器（置信度头 + STS + 离线 SPS 成本表 + ragged-verify）；② **SGLang `adaptive_spec_params`（已 ship 的运行时自适应：batch 1/8/32/64 → 候选步数 `[1,3,5,7]/[0,1,3]/[0,1]/[0]` + 迟滞 + 多套 CUDA-graph 原子切换）**。高 batch 下"少投机"已被它解决，深度轴必须在**这个**基线上仍有增量。
+- **基线纪律（与 §12 D1 一致）**：T1/T2 **固定跑 vLLM**，基线 = ① spec off（AR）② **最佳固定配置** ③ DSpark 生产调度器（置信度头 + STS + 离线 SPS 成本表 + ragged-verify）④ **vLLM `num_speculative_tokens_per_batch_size`**（per-batch K 查表）。SGLang `adaptive_spec_params` **逐字拒绝多层 worker**，不能充当 T2 对照（仅可作静态基线）。
+- **两个"8%"不是同一个比较**：§5 决策规则 2 的"<8% 即止"是相对**部署中实际在跑的配置**；本条 Go 判据的"≥8%"是相对**最佳固定配置**（更严）。两者需同时成立才 Go。
 
 ### 5.3 DEX 替换测试（书面交付物，W1 完成）
 
@@ -272,5 +275,6 @@
 | v1.5 | 2026-09-11 | **MLSys '26 全量扫描**（`docs/evidence/mlsys2026_scan.md`）：§11 该缺口关闭；`#6` 邻居清单加 PRISM/HELIOS/SpecDiff-2/"Performance or Illusion?"，并新增**必答项 ④ 动机抗辩**；`#12` 拥挤度获独立确认（CRAFT / Layered Prefill / MoE Serving Tax）。ASPLOS/ISCA/ATC/SOSP/SC '26 仍未扫。 |
 | v1.6 | 2026-09-11 | **ASPLOS '26 + SOSP '26 扫描**（`docs/evidence/venue_scan_2026.md`）与 **DA-MoE 正文精读**：`#12` 占位证据升到五重以上（+ MorphKernel、Barrier-Free EP[Tier B]、DA-MoE 实测量级），门槛加"先读 Barrier-Free EP"；`#6` 邻居加 TLT（训练期 adaptive drafter，策略轴）。ATC/ISCA/SC '26 仍未扫；§11 已清理两处被取代/过期的行。 |
 | v1.7 | 2026-09-11 | **无卡工作收尾**：SOSP 官方程序页核实 StreamEP 真名（社区清单标题有误）并转为 ⏳ 待发表；ATC/SC 入口受阻、ISCA 仅索引、**新发现 NSDI '26 漏在清单外（SwiftEP）**；§11 按「已关闭 / ⏳待发表 / ⛔入口受阻 / 📦仅影响已归档」四类收尾。 |
+| v1.10 | 2026-09-11 | 审计修正：§5.2 基线纪律与 **D1 决定同步**（固定 vLLM，基线改为 vLLM per-batch K 查表）+ 澄清"两个 8% 是不同比较"；§0 加"当前阶段"；README 入口表补 `docs/EXPERIMENT_GUIDE.md` 与 `docs/reviews/`；`upstream/README` 登记锚点核对副本；清理 `results/_patchtest`（草稿） |
 | v1.9 | 2026-09-11 | **D1–D4 拍板**：D1 = (a) + 预登记的扩展条款（T1 固定 vLLM；扩展优先家族、不自动加引擎；降级须新预登记）；D2 = (a)；D3 = (b)；D4 = 标注内部叫法。§12 由"待决策"改为"决策记录" |
 | v1.8 | 2026-09-11 | 新增 **§12 待决策项**（D1 测量论文降级形态 / D2 网格是否扩大 / D3 `R_reserve` 分支 / D4 名称标签，含默认建议与"降级须新预登记"的安全前提）；§0 补**结构风险**（主线候选仅 `#6` 一条）；`#6` 邻居表补 `2511.12031`（compute-vs-copy 配比，Tier B）。 |

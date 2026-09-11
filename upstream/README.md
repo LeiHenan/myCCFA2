@@ -14,6 +14,13 @@
 
 > 这些是**冻结证据**，用于核对引用（行号、默认值、开关语义）。**不要修改**，否则审计链断裂。
 
+**已提取的锚点核对副本**：`upstream/_snapshot/`（4 个文件：`version.py`、`v1/core/kv_cache_manager.py`、`v1/core/sched/scheduler.py`、`v1/worker/gpu_model_runner.py`，用于 `e1_patch.py` 的锚点核对；**不入库**）。重新提取：
+```bash
+tar xzf prior_art_fetch/vllm.tar.gz -C upstream/_snapshot \
+  vllm-main/vllm/version.py vllm-main/vllm/v1/core/kv_cache_manager.py \
+  vllm-main/vllm/v1/core/sched/scheduler.py vllm-main/vllm/v1/worker/gpu_model_runner.py
+```
+
 ## 建议用法
 
 ```bash

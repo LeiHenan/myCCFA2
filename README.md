@@ -11,7 +11,8 @@
 | **现在到底做什么、判据是什么** | **[`EXECUTION_PLAN.md`](EXECUTION_PLAN.md)** ← 唯一权威执行依据 |
 | 候选是怎么被筛出来的（论证与证据） | [`docs/`](docs/README.md) |
 | 每个实验怎么跑、何时杀 | [`probes/`](probes/README.md) 与 [`notes/prereg/`](notes/prereg/) |
-| 决策历史 | [`notes/decision_log.md`](notes/decision_log.md) |
+| **一步步怎么操作**（命令/注入点/回退表） | [`docs/EXPERIMENT_GUIDE.md`](docs/EXPERIMENT_GUIDE.md) |
+| 决策历史与评审记录 | [`notes/decision_log.md`](notes/decision_log.md) ｜ [`docs/reviews/`](docs/reviews/README.md) |
 
 ## 当前结论（摘要）
 
