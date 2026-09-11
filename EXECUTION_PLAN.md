@@ -224,7 +224,6 @@
 
 | 项 | 影响 | 处置 |
 |---|---|---|
-| ASPLOS / ISCA / ATC / SOSP / SC '26 论文集 | #14 / #12 | 架构会议方向结论仍属暂定；涉及该方向时不得宣称"空缺" |
 | ~~**MLSys '26**~~ ✅ **已扫描（09-11）** | #6 / #12 | **缺口关闭**。135/504 = 26.8%；Speculative Decoding 分区 4 篇**均不占 #6 的机制格**，但两篇 oral 构成挤压：**PRISM**（`2602.01762`，训练期架构重构，主张 "decouple model capacity from inference cost" ⇒ 攻击动机）、**HELIOS**（`2504.10724`，early-exit 多模型动态切换 + 实时 profiler ⇒ 挤压叙述）。`#12` 的"已被占"获第三重证据（CRAFT 专家副本 / Layered Prefill / MoE Serving Tax）。详见 `docs/evidence/mlsys2026_scan.md` |
 | ~~**ASPLOS '26 / SOSP '26**~~ ✅ **已扫描（09-11）** | #6 / #12 / #17 | **缺口关闭**。ASPLOS（152/1048）：SD 分区 DFVG + SwiftSpec（→ `#17` 草稿放置/异构已被占）；**TLT** `2511.16665` 为训练期 adaptive drafter + 按 batch 选策略（策略轴，不占 `#6`）。SOSP（62/390）：**MorphKernel**（跨 SM 融合，明确针对 MoE expert activation 等不均衡算子，1.3×）、**Barrier-Free Expert Parallelism**（Tier B，待读）。详见 `docs/evidence/venue_scan_2026.md` |
 | **ATC / ISCA / SC '26** | #12 / #14 | **仍未扫描**；涉及该方向时不得宣称"空缺" |
@@ -232,7 +231,7 @@
 | **TLT `2511.16665` 正文** | #6 | Tier B（标题 + 会议一句话）；读它可确认"按 batch 选策略"是否已覆盖 depth 轴 |
 | TransKV 正文（TechRxiv 403） | #1 | "二值"刻画仅据摘要；引用时标注 Tier B |
 | PrefixShield / Continuum 正文精读 | #2（已归档） | 仅影响归档理由的完整性，不阻塞执行 |
-| DA-MoE（`2607.23099`）正文 | #12 | 在 #12 的 ≤3 天判定与 2 周实验内一并精读 |
+| ~~DA-MoE（`2607.23099`）正文~~ ✅ **已精读（09-11，Tier A）** | #12 | 计算侧「路由偏斜 → tile padding → 内核选择」**已被占**，实测 1.16×(DSV3)/1.29×(Kimi K2) geomean；kimi 称其「合入 FlashInfer」在正文中**无依据** |
 | Nightjar DOI 不一致 | #13（已归档） | 不阻塞 |
 | Libra（OpenReview `WhxNwgGkAS`）403 | #19（已归档） | 不阻塞 |
 
@@ -248,4 +247,4 @@
 | v1.3 | 2026-09-11 | **数据采集前**收紧 #6：新增基线 ④（SGLang `adaptive_spec_params`，且它对 `enable_multi_layer_eagle` 明确不实现）、三个必答项、adaptive-steps-only 增量对照与两条杀判据；新增 `notes/p06-dex-differentiation.md`（与 DEX 的三轴区分 + 三条判死条件）。 |
 | v1.4 | 2026-09-11 | 采纳外部文献调研的可核部分：**主假设升级为正交性**（drafter capacity ⟂ draft length）、网格加 `γ` 因子、No-Go 加"共线即杀"、基线补 vLLM per-batch K 查表；§5.1 加多层 drafter 取数路径（`vllm-project/speculators` + HF 权重）；§11 MLSys '26 由"未覆盖"改为"有入口、尚未系统扫描"（原 proceedings 链接 404）；新增 `docs/reviews/2026-09-11-verdict-02-*.md`。 |
 | v1.5 | 2026-09-11 | **MLSys '26 全量扫描**（`docs/evidence/mlsys2026_scan.md`）：§11 该缺口关闭；`#6` 邻居清单加 PRISM/HELIOS/SpecDiff-2/"Performance or Illusion?"，并新增**必答项 ④ 动机抗辩**；`#12` 拥挤度获独立确认（CRAFT / Layered Prefill / MoE Serving Tax）。ASPLOS/ISCA/ATC/SOSP/SC '26 仍未扫。 |
-| v1.6 | 2026-09-11 | **ASPLOS '26 + SOSP '26 扫描**（`docs/evidence/venue_scan_2026.md`）与 **DA-MoE 正文精读**：`#12` 占位证据升到五重以上（+ MorphKernel、Barrier-Free EP[Tier B]、DA-MoE 实测量级），门槛加"先读 Barrier-Free EP"；`#6` 邻居加 TLT（训练期 adaptive drafter，策略轴）。ATC/ISCA/SC '26 仍未扫。 |
+| v1.6 | 2026-09-11 | **ASPLOS '26 + SOSP '26 扫描**（`docs/evidence/venue_scan_2026.md`）与 **DA-MoE 正文精读**：`#12` 占位证据升到五重以上（+ MorphKernel、Barrier-Free EP[Tier B]、DA-MoE 实测量级），门槛加"先读 Barrier-Free EP"；`#6` 邻居加 TLT（训练期 adaptive drafter，策略轴）。ATC/ISCA/SC '26 仍未扫；§11 已清理两处被取代/过期的行。 |
