@@ -52,6 +52,8 @@
 
 | 30 | **解冻条件改为有序三步**：② pin + 多层 drafter 核对 → ① 租卡 → ③ smoke test；② 扩展为含"该 vLLM pin 上是否存在可跑的多层 drafter"（否则卡型与主线都会选错） | 原"三选一"写法掩盖了依赖：卡型取决于多层 drafter 是否可得（`#6` 家族前提） | `README.md`、`EXECUTION_PLAN.md` v1.12 |
 
+| 31 | **解冻步骤 ② 完成**（pin = vLLM main `9a35c08`）：E1 锚点全部命中 ⇒ 补丁无需修改；多层 drafter **可得**（`DFlashDraftModel`/`DFlash2DraftModel` 已注册、`qwen3_dspark.py` 存在；HF 有 `Qwen3-4B-speculator.dflash2` 等 6 个权重）；深度为 **config 旋钮**（`num_hidden_layers` / 训练侧 `--num-layers`）⇒ T0 便宜 | "用最新 main"后按设计执行 ②：核对锚点 + 家族可得性 + 显存算术，结论是**无需为 #6 租 80 GB**（24 GB 起步，FP8 KV 覆盖 128k） | `notes/p06-toolchain-check.md`；`README.md` 解冻顺序；`EXECUTION_PLAN.md` §5.1 与 v1.13 |
+
 ## 四、归档台账（14 项）
 
 > 满足"任何方向的生与死都要记一条"的规则；逐项理由见 `EXECUTION_PLAN.md` §9，此处只留一行索引。

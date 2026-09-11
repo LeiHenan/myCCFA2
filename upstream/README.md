@@ -29,6 +29,12 @@ git clone https://github.com/vllm-project/vllm.git upstream/vllm
 cd upstream/vllm && git checkout <pin>
 ```
 
+## 当前 pin（2026-09-12 核对）
+
+- vLLM `main` = **`9a35c081e80a94828af6f611525102bb70e3c67f`**
+- 该 pin 的对照副本：`upstream/vllm-main-check/`（3 个文件，不入库）
+- 核对结论见 `notes/p06-toolchain-check.md`
+
 ## 必须记录的 pin
 
 每次跑探针时，把以下信息写进 `results/<probe>/<date>/summary.md`：

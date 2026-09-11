@@ -95,6 +95,8 @@
 
 ⇒ **frontier 必须跑在多层的并行 drafter 上（DFlash / DSpark 类）**；只有 EAGLE-3 可用时，#6 直接降级。
 
+**② 工具链核对已完成（2026-09-12）**：pin = vLLM main `9a35c08`；注册表含 `DFlashDraftModel`(qwen3_dflash) / `DFlash2DraftModel`(qwen3_dflash2)，`qwen3_dspark.py` 存在；HF 可用权重含 **`Qwen3-4B-speculator.dflash2`**（⇒ 24 GB 可跑）；**深度由 config 的 `num_hidden_layers` 驱动**（training 侧 `--num-layers`）⇒ T0 截断是改配置而非改代码。详见 `notes/p06-toolchain-check.md`。
+
 **多层 drafter 的取数路径（W1 先看这里）**：`vllm-project/speculators`（DSpark/DFlash 上游实现）+ HF 权重（如 `mgoin/GLM-5.2-speculator.dspark-block16`）。有它，W2 的租卡才有意义；没有它，`#6` 因"只有 EAGLE-3"直接降级。
 
 ### 5.2 实验设计
@@ -280,3 +282,4 @@
 | v1.10 | 2026-09-11 | 审计修正：§5.2 基线纪律与 **D1 决定同步**（固定 vLLM，基线改为 vLLM per-batch K 查表）+ 澄清"两个 8% 是不同比较"；§0 加"当前阶段"；README 入口表补 `docs/EXPERIMENT_GUIDE.md` 与 `docs/reviews/`；`upstream/README` 登记锚点核对副本；清理 `results/_patchtest`（草稿） |
 | v1.11 | 2026-09-11 | **独立核查后修正 7 类**：② 门槛的卡数适用范围；§4 #3 归档条件"且"→"或"；§5.2 必答项 ② 改为 **vLLM 口径**并把"三个"改为"四个"；§7 门改用真名 **StreamEP** 并加"正文不可得"的 fallback、删除未核实的"并入 FlashInfer"事实引用；§8.1 补 24 GB 分支与灰区判据；§8.2 语法类以 pre-reg 为唯一来源；`notes/decision_log.md` 重建三节结构 + 归档台账 + 日期锚点 |
 | v1.12 | 2026-09-11 | 解冻条件由"三选一"改为**有依赖的三步**（② pin + 多层 drafter 核对 → ① 租卡 → ③ smoke test），并把 ② 扩展为含"该 pin 上是否有可跑多层 drafter"的核对（`#6` 家族前提），使卡型选择有依据 |
+| v1.13 | 2026-09-12 | **解冻 ② 完成**（pin = vLLM main `9a35c08`）：E1 锚点全部命中（补丁无需改）、多层 drafter 可得（含 `Qwen3-4B-speculator.dflash2`）、深度为 config 旋钮；新增 `notes/p06-toolchain-check.md`（含显存算术与卡型建议：24 GB 起步，80 GB 仅当 8B/185k/bs>1） |

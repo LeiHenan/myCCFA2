@@ -4,9 +4,9 @@
 
 **解冻顺序（按实验设计的依赖；**不是"三选一"**）**：
 
-1. **② 先做**（无卡、最便宜、且**决定其余**）：给出 vLLM 的 **pin commit** → 我按该版本 (i) 核对 `e1_patch.py` 的注入锚点，(ii) **核对该 pin 上是否存在可跑的「多层 drafter」**（`vllm-project/speculators` 的 DSpark/DFlash，见 `EXECUTION_PLAN.md` §5.1 家族前提），并估算显存需求。
+1. ✅ **② 已完成（2026-09-12，pin = vLLM main `9a35c08`）** —— 结论：**通过**。(i) `e1_patch.py` 锚点在该 pin 上**全部命中，无需修改**；(ii) 多层 drafter **可得**（注册表含 `DFlashDraftModel`/`DFlash2DraftModel`，`qwen3_dspark.py` 存在；HF 有 **`Qwen3-4B-speculator.dflash2`** 等 6 个权重）；(iii) 深度由 config 的 `num_hidden_layers` 驱动（训练侧 `--num-layers`）。详见 [`notes/p06-toolchain-check.md`](notes/p06-toolchain-check.md)。
    **两种结局都是净收益**：有 ⇒ 卡型按显存需求定；**没有 ⇒ `#6` 降级**（深度旋钮不存在），卡型退到 24 GB 即可，主线改为 E1 + `#7`。
-2. **① 租卡**：卡型由第 1 步的结论决定 —— 这就是"② 必须先做"的**唯一理由**：避免租错卡。
+2. **① 租卡（现在可做）**：**1×24 GB 起步** —— 配 `Qwen3-4B` + `Qwen3-4B-speculator.dflash2`；128k 格需 `--kv-cache-dtype fp8`（或把 T1 的 ctx 收到 32k）。**只有**需要 8B target 或 185k 格/bs>1 时才租 80 GB。显存算术见 `notes/p06-toolchain-check.md` §5。
 3. **③ smoke test**（需卡）：三层验证（无投机 → `method:"ngram"` → 真 drafter）。EAGLE-3 加载失败**不影响 E1 的结论有效性**，但须在 `summary.md` 标注 drafter 家族。
 
 ## 入口
