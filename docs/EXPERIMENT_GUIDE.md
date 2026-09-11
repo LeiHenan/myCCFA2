@@ -166,7 +166,11 @@ huggingface-cli login            # 若模型是 gated
 
 ## Phase 3 — W2：frontier（主线决胜）
 
-### Step 3.1 跑 frontier（3–4 天）
+### Step 3.1 跑 frontier（先 T0/T1/T2 三级判定，再决定是否上 2 周全网格）
+
+> **决策级 ≠ 论文级**：T0 旋钮验证（半天）→ **T1 反转探针**（`depth{1,3,5} × γ{1,3,7} × ctx{4k,128k} × bs{1}` ≈18 格、半天–1 天）→ T2 增量对照（1–2 天）。T1 判主假设存废，T2 出最终 go/no-go；**通过后才做下面的全网格**。注意 T1 用**截断**只给下界，测不出东西时不得直接杀。详见 `notes/prereg/p06-frontier.md`。
+
+### Step 3.2 跑全网格（论文级，2 周）
 
 - 网格：`d{1..N} × width{窄链式,默认树,宽树} × bs{1,8,32} × ctx{4k,32k,128k,185k}`，spec off 与最佳固定配置作对照。
 - 每格 3 次重复；产出 `frontier.csv` + 等高线图。

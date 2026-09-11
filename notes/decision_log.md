@@ -35,11 +35,12 @@
 | 15 | 新增 `docs/EXPERIMENT_GUIDE.md`（W1–W3 逐步操作手册） | 方案需要可执行的命令级指导 | `docs/EXPERIMENT_GUIDE.md` |
 | 16 | **E1 判据新增硬件条件分支**：24 GB 卡（4090/5090）路径下 ctx 网格 {4k,32k,128k} → **{4k,16k,32k}**（或换 ≤4B target / 2×24 GB TP=2） | 显存算术：8B 级 ≈128 KiB/token ⇒ 单请求 128k ctx ≈16 GiB，24 GB 卡不可行；且比值 `≈γ/ctx` 在短上下文信噪比更高 | 本分支在**任何数据采集之前**登记，不构成事后放宽 |
 | 17 | **统一命名**：实验目录 `probes/pNN-*`（NN = 候选 #NN）、辅助探针 `probes/aux-cN-*`；新增 `docs/GLOSSARY.md` | 消除 `c3_constrained_scan` 与辅助表 C3 的语义冲突 | 全仓库路径已同步 |
-| 18 | **补入 #7**（per-adapter KV 配额）为**备线 C（待判定）**，配 ≤1 周离散度探针 | 上一版 §2 存活清单漏列 #7，导致 14+5=19 账不平 | 20 = 14 归档 + 6 存活 |
+| 18 | **补入 #7**（per-adapter KV 配额）为**备线 C（待判定）**，配 ≤1 周离散度探针 | 上一版 §2 存活清单漏列 #7，导致 14+5=19 账不平 | 20 = 14 归档 + 1 暂缓 + 5 存活（v1.2 起 #7 改称「备线 B」） |
 | 19 | **#4 复核门不通过 → 降为「暂缓」**（无卡，2 小时） | 主张的 gap 是已占证据的子集：ATOM（shipped）已实装 ladder + 需求驱动 rung + LRU 淘汰 + 成本记账 + 每请求 `1+num_speculative_tokens` 回滚 slot；共存半场由 vLLM `#50172`（OPEN，交付物=正确性）在办 | `notes/gap_hybrid_state.md`；重开触发①`#50172` 关闭或停滞 ②其落地后暴露结构性缺陷 |
 | 20 | **#6 代码层家族检查通过，但定位收紧**（无卡） | 多层 drafter 存在且层数可配置（`multi_layer_eagle_*`、`dflash.py` 的 `draft_config.num_hidden_layers`）；但 `adaptive_spec_params.py` 已 ship "runtime 调整 `speculative_num_steps`" + 多套 CUDA-graph 原子切换 ⇒ 不再以"算力分配"泛称，只主张 **drafter 网络深度/宽度** | `notes/p06-family-codecheck.md`；备线重排 A=`#12`、B=`#7`；20 = 14 归档 + 1 暂缓 + 5 存活 |
 | 21 | **#6 预登记在数据采集前收紧**（无卡）：新增基线 ④ `adaptive_spec_params`、三个必答项、`adaptive-steps-only` 增量对照、两条杀判据；新增与 DEX 的三轴区分声明 | 新证据：已 ship 的自适应控制器**逐字拒绝多层 worker**（`MultiLayerEagleWorkerV2 does not implement adaptive`）⇒ 深度轴的空白更明确，但也要求结构性理由而非 plumbing | `notes/prereg/p06-frontier.md`（修订记录已标注"数据采集前"）、`notes/p06-dex-differentiation.md` |
 | 22 | **采纳外部调研的可核部分，主假设升级为正交性**：`#6` 的头条主张改为「drafter capacity ⟂ draft length」；网格加 γ 因子；No-Go 加"共线即杀"；基线补 vLLM per-batch K 查表 | 该报告的区分经核实为真（MemSpec=draft residency；DSpark 有上游实现与 HF 权重 ⇒ 多层 drafter 可取）；其 MLSys '26 链接 404 但论文真实 ⇒ §11 缺口由「未覆盖」改为「有入口」 | `notes/prereg/p06-frontier.md`、`EXECUTION_PLAN.md` v1.4、`docs/reviews/2026-09-11-verdict-02-*.md`；**#6 维持主线** |
+| 23 | **全仓审计 + 三项修正**：① #6 写入**三级判定**（T0/T1/T2，决策级 3–4 天 ≠ 论文级 2 周）并标注**截断下界的不对称性**；② #12 写入**≤3 天残余不均衡判定门**，并更正其"证据最硬"标签（3.28× 投影 / 19% 下界 / 80× 极端尾巴；mechanism 已被 LPLB 占）；③ `__pycache__` 出库并加 ignore | 审计发现：1 条断链（`EXECUTION_PLAN → GLOSSARY.md`）、3 处陈旧表述（"证据最硬"×1、"14 归档 + 6 存活"×1、过时的待决策行）、pyc 误入库 | 见本轮 commit；`EXECUTION_PLAN.md` §2/§5/§7、`probes/p06-frontier/README.md`、`docs/README.md` |
 
 ## 待决策（按到期顺序）
 
@@ -48,6 +49,6 @@
 | D1 结束 | #1 生或死 | E1 判据（`probes/p01-e1-uncommitted-kv/README.md` §5） |
 | W1 结束 | #6 是否具备实验条件 | 是否存在可跑的多层并行 drafter |
 | W1 结束 | #3 归档或继续 | class-4 @batch≥32 是否 ≤0.85× 且结构性 |
-| W2 结束 | #4 归档或升为备线 A | 复核门 gap 声明 |
+| ~~W2~~ **已完成 09-11** | ~~#4 升为备线 A~~ ⇒ **#4 暂缓** | 复核门不通过（`notes/gap_hybrid_state.md`） |
 | ≤2 周 | #12 归档或保留 | 是否区分 DA-MoE / 转化率是否上升 |
 | W3 结束 | **锁定 1 主线 + 1 备线** | 量级 ≥8%（自测 vs 部署基线）且机制可归因 |

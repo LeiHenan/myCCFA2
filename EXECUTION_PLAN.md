@@ -14,7 +14,7 @@
 **判定探针 2 个**：#1 E1（1 天）、#3 约束解码扫描（1 周）。
 **其余 14 项归档**（§9），其中 #2 的归档理由不是"被占"而是**基线反证**（见 §9）。
 
-**命名法**：`#N` = 候选方向；`probes/pNN-<slug>/` = 第 NN 号方向的实验；`probes/aux-cN-<slug>/` = 辅助探针（与候选无关）。完整词表见 [`docs/GLOSSARY.md`](GLOSSARY.md)。
+**命名法**：`#N` = 候选方向；`probes/pNN-<slug>/` = 第 NN 号方向的实验；`probes/aux-cN-<slug>/` = 辅助探针（与候选无关）。完整词表见 [`docs/GLOSSARY.md`](docs/GLOSSARY.md)。
 
 ---
 
@@ -43,7 +43,7 @@
 |---|---|---|---|---|---|
 | **主线** `p06` | **#6 投机算力分配** | 空（DSpark 只做离线静态层数；SGLang 已 ship 的是 *verify* 预算调度，不是 drafter 算力） | 1–2 卡 / 2 周 | **实测**（DFlash DT=4 @185k：16 vs 71 tok/s，`#54691`） | §5 |
 | **暂缓** `p04` | **#4 收窄版** | **复核门不通过**：共存半场由 vLLM `#50172`（OPEN，交付物=正确性）在办；策略/预算半场已由 **ROCm ATOM 实装**（ladder + 需求驱动 rung + LRU + 成本记账 + 每请求 `1 + num_speculative_tokens` 回滚 slot） | — | — | §6（重开触发） |
-| **备线 A** `p12` | **#12 MoE EP 不均衡 + dispatch** | 拥挤（DA-MoE 等） | 2 周（需多卡 EP） | **实测最硬**（真实 trace：skew 5–80×；3.28× 层延迟） | §7（2 周时间盒） |
+| **备线 A** `p12` | **#12 MoE EP 不均衡 + dispatch** | **已被占**：dispatch 半边由 SGLang+NVIDIA **LPLB**（2026-06-26，2 节点）ship；padding 半边由 **DA-MoE** 等占 | 2 周（需多卡 EP；**先过 ≤3 天判定**） | **投影 / 下界 / 极端尾巴**（3.28× 系读图投影、19% 是均衡路由下的下界、80× 仅 Maverick top-1） | §7（先判定、后上卡） |
 | **备线 B** `p07`（待判定） | **#7 per-adapter KV 配额/准入** | 空（两引擎均无 KV 配额/分区；`#2929` 的 21 项全是适配器权重/算子/API） | ≤1 周 / 1 卡 | 算术 1.2–2×（**③ 未过，待换实测**） | §8.4（离散度 <5pp ⇒ 归档） |
 | 探针 `p01` | **#1 投机 KV 分级 state（E1）** | 空 | **1 天** | 无（E1 即补） | §8.1 |
 | 探针 `p03` | **#3 约束解码 dynamic × complex × concurrent** | 三交集空，邻域快速填充 | 1 周 / 不改代码 | 实测（+5.3% → +802.9%），先验字段级 ≤6% | §8.2 |
@@ -101,6 +101,7 @@
 - **指标**：tok/s、per-step draft 成本、平均接受长度、相对**最佳固定配置**的端到端比。
 - **Go（主假设：drafter capacity 与 draft length 正交）**：存在 (bs,ctx) 区域使最优 (depth, γ) 发生**非共线反转** **且** 存在内点最优 **且** 相对最佳固定配置 ≥8% **且** 三个必答项全部通过：① 与已 ship 控制器（`adaptive_spec_params`，调 `speculative_num_steps`）的差异；② 为什么不能直接复用它（它逐字拒绝多层 worker：`enable_multi_layer_eagle=True is not supported (MultiLayerEagleWorkerV2 does not implement adaptive)`）——**须给结构性理由，否则退化为 plumbing**；③ 每个 (bs,ctx) 格做 **adaptive-steps-only vs adaptive-steps+depth** 增量对照。
 - **No-Go**：收益只出现在 185k 角落；或与已 ship 的置信度/成本表调度器无法区分；或 **`optimal depth ≈ f(optimal γ)`（共线）⇒ 退化为"另一个 adaptive draft length 实现" ⇒ 杀或并入 `#7`/`#12`**。
+- **三级加速判定（决策级 ≠ 论文级）**：T0 旋钮验证（半天）→ **T1 反转探针**（`depth{1,3,5} × γ{1,3,7} × ctx{4k,128k} × bs{1}` ≈18 格，半天–1 天）→ T2 增量对照（1–2 天）。**T1 判主假设存废、T2 出最终 go/no-go；通过后才需要 2 周全网格**。注意 T1 的**不对称性**（截断只给下界）。详见 `notes/prereg/p06-frontier.md`。
 - **基线纪律**：三个基线都不是空白 —— ① DSpark 生产调度器（置信度头 + STS + 离线 SPS 成本表 + ragged-verify）；② **SGLang `adaptive_spec_params`（已 ship 的运行时自适应：batch 1/8/32/64 → 候选步数 `[1,3,5,7]/[0,1,3]/[0,1]/[0]` + 迟滞 + 多套 CUDA-graph 原子切换）**。高 batch 下"少投机"已被它解决，深度轴必须在**这个**基线上仍有增量。
 
 ### 5.3 DEX 替换测试（书面交付物，W1 完成）
@@ -137,9 +138,12 @@
 
 ---
 
-## 7. 备线 A — #12（2 周时间盒）
+## 7. 备线 A — #12（先判定、后上卡）
 
-- 定位：**非投机**推理系统对冲；证据最硬（真实 trace，非算术解）。
+- 定位：**非投机**推理系统对冲（非算术解、问题被生产验证）。
+- **量级证据更正（2026-09-11）**：引用链里的"最硬数字"实为三类不同强度的证据 —— ① `3.28×` 归一层延迟是**读图得到的投影**（`archive/subfield_scan/rea1/k3/FORENSIC_REPORT.md`：IF 轴是 swept/constructed 参数，原文未说明数据如何产生，"Treat as a PROJECTION, not a production measurement"）；② `19%` all-to-all 是硬件实测，但路由被构造成**完全均衡** ⇒ 只是**下界**；③ `80×` 是 **Llama-4-Maverick（128 专家 top-1）的极端尾巴**（DeepSeek-V3 10–20×、Qwen3 ≲10；"所有前沿 MoE 都严重偏斜"不成立）。
+- **机制已被占**：dispatch 半边由 **SGLang + NVIDIA 的 LPLB**（[2026-06-26 博客](https://lmsys.org/blog/2026-06-26-waterfill-lplb/)，per-layer dispatch LP，**2 个 Hopper 节点**，+0.84%–7.34%）ship；padding 半边由 **DA-MoE**（并入 FlashInfer）等占。
+- **门（≤3 天，不上 4–8 卡）**：在你自己的 model + workload 上，测 **EPLB/LPLB 之后残余的 per-rank 不均衡**；残余 <8% ⇒ **归档**；≥8% 且可归因 ⇒ 才进入 2 周实验。
 - 必须做到其一：**与 DA-MoE 正面区分的机制**，或把"体积降 20% → 时间降 9%"的转化率推上去。
 - 到期未达标 ⇒ **归档，不续期**（避免对冲仓变沉没成本）。
 - 注意：需多卡 EP，成本高于表格标注。
