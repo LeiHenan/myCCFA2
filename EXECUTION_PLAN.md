@@ -10,6 +10,7 @@
 **主线 1 条**：#6 投机算力分配（Speculative Compute Allocation）。
 **备线 2 条**：`#12`（MoE EP 对冲；**先过 ≤3 天残余不均衡判定**，再过才做 2 周）、`#7`（per-adapter KV 配额，待离散度探针判定）。
 **暂缓 1 项**：`#4` —— 复核门**不通过**（见 §6 与 `notes/gap_hybrid_state.md`），带重开触发条件。
+**结构风险（09-11 记录）**：能作为"主线候选"的**只有 `#6` 一条**；若 T1 判定共线而死亡，portfolio 内**没有第二个有强先验的主线**（`#12` 已冻结待 StreamEP、`#7` 仅算术量级、`#1` 待 E1、`#3` 先验 ≤6%、`#4` 暂缓）⇒ 见 §12 待决策项 **D1/D3**。
 **主线定位收紧**：`#6` 只能是 **drafter 网络自身的层数/宽度**弹性（draft 长度与 verify 预算的自适应已 ship，见 `notes/p06-family-codecheck.md`）。
 **判定探针 2 个**：#1 E1（1 天）、#3 约束解码扫描（1 周）。
 **其余 14 项归档**（§9），其中 #2 的归档理由不是"被占"而是**基线反证**（见 §9）。
@@ -96,7 +97,7 @@
 
 ### 5.2 实验设计
 
-- **定位**：`Speculative Compute Allocation` — 每步决定给这一轮投机投多少算力；`depth × width × draft length × verify budget` 是同一预算的不同形态。
+- **定位**：`Speculative Compute Allocation`（**内部叫法、非既有术语**，见 §12 D4）— 每步决定给这一轮投机投多少算力；`depth × width × draft length × verify budget` 是同一预算的不同形态。
 - **网格**：`depth × width × **γ{1,3,5,7}** × batch{1,8,32} × ctx{4k,32k,128k,185k}`，spec on/off 对照。**γ 因子不可省**——正交性检验必须同扫 depth 与 length（至少在 `width=默认树` 子集上）。
 - **指标**：tok/s、per-step draft 成本、平均接受长度、相对**最佳固定配置**的端到端比。
 - **Go（主假设：drafter capacity 与 draft length 正交）**：存在 (bs,ctx) 区域使最优 (depth, γ) 发生**非共线反转** **且** 存在内点最优 **且** 相对最佳固定配置 ≥8% **且** 三个必答项全部通过：① 与已 ship 控制器（`adaptive_spec_params`，调 `speculative_num_steps`）的差异；② 为什么不能直接复用它（它逐字拒绝多层 worker：`enable_multi_layer_eagle=True is not supported (MultiLayerEagleWorkerV2 does not implement adaptive)`）——**须给结构性理由，否则退化为 plumbing**；③ 每个 (bs,ctx) 格做 **adaptive-steps-only vs adaptive-steps+depth** 增量对照；④ **动机抗辩**：为什么在 PRISM（容量⟂成本的架构解耦，MLSys '26 oral）之后仍需要运行时分配——落点必须是 PRISM 不处理的**上下文相关成本**（如 185k 全上下文重扫）。
@@ -239,7 +240,23 @@
 
 ---
 
-## 12. 变更记录
+## 12. 待决策项（需你拍板；**每项都必须在开跑前定**）
+
+| # | 决策 | 选项 | 为什么必须现在定 |
+|---|---|---|---|
+| **D1** | 是否给 `#6` 预备**"测量论文"降级形态** | (a) 只做机制主张，跑最小网格 (b) 一开始就按测量论文设计覆盖（≥2 个 drafter 家族 × ≥2 个引擎） | 事后再扩网格＝**事后改设计**。MLSys '26 有先例：《Speculative Decoding: Performance or Illusion?》（Berkeley，**oral**）与《Demystifying the MoE Serving Tax》都是测量/表征论文 |
+| **D2** | frontier **网格是否扩大** | (a) T1 最小 18 格 + T2 反转点 (b) 增加家族/引擎维度 | 与 D1 绑定：选 D1(b) 则 T1 就要含第二家族，卡时与集成成本显著上升 |
+| **D3** | `#1` 的 **`R_reserve` 分支是否立项** | (a) E1 只做生死判定 (b) 若 `R_reserve / R_byte` > 2，开"**消除保守预留**"支线 | 这是 portfolio 内**唯一不依赖 `#6`** 的潜在主线；且决定 E1 的产物格式（`analyze.py` 已输出，边际成本≈0） |
+| **D4**（附加，非你列的三条） | `#6` 的**名称标签** | 把「投机算力分配 / Speculative Compute Allocation」标为**内部叫法、非既有术语** | 已检索**无同名论文**，但搜索不能证否；标为内部叫法可避免论文里被当成术语 |
+
+**默认建议（你不指定就按此执行）**：**D1=(a) + D2=(a) + D3=(b) + D4=标注**。
+
+- D1 选 (a) 的安全前提（**必须同时生效**）：**降级形态若启用，必须是一次新的、独立预登记的实验（新 prereg、新数据），不得把旧数据重新解读成测量论文** —— 这样"事后扩网格"的风险被结构性消除。
+- D3 选 (b) 的理由：`R_reserve` 已在 `analyze.py` 的输出里，**边际成本≈0**，而它可能是 `#6` 之外的唯一新线。
+
+---
+
+## 13. 变更记录
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
