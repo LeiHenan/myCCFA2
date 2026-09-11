@@ -8,7 +8,7 @@
 | [`p03-grammar-scan/`](p03-grammar-scan/README.md) | #3 | **1 周** | class-4 @batch≥32 >0.85× 且瓶颈非结构性 ⇒ 归档 | 判定探针（低概率彩票） |
 | [`p04-hybrid-gate/`](p04-hybrid-gate/README.md) | #4 | **2 小时** | gap 仍落在"checkpoint 边界/提交语义" ⇒ 归档 | 复核门（不是实验） |
 | [`p06-frontier/`](p06-frontier/README.md) | **#6 主线** | **3–4 天判定 → 2 周全网格** | 先 T0/T1/T2 三级判定：**无配置反转 / 共线 / 增量 <8% ⇒ 杀** | 主线决胜实验 |
-| [`p07-adapter-dispersion/`](p07-adapter-dispersion/README.md) | #7 | **≤1 周** | 离散度 <5 个百分点 ⇒ 归档 | 备线 C 的入场判定 |
+| [`p07-adapter-dispersion/`](p07-adapter-dispersion/README.md) | #7 | **≤1 周** | 离散度 <5 个百分点 ⇒ 归档 | 备线 B 的入场判定 |
 | [`aux-c1-prefill-padding/`](aux-c1-prefill-padding/README.md) | — | 1 周 | 记 `padded/real` | 填缝探针（辅助表 C1） |
 | [`aux-c2-flashinfer-radix/`](aux-c2-flashinfer-radix/README.md) | — | 1 周 | 静默关闭 radix 的代价 | 填缝探针（辅助表 C2） |
 
