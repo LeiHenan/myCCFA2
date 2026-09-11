@@ -275,6 +275,6 @@
 | v1.5 | 2026-09-11 | **MLSys '26 全量扫描**（`docs/evidence/mlsys2026_scan.md`）：§11 该缺口关闭；`#6` 邻居清单加 PRISM/HELIOS/SpecDiff-2/"Performance or Illusion?"，并新增**必答项 ④ 动机抗辩**；`#12` 拥挤度获独立确认（CRAFT / Layered Prefill / MoE Serving Tax）。ASPLOS/ISCA/ATC/SOSP/SC '26 仍未扫。 |
 | v1.6 | 2026-09-11 | **ASPLOS '26 + SOSP '26 扫描**（`docs/evidence/venue_scan_2026.md`）与 **DA-MoE 正文精读**：`#12` 占位证据升到五重以上（+ MorphKernel、Barrier-Free EP[Tier B]、DA-MoE 实测量级），门槛加"先读 Barrier-Free EP"；`#6` 邻居加 TLT（训练期 adaptive drafter，策略轴）。ATC/ISCA/SC '26 仍未扫；§11 已清理两处被取代/过期的行。 |
 | v1.7 | 2026-09-11 | **无卡工作收尾**：SOSP 官方程序页核实 StreamEP 真名（社区清单标题有误）并转为 ⏳ 待发表；ATC/SC 入口受阻、ISCA 仅索引、**新发现 NSDI '26 漏在清单外（SwiftEP）**；§11 按「已关闭 / ⏳待发表 / ⛔入口受阻 / 📦仅影响已归档」四类收尾。 |
-| v1.10 | 2026-09-11 | 审计修正：§5.2 基线纪律与 **D1 决定同步**（固定 vLLM，基线改为 vLLM per-batch K 查表）+ 澄清"两个 8% 是不同比较"；§0 加"当前阶段"；README 入口表补 `docs/EXPERIMENT_GUIDE.md` 与 `docs/reviews/`；`upstream/README` 登记锚点核对副本；清理 `results/_patchtest`（草稿） |
-| v1.9 | 2026-09-11 | **D1–D4 拍板**：D1 = (a) + 预登记的扩展条款（T1 固定 vLLM；扩展优先家族、不自动加引擎；降级须新预登记）；D2 = (a)；D3 = (b)；D4 = 标注内部叫法。§12 由"待决策"改为"决策记录" |
 | v1.8 | 2026-09-11 | 新增 **§12 待决策项**（D1 测量论文降级形态 / D2 网格是否扩大 / D3 `R_reserve` 分支 / D4 名称标签，含默认建议与"降级须新预登记"的安全前提）；§0 补**结构风险**（主线候选仅 `#6` 一条）；`#6` 邻居表补 `2511.12031`（compute-vs-copy 配比，Tier B）。 |
+| v1.9 | 2026-09-11 | **D1–D4 拍板**：D1 = (a) + 预登记的扩展条款（T1 固定 vLLM；扩展优先家族、不自动加引擎；降级须新预登记）；D2 = (a)；D3 = (b)；D4 = 标注内部叫法。§12 由"待决策"改为"决策记录" |
+| v1.10 | 2026-09-11 | 审计修正：§5.2 基线纪律与 **D1 决定同步**（固定 vLLM，基线改为 vLLM per-batch K 查表）+ 澄清"两个 8% 是不同比较"；§0 加"当前阶段"；README 入口表补 `docs/EXPERIMENT_GUIDE.md` 与 `docs/reviews/`；`upstream/README` 登记锚点核对副本；清理 `results/_patchtest`（草稿） |
