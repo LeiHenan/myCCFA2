@@ -36,6 +36,8 @@
 | 16 | **E1 判据新增硬件条件分支**：24 GB 卡（4090/5090）路径下 ctx 网格 {4k,32k,128k} → **{4k,16k,32k}**（或换 ≤4B target / 2×24 GB TP=2） | 显存算术：8B 级 ≈128 KiB/token ⇒ 单请求 128k ctx ≈16 GiB，24 GB 卡不可行；且比值 `≈γ/ctx` 在短上下文信噪比更高 | 本分支在**任何数据采集之前**登记，不构成事后放宽 |
 | 17 | **统一命名**：实验目录 `probes/pNN-*`（NN = 候选 #NN）、辅助探针 `probes/aux-cN-*`；新增 `docs/GLOSSARY.md` | 消除 `c3_constrained_scan` 与辅助表 C3 的语义冲突 | 全仓库路径已同步 |
 | 18 | **补入 #7**（per-adapter KV 配额）为**备线 C（待判定）**，配 ≤1 周离散度探针 | 上一版 §2 存活清单漏列 #7，导致 14+5=19 账不平 | 20 = 14 归档 + 6 存活 |
+| 19 | **#4 复核门不通过 → 降为「暂缓」**（无卡，2 小时） | 主张的 gap 是已占证据的子集：ATOM（shipped）已实装 ladder + 需求驱动 rung + LRU 淘汰 + 成本记账 + 每请求 `1+num_speculative_tokens` 回滚 slot；共存半场由 vLLM `#50172`（OPEN，交付物=正确性）在办 | `notes/gap_hybrid_state.md`；重开触发①`#50172` 关闭或停滞 ②其落地后暴露结构性缺陷 |
+| 20 | **#6 代码层家族检查通过，但定位收紧**（无卡） | 多层 drafter 存在且层数可配置（`multi_layer_eagle_*`、`dflash.py` 的 `draft_config.num_hidden_layers`）；但 `adaptive_spec_params.py` 已 ship "runtime 调整 `speculative_num_steps`" + 多套 CUDA-graph 原子切换 ⇒ 不再以"算力分配"泛称，只主张 **drafter 网络深度/宽度** | `notes/p06-family-codecheck.md`；备线重排 A=`#12`、B=`#7`；20 = 14 归档 + 1 暂缓 + 5 存活 |
 
 ## 待决策（按到期顺序）
 
