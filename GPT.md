@@ -15,8 +15,8 @@
 > | 判定 | 数量 | 对象 |
 > |---|---|---|
 > | ✅ **VALID KILL** | **2** | ② ④（**两条都是靠"方向 B：同一决策上 ≥2 个并行开放提案"**） |
-> | **NARROWED** | **3** | ① ⑧ A |
-> | **UNDECIDED** | **6** | ③ ⑤ ⑥ ⑦ B C |
+> | **NARROWED** | **5** | ① ⑤ ⑥ ⑧ A |
+> | **UNDECIDED** | **4** | ③ ⑦ B C |
 > | ❌ 不是可证伪命题 | 1 | ⑨ |
 >
 > **⇒ 没有任何一条击杀成立于 V1 或 V2。** 这与 REA-2 在另一簇里的发现**完全对称**：*"两簇里没有任何一条击杀成立于 V2——没有一条被筛选者自己对部署基线的测量所支持。"*
@@ -70,8 +70,8 @@
 | **②** | Adaptive SpecDec / "K 改成计算预算" | ✅ **VALID KILL（方向 B）** | **同一决策上 ≥2 个并行开放提案**：`#54749`、`#54801`、`#47111`。叠加 `#54749` 逐字 *"Six different signals are being proposed for this one decision right now. Batch size is what ships."*，以及 LibraSpec 的 *"marginal criterion"*、SparseSpec-L 的 *"marginal acceptance probability falls below the relative drafting cost"* |
 | **③** | Speculative KV Cache（容量/tiering） | **UNDECIDED**（待 `r4_graded_kv_tiers`） | 二分结构（committed vs speculative）已被 TransKV/SpecMemo/MemSpec/Nightjar 占；**按重要度分档**被 MiKV/QuantSpec/QSpec/"Don't Waste Bits!" 占。**但"由 `P(commit)` 驱动的分级晋升/降级"是否被占，尚无证据**——初版拿"MiKV 已占"判死属 O7/O1 |
 | **④** | KV **Placement** 而非 Eviction | ✅ **VALID KILL（方向 B）** | **不是**"有个版本已 ship"（那会是 O2）——而是**同一决策上 ≥2 个并行提案**：vLLM RFC `#54779` + 原型 `#54327`、SGLang `#21846`（`PREFETCH`/`DEMOTE`/`PIN`）、vLLM `#48445`/`#52113`/`#51428`。叠加 Dynamo KVBM 已 ship G1–G4 + TinyLFU/CMS（`frequency≥2` 默认开启） |
-| **⑤** | Compute-before-Attention | **UNDECIDED**（待 `r4_kv_prefetch`） | **初版判死用错了对象**：找到的 tracker 拥挤是**存储层预取**（host/NVMe → HBM），而本候选是**计算侧 KV page 预测**（HBM → SRAM/L2 或 kernel 内 block 索引）——**这可能是 O7**。而"2–8% 天花板"是**我自己的算术**，属 O8，不构成 V2。**两半都需重核** |
-| **⑥** | KV Prefetching | **UNDECIDED**（待 `r4_kv_prefetch`） | 同 ⑤。它的论证"预测错只损失带宽、不牺牲准确率"是真实优点，且**没有任何测量被引用来否证它** |
+| **⑤** | Compute-before-Attention | **NARROWED**（`r4_kv_prefetch` 已判） | **O7 混淆已被证实**：两个决策必须分开——（a）存储层 host/remote→HBM **有**预测（InfiniGen OSDI'24、OasisKV、SparDA、FlashMemory-DS-V4）；（b）计算侧 HBM→**片上** **无**预测（**Dong et al., AAAI-26 `2504.06319`** → L2，用 PTX `cp.async.bulk.prefetch.L2`；PRESERVE；Kelle MICRO'25 → eDRAM；Levy → LLC）。**"非预测的 HBM→L2 预取"已被发表且已实测**，所以只有 **预测 → 片上** 这个合取幸存。⚠️ 但该合取**已有一条已发表的失败记录**：Levy `2603.13430` §5.3 逐字 *"we achieved results only slightly better than keeping the previous step's top-k in memory, **essentially failing at this approach**."* |
+| **⑥** | KV Prefetching | **NARROWED（近乎退化）** | predict-then-prefetch **已被发表 4 次**（见 ⑤ 的 (a) 列），且在某 fork 里已是 env flag；**全部在 host/remote→HBM 层**。而它宣称的核心优点"**预测错只损失带宽、不牺牲准确率**"——**在文献中已被否证**。⇒ 只剩"非前序 query 的信号（draft/lookahead token 或 next-layer rehearsal）→ L2/SMEM"这一小条 |
 | **⑦** | Attention + 投机联合 | **UNDECIDED** | 初版两条依据都不合格：① **O4**——`enable_adaptive_verification` 是 flag，而钩子只拿走工程学分；② **O7**——那个 flag 管的是**验证长度（top-B over survival scores）**，不是 **attention 预算**。Vegas 很近（*"as a byproduct of verification"*），但它选的是**哪些 KV 条目**，不是**每位置多少预算**。差异是否足以支撑论文：**无证据** |
 | **⑧** | Speculation Scheduler | **NARROWED** | 初版依据"YieldSched 已被击杀"**是复用了我在 REA-4 中已判定为 OVER-REACH 的击杀**（其"ICLR 2026 逐字预占"支柱在记录里不存在；Libra 至今 UNRESOLVED）。REA-4 给出的幸存增量：**token-yield × KV-retention 联合分配（两种货币）**，量级单位数 % |
 | **⑨** | 合并愿景 | ❌ **仍不成立**（但**性质不同**） | 这**不是占位判定**，而是**它不是可证伪的命题**——是 ②③④⑤⑧ 的并集，自身没有单一待验证主张（它自己也承认需要"收敛成一个具体、可证伪的 research question"）。**这一条我维持原判，但它不属于"被占"** |
@@ -190,7 +190,7 @@
 | **2** | **跨并发投机分支的准入 + KV 容量调度** | GPT-A | 多租户多分支下测 **KV 是否绑定约束**（vllm-omni 的 37 GiB/branch 是现成仪器） | KV 非绑定 ⇒ 杀 | 1–2 周 |
 | **3** | **hybrid Mamba/GDN 下的前缀保留 × 投机** | V41-A2 | 对 hybrid 类关掉边界丢弃，测命中率与 goodput | **全库零论文**；须自测 | 1–2 卡，2 周 |
 | **4** | **投机 KV 的分级状态（`P(commit)` 驱动晋升/降级）** | GPT-③ | 测未提交投机 token 实际占 KV 字节比例 + 被提交 token 的输出偏移 | 占比 <10% 或偏移不可忽略 ⇒ 杀 | 待 `r4_graded_kv_tiers` |
-| **5** | **计算侧 KV page 预测 + 预取**（"不牺牲准确率"） | GPT-⑤⑥ | 先分离"存储层预取"与"计算侧预取"两个决策，再定量 | 待 `r4_kv_prefetch` | 待筛查 |
+| **5** | **注意力感知预测 → 片上（L2/SMEM）KV 预取** | GPT-⑤⑥ | 按 **GQA 比**分档，在 FA3 基线上测 | 已发表失败记录（Levy §5.3 *"essentially failing"*）与实测上限（AAAI-26 的 **+15%/+7%/−2…−5%**）都把界压在这里；**须先测 KV stall 占长上下文 decode 墙钟的比例**（无人测过） | 2 周 |
 | **6** | **接受概率 → 每位置 attention 预算** | GPT-⑦/C | 先测"接受概率"与"该位置需要多少 attention 精度"**是否存在相关性** | 无相关 ⇒ 杀 | 2 周 |
 | **7** | **投机不确定度 → KV 精度** | GPT-B | 同上（占比 + 输出偏移） | 同上 | 2 周 |
 | **8** | **rank-imbalance-aware dispatch + padding-aware all-to-all** | V41-A3 | 人为 skew 下 A/B padding 感知的 all-to-all | 20% 体积削减转化不成 >9% 时间 ⇒ 杀 | 2 周 |
