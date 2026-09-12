@@ -61,6 +61,8 @@
 
 | 35 | **服务器工作流就绪**：新增 `docs/SERVER_BOOTSTRAP.md`；**修 `.gitignore`** —— `results/**` 原规则把 `summary.md` 也忽略了，会让实验结论随机器丢失 ⇒ 改为"结论入库、原始数据不入库"；卡分配定为 GPU0=E1、GPU1=T0/T1、其余留空 | 用户已有 8×4090 服务器（PCIe、无 NVLink） | `docs/SERVER_BOOTSTRAP.md`、`.gitignore`、`results/README.md`、`EXECUTION_PLAN.md` v1.16 |
 
+| 36 | **环境方案定案**：venv 优先、**不必 conda**；一个 env 只用一种包管理器；装 vLLM **先试 wheel + `ModelRegistry` 自检 DFlash/DSpark 注册**，缺了才编译 pinned commit | vLLM wheel 自带 CUDA 运行时，与 conda 的 cudatoolkit/pytorch-cuda 混用易出 undefined symbol；git 安装会源码编译 20–60 分钟 | `docs/SERVER_BOOTSTRAP.md` §2/§2b、`EXECUTION_PLAN.md` v1.17 |
+
 ## 四、归档台账（14 项）
 
 > 满足"任何方向的生与死都要记一条"的规则；逐项理由见 `EXECUTION_PLAN.md` §9，此处只留一行索引。

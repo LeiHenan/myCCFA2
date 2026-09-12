@@ -32,15 +32,42 @@ df -h "$HOME"
 nvidia-smi topo -m | head -12
 ```
 
-## 2. 代码与依赖
+## 2. 环境选择（**venv 优先，不必用 conda**）
 
 ```bash
-git clone git@github.com:LeiHenan/myCCFA.git && cd myCCFA
-python3 -m venv .venv && . .venv/bin/activate
-pip install -U pip
-pip install vllm safetensors pandas            # vLLM 用 main（pin 见 upstream/README.md）
-python -c "import vllm, torch; print(vllm.__version__, torch.__version__)"
+python3 -V
+# ≥3.10 → 直接 venv（推荐）
+python3 -m venv .venv && . .venv/bin/activate && pip install -U pip
+# <3.10 或没有 pip 权限 → 用 conda **只提供 Python**，之后同样用 pip 装包
+#   conda create -n myccfa python=3.12 -y && conda activate myccfa && pip install -U pip
 ```
+
+**为什么不必用 conda、且对 vLLM 有风险**：
+
+| 事实 | 含义 |
+|---|---|
+| vLLM 的 wheel **自带 CUDA 运行时**（以 `nvidia-*` pip 包形式） | 用 venv 最干净 |
+| 若同一 env 里又用 conda 装了 `cudatoolkit` / `pytorch-cuda` | 两套 CUDA 库混在一起 ⇒ 常见 `undefined symbol` / 版本不匹配 |
+| `conda install vllm` 版本滞后、ABI 风险更高 | **只用 pip 装 vLLM** |
+
+**一条硬规则**：**一个 env 只用一种包管理器**。可以用 conda 创建环境（拿 Python），但 `vLLM / torch / nvidia-*` 一律用 `pip` 装，**不要**在同一个 env 里 conda 装 torch 或 cuda 工具链。
+
+## 2b. 装 vLLM：先试 wheel，**不要一上来就编译源码**
+
+```bash
+pip install vllm safetensors pandas
+python -c "import vllm, torch; print('vllm', vllm.__version__, '| torch', torch.__version__, '| cuda', torch.version.cuda)"
+# 关键自检：DFlash/DSpark 是否已注册（这是 #6 的家族前提）
+python -c "from vllm.model_executor.models.registry import ModelRegistry as R; \
+print([k for k in R.get_supported_archs() if 'DFlash' in k or 'DSpark' in k])"
+```
+
+- **输出含 `DFlash2DraftModel`（或 `DFlashDraftModel`）⇒ 直接用 wheel，别编译**（快、稳）。
+- **输出为空 ⇒ 才**装我们核对过锚点的那个 commit（**会从源码编译，20–60 分钟，且需要匹配的 nvcc**）：
+  ```bash
+  pip install "vllm @ git+https://github.com/vllm-project/vllm.git@9a35c081e80a94828af6f611525102bb70e3c67f"
+  ```
+- 无论哪条路径，**把 `vllm.__version__`（或 commit）写进 `results/<probe>/<日期>/summary.md`**（判据要求记录 pin）。
 
 > 若该机不能访问 GitHub：从本机 `scp -r` 整个目录过去即可（脚本都在 `probes/` 下）。
 

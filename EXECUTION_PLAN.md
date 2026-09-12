@@ -287,3 +287,4 @@
 | v1.14 | 2026-09-12 | 更正 `notes/prereg/p06-frontier.md` 的过时显存估算（128k 的 "KV ≈7 GB" → **18.0 GiB FP16 / 9.0 GiB FP8**，按 Qwen3-4B 实测配置），并写明 T0 ≥16 GB、T1 ≥24 GB、T0/T1 不需多卡、须同 KV dtype |
 | v1.15 | 2026-09-12 | **T0/T1 工具链就绪**：新增 `probes/p06-frontier/T0-runbook.md`、`make_depth_variants.py`（config 级深度变体，含 selftest）、`run_t1.sh`（18 格 sweep，DRY 模式）、`analyze_t1.py`（ridge 判定，含 selftest）；pre-reg 增补**ridge 斜率主读数**与 **H1b 分支**（斜 ridge 不自动判死，但须打赢已 ship 适配器） |
 | v1.16 | 2026-09-12 | **服务器工作流就绪**：新增 `docs/SERVER_BOOTSTRAP.md`（8×4090 环境验收 + 卡分配 + smoke test + 并行跑 E1/T0/T1 + 注意事项）；**`.gitignore` 放开 `results/**/summary.md`**（原规则会让实验结论随机器丢失），原始数据仍不入库；`results/README.md` 同步 |
+| v1.17 | 2026-09-12 | 上机手册补「环境选择」：**venv 优先、不必 conda**（vLLM wheel 自带 CUDA 运行时，混 conda 的 cudatoolkit/pytorch-cuda 易出 `undefined symbol`）；硬规则"一个 env 只用一种包管理器"；装 vLLM 改为**先试 wheel 并用 `ModelRegistry` 自检 DFlash/DSpark 是否注册，缺了才编译 pinned commit**（避免 20–60 分钟源码编译） |
