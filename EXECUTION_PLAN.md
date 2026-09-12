@@ -289,3 +289,4 @@
 | v1.16 | 2026-09-12 | **服务器工作流就绪**：新增 `docs/SERVER_BOOTSTRAP.md`（8×4090 环境验收 + 卡分配 + smoke test + 并行跑 E1/T0/T1 + 注意事项）；**`.gitignore` 放开 `results/**/summary.md`**（原规则会让实验结论随机器丢失），原始数据仍不入库；`results/README.md` 同步 |
 | v1.17 | 2026-09-12 | 上机手册补「环境选择」：**venv 优先、不必 conda**（vLLM wheel 自带 CUDA 运行时，混 conda 的 cudatoolkit/pytorch-cuda 易出 `undefined symbol`）；硬规则"一个 env 只用一种包管理器"；装 vLLM 改为**先试 wheel 并用 `ModelRegistry` 自检 DFlash/DSpark 是否注册，缺了才编译 pinned commit**（避免 20–60 分钟源码编译） |
 | v1.18 | 2026-09-12 | `docs/SERVER_BOOTSTRAP.md` 增加**「阅读顺序」**（上机只需从该文件出发，按序指向 T0 runbook → T1 → E1 → 判据 → 全局背景；并明确**不得**从四份冻结上游文档取执行指令） |
+| v1.19 | 2026-09-12 | `.gitignore` 补 **`.venv/` `venv/` `env/`** —— 服务器上仓库根已有 `.venv/`（Python 3.11.7），原规则未忽略它，`git add -A` 会把数 GB 的虚拟环境误提交 |

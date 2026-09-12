@@ -65,6 +65,8 @@
 
 | 37 | **上机入口唯一化**：`docs/SERVER_BOOTSTRAP.md` 顶部加「阅读顺序」，从该文件按序指向 T0 → T1 → E1 → 判据 → 全局背景；并显式禁止从四份冻结上游文档取执行指令 | 避免上机时在 20 个文件间找入口，或误读带勘误横幅的历史文档 | `docs/SERVER_BOOTSTRAP.md`、`EXECUTION_PLAN.md` v1.18 |
 
+| 38 | **服务器实地勘探结论 + 修 `.gitignore`**：GPU2 空闲（0% 利用率、仅 754 MiB 占用）→ 定为主用卡；**HuggingFace 直连不可达**（000）但 `hf-mirror.com` 通（200）⇒ 用 `HF_ENDPOINT=https://hf-mirror.com`；anaconda 的 **torch 2.9.0+cu128 实测 `cuda.is_available()=True`** ⇒ 驱动 550.67（CUDA 12.4）不构成阻断；docker 不可用、无 sudo/tmux，但 `/opt/anaconda3/bin/conda` 可用（用 `-p ~/envs/...` 前缀装 tmux）；仓库根已有 `~/myCCFA/.venv`（Python 3.11.7 + pip）但**原 `.gitignore` 未忽略 `.venv/`** ⇒ 已补 `.venv/ venv/ env/` | 实地探测（三轮只读命令）；若在服务器上误提交 venv 会污染仓库 | `.gitignore`、`EXECUTION_PLAN.md` v1.19 |
+
 ## 四、归档台账（14 项）
 
 > 满足"任何方向的生与死都要记一条"的规则；逐项理由见 `EXECUTION_PLAN.md` §9，此处只留一行索引。
