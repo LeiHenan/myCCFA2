@@ -9,6 +9,13 @@
 # 磁盘约定：venv 在 /root，缓存与模型在数据盘（AutoDL 上 /root/autodl-tmp），给系统盘留空间。
 set -uo pipefail
 
+# ⚠️ 必须在任何 python 进程之前设好 locale（2026-09-12 实测踩坑）：
+#   容器常把 LC_ALL=en_US.UTF-8 写进环境但**并未生成该 locale**（`locale -a` 只有 C / C.utf8）。
+#     ⇒ `setlocale()` 失败 ⇒ python `import readline` 段错误（rl_initialize → _rl_init_locale）
+#     ⇒ vLLM EngineCore 静默死亡，只报 "Engine core initialization failed"，极难定位。
+export LC_ALL=C.UTF-8
+export LANG=C.UTF-8
+
 PY="${PY:-/root/miniconda3/bin/python3}"
 VENV="${VENV:-/root/ccfa_venv}"
 VLLM_PIN="${VLLM_PIN:-vllm==0.29.0}"

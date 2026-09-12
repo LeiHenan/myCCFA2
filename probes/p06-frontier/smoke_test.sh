@@ -8,16 +8,21 @@
 #   bash smoke_test.sh
 #   DRY=1 bash smoke_test.sh
 #   TARGET=/root/autodl-tmp/models/Qwen3-4B DRAFTER=/root/autodl-tmp/models/dflash2 \
-#     KV_DTYPE=float16 OUT=/root/myCCFA/results/p06-frontier/$(date +%F)/smoke bash smoke_test.sh
+#     KV_DTYPE=bfloat16 OUT=/root/myCCFA/results/p06-frontier/$(date +%F)/smoke bash smoke_test.sh
 #
 # 判定：③ 的 spec_decode 计数必须 >0（否则"起了服务"不等于"投机真的接上了"）。
+#
+# ⚠️ KV dtype 规则（2026-09-12 在 96 GB Blackwell 上实测踩到）：**KV cache dtype 必须与模型 dtype 一致**。
+#    本模型是 bfloat16；若传 `--kv-cache-dtype float16`，FlashAttention 会直接报
+#    `mha_varlen_fwd ... query and key must have the same dtype` 并让 EngineCore 初始化失败。
+#    合法取值（vLLM v0.29 `CacheDType`）：auto / float16 / bfloat16 / fp8* ⇒ 用 `auto` 或 `bfloat16`。
 set -uo pipefail
 
 TARGET=${TARGET:-Qwen/Qwen3-4B}
 DRAFTER=${DRAFTER:-upstream/drafters/src}
 OUT=${OUT:-results/p06-frontier/$(date +%F)/smoke}
 PORT=${PORT:-8000}
-KV_DTYPE=${KV_DTYPE:-float16}
+KV_DTYPE=${KV_DTYPE:-auto}
 MAXLEN=${MAXLEN:-32768}
 GPU_UTIL=${GPU_UTIL:-0.85}
 PROMPT=${PROMPT:-"The capital of France is"}

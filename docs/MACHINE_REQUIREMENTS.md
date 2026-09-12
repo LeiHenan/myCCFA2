@@ -174,12 +174,38 @@ bash docs/acceptance_check.sh --smoke     # 0.6B + ngram 投机解码：最小�
 
 ---
 
-## 5. 网络注意事项（原机实测踩过的坑）
+## 5. 网络与运行环境注意事项（**实测踩过的坑**）
 
-- HuggingFace **直连不可达**（原机 curl 返回 000）；`HF_ENDPOINT=https://hf-mirror.com` 可用（200）。
+### 5.1 下载源（2026-09-12 在新机器上实测的速率）
+
+| 源 | 实测速率 | 用途 |
+|---|---|---|
+| **ModelScope**（阿里） | **6.9–23 MB/s** | **首选**：Qwen3-4B 等阿里系权重（`modelscope download --model Qwen/Qwen3-4B`） |
+| hf-mirror.com | 1.2–1.9 MB/s | HF-only 仓库（如 `mgoin/Qwen3-4B-speculator.dflash2`）；`HF_ENDPOINT=https://hf-mirror.com` |
+| AutoDL 学术加速代理（`/etc/network_turbo`） | ~0.5 MB/s 且**大文件会卡死重试** | 不推荐：drafter 2.7 GB 在代理下 5 分钟毫无进展，换 hf-mirror 后 ~25 分钟完成 |
+| 阿里云 PyPI 镜像 | 0.6–2 MB/s | 默认源，慢但可用（torch+cuda 库约 5 GB，耗时 ~1.5 h） |
+| TUNA / 腾讯 / 阿里云 VPC 内网端点 | 不可用或更慢 | 不要在它们身上浪费时间 |
+
 - **必须设 `HF_HUB_DISABLE_XET=1`**：否则大文件走 Xet CAS 会失败并报
-  `RuntimeError: Task error: File reconstruction error: CAS Client Error: HTTP status client error (401 Unauthorized), domain: https://cas-server.xethub.hf.co/...`。设了就正常下载（原机 Qwen3-4B 7.6 GB 与 drafter 2.7 GB 均以此完成）。
-- PyPI：TUNA 镜像可用；GitHub 指纹可达（脚本下载与 `git push` 均正常）。
+  `RuntimeError: Task error: File reconstruction error: CAS Client Error: HTTP status client error (401 Unauthorized), domain: https://cas-server.xethub.hf.co/...`。
+- HuggingFace 直连不可达（curl 返回 000）⇒ 一律走 hf-mirror 或 ModelScope。
+
+### 5.2 运行环境（两个会**静默杀死引擎**的坑）
+
+1. **locale 未生成 ⇒ python `import readline` 段错误 ⇒ EngineCore 无声死亡。**
+   容器常把 `LC_ALL=en_US.UTF-8` 写进环境，但 `locale -a` 里只有 `C` / `C.utf8`。
+   症状：`vllm serve` 报 `RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}`，
+   而**日志里没有 Python traceback**；往上翻能看到 `!!!!!!! Segfault encountered !!!!!!!`
+   与 `rl_initialize → _rl_init_locale → PyInit_readline` 的栈。
+   **修复**：任何 python 进程之前 `export LC_ALL=C.UTF-8; export LANG=C.UTF-8`（`docs/server_setup.sh` 已内置）。
+
+2. **KV cache dtype 必须与模型 dtype 一致。**
+   模型是 `bfloat16` 时传 `--kv-cache-dtype float16` ⇒ FlashAttention 直接报
+   `mha_varlen_fwd ... query and key must have the same dtype`。
+   合法取值只有 `auto / float16 / bfloat16 / fp8*`（**没有 `fp16`**）⇒ 用 `auto` 或与模型一致的 dtype。
+
+3. **96 GB 卡上别沿用 0.85 的 `--gpu-memory-utilization`**：它会一次性预留约 82 GB 给 KV cache
+   （本工作负载 bs=1 完全用不到），使启动 profiling 更慢。实测 **0.5（≈48 GB）** 起服务约 65 秒即可 health=200。
 
 ---
 
