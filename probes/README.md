@@ -13,6 +13,8 @@
 | [`aux-c2-flashinfer-radix/`](aux-c2-flashinfer-radix/README.md) | — | 1 周 | 静默关闭 radix 的代价 | 填缝探针（辅助表 C2） |
 
 > `#12`（MoE EP 对冲）的实验 runbook 在时间盒启动时创建，命名为 `p12-ep-imbalance/`。
+>
+> **`p06` 的工具链已就绪**：`T0-runbook.md`（旋钮验证）、`make_depth_variants.py`（深度变体）、`run_t1.sh`（18 格 sweep）、`analyze_t1.py`（ridge 判定）。
 
 ## 统一约定
 

@@ -109,6 +109,7 @@
 - **三级加速判定（决策级 ≠ 论文级）**：T0 旋钮验证（半天）→ **T1 反转探针**（`depth{1,3,5} × γ{1,3,7} × ctx{4k,128k} × bs{1}` ≈18 格，半天–1 天）→ T2 增量对照（1–2 天）。**T1 判主假设存废、T2 出最终 go/no-go；通过后才需要 2 周全网格**。注意 T1 的**不对称性**（截断只给下界）。详见 `notes/prereg/p06-frontier.md`。
 - **基线纪律（与 §12 D1 一致）**：T1/T2 **固定跑 vLLM**，基线 = ① spec off（AR）② **最佳固定配置** ③ DSpark 生产调度器（置信度头 + STS + 离线 SPS 成本表 + ragged-verify）④ **vLLM `num_speculative_tokens_per_batch_size`**（per-batch K 查表）。SGLang `adaptive_spec_params` **逐字拒绝多层 worker**，不能充当 T2 对照（仅可作静态基线）。
 - **两个"8%"不是同一个比较**：§5 决策规则 2 的"<8% 即止"是相对**部署中实际在跑的配置**；本条 Go 判据的"≥8%"是相对**最佳固定配置**（更严）。两者需同时成立才 Go。
+- **主读数 = ridge 斜率**（2026-09-12 增补，数据采集前）：逐 (bs,ctx) 记 `γ*(depth)` 与 `spread = max−min`；`spread = 0` ⇒ 主假设成立；**单调斜 ridge ⇒ H1b**（预测式 horizon 策略，**须打赢已 ship 适配器**）；非单调 ⇒ 补重复/扩 bs 再判。脚本 `probes/p06-frontier/analyze_t1.py`。
 
 ### 5.3 DEX 替换测试（书面交付物，W1 完成）
 
@@ -284,3 +285,4 @@
 | v1.12 | 2026-09-11 | 解冻条件由"三选一"改为**有依赖的三步**（② pin + 多层 drafter 核对 → ① 租卡 → ③ smoke test），并把 ② 扩展为含"该 pin 上是否有可跑多层 drafter"的核对（`#6` 家族前提），使卡型选择有依据 |
 | v1.13 | 2026-09-12 | **解冻 ② 完成**（pin = vLLM main `9a35c08`）：E1 锚点全部命中（补丁无需改）、多层 drafter 可得（含 `Qwen3-4B-speculator.dflash2`）、深度为 config 旋钮；新增 `notes/p06-toolchain-check.md`（含显存算术与卡型建议：24 GB 起步，80 GB 仅当 8B/185k/bs>1） |
 | v1.14 | 2026-09-12 | 更正 `notes/prereg/p06-frontier.md` 的过时显存估算（128k 的 "KV ≈7 GB" → **18.0 GiB FP16 / 9.0 GiB FP8**，按 Qwen3-4B 实测配置），并写明 T0 ≥16 GB、T1 ≥24 GB、T0/T1 不需多卡、须同 KV dtype |
+| v1.15 | 2026-09-12 | **T0/T1 工具链就绪**：新增 `probes/p06-frontier/T0-runbook.md`、`make_depth_variants.py`（config 级深度变体，含 selftest）、`run_t1.sh`（18 格 sweep，DRY 模式）、`analyze_t1.py`（ridge 判定，含 selftest）；pre-reg 增补**ridge 斜率主读数**与 **H1b 分支**（斜 ridge 不自动判死，但须打赢已 ship 适配器） |

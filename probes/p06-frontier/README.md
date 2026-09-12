@@ -77,3 +77,15 @@ results/p06-frontier/<YYYY-MM-DD>/
 ├── figures/            # 等高线 / 反转点图
 └── run.log
 ```
+
+## 8. 本目录工具（2026-09-12 增补）
+
+| 文件 | 用途 | 自测 |
+|---|---|---|
+| [`T0-runbook.md`](T0-runbook.md) | 深度旋钮验证的操作手册（改 config → 裁权重 → 加载 → 三结局判定 + 失败形态） | —（文档） |
+| [`make_depth_variants.py`](make_depth_variants.py) | 从已发布 speculator 权重生成 `d1/ d3/ d5/` 深度变体（只改 config，可选 `--prune-weights`） | `--selftest` ✔ |
+| [`run_t1.sh`](run_t1.sh) | 18 格 sweep（`DRY=1` 只打印命令；`KV_DTYPE=fp8` 供 24 GB 卡跑 128k） | dry-run ✔（117 行命令） |
+| [`analyze_t1.py`](analyze_t1.py) | 聚合结果 → `t1.csv`/`ridge.csv`/`summary.md`，判定正交 / 斜 ridge(H1b) / 不可判定 | `--selftest` ✔（三种情形） |
+
+> 三者**均未在真机验证过**（无 GPU 环境）；`vllm serve` / `vllm bench serve` 的 flag 以你 pin 的版本 `--help` 为准。
+
