@@ -106,7 +106,9 @@
 - **指标**：tok/s、per-step draft 成本、平均接受长度、相对**最佳固定配置**的端到端比。
 - **Go（主假设：drafter capacity 与 draft length 正交）**：存在 (bs,ctx) 区域使最优 (depth, γ) 发生**非共线反转** **且** 存在内点最优 **且** 相对最佳固定配置 ≥8% **且** **四个必答项**全部通过：① 与已 ship 控制器（`adaptive_spec_params`，调 `speculative_num_steps`）的差异；② **为什么不能把 vLLM 的 per-batch K 查表（`num_speculative_tokens_per_batch_size`）扩到深度轴** —— 本线跑在 vLLM，这才是审稿人会问的那一问；SGLang 拒绝多层 worker（`enable_multi_layer_eagle=True is not supported`）只是**旁证**；须给**结构性**理由，否则退化为 plumbing；③ 每个 (bs,ctx) 格做 **adaptive-steps-only vs adaptive-steps+depth** 增量对照；④ **动机抗辩**：为什么在 PRISM（容量⟂成本的架构解耦，MLSys '26 oral）之后仍需要运行时分配——落点必须是 PRISM 不处理的**上下文相关成本**（如 185k 全上下文重扫）。
 - **No-Go**：收益只出现在 185k 角落；或与已 ship 的置信度/成本表调度器无法区分；或 **`optimal depth ≈ f(optimal γ)`（共线）⇒ 退化为"另一个 adaptive draft length 实现" ⇒ 杀或并入 `#7`/`#12`**。
-- **三级加速判定（决策级 ≠ 论文级）**：T0 旋钮验证（半天）→ **T1 反转探针**（`depth{1,3,5} × γ{1,3,7} × ctx{4k,128k} × bs{1}` ≈18 格，半天–1 天）→ T2 增量对照（1–2 天）。**T1 判主假设存废、T2 出最终 go/no-go；通过后才需要 2 周全网格**。注意 T1 的**不对称性**（截断只给下界）。详见 `notes/prereg/p06-frontier.md`。
+- **三级加速判定（决策级 ≠ 论文级）**：T0 旋钮验证（半天）→ **T1 反转探针**（`depth{1,3,5} × γ{1,3,7} × ctx{4k,32k} × bs{1}` ≈18 格，半天–1 天）→ T2 增量对照（1–2 天）。**T1 判主假设存废、T2 出最终 go/no-go；通过后才需要 2 周全网格**。注意 T1 的**不对称性**（截断只给下界）。详见 `notes/prereg/p06-frontier.md`。
+  **T0 已完成（2026-09-12）**：结局 **A（旋钮可操作）** —— 接受长度 1.303→2.829、tok/s 101.5→180.3 随深度单调增长，lossless 通过。
+  **网格更正（数据采集前）**：长上下文格 128k → **32k**，因 `Qwen3-4B` 的 `max_position_embeddings = 40960`（128k 需 rope scaling，会改变被测量模型）。
 - **基线纪律（与 §12 D1 一致）**：T1/T2 **固定跑 vLLM**，基线 = ① spec off（AR）② **最佳固定配置** ③ DSpark 生产调度器（置信度头 + STS + 离线 SPS 成本表 + ragged-verify）④ **vLLM `num_speculative_tokens_per_batch_size`**（per-batch K 查表）。SGLang `adaptive_spec_params` **逐字拒绝多层 worker**，不能充当 T2 对照（仅可作静态基线）。
 - **两个"8%"不是同一个比较**：§5 决策规则 2 的"<8% 即止"是相对**部署中实际在跑的配置**；本条 Go 判据的"≥8%"是相对**最佳固定配置**（更严）。两者需同时成立才 Go。
 - **主读数 = ridge 斜率**（2026-09-12 增补，数据采集前）：逐 (bs,ctx) 记 `γ*(depth)` 与 `spread = max−min`；`spread = 0` ⇒ 主假设成立；**单调斜 ridge ⇒ H1b**（预测式 horizon 策略，**须打赢已 ship 适配器**）；非单调 ⇒ 补重复/扩 bs 再判。脚本 `probes/p06-frontier/analyze_t1.py`。

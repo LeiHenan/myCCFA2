@@ -21,14 +21,14 @@ OUT=${OUT:-results/p06-frontier/$(date +%F)}
 PORT=${PORT:-8000}
 REPS=${REPS:-3}
 KV_DTYPE=${KV_DTYPE:-auto}
-MAXLEN=${MAXLEN:-140000}
+MAXLEN=${MAXLEN:-40960}   # Qwen3-4B 的 max_position_embeddings=40960（128k 需 rope scaling，超出本探针）
 GPU_UTIL=${GPU_UTIL:-0.5}
 DRY=${DRY:-0}
 DATASET=${DATASET:-random}
 DATASET_DIR=${DATASET_DIR:-}
 OUTLEN=${OUTLEN:-128}
 REQS=${REQS:-8}
-DEPTHS=${DEPTHS:-"1 3 5"}; GAMMAS=${GAMMAS:-"1 3 7"}; CTXS=${CTXS:-"4096 131072"}
+DEPTHS=${DEPTHS:-"1 3 5"}; GAMMAS=${GAMMAS:-"1 3 7"}; CTXS=${CTXS:-"4096 32768"}
 
 mkdir -p "$OUT"
 show() { printf '  [dry]'; printf ' %q' "$@"; printf '\n'; }
