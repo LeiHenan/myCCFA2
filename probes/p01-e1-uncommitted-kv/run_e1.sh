@@ -55,6 +55,16 @@ echo "== 1) 打补丁（幂等）=="
 python probes/p01-e1-uncommitted-kv/instrument/e1_patch.py --apply || exit 1
 python probes/p01-e1-uncommitted-kv/instrument/e1_patch.py --status
 
+echo "== 1b) 插桩自检：Hook B 必须真的装上（否则 alloc/R_reserve 恒为空）=="
+python - <<'PYEOF'
+import vllm.v1.core.kv_cache_manager as m
+ok = getattr(m.KVCacheManager, "_e1_wrapped", False)
+has = hasattr(m, "_e1_emit")
+print(f"  KVCacheManager._e1_wrapped={ok}  _e1_emit defined={has}")
+raise SystemExit(0 if (ok and has) else 1)
+PYEOF
+[ $? -eq 0 ] || { echo "  !! Hook B 未生效，终止（先修 e1_patch.py）"; exit 1; }
+
 for g in $GAMMAS; do
   SPEC="{\"method\":\"ngram\",\"num_speculative_tokens\":$g}"
   [ -n "$DRAFTER" ] && SPEC="{\"model\":\"$DRAFTER\",\"num_speculative_tokens\":$g}"

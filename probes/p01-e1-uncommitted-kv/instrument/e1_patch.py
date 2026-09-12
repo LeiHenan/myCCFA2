@@ -71,6 +71,31 @@ HOOK_A_INSERT = HOOK_A_ANCHOR + f"""
 HOOK_B = f'''
 
 {MARK_BEGIN}
+# ⚠️ 自包含：`_e1_emit` 原本只定义在 scheduler.py（另一个模块），在 kv_cache_manager 的名字空间里
+#    并不存在 ⇒ 调用会抛 NameError，又被下面的 `except Exception: pass` 吞掉 ⇒ **alloc 事件恒为 0**
+#    （2026-09-12 实测踩到：spec 事件正常、alloc 全无）。故在此重新定义一份。
+def _e1_emit(rec):
+    """E1 探针：把一条记账记录追加到 $E1_LOG（未设置则静默返回）。"""
+    import os
+    if not os.environ.get("E1_LOG"):
+        return
+    try:
+        import json
+        import threading
+        import time
+        rec["ts"] = time.time()
+        rec["pid"] = os.getpid()
+        lock = globals().get("_E1_LOCK")
+        if lock is None:
+            lock = threading.Lock()
+            globals()["_E1_LOCK"] = lock
+        with lock:
+            with open(os.environ["E1_LOG"], "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec, separators=(",", ":")) + "\\n")
+    except Exception:
+        pass
+
+
 def _e1_install_alloc_hook():
     """包装 KVCacheManager.allocate_slots，记录每次分配的请求 token 数与实际块数。"""
     try:
