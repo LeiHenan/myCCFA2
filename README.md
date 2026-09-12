@@ -13,6 +13,7 @@
 
 | 想看什么 | 打开 |
 |---|---|
+| **要重新选课题时**（找真痛点 / 伪问题筛查 / 流程图 / 模板 / 审计清单） | **[`docs/TOPIC_METHODOLOGY.md`](docs/TOPIC_METHODOLOGY.md)** ← **最上位入口** |
 | **现在到底做什么、判据是什么** | **[`EXECUTION_PLAN.md`](EXECUTION_PLAN.md)** ← 唯一权威执行依据 ｜ 解冻顺序见本文 §"解冻顺序" |
 | 候选是怎么被筛出来的（论证与证据） | [`docs/`](docs/README.md) |
 | 每个实验怎么跑、何时杀 | [`probes/`](probes/README.md) 与 [`notes/prereg/`](notes/prereg/) |
