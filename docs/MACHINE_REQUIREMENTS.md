@@ -186,6 +186,23 @@ bash docs/acceptance_check.sh --smoke     # 0.6B + ngram 投机解码：最小�
 | 阿里云 PyPI 镜像 | 0.6–2 MB/s | 默认源，慢但可用（torch+cuda 库约 5 GB，耗时 ~1.5 h） |
 | TUNA / 腾讯 / 阿里云 VPC 内网端点 | 不可用或更慢 | 不要在它们身上浪费时间 |
 
+**2026-09-12 第二台机器（RTX 5090 / 32 GB）上重测的源速度——差异极大，务必先测再装：**
+
+| 源 | 单连接 | 16 连接（aria2c） | 结论 |
+|---|---|---|---|
+| **阿里云 PyPI** | ~1 MB/s（首台）/ **~113 KB/s**（次台，uv 并行聚合） | 未测 | ❌ 次台上是瓶颈（450× 慢于 TUNA） |
+| **TUNA PyPI** | — | — | ✅ **用 `uv` + TUNA：实测 ~51 MB/s**（60 秒下 3 GB） |
+| hf-mirror | 2.5 MB/s | **126 MB/s** | ✅ 大权重用 `aria2c -x16 -s16 -k1M`（2.8 GB 秒级；`hf download` 会卡死） |
+| ModelScope | 7–9 MB/s（分片并行） | — | ✅ 阿里系权重首选 |
+
+装引擎的推荐命令（次台实测约 4 分钟装完 vllm+torch+全部 CUDA 库）：
+```bash
+pip install -q uv
+VIRTUAL_ENV=<venv> uv pip install --python <venv>/bin/python \
+  --index-url https://pypi.tuna.tsinghua.edu.cn/simple vllm==0.29.0
+```
+其他两个坑：① 新容器**没有 `hf` CLI**，`server_download_models.sh` 已补自动安装；② `run_t1.sh` 重写时曾漏掉顶层 `mkdir -p $OUT`（serve.log 写不进去、首次启动即失败）——启动脚本前先 `DRY=1` 自测。
+
 - **必须设 `HF_HUB_DISABLE_XET=1`**：否则大文件走 Xet CAS 会失败并报
   `RuntimeError: Task error: File reconstruction error: CAS Client Error: HTTP status client error (401 Unauthorized), domain: https://cas-server.xethub.hf.co/...`。
 - HuggingFace 直连不可达（curl 返回 000）⇒ 一律走 hf-mirror 或 ModelScope。
