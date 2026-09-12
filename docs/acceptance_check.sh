@@ -5,17 +5,20 @@
 #   bash docs/acceptance_check.sh              # 只检测
 #   bash docs/acceptance_check.sh --install    # 先建 venv 并装 vllm==0.29.0，再检测
 #   bash docs/acceptance_check.sh --tier-b     # 按降级方案（vllm==0.26.0）检测
+#   bash docs/acceptance_check.sh --smoke      # 追加端到端测试（0.6B + ngram；Blackwell/sm_120 必做）
 #
 # 两条硬门槛：驱动 >= 580（Tier A）、DFlash2DraftModel 被引擎注册。
 set -uo pipefail
 
 WANT_TIER="a"
 DO_INSTALL=0
+DO_SMOKE=0
 for arg in "$@"; do
   case "${arg}" in
     --install) DO_INSTALL=1 ;;
+    --smoke)   DO_SMOKE=1 ;;
     --tier-b)  WANT_TIER="b" ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
     *) echo "未知参数: ${arg}"; exit 2 ;;
   esac
 done
@@ -144,6 +147,30 @@ if HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1 "${PY}" \
   ok "hf-mirror.com 可达（记得 HF_HUB_DISABLE_XET=1）"
 else
   warn "hf-mirror.com 不可达（若直连 HF 可用则忽略）"
+fi
+
+if [ "${DO_SMOKE}" = "1" ]; then
+  hdr "7. 端到端 smoke（Qwen3-0.6B + ngram 投机解码；Blackwell/sm_120 必做）"
+  if "${PY}" -c 'import vllm' >/dev/null 2>&1; then
+    SMOKE_RC=0
+    "${PY}" - <<'EOF' || SMOKE_RC=1
+import time
+from vllm import LLM, SamplingParams
+t0 = time.time()
+llm = LLM(model="Qwen/Qwen3-0.6B",
+          speculative_config={"method": "ngram", "num_speculative_tokens": 3},
+          max_model_len=2048, gpu_memory_utilization=0.30, enforce_eager=True)
+out = llm.generate(["The capital of France is"], SamplingParams(max_tokens=32, temperature=0))
+print("SMOKE_TEXT:", out[0].outputs[0].text.strip()[:60], "| elapsed=%.1fs" % (time.time() - t0))
+EOF
+    if [ "${SMOKE_RC}" -eq 0 ]; then
+      ok "端到端生成通过（引擎 + 注意力内核 + 投机路径在该卡上可用）"
+    else
+      no "端到端生成失败 ⇒ 按 MACHINE_REQUIREMENTS §4.10 换后端重试（FLASH_ATTN → FLASHINFER → TRITON_ATTN），仍失败则换卡"
+    fi
+  else
+    no "vllm 不可 import，无法 smoke（先跑 --install）"
+  fi
 fi
 
 hdr "汇总"

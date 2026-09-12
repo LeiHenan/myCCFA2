@@ -14,7 +14,7 @@
 | 项 | 最低要求 | 推荐 | 理由 |
 |---|---|---|---|
 | **NVIDIA 驱动** | **≥ 580** | R580 或更新（590/595/610/615 皆可） | CUDA 13.x 要求驱动 ≥580；这是**唯一不可妥协**的一条（§1） |
-| GPU | **1× ≥24 GB，sm_89+** | **2× ≥24 GB** 或 1× ≥40 GB | 单卡可跑 T0/T1（128k 用 FP8 KV = 9 GiB）；第二张用于并行跑 E1（原计划 GPU0=E1、GPU1=T0/T1） |
+| GPU | **1× ≥24 GB，sm_89+** | **1× 48 GB** 或 **2× 24 GB**；**96 GB（RTX PRO 6000 Blackwell）属宽裕，且有额外解锁（§2.3）** | 单卡可跑 T0/T1（128k 用 FP8 KV = 9 GiB）；第二张用于并行跑 E1（原计划 GPU0=E1、GPU1=T0/T1） |
 | GPU 架构 | **Ada(8.9) / Hopper(9.0)+** | 4090 / L40S / RTX 6000 Ada / H100 | **FP8 KV 需要 ≥sm_89**；A100（sm_80）只能退回 FP16 KV，会违反 T1 网格的 `KV_DTYPE=fp8` 设定 |
 | CUDA | 13.0+（**由 wheel 自带，不需要装 toolkit，也不需要 nvcc**） | — | vLLM wheel 内嵌 CUDA 运行时；本机在 cu128 情形下已验证"无编译器也能跑" |
 | 数据盘 | ≥ 100 GB 可用 | **≥ 200 GB 可用** | §2 预算表；原机只剩 90 GB，一轮下载就吃掉 29 GB |
@@ -81,6 +81,17 @@ Qwen3-4B 实测配置：36 层 / 8 KV heads / head_dim 128 ⇒ **144 KiB/token**
 | **合计** | **~70 GB ⇒ 建议可用空间 ≥200 GB** |
 
 原机 7.3 TB 盘只剩 **90 GB（99% 满）**，每一步下载都在冒险——这是选机时容易被忽略、但会真实打断实验的一项。
+
+### 2.3 显存"宽裕"能解锁什么（≥48 GB；96 GB 的 RTX PRO 6000 全都解锁）
+
+| 解锁项 | 24 GB 卡 | **96 GB 卡** | 对实验的意义 |
+|---|---|---|---|
+| 128k 的 KV dtype | 只能 **FP8**（9 GiB，偏紧） | **FP16（18 GiB）也放得下** | prereg 要求"所有对照必须同 KV dtype"；能用 FP16 就少一个量化变量 |
+| `bs{1,8,32}` 扩展条款 | **跑不了**（128k@bs8 的 FP8 KV 已 72 GiB） | 128k@bs8（FP8）≈ 83 GiB **可跑**；32k 更宽裕 | 若反转只在高 bs 出现，24 GB 机器**必须再租卡**，96 GB **当场就能判** |
+| 8B 目标稳健性臂 | 放不下 128k | 16 GiB 权重 + 36 GiB（FP16 KV@128k）= 52 GiB **可跑** | 论文可从"4B 现象"升级为"跨规模成立" |
+| 185k 长上下文格（W2 全网格） | 不可行 | 可行 | W2 不必换机器 |
+
+⇒ **96 GB 不是浪费**：它把"第二次租卡 / 第一次判不了"的风险一次性消掉。
 
 ---
 
@@ -150,9 +161,16 @@ df -h ~        # 可用 >= 100 GB（建议 >= 200 GB）
 # 4.9 网络（国内机房必看）
 python -c "import urllib.request as u;print(u.urlopen('https://pypi.org/simple/', timeout=10).status)"
 HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1 python -c "import huggingface_hub as h;print(h.model_info('Qwen/Qwen3-4B').sha[:8])"
+# 4.10 端到端（**Blackwell / sm_120 卡必做**，~15 分钟，需先下 ~10 GB 权重）
+bash docs/acceptance_check.sh --smoke     # 0.6B + ngram 投机解码：最小代价验证"引擎+注意力内核+投机路径"在该卡可用
+#   完整版（真 drafter，与主线一致）：见 docs/SERVER_BOOTSTRAP.md §4 的三层 smoke test
+#   若报注意力后端相关错误，按序覆盖后端重试：
+#     VLLM_ATTENTION_BACKEND=FLASH_ATTN  →  FLASHINFER  →  TRITON_ATTN
 ```
 
-**只有 4.1 与 4.6 同时通过，这台机器才算可用。**
+**判定线**：
+- **4.1 与 4.6 同时通过 ⇒ 机器可用**（这是原机失败的那一条）。
+- **若卡是 Blackwell（RTX PRO 6000 / RTX 50 系，sm_120），4.10 也必须通过** —— 原因见 §6 的"非因果注意力已知坑"：能 import、能注册架构，仍可能在真跑时因内核缺失而失败。
 
 ---
 
@@ -167,9 +185,21 @@ HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1 python -c "import hugging
 
 ## 6. 选机对照表（可直接交给厂商 / 管理员）
 
+**卡型白名单（2026-09-12 vLLM 0.29 源码核对）**：
+
+| 卡 | 判定 | 依据 / 注意事项 |
+|---|---|---|
+| **RTX PRO 6000 Blackwell 96 GB（sm_120）** | ✅ **可以，且有 §2.3 的额外解锁** | vLLM 0.29 对它**显式支持**：注意力后端里有多处 `is_device_capability_family(120)` 分支；构建系统在 **`12.0a`** 上覆盖 9 个内核家族（含 **FP8 Marlin**，即 FP8 KV 可用）。它没有 NVLink，但我们不需要 |
+| RTX 4090 / L40S / RTX 6000 Ada（sm_89）、H100（sm_90） | ✅ 可以 | 原方案就是按 4090 的 24 GB 算的 |
+| A100（sm_80） | ⚠️ 不推荐 | 不支持 FP8 KV ⇒ 只能 FP16 KV（40 GB 恰好够 128k），会偏离 T1 网格的 `KV_DTYPE=fp8` 设定 |
+
+> ⚠️ **非因果注意力的已知坑（与我们的 drafter 直接相关）**：本工作区的 drafter 配置写着 `sliding_window_non_causal = true`，而 vLLM 源码注释明确说明 **SM100f 上 FlashInfer 的非因果 cutlass 路径 "known to have problems"**，因此非因果场景下**优先 FlashAttention**。⇒ 在 Blackwell 上，**§4.10 的端到端测试不可省**；真出问题时按 4.10 的 fallback 链换后端（会改变绝对 tok/s，**不改变 ridge 形状的判定**）。
+>
+> ⚠️ **同名的两个型号**：RTX PRO 6000 Blackwell 有 **Workstation Edition（600 W）** 与 **Max-Q / Server Edition（300 W）**。后者绝对吞吐明显更低；**ridge 形状判定不受影响**，但论文须注明具体型号与功耗档（与"须注明 GPU 型号"同一条纪律）。
+
 | 渠道 | 该怎么提要求 |
 |---|---|
-| 任意云 | "要 **CUDA 13.0 / 驱动 580+** 的 GPU 实例，卡型 ≥24 GB 且为 Ada 或 Hopper（4090 / L40S / RTX 6000 Ada / H100），数据盘可用 ≥200 GB，按量计费、可长期保持 SSH 会话" |
+| 任意云 | "要 **CUDA 13.0 / 驱动 580+** 的 GPU 实例，卡型 ≥24 GB 且为 Ada / Hopper / Blackwell（4090 / L40S / RTX 6000 Ada / H100 / **RTX PRO 6000 96 GB**），数据盘可用 ≥200 GB，按量计费、可长期保持 SSH 会话" |
 | 国内（AutoDL / 恒源云 / 揽睿等） | 默认镜像多为 CUDA 12.x ⇒ **必须显式选 CUDA 13 基础镜像**；先开 1 小时按量实例跑 §4 验收，再决定包周 |
 | 海外（RunPod / Vast.ai / Lambda 等） | 选 CUDA 13.0 模板；确认是**持久实例/Pod**而非 serverless；确认无空闲自动关机 |
 | 学校 / 实验室机器 | 直接把 §1 的六条事实链 + §4 的验收命令发给管理员，并附一句"不需 root，只要镜像自带 ≥580 驱动" |
