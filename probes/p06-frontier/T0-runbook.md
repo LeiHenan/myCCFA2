@@ -16,6 +16,14 @@ T1 要测"最优 depth 与最优 γ 是否可分离"。如果深度**根本不�
 
 ⇒ 首选"**改 config**"，不要重训、也先不要改代码。
 
+> ✅ **2026-09-12 按真实权重核对（重要，曾会导致 T0 假阴性）**：`mgoin/Qwen3-4B-speculator.dflash2` 的
+> `config.json` **顶层没有** `num_hidden_layers`；层数在 **`transformer_layer_config.num_hidden_layers`（嵌套 dict）**，
+> 且同层还有 `layer_types`（逐层 SWA/Full 标记，长度必须与层数一致）。
+> vLLM 侧对应 `DFlashQwen3Model.layers = [.. for i in range(self.config.num_hidden_layers)]` 与
+> `_dflash_layer_causal()` 的 `layer_types[layer_idx]`，其中 `self.config` 就是 `transformer_layer_config`。
+> `make_depth_variants.py` 已据此修好（支持嵌套 dict + 同步截短 `layer_types`），并加了**护栏**：
+> 若一处字段都没改动就直接报错退出 —— 否则会产出与源逐字节相同的"变体"，让 T0 得到"所有深度行为一致"的**假阴性**。
+
 ## 2. 准备：生成深度变体
 
 ```bash
