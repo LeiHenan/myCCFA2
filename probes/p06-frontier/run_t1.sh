@@ -46,6 +46,13 @@ for d in $DEPTHS; do for g in $GAMMAS; do
   if [ "$DRY" != "1" ] && [ ! -d "$DRAFT" ]; then
     echo "跳过 depth=${d}：缺 $DRAFT"; continue
   fi
+  # 护栏：vLLM 0.29 的 method 推断只看路径里有没有 "dflash"（DFlash2DraftModel 不在架构白名单）
+  #   ⇒ 路径不含 dflash 会退化成通用 draft_model，接受率恒 0（2026-09-12 实测踩坑）
+  case "$(printf '%s' "$DRAFT" | tr 'A-Z' 'a-z')" in
+    *dflash*) ;;
+    *) echo "  !! 致命：drafter 路径不含 'dflash'（${DRAFT}）⇒ 接受率会恒为 0；请用 DRAFTER_ROOT=/root/autodl-tmp/dflash-variants"
+       continue ;;
+  esac
   echo "== depth=${d}  gamma=${g}  dataset=${DATASET} =="
   SERVE=(vllm serve "$TARGET"
          --speculative-config "{\"model\":\"$DRAFT\",\"num_speculative_tokens\":$g}"

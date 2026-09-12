@@ -54,6 +54,15 @@ for d in $DEPTHS; do
   if [ "$DRY" != "1" ] && [ ! -d "$DRAFT" ]; then
     echo "跳过 depth=${d}：缺 $DRAFT"; continue
   fi
+  # 护栏（2026-09-12 实测踩坑）：vLLM 0.29 的 method 推断只看**路径字符串**里有没有 "dflash"
+  #   （`"dflash" in draft_model_config.model.lower()`；`DFlash2DraftModel` 不在架构白名单里）。
+  #   路径不含 dflash ⇒ 退化成通用 `draft_model` ⇒ DFlash 专属接线失效 ⇒ **接受率恒为 0**。
+  case "$(printf '%s' "$DRAFT" | tr 'A-Z' 'a-z')" in
+    *dflash*) ;;
+    *) echo "  !! 致命：drafter 路径不含 'dflash'（${DRAFT}）⇒ vLLM 会当通用 draft_model、接受率恒 0。"
+       echo "     请把变体放在含 'dflash' 的目录下，例如 DRAFTER_ROOT=/root/autodl-tmp/dflash-variants"
+       continue ;;
+  esac
   echo "== depth=${d} (gamma=${GAMMA}, ctx=${CTX}, dataset=${DATASET}) =="
   SERVE=(vllm serve "$TARGET"
          --speculative-config "{\"model\":\"$DRAFT\",\"num_speculative_tokens\":$GAMMA}"
