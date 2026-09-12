@@ -89,7 +89,7 @@ for g in $GAMMAS; do
     vllm bench serve --model "$TARGET" --base-url "http://localhost:${PORT}" \
       --dataset-name "$DATASET" --dataset-path "$DATASET_DIR/prompts_${ctx}.jsonl" \
       --custom-output-len "$OUTLEN" --num-prompts "$REQS" --max-concurrency "$bc" \
-      --result-filename "${TAG}.bench.json" --result-dir "$OUT" \
+      --save-result --result-filename "${TAG}.bench.json" --result-dir "$OUT" \
       > "$OUT/${TAG}.bench.log" 2>&1 || echo "  !! bench 失败：${TAG}"
     cp "$E1_LOG" "$OUT/${TAG}.e1.jsonl" 2>/dev/null || true
     python probes/p01-e1-uncommitted-kv/instrument/analyze.py \
