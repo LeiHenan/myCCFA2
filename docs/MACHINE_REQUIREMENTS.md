@@ -197,6 +197,28 @@ bash docs/acceptance_check.sh --smoke     # 0.6B + ngram 投机解码：最小�
 >
 > ⚠️ **同名的两个型号**：RTX PRO 6000 Blackwell 有 **Workstation Edition（600 W）** 与 **Max-Q / Server Edition（300 W）**。后者绝对吞吐明显更低；**ridge 形状判定不受影响**，但论文须注明具体型号与功耗档（与"须注明 GPU 型号"同一条纪律）。
 
+**镜像怎么选（2026-09-12 追加：**别按 PyTorch 版本挑**）**
+
+**结论：镜像里预装的 PyTorch 与我们无关，可以忽略；唯一要看的是宿主机驱动。** 我们的流程是 `python -m venv` + `pip install vllm==0.29.0`，它会自己拉 `torch==2.13.0+cu130`（实测）。所以：
+
+| 选择项 | 怎么选 |
+|---|---|
+| **PyTorch 版本** | **不重要，别照它挑**。特别地**不要选 2.8.0** —— 那是 CUDA 12.8/12.9 时代的东西，与我们要的 CUDA 13 无关；如果它的 `LD_LIBRARY_PATH` 泄漏进我们的 venv，反而会复现原机那个 `libcudart.so.13` 报错 |
+| 预装框架与否 | **优先选最"素"的镜像**（Miniconda / Ubuntu + CUDA，无预装 torch）。decision #36：**一个 env 只用一种包管理器**，conda base 里的 torch 与 venv 里的 torch 混用是 `undefined symbol` 类故障的经典来源 |
+| 镜像里的 CUDA | 有 **CUDA 13.0** 就选它；没有也不致命 —— vLLM wheel **自带** CUDA 运行时，镜像的 CUDA 只服务于编译，而我们**不需要编译** |
+| **宿主机驱动** | ✅ **唯一硬指标：`nvidia-smi` ≥580**。这是宿主机的属性，**选镜像改不了它**，只能换机器 |
+
+**开机后 30 秒先验这四条**：
+
+```bash
+nvidia-smi --query-gpu=name,driver_version,memory.total,memory.used --format=csv   # 驱动 <580 ⇒ 直接释放换机
+python3 -V                                                                        # 3.10–3.12（3.11 最佳）
+echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"     # 若指向 CUDA 12.x，进 venv 前 unset 掉
+nvidia-smi -L                                                                    # 确认卡的型号/张数
+```
+
+**两个常见坑**：① 预装镜像的 `.bashrc` 会自动 `conda activate base`，并把 CUDA 12.x 的 lib 塞进 `LD_LIBRARY_PATH`；venv 继承它就可能出现"torch 已是 2.13+cu130、却仍加载 12.x 运行时"的错配 ⇒ **进 venv 前 `unset LD_LIBRARY_PATH`**。② 装完引擎后 `pip list | grep -i torch` 确认 torch 来自 venv 而非 base。
+
 | 渠道 | 该怎么提要求 |
 |---|---|
 | 任意云 | "要 **CUDA 13.0 / 驱动 580+** 的 GPU 实例，卡型 ≥24 GB 且为 Ada / Hopper / Blackwell（4090 / L40S / RTX 6000 Ada / H100 / **RTX PRO 6000 96 GB**），数据盘可用 ≥200 GB，按量计费、可长期保持 SSH 会话" |
