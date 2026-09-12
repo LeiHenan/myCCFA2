@@ -9,9 +9,16 @@
 # 用法：
 #   DRY=1 bash run_t0.sh                          # 只打印命令
 #   TARGET=/path/to/Qwen3-4B DRAFTER_ROOT=/path/drafters OUT=/path/out bash run_t0.sh
-#   KV_DTYPE=float16 bash run_t0.sh               # 96 GB 卡用 FP16 KV（合法值只有 auto/float16/bfloat16/fp8*）
+#   DATASET=custom DATASET_DIR=/root/autodl-tmp/prompts bash run_t0.sh    # 真实文本（推荐）
 #
-# 前置：DRAFTER_ROOT 下须有 d1..d5 变体（由 make_depth_variants.py 生成）
+# ⚠️ 数据集选择（2026-09-12 实测教训）：**不要用 `--dataset-name random`**。
+#    它喂随机 token id，drafter 无从预测 ⇒ 每一档的 Mean acceptance length 都是 1.00（零接受），
+#    脊线被整体压平、失去信号。必须用真实文本：`DATASET=custom DATASET_DIR=<含 prompts_<ctx>.jsonl 的目录>`。
+#
+# ⚠️ KV dtype 必须与模型 dtype 一致（bf16 模型给 float16 会让 FA 报 query/key dtype 不匹配）。
+#
+# 前置：DRAFTER_ROOT 下须有 d1..d5 变体（make_depth_variants.py，**必须带 --prune-weights**：
+#       vLLM 严格加载，权重里多出的层会直接报 "no module or parameter named 'layers.1'"）。
 set -uo pipefail
 
 TARGET=${TARGET:-Qwen/Qwen3-4B}
@@ -22,30 +29,42 @@ GAMMA=${GAMMA:-7}
 CTX=${CTX:-4096}
 KV_DTYPE=${KV_DTYPE:-auto}
 MAXLEN=${MAXLEN:-8192}
-GPU_UTIL=${GPU_UTIL:-0.85}
+GPU_UTIL=${GPU_UTIL:-0.5}
 DEPTHS=${DEPTHS:-"1 2 3 4 5"}
 DRY=${DRY:-0}
 PROMPT=${PROMPT:-"The capital of France is"}
+DATASET=${DATASET:-random}
+DATASET_DIR=${DATASET_DIR:-}
+OUTLEN=${OUTLEN:-128}
+REQS=${REQS:-8}
 
 mkdir -p "$OUT"
 show() { printf '  [dry]'; printf ' %q' "$@"; printf '\n'; }
+
+bench_args() {   # $1 = ctx
+  if [ "$DATASET" = "custom" ]; then
+    printf '%s\n' --dataset-name custom --dataset-path "$DATASET_DIR/prompts_$1.jsonl" --custom-output-len "$OUTLEN"
+  else
+    printf '%s\n' --dataset-name "$DATASET" --random-input-len "$1" --random-output-len "$OUTLEN"
+  fi
+}
 
 for d in $DEPTHS; do
   DRAFT="$DRAFTER_ROOT/d${d}"
   if [ "$DRY" != "1" ] && [ ! -d "$DRAFT" ]; then
     echo "跳过 depth=${d}：缺 $DRAFT"; continue
   fi
-  echo "== depth=${d} (gamma=${GAMMA}, ctx=${CTX}) =="
+  echo "== depth=${d} (gamma=${GAMMA}, ctx=${CTX}, dataset=${DATASET}) =="
   SERVE=(vllm serve "$TARGET"
          --speculative-config "{\"model\":\"$DRAFT\",\"num_speculative_tokens\":$GAMMA}"
          --max-model-len "$MAXLEN" --gpu-memory-utilization "$GPU_UTIL"
          --kv-cache-dtype "$KV_DTYPE" --port "$PORT")
   if [ "$DRY" = "1" ]; then
     show "${SERVE[@]}"
+    DS=(); while IFS= read -r _l; do DS+=("$_l"); done < <(bench_args "$CTX")
     show vllm bench serve --model "$TARGET" --base-url "http://localhost:${PORT}" \
-      --dataset-name random --random-input-len "$CTX" --random-output-len 128 \
-      --num-prompts 8 --max-concurrency 1 --save-result --result-dir "$OUT" \
-      --result-filename "d${d}.bench.json"
+      "${DS[@]}" --num-prompts "$REQS" --max-concurrency 1 \
+      --save-result --result-dir "$OUT" --result-filename "d${d}.bench.json"
     show curl -s "http://localhost:${PORT}/metrics" -o "$OUT/d${d}.metrics"
     show curl -s "http://localhost:${PORT}/v1/completions" -H "Content-Type: application/json" \
       -d "{\"model\":\"$TARGET\",\"prompt\":\"$PROMPT\",\"max_tokens\":32,\"temperature\":0}" -o "$OUT/d${d}.prompt.json"
@@ -64,9 +83,9 @@ for d in $DEPTHS; do
     kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null; sleep 5; continue
   fi
 
+  mapfile -t DS < <(bench_args "$CTX")
   vllm bench serve --model "$TARGET" --base-url "http://localhost:${PORT}" \
-    --dataset-name random --random-input-len "$CTX" --random-output-len 128 \
-    --num-prompts 8 --max-concurrency 1 \
+    "${DS[@]}" --num-prompts "$REQS" --max-concurrency 1 \
     --save-result --result-dir "$OUT" --result-filename "d${d}.bench.json" \
     > "$OUT/d${d}.bench.log" 2>&1 || echo "  !! bench 失败（见 d${d}.bench.log）"
 
@@ -81,4 +100,4 @@ for d in $DEPTHS; do
 done
 
 echo "完成 → $OUT"
-echo "下一步：python probes/p06-frontier/analyze_t0.py --dir $OUT"
+echo "下一步：python probes/p06-frontier/analyze_t0.py --dir $OUT --drafter-root $DRAFTER_ROOT"
