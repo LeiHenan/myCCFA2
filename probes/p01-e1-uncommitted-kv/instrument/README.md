@@ -2,6 +2,13 @@
 
 两个脚本 + 一条源码事实。**用途**：把"未提交投机 KV 占比"从一个没人数过的量，变成 D1 当天就能拿到的数字。
 
+> ✅ **锚点核对（2026-09-12，新增）**：在 **vLLM `v0.29.0`**（即新机器上实际要跑的版本）上逐项验过，**补丁无需修改**：
+> ① Hook A 锚点（`if request.num_output_placeholders > 0:` / `request.num_output_placeholders -= num_rejected`）
+> 在 `vllm/v1/core/sched/scheduler.py` 中**恰好出现 1 次**（第 1916–1917 行），缩进与模板逐字节一致；
+> ② `KVCacheManager.allocate_slots(self, request, num_new_tokens, ...)` 与包装器的位置参数签名一致（第 343 行起）；
+> ③ 其返回值 `KVCacheBlocks | None` 具备 `get_block_ids()`。
+> ⇒ D1 的"引擎固定 vLLM"在 0.29.0 上成立，插桩可直接 `--apply`。
+
 ## 怎么用
 
 ```bash

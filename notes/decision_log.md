@@ -105,3 +105,5 @@
 | D0+3 周 | **锁定 1 主线 + 1 备线** | 量级 ≥8%（自测 vs 部署基线）且机制可归因 |
 
 > `#4` 已暂缓（复核门不通过，decision #19），不再占用截止项。
+
+| 41 | **E1 插桩在 vLLM 0.29.0 上锚点全中（无需改补丁）** —— ① Hook A 锚点在 `vllm/v1/core/sched/scheduler.py` **恰好 1 次**（1916–1917 行），缩进逐字节一致；② `KVCacheManager.allocate_slots(self, request, num_new_tokens, ...)` 与包装器位置参数签名一致（343 行起）；③ 返回的 `KVCacheBlocks \| None` 具备 `get_block_ids()`。⇒ D1「引擎固定 vLLM」在新机器的 0.29.0 上成立，E1 可直接 `--apply` | 对 v0.29.0 源码逐项核对（此前只对 main `9a35c08` 验过） | `probes/p01-e1-uncommitted-kv/instrument/README.md` |
