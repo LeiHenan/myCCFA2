@@ -94,7 +94,7 @@ def collect(out_dir: Path, drafter_root: Path | None) -> list[dict]:
             "accepted": acc,
             "drafts": drafts,
             "draft_tokens": dtok,
-            "accept_len": (acc / drafts) if (acc is not None and drafts) else None,
+            "accept_len": (1.0 + acc / drafts) if (acc is not None and drafts) else None,
             "accept_rate": (acc / dtok) if (acc is not None and dtok) else None,
             "tok_s": None,
             "text": first_text(out_dir / f"d{d}.prompt.json"),
@@ -127,11 +127,18 @@ def judge(rows: list[dict]) -> tuple[str, list[str]]:
         notes.append(f"tok/s {min(toks):.1f}–{max(toks):.1f}")
 
     texts = [r["text"] for r in live if r["text"]]
+    # ⚠️ 更正（2026-09-12 实测）：投机解码是**无损**的 ⇒ 各档 greedy 输出**本就应当逐字相同**。
+    #    早期版本把"输出全同"判为"截断未生效"，是**假警报**：真正的判别量是接受长度/tok/s 是否随 d 变动。
     if len(texts) >= 3 and len(set(texts)) == 1:
-        notes.append("所有档位 greedy 输出**逐字相同** ⇒ 截断很可能未生效，或 draft 质量完全由目标模型喂入的 aux hidden states 决定")
-        return "B/C 边界（先核实变体是否真的被加载）", notes
-    if len(texts) >= 2 and len(set(texts)) > 1:
-        notes.append(f"输出随深度变化：{len(set(texts))} 种不同文本")
+        notes.append("lossless 检查通过：各档 greedy 输出逐字相同（投机解码无损，这是**预期**行为）")
+    elif len(texts) >= 2:
+        notes.append(f"⚠️ 各档输出不一致（{len(set(texts))} 种）⇒ 检查是否有档位加载失败或非贪心采样")
+
+    # 单调性：接受长度是否随深度单调不减
+    seq = [(r["d"], r["accept_len"]) for r in sorted(live, key=lambda x: x["d"])]
+    mono = all(b[1] >= a[1] - 1e-9 for a, b in zip(seq, seq[1:]))
+    notes.append("接受长度随深度" + ("单调不减" if mono else "非单调（可能单峰，需看 T1 的 γ 维）"))
+
     if rel < HEURISTIC_SPREAD:
         return "C. 灰区（能跑但接受长度几乎不随深度变）", notes
     return "A. 旋钮可操作（进 T1）", notes
@@ -152,7 +159,7 @@ def write_summary(out_dir: Path, rows: list[dict], verdict: str, notes: list[str
         )
     lines += [
         "",
-        "> 口径：平均接受长度 = `num_accepted_tokens / num_drafts`；接受率 = `num_accepted_tokens / num_draft_tokens`（vLLM v0.29 指标注释）。",
+        "> 口径：**平均接受长度 = 1 + `num_accepted_tokens / num_drafts`**（与 vLLM 日志的 `Mean acceptance length` 一致；1.00 = 一个草稿都没被接受）；接受率 = `num_accepted_tokens / num_draft_tokens`。",
         "> 判据见 `probes/p06-frontier/T0-runbook.md` §4；上表的展示阈值**不是**预登记判据，仅用于标出'几乎不动'。",
     ]
     p = out_dir / "summary.md"
@@ -178,20 +185,27 @@ def selftest() -> None:
             (root / f"d{d}.prompt.json").write_text(json.dumps({"choices": [{"text": f"out{d}"}]}), encoding="utf-8")
             (root / f"d{d}.bench.json").write_text(json.dumps({"output_throughput": 10.0 * d}), encoding="utf-8")
         rows = collect(root, None)
-        assert rows[0]["accept_len"] == 2.0 and abs(rows[0]["accept_rate"] - 2 / 7) < 1e-9, rows[0]
-        assert rows[1]["accept_len"] == 4.0, rows[1]
+        # 口径：accept_len = 1 + accepted/drafts（与 vLLM 的 Mean acceptance length 一致）
+        assert rows[0]["accept_len"] == 3.0 and abs(rows[0]["accept_rate"] - 2 / 7) < 1e-9, rows[0]
+        assert rows[1]["accept_len"] == 5.0, rows[1]
         v, n = judge(rows)
         assert v.startswith("A."), (v, n)
         p = write_summary(root, rows, v, n)
         assert p.exists() and "T0 — 深度旋钮验证" in p.read_text(encoding="utf-8")
-        # 全同文本 ⇒ B/C 边界
+        # 全同文本 ⇒ 应判为 lossless 通过（而非 B/C 边界）
         for d in (1, 3):
             (root / f"d{d}.prompt.json").write_text(json.dumps({"choices": [{"text": "same"}]}), encoding="utf-8")
         (root / "d5.metrics").write_text((root / "d1.metrics").read_text(encoding="utf-8"), encoding="utf-8")
         (root / "d5.prompt.json").write_text(json.dumps({"choices": [{"text": "same"}]}), encoding="utf-8")
-        v2, _ = judge(collect(root, None))
-        assert "B/C" in v2, v2
-        print("selftest ✔ 指标解析 / 接受长度与接受率 / A 与 B-C 判定 / summary 落盘")
+        rows2 = collect(root, None)
+        v2, n2 = judge(rows2)
+        assert "lossless 检查通过" in " ".join(n2), n2          # 输出相同 = 无损，属预期
+        assert not v2.startswith("B/"), v2                       # 不得再据此判成 B/C 边界
+        # 接受长度不随深度变 ⇒ C（灰区）
+        (root / "d3.metrics").write_text((root / "d1.metrics").read_text(encoding="utf-8"), encoding="utf-8")
+        v3, _ = judge(collect(root, None))
+        assert v3.startswith("C."), v3
+        print("selftest ✔ 指标解析 / 接受长度口径 / lossless 预期 / A 与 C 判定 / summary 落盘")
 
 
 if __name__ == "__main__":
