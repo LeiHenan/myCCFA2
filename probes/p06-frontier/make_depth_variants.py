@@ -86,10 +86,13 @@ def prune_safetensors(path: Path, d: int, notes: list[str]) -> None:
     notes.append(f"{path.name}: dropped {dropped} tensor(s)")
 
 
-def make_variants(src: Path, out: Path, depths: list[int], prune: bool) -> None:
+def make_variants(src: Path, out: Path, depths: list[int], prune: bool,
+                  symlink_weights: bool = False) -> None:
     cfg_path = src / "config.json"
     if not cfg_path.exists():
         sys.exit(f"缺 {cfg_path}")
+    if prune and symlink_weights:
+        sys.exit("--prune-weights 与 --symlink-weights 互斥：裁剪会改到共享的源权重文件")
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     for d in depths:
         dst = out / f"d{d}"
@@ -102,7 +105,16 @@ def make_variants(src: Path, out: Path, depths: list[int], prune: bool) -> None:
             )
         if dst.exists():
             shutil.rmtree(dst)
-        shutil.copytree(src, dst)
+        if symlink_weights:
+            # 权重只存一份，各档用软链引用（省 13+ GB；vLLM 按路径读文件，软链可用）
+            dst.mkdir(parents=True)
+            for f in sorted(src.iterdir()):
+                if f.name == "config.json":
+                    continue
+                (dst / f.name).symlink_to(f.resolve())
+            notes.append("权重=软链（共享源文件）")
+        else:
+            shutil.copytree(src, dst)
         (dst / "config.json").write_text(
             json.dumps(new_cfg, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -160,12 +172,14 @@ if __name__ == "__main__":
     ap.add_argument("--out")
     ap.add_argument("--depths", nargs="*", type=int, default=[1, 2, 3, 4, 5])
     ap.add_argument("--prune-weights", action="store_true")
+    ap.add_argument("--symlink-weights", action="store_true",
+                    help="各档只写 config，权重用软链共享（省磁盘；与 --prune-weights 互斥）")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
         selftest()
     elif a.src and a.out:
         Path(a.out).mkdir(parents=True, exist_ok=True)
-        make_variants(Path(a.src), Path(a.out), a.depths, a.prune_weights)
+        make_variants(Path(a.src), Path(a.out), a.depths, a.prune_weights, a.symlink_weights)
     else:
         ap.error("需要 --src/--out，或 --selftest")
