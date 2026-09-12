@@ -65,7 +65,9 @@
 
 | 37 | **上机入口唯一化**：`docs/SERVER_BOOTSTRAP.md` 顶部加「阅读顺序」，从该文件按序指向 T0 → T1 → E1 → 判据 → 全局背景；并显式禁止从四份冻结上游文档取执行指令 | 避免上机时在 20 个文件间找入口，或误读带勘误横幅的历史文档 | `docs/SERVER_BOOTSTRAP.md`、`EXECUTION_PLAN.md` v1.18 |
 
-| 38 | **服务器实地勘探结论 + 修 `.gitignore`**：GPU2 空闲（0% 利用率、仅 754 MiB 占用）→ 定为主用卡；**HuggingFace 直连不可达**（000）但 `hf-mirror.com` 通（200）⇒ 用 `HF_ENDPOINT=https://hf-mirror.com`；anaconda 的 **torch 2.9.0+cu128 实测 `cuda.is_available()=True`** ⇒ 驱动 550.67（CUDA 12.4）不构成阻断；docker 不可用、无 sudo/tmux，但 `/opt/anaconda3/bin/conda` 可用（用 `-p ~/envs/...` 前缀装 tmux）；仓库根已有 `~/myCCFA/.venv`（Python 3.11.7 + pip）但**原 `.gitignore` 未忽略 `.venv/`** ⇒ 已补 `.venv/ venv/ env/` | 实地探测（三轮只读命令）；若在服务器上误提交 venv 会污染仓库 | `.gitignore`、`EXECUTION_PLAN.md` v1.19 |
+| 38 | **服务器实地勘探结论 + 修 `.gitignore`**：GPU2 空闲（0% 利用率、仅 754 MiB 占用）→ 定为主用卡；**HuggingFace 直连不可达**（000）但 `hf-mirror.com` 通（200）⇒ 用 `HF_ENDPOINT=https://hf-mirror.com`；anaconda 的 **torch 2.9.0+cu128 实测 `cuda.is_available()=True`** ⇒ 驱动 550.67（CUDA 12.4）不构成阻断；docker 不可用、无 sudo/tmux，但 `/opt/anaconda3/bin/conda` 可用（用 `-p ~/envs/...` 前缀装 tmux）；仓库根已有 `~/myCCFA/.venv`（Python 3.11.7 + pip）但**原 `.gitignore` 未忽略 `.venv/`** ⇒ 已补 `.venv/ venv/ env/` | 实地探测（三轮只读命令）；若在服务器上误提交 venv 会污染仓库。**⚠️ 本条"驱动 550.67 不构成阻断"的结论已被 #39 推翻**：torch 2.9+cu128 能算只说明"计算可用"，而 vLLM ≥0.28 是 CUDA 13 构建，550.67 无法加载 | `.gitignore`、`EXECUTION_PLAN.md` v1.19 |
+
+| 39 | **换机器（= `EXECUTION_PLAN.md` §12 D5）：原 8×4090 判定不可用** —— 事实链：(i) `qwen3_dflash2` 模块**只从 vLLM 0.28.0（2026-08-26）起存在**，0.26/0.27 连文件都没有（404）⇒ 补注册表无效；(ii) vLLM 0.27.1/0.28.0/0.29.0 全部钉 `torch==2.13.0`，而 2.13.0 **只有 cu129/cu130**（cu128 索引最高 2.11.0）⇒ 必须 CUDA 13；(iii) NVIDIA 官方表：CUDA 13.x 要求驱动 **≥580**，本机 **550.67** 落在 12.x 区间（实测报错 `libcudart.so.13` 缺失 / `driver too old (found version 12040)`）；(iv) SGLang 0.5.19 同样钉 torch 2.13 + `flashinfer_python[cu13]` ⇒ 换引擎也救不了；(v) 无 root，不能原地升驱动。**产出**：`docs/MACHINE_REQUIREMENTS.md`（选机规格 + 显存/磁盘预算 + Tier A/B 清单）与 `docs/acceptance_check.sh`（验收脚本，两条硬门槛）；`docs/SERVER_BOOTSTRAP.md` 加冻结横幅与阅读顺序第 0 步。**prereg 一字不改**（引擎仍为 vLLM，只是换机器）；若最终只能用 CUDA 12.x 驱动则走 Tier B（引擎降级 ⇒ 需新增 prereg） | 逐 tag 核对模块存在性、PyPI 与 PyTorch 索引实测、NVIDIA 官方驱动表、原机实测报错 | `docs/MACHINE_REQUIREMENTS.md`、`docs/acceptance_check.sh`、`README.md`、`docs/SERVER_BOOTSTRAP.md`、`EXECUTION_PLAN.md` v1.20 |
 
 ## 四、归档台账（14 项）
 
@@ -88,10 +90,11 @@
 | `#19` token-yield × KV-retention | 量级单位数 % | §9 |
 | `#20` block-aware 多节点放置 | 基线（Epoch+EPLB）须自建；1.1–1.3× | §9 |
 
-## 五、待决策（按到期顺序；**锚点：D0 = 拿到卡之日**）
+## 五、待决策（按到期顺序；**锚点：D0 = 新机器通过验收之日**，见 `docs/MACHINE_REQUIREMENTS.md` §4）
 
 | 截止 | 决策 | 触发条件 |
 |---|---|---|
+| **机器到位时** | 该机器是否合格（不合格就不开跑） | `bash docs/acceptance_check.sh`：驱动 **≥580** ＋ `DFlash2DraftModel` 被引擎注册；缺一 ⇒ 只能走 Tier B（引擎降级，**需新 prereg**） |
 | D0+1 结束 | #1 生或死 | E1 判据（`probes/p01-e1-uncommitted-kv/README.md` §5）＋ D3 支线（`R_reserve/R_byte > 2`） |
 | D0+3–4 | #6 主假设存废（T1 → T2） | 见 `notes/prereg/p06-frontier.md` 三级判定 |
 | D0+1 周 | #3 归档或继续 | class-4 @batch≥32 是否 ≤0.85× **或**非结构性 ⇒ 归档 |

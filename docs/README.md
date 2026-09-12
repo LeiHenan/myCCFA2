@@ -12,6 +12,15 @@
 | 4 | [`kimi_plan.md`](kimi_plan.md) | 独立再校准（20 项重排 + MLSys 契合度 + 量级证据等级） | **§1/§7 的三条"引用不实"裁定全部作废**；排序键不可复现（主键是自由文本、次级键被违反）；宣称的"三个检索通道"无产物；其 #12 的 `3.28×`、`80×` 亦属未核实的转述 |
 | 5 | [`old.md`](old.md) | 引用纪律、判据框架、击杀台账（47 条击杀 / 38 条越界） | 仍有效；是本工作区纪律条款的来源 |
 
+## 上机与选机（**执行侧**，与上面的"论证侧"分开）
+
+| 文档 | 用途 |
+|---|---|
+| [`MACHINE_REQUIREMENTS.md`](MACHINE_REQUIREMENTS.md) | **选机规格书**：驱动 ≥580 的事实链、显存/磁盘预算、框架与权重清单（Tier A/B）、选机对照表 |
+| [`acceptance_check.sh`](acceptance_check.sh) | **机器验收脚本**：`bash docs/acceptance_check.sh`（两条硬门槛：驱动 ≥580、`DFlash2DraftModel` 被引擎注册） |
+| [`SERVER_BOOTSTRAP.md`](SERVER_BOOTSTRAP.md) | **上机之后**：环境初始化 + 卡分配 + 三层 smoke test + 结果回写纪律 |
+| [`EXPERIMENT_GUIDE.md`](EXPERIMENT_GUIDE.md) | 命令级操作细节（注入点 / 回退表） |
+
 ## 评审记录
 
 - [`reviews/2026-09-11-verdict-01-ranking-review.md`](reviews/2026-09-11-verdict-01-ranking-review.md) — 对 `plan.md` 与 `kimi_plan.md` 的独立裁决（结论：plan.md 排序水平明显更高）。

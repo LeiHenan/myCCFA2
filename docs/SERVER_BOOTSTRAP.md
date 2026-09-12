@@ -1,7 +1,12 @@
-# 服务器初始化手册（8×RTX 4090）
+# 服务器初始化手册（GPU 机器）
+
+> 🧊 **2026-09-12 更新：本手册原针对的 8×RTX 4090 服务器（驱动 550.67 / CUDA 12.4）已判定不可用于主线实验。**
+> 原因：vLLM ≥0.28（主线 `#6` 的 `DFlash2DraftModel` 只从该版本起存在）是 **CUDA 13** 构建，要求驱动 **≥ 580**；该机落在 CUDA 12.x 驱动区间且无 root，无法升级。
+> ⇒ **上机之前先读 [`MACHINE_REQUIREMENTS.md`](MACHINE_REQUIREMENTS.md)**（选机规格），并跑 `bash docs/acceptance_check.sh` 过验收。
+> 本文以下内容（环境初始化、卡分配、smoke test、结果回写纪律）对新机器**同样适用**；"8 卡"字样按实际卡数理解即可。
 
 **目标**：10 分钟内确认环境可用，并把**今天要跑的两个实验**并行起来。
-**前提**：一台 8×4090（24 GB/卡，**PCIe、无 NVLink**）的服务器，SSH 可登录。
+**前提**：一台 **驱动 ≥580（CUDA 13）**、单卡 ≥24 GB（Ada/Hopper，FP8 KV 需 sm_89+）的服务器，SSH 可登录。原 8×4090 的显存与互联特性仍可参考（24 GB/卡、**PCIe、无 NVLink**）。
 
 ---
 
@@ -9,6 +14,7 @@
 
 | 顺序 | 文件 | 作用 |
 |---|---|---|
+| **0** | [`docs/MACHINE_REQUIREMENTS.md`](MACHINE_REQUIREMENTS.md) + `bash docs/acceptance_check.sh` | **上机之前**：这台机器是否合格（两条硬门槛：驱动 ≥580、`DFlash2DraftModel` 被引擎注册）。不合格就别开跑 |
 | **1** | **本文** `docs/SERVER_BOOTSTRAP.md` | 环境验收 → 依赖 → 模型 → **smoke test** → 卡分配 → 结果回写纪律 |
 | **2** | [`probes/p06-frontier/T0-runbook.md`](../probes/p06-frontier/T0-runbook.md) | **T0**：深度旋钮验证（半天）。**结局 B ⇒ `#6` 当天降级** |
 | **3** | [`probes/p06-frontier/README.md`](../probes/p06-frontier/README.md) | **T1** 操作与判据概览；脚本 `run_t1.sh`（18 格 sweep）+ `analyze_t1.py`（ridge 判定） |

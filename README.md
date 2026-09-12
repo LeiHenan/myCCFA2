@@ -1,12 +1,12 @@
 # myCCFA — MLSys 选题工作区
 
-本工作区用于**选定并执行一条 MLSys 论文主线**。当前阶段：**⏸ 停工等卡** —— 无卡工作（文献/引擎/仓库审计）已收尾；下一步必须用 GPU。
+本工作区用于**选定并执行一条 MLSys 论文主线**。当前阶段：**⏸ 停工等新机器** —— 无卡工作（文献/引擎/仓库审计）已收尾，但原 8×4090 服务器**不可用于主线实验**：其驱动 **550.67（CUDA 12.4）** 无法运行 **CUDA 13 构建**的 vLLM ≥0.28，而主线 `#6` 所需的 `DFlash2DraftModel` 恰好只从 vLLM 0.28.0 起存在；该机无 root，无法升级驱动。**选机规格与验收脚本见 [`docs/MACHINE_REQUIREMENTS.md`](docs/MACHINE_REQUIREMENTS.md)。**
 
 **解冻顺序（按实验设计的依赖；**不是"三选一"**）**：
 
 1. ✅ **② 已完成（2026-09-12，pin = vLLM main `9a35c08`）** —— 结论：**通过**。(i) `e1_patch.py` 锚点在该 pin 上**全部命中，无需修改**；(ii) 多层 drafter **可得**（注册表含 `DFlashDraftModel`/`DFlash2DraftModel`，`qwen3_dspark.py` 存在；HF 有 **`Qwen3-4B-speculator.dflash2`** 等 6 个权重）；(iii) 深度由 config 的 `num_hidden_layers` 驱动（训练侧 `--num-layers`）。详见 [`notes/p06-toolchain-check.md`](notes/p06-toolchain-check.md)。
    **两种结局都是净收益**：有 ⇒ 卡型按显存需求定；**没有 ⇒ `#6` 降级**（深度旋钮不存在），卡型退到 24 GB 即可，主线改为 E1 + `#7`。
-2. **① 租卡（现在可做）**：**1×24 GB 起步** —— 配 `Qwen3-4B` + `Qwen3-4B-speculator.dflash2`；128k 格需 `--kv-cache-dtype fp8`（或把 T1 的 ctx 收到 32k）。**只有**需要 8B target 或 185k 格/bs>1 时才租 80 GB。显存算术见 `notes/p06-toolchain-check.md` §5。
+2. **① 换机器（现在可做）**：按 [`docs/MACHINE_REQUIREMENTS.md`](docs/MACHINE_REQUIREMENTS.md) 选机 —— **硬门槛：驱动 ≥580（CUDA 13）**；卡 **≥24 GB 且 Ada/Hopper（FP8 KV 需 sm_89+）**；数据盘可用 **≥200 GB**。拿到机器先跑 `bash docs/acceptance_check.sh`（两条硬门槛：驱动 ≥580、`DFlash2DraftModel` 被引擎注册）。配置 **1×24 GB 起步** —— 配 `Qwen3-4B` + `Qwen3-4B-speculator.dflash2`；128k 格需 `--kv-cache-dtype fp8`。**只有**需要 8B target 或 bs>1 时才要 48/80 GB。显存算术见 `notes/p06-toolchain-check.md` §5。
 3. **③ smoke test**（需卡）：三层验证（无投机 → `method:"ngram"` → 真 drafter）。EAGLE-3 加载失败**不影响 E1 的结论有效性**，但须在 `summary.md` 标注 drafter 家族。
 
 ## 入口
@@ -17,6 +17,7 @@
 | 候选是怎么被筛出来的（论证与证据） | [`docs/`](docs/README.md) |
 | 每个实验怎么跑、何时杀 | [`probes/`](probes/README.md) 与 [`notes/prereg/`](notes/prereg/) |
 | **一步步怎么操作**（命令/注入点/回退表） | [`docs/EXPERIMENT_GUIDE.md`](docs/EXPERIMENT_GUIDE.md) |
+| **换机器前**（配置规格 + 验收脚本 + 降级方案） | [`docs/MACHINE_REQUIREMENTS.md`](docs/MACHINE_REQUIREMENTS.md) ｜ `bash docs/acceptance_check.sh` |
 | **上机第一步**（服务器验收 + 卡分配 + smoke test） | [`docs/SERVER_BOOTSTRAP.md`](docs/SERVER_BOOTSTRAP.md) |
 | 决策历史与评审记录 | [`notes/decision_log.md`](notes/decision_log.md) ｜ [`docs/reviews/`](docs/reviews/README.md) |
 
@@ -34,7 +35,7 @@
 ```
 EXECUTION_PLAN.md   唯一权威执行依据（门槛 / 清单 / W1-W3 / 判据 / 引用纪律）
 README.md           本文件
-docs/               方案与评估文档（5 份上游）+ evidence/ 证据扫描 + reviews/ 评审记录
+docs/               方案与评估文档（5 份上游）+ evidence/ 证据扫描 + reviews/ 评审记录 + 上机（MACHINE_REQUIREMENTS / SERVER_BOOTSTRAP / EXPERIMENT_GUIDE）
 probes/             实验 runbook：p01-e1 / p03-grammar-scan / p04-hybrid-gate / p06-frontier / p07-adapter-dispersion / aux-c1,c2（命名见 docs/GLOSSARY.md）
 notes/              decision_log.md（决策历史）+ prereg/（预登记杀判据）
 results/            实验产物（默认不入库，只保留 README 与 .gitkeep）

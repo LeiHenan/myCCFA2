@@ -15,7 +15,7 @@
 **判定探针 2 个**：#1 E1（1 天）、#3 约束解码扫描（1 周）。
 **其余 14 项归档**（§9），其中 #2 的归档理由不是"被占"而是**基线反证**（见 §9）。
 
-**当前阶段**：⏸ **停工等卡**（见 [`README.md`](README.md) 顶部的**解冻顺序**：先 ② pin + 工具链核对 → 再 ① 租卡 → 再 ③ smoke test）。
+**当前阶段**：⏸ **停工等新机器** —— ② 工具链核对已完成；① 的原 8×4090 服务器**被判不可用**（驱动 550.67 / CUDA 12.4 无法运行 CUDA 13 构建的 vLLM ≥0.28，而 `DFlash2DraftModel` 只从 0.28.0 起存在；无 root 无法升级）⇒ **① 改为按 [`docs/MACHINE_REQUIREMENTS.md`](docs/MACHINE_REQUIREMENTS.md) 选机并过 `docs/acceptance_check.sh` 验收**，之后再做 ③ smoke test。理由链见 §12 **D5** 与 `notes/decision_log.md` #39。
 
 **命名法**：`#N` = 候选方向；`probes/pNN-<slug>/` = 第 NN 号方向的实验；`probes/aux-cN-<slug>/` = 辅助探针（与候选无关）。完整词表见 [`docs/GLOSSARY.md`](docs/GLOSSARY.md)。
 
@@ -254,6 +254,7 @@
 | **D2** | frontier 网格 | **(a)** T1 最小 18 格 + T2 反转点 | 与 D1 绑定；扩大只按 D1 条款自动触发 |
 | **D3** | `#1` 的 `R_reserve` 分支 | **(b) 立项** | 若 `R_reserve / R_byte > 2` ⇒ 开"**消除保守预留**"支线；该比值 `analyze.py` 已直接输出，**边际成本≈0**，且是 portfolio 内唯一不依赖 `#6` 的线 |
 | **D4** | `#6` 名称标签 | **标注为内部叫法** | 已在 §5.2 与 `notes/prereg/p06-frontier.md` 注明"非既有术语" |
+| **D5** | 执行机器（**2026-09-12 追加**） | **(c) 换机器**，按 `docs/MACHINE_REQUIREMENTS.md` 规格 | 原 8×4090（驱动 550.67 = CUDA 12.4）无法运行 CUDA 13 构建的 vLLM ≥0.28 ⇒ 主线 `#6` 的 `DFlash2DraftModel` 权重不可加载；SGLang 0.5.19 同样锁 CUDA 13；无 root ⇒ 不能原地升级驱动。**这不是实验设计变更：prereg 一字不改**。若最终只能用 CUDA 12.x 驱动，则走该文件 §7 的 **Tier B**（引擎降级 ⇒ 需新增 prereg） |
 
 ### D1 条款（预登记；**改动即事后调整**）
 
@@ -290,3 +291,4 @@
 | v1.17 | 2026-09-12 | 上机手册补「环境选择」：**venv 优先、不必 conda**（vLLM wheel 自带 CUDA 运行时，混 conda 的 cudatoolkit/pytorch-cuda 易出 `undefined symbol`）；硬规则"一个 env 只用一种包管理器"；装 vLLM 改为**先试 wheel 并用 `ModelRegistry` 自检 DFlash/DSpark 是否注册，缺了才编译 pinned commit**（避免 20–60 分钟源码编译） |
 | v1.18 | 2026-09-12 | `docs/SERVER_BOOTSTRAP.md` 增加**「阅读顺序」**（上机只需从该文件出发，按序指向 T0 runbook → T1 → E1 → 判据 → 全局背景；并明确**不得**从四份冻结上游文档取执行指令） |
 | v1.19 | 2026-09-12 | `.gitignore` 补 **`.venv/` `venv/` `env/`** —— 服务器上仓库根已有 `.venv/`（Python 3.11.7），原规则未忽略它，`git add -A` 会把数 GB 的虚拟环境误提交 |
+| v1.20 | 2026-09-12 | **执行环境换机器（D5）**：实测确认原 8×4090 不可用 —— `qwen3_dflash2` 只从 vLLM **0.28.0** 起存在，而 ≥0.27 全部钉 `torch==2.13.0`（仅 cu129/cu130，**无 cu128**）⇒ 需 CUDA 13 / 驱动 **≥580**，本机 550.67 属 12.x 区间且无 root；SGLang 0.5.19 同为 CUDA 13 ⇒ 换引擎无效。新增 **`docs/MACHINE_REQUIREMENTS.md`**（选机规格 + 显存/磁盘预算 + Tier B 降级清单）与 **`docs/acceptance_check.sh`**（验收脚本，两条硬门槛：驱动 ≥580、`DFlash2DraftModel` 注册）；`docs/SERVER_BOOTSTRAP.md` 加冻结横幅与阅读顺序第 **0** 步；`README.md` 解冻顺序 ① 由"租卡"改为"按规格换机"；decision **#38** 中"驱动 550.67 不构成阻断"的结论被 **#39** 推翻并就地标注；`notes/prereg/p06-frontier.md` 补环境前提（**实验设计、判据、网格一字未改**） |
