@@ -116,6 +116,11 @@
 - **基线纪律（与 §12 D1 一致）**：T1/T2 **固定跑 vLLM**，基线 = ① spec off（AR）② **最佳固定配置** ③ DSpark 生产调度器（置信度头 + STS + 离线 SPS 成本表 + ragged-verify）④ **vLLM `num_speculative_tokens_per_batch_size`**（per-batch K 查表）。SGLang `adaptive_spec_params` **逐字拒绝多层 worker**，不能充当 T2 对照（仅可作静态基线）。
 - **两个"8%"不是同一个比较**：§5 决策规则 2 的"<8% 即止"是相对**部署中实际在跑的配置**；本条 Go 判据的"≥8%"是相对**最佳固定配置**（更严）。两者需同时成立才 Go。
 - **主读数 = ridge 斜率**（2026-09-12 增补，数据采集前）：逐 (bs,ctx) 记 `γ*(depth)` 与 `spread = max−min`；`spread = 0` ⇒ 主假设成立；**单调斜 ridge ⇒ H1b**（预测式 horizon 策略，**须打赢已 ship 适配器**）；非单调 ⇒ 补重复/扩 bs 再判。脚本 `probes/p06-frontier/analyze_t1.py`。
+- **🔴 实测结论（2026-09-12，`#6` 结题）**：
+  - **T1 = 斜 ridge**：`ctx=4096` γ*(1/3/5) = 3/7/7、`ctx=32768` = 3/3/7（spread=4）⇒ 严格正交性否证 ⇒ 转 H1b。
+  - **T2 = 增量 +0.1%**（臂1 固定最深 157.4/33.2 vs 臂2 全空间 157.4/33.3）≪ **8%** ⇒ **`#6` No-Go**。机制原因：**深度在每个 γ、每个 ctx 上单调有利** ⇒ 无"长度 ↔ 深度"的非退化权衡。
+  - **γ 可行上限 = 7**（γ=8/15 实测引擎崩 `CUBLAS_STATUS_INTERNAL_ERROR`；权重 `block_size=8`、`speculative_tokens=7`）⇒ 网格 γ∈{1,3,7} 已覆盖可行域 ⇒ No-Go 稳健。
+  - 完整论证：`results/p06-frontier/2026-09-12/T2-verdict.md`。**后续须按 D1 条款第 3 条走新预登记**，不得把旧数据重新解读成测量论文。
 
 ### 5.3 DEX 替换测试（书面交付物，W1 完成）
 
@@ -298,3 +303,4 @@
 | v1.18 | 2026-09-12 | `docs/SERVER_BOOTSTRAP.md` 增加**「阅读顺序」**（上机只需从该文件出发，按序指向 T0 runbook → T1 → E1 → 判据 → 全局背景；并明确**不得**从四份冻结上游文档取执行指令） |
 | v1.19 | 2026-09-12 | `.gitignore` 补 **`.venv/` `venv/` `env/`** —— 服务器上仓库根已有 `.venv/`（Python 3.11.7），原规则未忽略它，`git add -A` 会把数 GB 的虚拟环境误提交 |
 | v1.20 | 2026-09-12 | **执行环境换机器（D5）**：实测确认原 8×4090 不可用 —— `qwen3_dflash2` 只从 vLLM **0.28.0** 起存在，而 ≥0.27 全部钉 `torch==2.13.0`（仅 cu129/cu130，**无 cu128**）⇒ 需 CUDA 13 / 驱动 **≥580**，本机 550.67 属 12.x 区间且无 root；SGLang 0.5.19 同为 CUDA 13 ⇒ 换引擎无效。新增 **`docs/MACHINE_REQUIREMENTS.md`**（选机规格 + 显存/磁盘预算 + Tier B 降级清单）与 **`docs/acceptance_check.sh`**（验收脚本，两条硬门槛：驱动 ≥580、`DFlash2DraftModel` 注册）；`docs/SERVER_BOOTSTRAP.md` 加冻结横幅与阅读顺序第 **0** 步；`README.md` 解冻顺序 ① 由"租卡"改为"按规格换机"；decision **#38** 中"驱动 550.67 不构成阻断"的结论被 **#39** 推翻并就地标注；`notes/prereg/p06-frontier.md` 补环境前提（**实验设计、判据、网格一字未改**） |
+| v1.21 | 2026-09-12 | **实验阶段收尾：T0/T1/T2 + E1 全部跑完** —— 新机器（RTX PRO 6000 96 GB / 驱动 580.82.09）验收通过，smoke 三层全绿（真 DFlash2 drafter 接受 23 tokens）。**T0 = 结局 A**（接受长度 1.303→2.829、tok/s 101.5→180.3 单调）；**T1 = 斜 ridge**（γ* 随 depth 3→7 ⇒ 严格正交性否证，54 格）；**T2 增量 +0.1% ⇒ `#6` No-Go**；**γ 可行上限实测 = 7**（γ=8/15 引擎崩），网格已覆盖可行域 ⇒ No-Go 稳健；**E1 = `#1` 判死**（R_byte p95 0.072% ≪ 5%）**+ D3 支线触发**（R_reserve/R_byte = 5.39 > 2，量级警示：本质是 block 取整）。新增 `results/p06-frontier/2026-09-12/T2-verdict.md`、`evidence/2026-09-12/`；decision **#47–#50**（含"结果目录必须在仓库外"的流程教训）；§0 当前阶段改写；另修掉若干会导致**错误结论**的陷阱（变体路径须含 `dflash`、数据集须真实文本、须 `--prune-weights`、locale、KV dtype、E1 Hook B 自包含） |
