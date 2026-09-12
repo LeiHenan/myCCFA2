@@ -34,6 +34,8 @@ DEPTHS=${DEPTHS:-"1 3 5"}
 GAMMAS=${GAMMAS:-"3 7"}
 CTXS=${CTXS:-"4096 32768"}
 CONCS=${CONCS:-"1"}
+MAXSEQS=${MAXSEQS:-32}   # vLLM 默认 256 ⇒ 激活预留过多，γ 大 + bs 大时 OOM（2026-09-12 实测）
+GPU_UTIL=${GPU_UTIL:-0.9}
 
 mkdir -p "$OUT"   # ⚠️ 必须：serve.log 与 bs 子目录都写在 $OUT 下（重写脚本时漏过这一行，导致首次启动即失败）
 
@@ -56,7 +58,7 @@ for d in $DEPTHS; do for g in $GAMMAS; do
   SERVE=(vllm serve "$TARGET"
          --speculative-config "{\"model\":\"$DRAFT\",\"num_speculative_tokens\":$g}"
          --max-model-len "$MAXLEN" --gpu-memory-utilization "$GPU_UTIL"
-         --kv-cache-dtype "$KV_DTYPE" --port "$PORT")
+         --kv-cache-dtype "$KV_DTYPE" --max-num-seqs "$MAXSEQS" --port "$PORT")
   [ "$EAGER" = "1" ] && SERVE+=(--enforce-eager)
 
   if [ "$DRY" = "1" ]; then
