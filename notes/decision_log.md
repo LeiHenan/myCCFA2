@@ -63,6 +63,8 @@
 
 | 36 | **环境方案定案**：venv 优先、**不必 conda**；一个 env 只用一种包管理器；装 vLLM **先试 wheel + `ModelRegistry` 自检 DFlash/DSpark 注册**，缺了才编译 pinned commit | vLLM wheel 自带 CUDA 运行时，与 conda 的 cudatoolkit/pytorch-cuda 混用易出 undefined symbol；git 安装会源码编译 20–60 分钟 | `docs/SERVER_BOOTSTRAP.md` §2/§2b、`EXECUTION_PLAN.md` v1.17 |
 
+| 37 | **上机入口唯一化**：`docs/SERVER_BOOTSTRAP.md` 顶部加「阅读顺序」，从该文件按序指向 T0 → T1 → E1 → 判据 → 全局背景；并显式禁止从四份冻结上游文档取执行指令 | 避免上机时在 20 个文件间找入口，或误读带勘误横幅的历史文档 | `docs/SERVER_BOOTSTRAP.md`、`EXECUTION_PLAN.md` v1.18 |
+
 ## 四、归档台账（14 项）
 
 > 满足"任何方向的生与死都要记一条"的规则；逐项理由见 `EXECUTION_PLAN.md` §9，此处只留一行索引。

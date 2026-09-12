@@ -5,6 +5,21 @@
 
 ---
 
+## 阅读顺序（**先读这一段**）
+
+| 顺序 | 文件 | 作用 |
+|---|---|---|
+| **1** | **本文** `docs/SERVER_BOOTSTRAP.md` | 环境验收 → 依赖 → 模型 → **smoke test** → 卡分配 → 结果回写纪律 |
+| **2** | [`probes/p06-frontier/T0-runbook.md`](../probes/p06-frontier/T0-runbook.md) | **T0**：深度旋钮验证（半天）。**结局 B ⇒ `#6` 当天降级** |
+| **3** | [`probes/p06-frontier/README.md`](../probes/p06-frontier/README.md) | **T1** 操作与判据概览；脚本 `run_t1.sh`（18 格 sweep）+ `analyze_t1.py`（ridge 判定） |
+| **4** | [`probes/p01-e1-uncommitted-kv/instrument/README.md`](../probes/p01-e1-uncommitted-kv/instrument/README.md) | **E1**：`e1_patch.py --apply` → 压测 → `analyze.py` → `--revert` |
+| **5** | 判据（**不要只看命令**）：[`notes/prereg/p06-frontier.md`](../notes/prereg/p06-frontier.md)、[`notes/prereg/p01-e1-uncommitted-kv.md`](../notes/prereg/p01-e1-uncommitted-kv.md) | 门槛 / 杀判据 / 扩展条款 / H1b / D3 支线 |
+| 6 | 全局背景：[`EXECUTION_PLAN.md`](../EXECUTION_PLAN.md)（唯一权威）、[`docs/EXPERIMENT_GUIDE.md`](EXPERIMENT_GUIDE.md) | 决策记录、W1–W3 规划、命令级细节 |
+
+> ⚠️ **不要**从 `docs/plan.md` / `docs/kimi_plan.md` / `docs/GPT.md` / `docs/V41.md` 取执行指令 —— 它们是**冻结的历史记录**，文首有勘误横幅，执行依据一律以 `EXECUTION_PLAN.md` 为准。
+
+---
+
 ## 0. 本次的卡分配（8 卡只用 3 张，其余留空）
 
 | 卡 | 用途 | 备注 |
