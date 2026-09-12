@@ -26,6 +26,8 @@ say "2. drafter Qwen3-4B-speculator.dflash2  ← 学术加速 → hf-mirror 回�
 export HF_HOME=/root/autodl-tmp/hf HF_HUB_DISABLE_XET=1
 # 不用 AutoDL 学术加速代理：2026-09-12 实测它在 2.7 GB 文件上会卡死重试；hf-mirror 直连 1.5–1.9 MB/s 稳定
 export HF_ENDPOINT=https://hf-mirror.com
+# hf CLI 在新容器里默认不存在（老机器是手动装的）⇒ 显式安装
+"${CONDA}/pip" install -q -U "huggingface_hub[cli]" 2>&1 | tail -1
 "${CONDA}/hf" download mgoin/Qwen3-4B-speculator.dflash2 --local-dir "${MODELS}/dflash2"
 
 say "3. 结果"

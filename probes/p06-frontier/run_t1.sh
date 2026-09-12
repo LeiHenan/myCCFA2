@@ -35,6 +35,8 @@ GAMMAS=${GAMMAS:-"3 7"}
 CTXS=${CTXS:-"4096 32768"}
 CONCS=${CONCS:-"1"}
 
+mkdir -p "$OUT"   # ⚠️ 必须：serve.log 与 bs 子目录都写在 $OUT 下（重写脚本时漏过这一行，导致首次启动即失败）
+
 show() { printf '  [dry]'; printf ' %q' "$@"; printf '\n'; }
 
 bench_args() {   # $1 = ctx
