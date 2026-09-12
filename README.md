@@ -17,6 +17,7 @@
 | 候选是怎么被筛出来的（论证与证据） | [`docs/`](docs/README.md) |
 | 每个实验怎么跑、何时杀 | [`probes/`](probes/README.md) 与 [`notes/prereg/`](notes/prereg/) |
 | **一步步怎么操作**（命令/注入点/回退表） | [`docs/EXPERIMENT_GUIDE.md`](docs/EXPERIMENT_GUIDE.md) |
+| **上机第一步**（服务器验收 + 卡分配 + smoke test） | [`docs/SERVER_BOOTSTRAP.md`](docs/SERVER_BOOTSTRAP.md) |
 | 决策历史与评审记录 | [`notes/decision_log.md`](notes/decision_log.md) ｜ [`docs/reviews/`](docs/reviews/README.md) |
 
 ## 当前结论（摘要）

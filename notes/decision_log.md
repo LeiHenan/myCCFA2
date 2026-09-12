@@ -59,6 +59,8 @@
 | 33 | **T0/T1 工具链交付 + 两条 pre-reg 增补**（无卡）：`T0-runbook.md`、`make_depth_variants.py`、`run_t1.sh`、`analyze_t1.py`；pre-reg 增补 **ridge 斜率主读数**（`γ*(depth)` 与 `spread`）与 **H1b 分支**（斜 ridge 转"预测式 horizon"，但**必须打赢已 ship 适配器**） | 上一轮外部评估提出"斜 ridge 可能比正交更有价值"；采纳其可核部分，同时补上纪律：H1b 不得退化为"什么结果都能成文" | `probes/p06-frontier/*`、`notes/prereg/p06-frontier.md`、`EXECUTION_PLAN.md` v1.15 |
 | 34 | **修掉一个脚本真 bug**：`run_t1.sh` 中 `$d` 紧跟全角冒号 ⇒ bash 把多字节首字节并入变量名，`set -u` 报 `d?: unbound variable`；并让 `DRY=1` 走独立分支（原实现会等 300 秒健康检查） | 离线自测发现：dry-run 超时 → 定位到变量名解析与等待逻辑 | `probes/p06-frontier/run_t1.sh`（已复测：语法 ✔、dry-run 瞬时输出 117 行命令） |
 
+| 35 | **服务器工作流就绪**：新增 `docs/SERVER_BOOTSTRAP.md`；**修 `.gitignore`** —— `results/**` 原规则把 `summary.md` 也忽略了，会让实验结论随机器丢失 ⇒ 改为"结论入库、原始数据不入库"；卡分配定为 GPU0=E1、GPU1=T0/T1、其余留空 | 用户已有 8×4090 服务器（PCIe、无 NVLink） | `docs/SERVER_BOOTSTRAP.md`、`.gitignore`、`results/README.md`、`EXECUTION_PLAN.md` v1.16 |
+
 ## 四、归档台账（14 项）
 
 > 满足"任何方向的生与死都要记一条"的规则；逐项理由见 `EXECUTION_PLAN.md` §9，此处只留一行索引。

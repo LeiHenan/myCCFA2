@@ -286,3 +286,4 @@
 | v1.13 | 2026-09-12 | **解冻 ② 完成**（pin = vLLM main `9a35c08`）：E1 锚点全部命中（补丁无需改）、多层 drafter 可得（含 `Qwen3-4B-speculator.dflash2`）、深度为 config 旋钮；新增 `notes/p06-toolchain-check.md`（含显存算术与卡型建议：24 GB 起步，80 GB 仅当 8B/185k/bs>1） |
 | v1.14 | 2026-09-12 | 更正 `notes/prereg/p06-frontier.md` 的过时显存估算（128k 的 "KV ≈7 GB" → **18.0 GiB FP16 / 9.0 GiB FP8**，按 Qwen3-4B 实测配置），并写明 T0 ≥16 GB、T1 ≥24 GB、T0/T1 不需多卡、须同 KV dtype |
 | v1.15 | 2026-09-12 | **T0/T1 工具链就绪**：新增 `probes/p06-frontier/T0-runbook.md`、`make_depth_variants.py`（config 级深度变体，含 selftest）、`run_t1.sh`（18 格 sweep，DRY 模式）、`analyze_t1.py`（ridge 判定，含 selftest）；pre-reg 增补**ridge 斜率主读数**与 **H1b 分支**（斜 ridge 不自动判死，但须打赢已 ship 适配器） |
+| v1.16 | 2026-09-12 | **服务器工作流就绪**：新增 `docs/SERVER_BOOTSTRAP.md`（8×4090 环境验收 + 卡分配 + smoke test + 并行跑 E1/T0/T1 + 注意事项）；**`.gitignore` 放开 `results/**/summary.md`**（原规则会让实验结论随机器丢失），原始数据仍不入库；`results/README.md` 同步 |
