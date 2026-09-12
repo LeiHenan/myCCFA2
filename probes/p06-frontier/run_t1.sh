@@ -24,6 +24,7 @@ KV_DTYPE=${KV_DTYPE:-auto}
 MAXLEN=${MAXLEN:-40960}   # Qwen3-4B 的 max_position_embeddings=40960（128k 需 rope scaling，超出本探针）
 GPU_UTIL=${GPU_UTIL:-0.5}
 DRY=${DRY:-0}
+EAGER=${EAGER:-0}   # =1 追加 --enforce-eager（绕过 torch.compile/fake-kernel 的 flakiness；全网格必须一致）
 DATASET=${DATASET:-random}
 DATASET_DIR=${DATASET_DIR:-}
 OUTLEN=${OUTLEN:-128}
@@ -58,6 +59,7 @@ for d in $DEPTHS; do for g in $GAMMAS; do
          --speculative-config "{\"model\":\"$DRAFT\",\"num_speculative_tokens\":$g}"
          --max-model-len "$MAXLEN" --gpu-memory-utilization "$GPU_UTIL"
          --kv-cache-dtype "$KV_DTYPE" --port "$PORT")
+  [ "$EAGER" = "1" ] && SERVE+=(--enforce-eager)
   if [ "$DRY" = "1" ]; then
     show "${SERVE[@]}"
     for ctx in $CTXS; do for r in $(seq 1 "$REPS"); do

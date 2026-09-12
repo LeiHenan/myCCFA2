@@ -32,6 +32,7 @@ MAXLEN=${MAXLEN:-8192}
 GPU_UTIL=${GPU_UTIL:-0.5}
 DEPTHS=${DEPTHS:-"1 2 3 4 5"}
 DRY=${DRY:-0}
+EAGER=${EAGER:-0}   # =1 追加 --enforce-eager（绕过 torch.compile/fake-kernel 的 flakiness；全网格必须一致）
 PROMPT=${PROMPT:-"The capital of France is"}
 DATASET=${DATASET:-random}
 DATASET_DIR=${DATASET_DIR:-}
@@ -68,6 +69,7 @@ for d in $DEPTHS; do
          --speculative-config "{\"model\":\"$DRAFT\",\"num_speculative_tokens\":$GAMMA}"
          --max-model-len "$MAXLEN" --gpu-memory-utilization "$GPU_UTIL"
          --kv-cache-dtype "$KV_DTYPE" --port "$PORT")
+  [ "$EAGER" = "1" ] && SERVE+=(--enforce-eager)
   if [ "$DRY" = "1" ]; then
     show "${SERVE[@]}"
     DS=(); while IFS= read -r _l; do DS+=("$_l"); done < <(bench_args "$CTX")
