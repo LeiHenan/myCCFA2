@@ -24,14 +24,9 @@ say "1. 目标模型 Qwen/Qwen3-4B  ← ModelScope"
 
 say "2. drafter Qwen3-4B-speculator.dflash2  ← 学术加速 → hf-mirror 回退"
 export HF_HOME=/root/autodl-tmp/hf HF_HUB_DISABLE_XET=1
-# shellcheck disable=SC1091
-source /etc/network_turbo >/dev/null 2>&1 || true
-if ! "${CONDA}/hf" download mgoin/Qwen3-4B-speculator.dflash2 --local-dir "${MODELS}/dflash2"; then
-  echo "!! 学术加速失败，改用 hf-mirror"
-  unset http_proxy https_proxy
-  export HF_ENDPOINT=https://hf-mirror.com
-  "${CONDA}/hf" download mgoin/Qwen3-4B-speculator.dflash2 --local-dir "${MODELS}/dflash2"
-fi
+# 不用 AutoDL 学术加速代理：2026-09-12 实测它在 2.7 GB 文件上会卡死重试；hf-mirror 直连 1.5–1.9 MB/s 稳定
+export HF_ENDPOINT=https://hf-mirror.com
+"${CONDA}/hf" download mgoin/Qwen3-4B-speculator.dflash2 --local-dir "${MODELS}/dflash2"
 
 say "3. 结果"
 du -sh "${MODELS}"/* 2>/dev/null
