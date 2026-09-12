@@ -74,12 +74,18 @@ def main():
             }
         )
 
-    # ---- 预留口径：R_reserve = blocks*block_size / committed ----
+    # ---- 预留口径 ----
+    # ⚠️ 更正（2026-09-12）：`allocate_slots` 返回的是**本次新增**块，故 `blocks*block_size/ctx`
+    #    量的是"本次新增容量占比"（≈ block_size/ctx），**不是**保守预留。用它算出的
+    #    `R_reserve/R_byte ≈ block_size/γ` 只要 γ < block_size 就必然 > 2 —— 那是结构性假信号。
+    #    真正要的是**总持有块数**（含 lookahead 预留）÷ committed：`R_reserve_total`（需新版 Hook B
+    #    记录 `total_blocks`；旧日志该字段缺失 → 为 None）。
     by_req_alloc = defaultdict(list)
     for r in allocs:
         by_req_alloc[r.get("req")].append(r)
         ctx = r.get("ctx") or 0
         blocks = r.get("blocks")
+        total_blocks = r.get("total_blocks")
         rows.append(
             {
                 "kind": "alloc",
@@ -92,6 +98,8 @@ def main():
                 "R_byte": None,
                 "R_analytic": None,
                 "R_reserve": ((blocks * a.block_size) / ctx) if (blocks and ctx > 0) else None,
+                "R_reserve_total": ((total_blocks * a.block_size) / ctx)
+                if (total_blocks and ctx > 0) else None,
                 "H": None,
                 "new_tokens": r.get("new_tokens"),
                 "blocks": blocks,
@@ -104,6 +112,7 @@ def main():
     rb = [r["R_byte"] for r in spec_rows]
     ra = [r["R_analytic"] for r in spec_rows]
     rr = [r["R_reserve"] for r in alloc_rows]
+    rrt = [r["R_reserve_total"] for r in alloc_rows if r.get("R_reserve_total") is not None]
 
     # 逐请求峰值（p95 单请求口径）
     per_req = defaultdict(list)
@@ -115,6 +124,13 @@ def main():
         "R_byte": {"p50": pct(rb, 0.50), "p95": pct(rb, 0.95), "max": max([v for v in rb if v is not None], default=float("nan"))},
         "R_analytic_gamma_over_ctx": {"p50": pct(ra, 0.50), "p95": pct(ra, 0.95)},
         "R_reserve": {"p50": pct(rr, 0.50), "p95": pct(rr, 0.95)},
+        # D3 的**正当**口径：总持有块（含 lookahead 预留）÷ committed。
+        # 越接近 1 越好；>1 的部分才是"预留了但没用上"的容量。
+        "R_reserve_total_over_committed": {
+            "p50": pct(rrt, 0.50), "p95": pct(rrt, 0.95),
+            "n": len(rrt),
+            "note": "需新版 Hook B 的 total_blocks 字段；旧日志为 None",
+        },
         "ratio_reserve_over_byte_p95": (
             pct(rr, 0.95) / pct(rb, 0.95) if pct(rb, 0.95) and pct(rb, 0.95) == pct(rb, 0.95) and pct(rb, 0.95) > 0 else None
         ),

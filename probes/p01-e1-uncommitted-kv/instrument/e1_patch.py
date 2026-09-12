@@ -113,12 +113,22 @@ def _e1_install_alloc_hook():
             if out is not None:
                 ids = out.get_block_ids()
                 blocks = len(ids[0]) if ids else 0
+            # ⚠️ `blocks` 是**本次新增**的块（allocate_slots 的返回值语义），不是请求持有的总块数。
+            #    D3 要的"保守预留"必须看**总持有块数**（含 lookahead 预留）：额外取 get_block_ids(req)。
+            total_blocks = None
+            try:
+                tot = self.get_block_ids(request.request_id)
+                if tot:
+                    total_blocks = len(tot[0])
+            except Exception:
+                total_blocks = None
             _e1_emit(
                 {{
                     "ev": "alloc",
                     "req": request.request_id,
                     "new_tokens": int(num_new_tokens),
                     "blocks": blocks,
+                    "total_blocks": total_blocks,
                     "ctx": getattr(request, "num_computed_tokens", None),
                 }}
             )
