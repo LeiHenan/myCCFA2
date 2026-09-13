@@ -31,10 +31,17 @@ for R in vllm-project/vllm sgl-project/sglang; do
   run "${T}_p_regression"    "repo:$R regression \"kv cache\" in:title"
 done
 
-for R in NVIDIA/TensorRT-LLM flashinfer-ai/flashinfer LMCache/LMCache ai-dynamo/dynamo deepspeedai/DeepSpeed volcengine/verl huggingface/transformers; do
+for R in NVIDIA/TensorRT-LLM flashinfer-ai/flashinfer LMCache/LMCache ai-dynamo/dynamo deepspeedai/DeepSpeed verl-project/verl huggingface/transformers; do
   T=$(echo "$R" | tr '/' '_')
   run "${T}_p_kv_neg"   "repo:$R \"kv cache\" (\"won't fix\" OR \"by design\" OR \"not planned\" OR \"out of scope\" OR \"no longer pursuing\")"
   run "${T}_p_cache_neg" "repo:$R cache (\"we decided against\" OR \"not worth\" OR \"no benefit\" OR \"does not help\")"
 done
 
 echo "=== PHRASE SWEEP DONE ==="
+
+### retries / additions
+run retry_sglang_iss_notplanned_kv "repo:sgl-project/sglang is:issue is:closed reason:\"not planned\" \"kv cache\" in:title created:>=2025-06-01"
+run retry_hf_pr_cache_broad "repo:huggingface/transformers is:pr is:unmerged cache in:title created:>=2025-06-01"
+run retry_sglang_pr_prefixcache "repo:sgl-project/sglang is:pr is:unmerged \"prefix cache\" in:title created:>=2025-06-01"
+run retry_trtllm_pr_kvcache "repo:NVIDIA/TensorRT-LLM is:pr is:unmerged \"kv cache\" in:title created:>=2025-06-01"
+echo "=== RETRIES DONE ==="
