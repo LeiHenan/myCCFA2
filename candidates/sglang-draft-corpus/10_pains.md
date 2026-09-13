@@ -28,11 +28,11 @@
 
 - **现象**：`ExternalCorpusManager` 只提供 `add` / `remove` / `list` 三个操作，**没有 save/snapshot/restore**，
   也没有任何磁盘或跨进程路径 ⇒ 进程一重启，语料全丢，回到 P1 的 1.84。
-  同一文件里还有上游自己留下的 FIXME：`remove` 在加载进行中属于**未定义行为**（作者原话见证据）。
+  同一文件里还有上游自己留下的 FIXME（豁免：这是**被引用的上游源码原文**，是本痛点的证据内容，不是本仓库的待办）：`remove` 在加载进行中属于**未定义行为**（作者原话见证据）。
 - **谁在疼**：需要**弹性扩缩容 / 滚动升级 / 多副本**的部署者 —— 每次新副本都要从零重新积累语料。
 - **量级**：**L1→L2**（源码路径 + 本工作区实测的冷窗口数字 P1）。
 - **证据**：`/root/autodl-tmp/venvs/sglang/lib/python3.12/site-packages/sglang/srt/speculative/external_corpus_manager.py:23-111`
-  （全文已读）；第 86-87 行原文：`# FIXME(kpham-sgl): remove a corpus during a pending load is an undefined behaviour and should be explicitly prevented.`
+  （全文已读）；第 86-87 行原文（豁免：引用上游源码，非本仓库待办）：`# FIXME(kpham-sgl): remove a corpus during a pending load is an undefined behaviour and should be explicitly prevented.`
 - **反证**：上游可以把持久化当作"部署者的事"（语料是纯 CPU 结构，理论上可由外部重建）。
   若外部重建的成本与收益不成比例，这条痛点的"该由引擎解决"就站不住 —— S3 必须正面回答。
 
@@ -81,7 +81,7 @@
 | 痛点 | 证据形态 | 路径 / 链接 | 可否独立复现 |
 |---|---|---|---|
 | P1 | 逐请求原始数据（仓库外）+ 一行命令 | `/root/ccfa_results/2026-09-13/p12_smoke/smoke.jsonl`；`bash probes/p12-draft-corpus/smoke.sh` | ✅ 可（探针含 `--selftest`） |
-| P2 | 源码全文（含作者 FIXME） | `…/sglang/srt/speculative/external_corpus_manager.py:23-111`（服务器已装树） | ✅ 可（`grep -n FIXME` 一行） |
+| P2 | 源码全文（含作者 FIXME（豁免：上游原文引用）） | `…/sglang/srt/speculative/external_corpus_manager.py:23-111`（服务器已装树） | ✅ 可（`grep -n FIXME` 一行） |
 | P3 | 上游 roadmap 正文 | [issue #21052](https://github.com/sgl-project/sglang/issues/21052) | ✅ 可（公开页，2026-09-13 取） |
 | P4 | C++ 源码行 + 上游 PR 状态 | `…/kernels/jit/csrc/ngram_corpus/ngram.cpp:173`；[PR #22538](https://github.com/sgl-project/sglang/pull/22538) | ✅ 可（但百分比未取证 ⇒ L1） |
 | P5 | 两轮实测派生表 + 预登记 | `results/p09-engine-conformance/2026-09-13/conformance.md`、`results/p08-specbench/2026-09-13/consistency.md` | ✅ 可（`run_conformance.sh`） |
@@ -106,7 +106,7 @@
 |---|---|---|---|---|
 | 1 | **P1 冷启动罚金** | **L2** | 首通 **1.8365** vs 饱和 **7.7827**（**4.24×**）；wall **25.22 s → 8.67 s（2.91×）** | **自有实测**（160 格） |
 | 2 | **P5 跨引擎接受长度不可比** | **L3** | **−32.6%**（1.479 vs 2.194）；`itl/tpot` 1.07× vs 2.85× | 自有实测（两轮 48 格/bench） |
-| 3 | **P2 语料不持久** | L1→L2 | 无 save/restore 路径（源码）+ 作者 FIXME；重启即回到 1.84 | 源码 + P1 实测 |
+| 3 | **P2 语料不持久** | L1→L2 | 无 save/restore 路径（源码）+ 作者 FIXME（豁免：上游原文引用）；重启即回到 1.84 | 源码 + P1 实测 |
 | 4 | **P3 上游自认首要缺口** | L2 | 上游基准 *"SAM ≥2× accept length boost"* | **他人**（上游 roadmap） |
 | 5 | **P4 固定预算分割** | L1 | `min(external_sam_budget, total_draft_token_num)`；上游 PR 自述要移除但 **Closed** | 源码 + 上游 PR |
 
