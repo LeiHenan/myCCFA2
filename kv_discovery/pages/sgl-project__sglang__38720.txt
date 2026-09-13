@@ -1,0 +1,216 @@
+FETCHED: https://github.com/sgl-project/sglang/issues/38720  (is_pr=True, 332268 bytes)
+LAYOUT NODE (PR):
+  number = 38720
+  title = [Router] Honor KV-event storage tiers in the cache-aware tree
+  state = CLOSED
+  closedTime = 2026-09-11T18:23:38Z
+  createdTime = 2026-09-09T18:43:52Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 1
+  baseBranch = main
+  headBranch = router-kv-storage-tiers
+  author = Kangyan-Zhou
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="LE_lADOLCAjRs8AAAABQhFmjc8AAAAHLuLZ8Q"> | github-actions | Bot | added | the | documentation | Improvements or additions to documentation | label | Sep 9, 2026 | Kangyan-Zhou | mentioned this pull request | Sep 9, 2026 | [Router] Add a KV storage-tier coverage row to the Grafana dashboard | #38721 | Closed | 5 tasks | Kangyan-Zhou | <a data-hydro-click="{"event_type":"force_push_timeline_diff.click","payload":{"pull_request_id":4488258577,"repository_id":740303686,"event_id":308
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOPk8IZtoAKDk0NTVlZjY5ZDU1OWQ0YzIwMmFlZjNlZjA1Zjc3OTI5MTZiY2ExYzE"> | [Router] Honor KV-event storage tiers in the cache-aware tree | … | <div class="te
+EV: js-timeline-progressive-focus-container" data-gid="HRFPE_lADOLCAjRs8AAAABQhFmjc8AAAAHLzayyg"> | Kangyan-Zhou | force-pushed | the | router-kv-storage-tiers | branch | from | 0895364 to | 9455ef6 | Compare | September 9, 2026 20:24 | github-actions | Bot | added | the | hicache | Hierarchical Caching for SGLang | label | Sep 9, 2026 | Kangyan-Zhou | closed this | Sep 11, 2026 | <img class="avatar avatar-user" src="https://avatars.gith
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=? date=?]
+Superseded — split into a stacked series and closed. The same change,
+
+byte-for-byte, now lands as #39108 (the tier-aware tree), #39109 (the
+
+sgl_router_kv_* /metrics series) and #39110 (the real-GPU e2e proof), all
+
+with their heads on sgl-project/sglang so they can chain base-to-head.
+
+Review there; this branch is gone.
+
+Motivation
+
+An engine running a hierarchical cache publishes tier-tagged KV events: a
+
+CPU_PINNED BlockStored when a block's host backup lands, a GPU
+
+BlockRemoved when its device copy is demoted, a CPU_PINNED BlockRemoved
+
+when the host copy goes. The router's in-process radix tree applies every
+
+BlockRemoved as a full removal:
+
+For every node carrying any hash in block_hashes, drop worker from that
+
+node's worker set.
+
+— src/policies/kv_events/tree.rs, HashTree::remove
+
+So a pod loses ownership of a prefix the moment its device copy is evicted,
+
+even though its host tier still holds the block and can load it back at memory
+
+speed. The tag is decoded off the wire and then discarded: medium appears 35
+
+times in wire.rs and 6 in index.rs — and zero times in tree.rs.
+
+Observed consequence on a hierarchical-cache fleet: every prefix became
+
+unroutable after one device turnover (~15 min) while the host tier retained it
+
+for ~2 h. Repeats fell through to min-load and landed on a random pod, which
+
+prefilled them cold. The 2.4% host-hit share that remained was the 1-in-61 luck
+
+of picking the right pod.
+
+Worth noting for reviewers: the Indexer path already solves this.
+
+sgl-kv-indexer/src/memory_backend.rs carries TierType, per-(worker, tier)
+
+holdings and revoke_one(&mut state, &worker_id, &hash, action.tier). Tiers
+
+were designed for the new crate and the in-process tree was left blind — which
+
+matters because --cache-prefix-provider radix_tree is the #[default]
+
+(src/config/types.rs:376).
+
+Modifications
+
+Tree (kv_events/tree.rs). Each (node, worker) carries a tier bitset
+
+over the engine's own StorageMedium ladder — device (L1) / host (L2) / disk
+
+(L3) / external (L4) — plus an unranked other, instead of bare membership:
+
+- a tagged store sets one bit; a tagged removal clears only that bit; a worker
+
+stays an owner while any bit remains;
+
+- untagged events keep their pre-tiering meaning — an untagged store is a
+
+device store, an untagged removal clears every tier;
+
+- an unknown medium on a store lands on the unranked other tier, so an
+
+engine adding a medium cannot silently turn every store on it into a device
+
+hit.
+
+Removal is deliberately asymmetric with storing, because a permanently stale
+
+owner is the one failure a routing index must never manufacture while
+
+over-removal costs at most one cold prefill:
+
+- an untagged or unrecognised medium on a removal clears every tier;
+
+- a recognised medium clears its own tier and the unranked other with
+
+it. Nothing else clears other, so a future engine publishing stores under
+
+a medium this build folds there — but freeing them on a path that emits a tag
+
+this build does know (_evict_regular in hiradix_cache.py tags a
+
+whole-node teardown GPU) — would otherwise strand that bit until the worker
+
+is dropped entirely. On today's engine every medium is known, so this clears
+
+a bit that is never set.
+
+DISK and EXTERNAL get their own bits rather than one shared "storage" bit:
+
+the engine treats them as distinct tiers, so sharing one would make an L3
+
+eviction erase the router's knowledge of an L4 copy on a fleet running both.
+
+prefix_depths — which is what the routing path actually reads
+
+(policies/prefix_provider.rs) — needs no signature change: presence is now
+
+"on any tier", so a host-backed chain keeps its full depth.
+
+MatchResult now carries a per-worker tiers map as its single carrier list,
+
+with workers() derived from it — so the two can never disagree and the match
+
+path clones each KvWorkerId once instead of twice. Nothing selects on tier
+
+yet; that is left to the policy layer.
+
+Event tally (kv_events/tally.rs, new). Fixed-cardinality counters of the
+
+events the pump applied, by kind and medium. Without it a router discarding the
+
+tag is indistinguishable from an engine never sending it — which is exactly why
+
+this survived. Every (event, medium) cell renders, zeros included: the zero
+
+is the finding.
+
+Metrics (/metrics, pulled on scrape like the worker gauges):
+
+series
+what it says
+
+sgl_router_kv_events_total{event,medium}
+
+the tier-tagged stream the tree applied
+
+sgl_router_kv_event_blocks_total{event,medium}
+
+block hashes those events carried
+
+sgl_router_kv_tree_blocks{worker_url,dp_rank,tier}
+
+what the tree attributes per worker and tier
+
+sgl_router_kv_block_size
+
+tokens per block hash, to convert the above
+
+sgl_router_kv_event_batches_lost_total
+
+batches dropped in transit, from gaps in the publisher's sequence
+
+sgl_router_kv_tree_accounting_errors_total{reason}
+
+occupancy bookkeeping contradicting itself; always 0 on a correct tree
+
+sgl_router_kv_tree_maintained
+
+1 when this router maintains a tree, 0 under an external Indexer
+
+kv_tree_blocks * kv_block_size, divided by the pod's own occupancy of the
+
+tier (device: sglang_kv_used_tokens + sglang_kv_evictable_tokens; host:
+
+sglang_hicache_host_used_tokens; tp_rank="0"), is the tree's coverage of
+
+that tier: ~1 mirrors the engine, ~0 means the engine holds a tier routing
+
+cannot see. The occupancy is maintained incrementally at each mutation site, so
+
+a scrape costs one read lock rather than a tree walk.
+
+Coverage above 1 is a third reading, and it is new. A tagged removal now
+
+clears only its own tier, so a batch lost in transit (ZMQ drops at the
+
+publisher's high-water mark) can strand a tier bit the tree will never clear on
+
+its own — where previously the earlier device removal had already evicted the
+
+worker outright and losing the later batch was harmless. The pump therefore
+
+counts sequence gaps: sgl_router_kv_event_batches_lost_total is the
+
+explanation for a coverage ratio drifting above 1, and the gap is logged at
+
+warn naming the worker.
+
+The three health series 

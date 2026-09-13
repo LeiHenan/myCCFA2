@@ -1,0 +1,341 @@
+
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ sgl-project
+ / 
+ sglang 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 8.8k 
+ Star
+ 35.9k 
+ Code 
+ Issues 
+ 890 
+ Pull requests 
+ 4.4k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ [AMD][Not-Merge]: torch fallbacks for top-k/top-p renorm so DSPARK/DFLASH works on ROCm - # 32630 
+ # 32630 
+ Closed 
+ stefanskiasan wants to merge 1 commit into sgl-project:main sgl-project/sglang:main from stefanskiasan:fix/rocm-dflash-topk-topp-renorm stefanskiasan/sglang:fix/rocm-dflash-topk-topp-renorm Copy head branch name to clipboard 
+ Conversation Commits 1 ( 1 ) Checks Files changed 
+ Closed 
+ [AMD][Not-Merge]: torch fallbacks for top-k/top-p renorm so DSPARK/DFLASH works on ROCm # 32630 stefanskiasan wants to merge 1 commit into sgl-project:main sgl-project/sglang:main from stefanskiasan:fix/rocm-dflash-topk-topp-renorm stefanskiasan/sglang:fix/rocm-dflash-topk-topp-renorm Copy head branch name to clipboard 
+ Conversation
+ stefanskiasan 
+ commented
+ Jul 28, 2026 
+ • 
+ edited by github-actions
+ Bot 
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Problem
+ build_dflash_verify_target_probs() calls top_k_renorm_prob() and top_p_renorm_prob() unconditionally, but sgl_kernel only exports them under CUDA/MUSA. On ROCm both are None , so DSPARK/DFLASH speculative decoding dies with:
+ TypeError: 'NoneType' object is not callable
+ as soon as a request sets top_p < 1 or top_k > 1 . That includes any client inheriting sampling defaults from a model's generation_config , so in practice the server serves for a few minutes and then dies on the first such request.
+ Fixes #32569 (reported on 8x MI350X; AMD confirmed it as "a valid issue on ROCm").
+ Fix
+ Both ops are plain probability renormalisation with exact, portable torch equivalents, so the else branch now defines them instead of setting them to None .
+ Deliberately minimal:
+ tree_speculative_sampling_target_only has no cheap equivalent and stays None 
+ _DFLASH_SAMPLING_VERIFY_AVAILABLE stays False , so no additional code path is enabled by this change
+ no new imports ( torch is already imported in this module)
+ One edge case worth noting: top_p <= 0 would mask every token and produce an all-zero row, so the most likely token is always kept.
+ Verification
+ Hardware: 8x MI350X (gfx950), ROCm 7.2.1, image lmsysorg/sglang-rocm:rocm720-mi35x-k3-20260727 , Kimi-K3 MXFP4, TP8, DSPARK with a block_size=7 draft model.
+ Reproduced the crash, then confirmed the fix with requests that previously killed the server:
+ temperature=0.7, top_p=0.8 → OK
+ temperature=0.8, top_k=20 → OK
+ Semantics checked against hand-computed expectations (top-k = 1/2/V, top-p = 0/0.8/1.0, batched mixed k/p, row sums == 1, scalar and tensor inputs).
+ Throughput on that box (SGLang's own bench_serving.py , 1k in / 300 out, --random-range-ratio 1.0 --seed 42 --flush-cache , median of 3 runs):
+ DSPARK off 
+ DSPARK on (this fix) 
+ single stream 
+ 37.5 tok/s 
+ 149–167 tok/s 
+ TPOT 
+ 26.1 ms 
+ ~5 ms 
+ output @ conc 128 
+ 1000.9 tok/s 
+ 1606–1644 tok/s 
+ total @ conc 128 
+ 4417 tok/s 
+ 7090–7256 tok/s 
+ median TTFT @ conc 8 
+ 717 ms 
+ 490 ms 
+ Also verified unaffected: needle-in-a-haystack retrieval up to 641,779 prompt tokens, tool calling, and vision input. No restarts over several hours of load.
+ I did not add a unit test since the fallbacks only activate off-CUDA and CI presumably runs on NVIDIA - happy to add one under test/srt/ if you'd prefer.
+ CI States
+ Latest PR Test (Base): ❌ Run #30342976482 
+Latest PR Test (Extra): ✅ Run #30396990531 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ fix(rocm): provide torch fallbacks for top-k/top-p renorm in DFLASH/D… 
+ …
+ 7ce34e3 
+ …SPARK
+build_dflash_verify_target_probs() calls top_k_renorm_prob() and
+top_p_renorm_prob() unconditionally, but sgl_kernel only exports them for
+CUDA/MUSA. On ROCm both are None, so DSPARK/DFLASH speculative decoding dies
+with `TypeError: 'NoneType' object is not callable` as soon as a request sets
+top_p < 1 or top_k > 1 -- which includes any client that inherits sampling
+defaults from a model's generation_config.
+Both ops are plain probability renormalisation and have exact, portable torch
+equivalents. tree_speculative_sampling_target_only has no cheap equivalent and
+stays None, so _DFLASH_SAMPLING_VERIFY_AVAILABLE remains False and no
+additional code path is enabled by this change.
+ Fixes sgl-project#32569 
+ stefanskiasan 
+ requested review from
+ Qiaolin-Yu , 
+ Ying1123 , 
+ hnyls2002 and 
+ merrymercy 
+ as code owners 
+ July 28, 2026 08:35 
+ gemini-code-assist 
+ Bot 
+ commented
+ Jul 28, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Caution
+ The consumer version of Gemini Code Assist on GitHub has been sunset. All code review activity has officially ceased.
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ hubertlu-tw 
+ added
+ the 
+ amd
+ label
+ Jul 28, 2026 
+ hubertlu-tw 
+ requested a review
+ from HaiShaw 
+ July 28, 2026 17:51 
+ hubertlu-tw 
+ commented
+ Jul 28, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ @HaiShaw could you please help review this PR?
+ #30964 also includes these changes, but #30964 has other code changes to enable DSpark for DeepSeek-V4 on ROCm.
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ HaiShaw 
+ commented
+ Jul 28, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ @stefanskiasan issue #32569 is addressed with #32621 .
+ I will keep this PR (target to main) open until #32541 merges to main, by then issue is solved with merge..
+ --> 
+ 👍 
+ 3 
+ hubertlu-tw, At1a8, and stefanskiasan reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 3 reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ HaiShaw 
+ changed the title
+ fix(rocm): torch fallbacks for top-k/top-p renorm so DSPARK/DFLASH works on ROCm 
+ [AMD][Not-Merge]: torch fallbacks for top-k/top-p renorm so DSPARK/DFLASH works on ROCm 
+ Jul 28, 2026 
+ HaiShaw 
+ added
+ the 
+ DO NOT MERGE
+ label
+ Jul 28, 2026 
+ amd-bot 
+ mentioned this pull request
+ Aug 5, 2026 
+ [CI Monitor] Daily Report - 2026-08-05
+ bingxche/sglang-ci-bot#157 
+ Open
+ stefanskiasan 
+ commented
+ Aug 12, 2026 
+ Copy link
+ Copy Markdown
+ Author 
+ Closing this one: the underlying problem (DSpark/DFlash sampler ops unavailable on ROCm, silently degrading to greedy) has since been addressed properly upstream — #32621 for the kernel availability and #33301 adding the is_hip() import guard. We are running the guard from #33301 in production on 8x MI350X and confirmed it there. Thanks @hubertlu-tw @HaiShaw for the pointers.
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ stefanskiasan 
+ closed this
+ Aug 12, 2026 
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ Ying1123 
+ Awaiting requested review from Ying1123 
+ Ying1123 is a code owner 
+ merrymercy 
+ Awaiting requested review from merrymercy 
+ merrymercy is a code owner 
+ hnyls2002 
+ Awaiting requested review from hnyls2002 
+ hnyls2002 is a code owner 
+ Qiaolin-Yu 
+ Awaiting requested review from Qiaolin-Yu 
+ Qiaolin-Yu is a code owner 
+ HaiShaw 
+ Awaiting requested review from HaiShaw 
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ amd 
+ DO NOT MERGE 
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ [Bug] Kimi K3 DSPARK speculative decoding crashes with TypeError: 'NoneType' object is not callable in top_k_renorm_prob
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 3 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

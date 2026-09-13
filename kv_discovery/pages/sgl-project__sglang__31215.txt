@@ -1,0 +1,78 @@
+FETCHED: https://github.com/sgl-project/sglang/issues/31215  (is_pr=True, 314911 bytes)
+LAYOUT NODE (PR):
+  number = 31215
+  title = [DSA] Guard move_kv_cache against page-indexed corruption for page_size>1
+  state = CLOSED
+  closedTime = 2026-07-14T17:59:43Z
+  createdTime = 2026-07-14T17:41:16Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 1
+  baseBranch = main
+  headBranch = fix/dsa-movekv-page-index-guard
+  author = JohnQinAMD
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDORwj2QNoAKDU2OTI4NmI4MjBmYjQ3ZjllODA3Nzg5NGQ2Y2QyY2M1NDdhNjY2M2M"> | fix(dsa): guard move_kv_cache against page-indexed corruption for pag… | … | 569286b | …e_size>1 | DSATokenToKVPool.move_kv_cache moved the DSA indexer cache with: | for index_k in self.index_k_with_scale_buffer: | index_k[tgt_loc_flat] = index_k[src_loc_flat] | but index_k_with_scale_buffer is PAGE-indexed -- _index_buffer_shape is | (num_pages, page_size * (index_head_dim + ...)), so dim-0 is pages, with | page_size tokens packed along dim-1 -- while tgt_loc/src_loc ar
+EV: js-timeline-progressive-focus-container" data-gid="RRE_lADOLCAjRs8AAAABIzRJ4M8AAAAGg4rwZQ"> | JohnQinAMD | requested review from | Ying1123, | alphabetc1, | hanming-lu, | hnyls2002, | hzh0425, | ispobock, | merrymercy, | xiezhq-hermann and | yizhang2077 | as code owners | July 14, 2026 17:41 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOLCAjRs8AAAABKF3eGA"> | gemini-code-assist | Bot | commented | Jul 14, 2026 | Copy link | Copy Markdown | Contributor | Warning | You have reached your daily quota limit. Please wait up to 24 hours and I will start processing your requests again! | --> | All reactions | --> | Sorry, something went wrong. | Uh oh! | There was an error while loading. <a class="Link--inTex
+EV: js-timeline-progressive-focus-container" data-gid="CE_lADOLCAjRs8AAAABIzRJ4M8AAAAGg5bEwg"> | JohnQinAMD | closed this | Jul 14, 2026 | JohnQinAMD | deleted the | fix/dsa-movekv-page-index-guard | branch | July 14, 2026 17:59 | --> | Sign up for free | to join this conversation on GitHub. | Already have an account? | Sign in to comment | <div class="prc-PageLayout-PaneWrapper-pHPop Conversations-module__pane__ySNaC" style="--offset-header:0px;--spacing-row:var(--spacing-no
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=JohnQinAMD date=2026-07-14T17:41:16Z]
+Problem
+
+DSATokenToKVPool.move_kv_cache (srt/mem_cache/memory_pool.py) moves the DSA indexer cache with:
+
+for index_k in self.index_k_with_scale_buffer: # PAGE-indexed: (num_pages, page_size*(...))
+ index_k[tgt_loc_flat] = index_k[src_loc_flat] # tgt/src are per-TOKEN locations
+
+index_k_with_scale_buffer is page-indexed (dim-0 is num_pages, with page_size tokens packed along
+
+dim-1), but tgt_loc/src_loc are token locations. This is correct only for page_size == 1; for
+
+page_size == 64 (all CUDA DSA) it indexes the page dimension with token indices → wrong rows / OOB → silent
+
+indexer-cache corruption. It is reached only via move_accept_tokens_to_target_kvcache on the topk>1
+
+tree-draft path (srt/speculative/spec_utils.py); the topk==1 chain (e.g. GLM-5.2) never hits it, so it is
+
+latent today.
+
+Fix
+
+Add a fail-fast guard at the top of the method: for page_size != 1, raise NotImplementedError (before any
+
+move, preserving the method's all-or-nothing contract) explaining that a page-aware move is required before
+
+tree-drafting (topk>1) is enabled on DSA. The page_size == 1 path and the base MLA super().move_kv_cache
+
+(token-indexed, correct) are unchanged. A page-aware rewrite is deliberately out of scope — this stops silent
+
+corruption cheaply until tree-drafting on DSA is actually wired up.
+
+Testing (all pass)
+
+test/registered/unit/mem_cache/test_dsa_move_kv_cache_guard.py — GPU-free, 2/2 PASSED:
+
+method
+asserts
+
+test_move_kv_cache_raises_for_page_size_gt_1
+
+page_size ∈ {16, 64} raises NotImplementedError (fails on pre-fix code, which silently mis-moves); the 16 case pins != 1 vs a wrong == 64
+
+test_move_kv_cache_page_size_1_moves_without_guard
+
+page_size == 1 does not raise and moves the correct row
+
+CI States
+
+Latest PR Test (Base): ❌ Run #29354807603
+
+Latest PR Test (Extra): ❌ Run #29354807313
+
+[RENDERED BLOCK author=yizhang2077 date=2026-07-14T17:41:19Z]
+Warning
+You have reached your daily quota limit. Please wait up to 24 hours and I will start processing your requests again!

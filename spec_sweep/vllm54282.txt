@@ -1,0 +1,671 @@
+
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [Bugfix][Model Runner V2][Spec Decode] Decouple the draft's gumbel noise stream from the target's - # 54282 
+ # 54282 
+ Merged 
+ WoosukKwon merged 1 commit into vllm-project:main vllm-project/vllm:main from TheEpicDolphin:mrv2-draft-gumbel-decouple TheEpicDolphin/vllm:mrv2-draft-gumbel-decouple Copy head branch name to clipboard 
+ Aug 29, 2026 
+ Conversation Commits 1 ( 1 ) Checks Files changed 
+ Merged 
+ [Bugfix][Model Runner V2][Spec Decode] Decouple the draft's gumbel noise stream from the target's # 54282 WoosukKwon merged 1 commit into vllm-project:main vllm-project/vllm:main from TheEpicDolphin:mrv2-draft-gumbel-decouple TheEpicDolphin/vllm:mrv2-draft-gumbel-decouple Copy head branch name to clipboard 
+ Conversation
+ TheEpicDolphin 
+ commented
+ Aug 28, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Context
+ Picking up the work from #47386 . During target verification, the Gumbel noise used to re-sample a rejected draft token is drawn from the same Philox offset as the noise that produced that draft token (the same seed, pos), so byte-identical noise. Conditioned on the proposal winning the argmax, the other tokens' Gumbels are truncated below that max, most tightly for the tokens the draft ranked highest, but lost (high-q loser tokens generally have smaller noise, because otherwise they would have won), so the residual under-weights exactly those tokens and the output distribution is no longer the target's.
+ This affects draft_sample_method="probabilistic" only. Under the default greedy, draft_logits is None, the draft never calls gumbel_sample , and there is no shared noise vector.
+ This PR
+ Adds a salt (1 << 30) to the offset of the draft's Philox stream, decoupling the draft's Gumbel noise from the target's. Verification is a probability-ratio test against the cached draft distribution rather than a Gumbel coupling, so nothing depends on the two streams matching.
+ Also refactors how the speculators compute the position used as the sampling-stream index, so each site states its own convention instead of relying on an implicit +1 inside sample_draft. This incidentally fixes a second latent issue: the sampling position was previously derived from a buffer clamped at max_model_len, so near the context limit two consecutive draft steps could reuse one noise vector. It is now tracked unclamped.
+ Tests
+ gdelfin@gb200-rack1-18:~/vllm$ python -m pytest tests/v1/spec_decode/test_rejection_sampler_utils.py::test_gumbel_drafted_rejection_sample_is_unbiased -q
+Running 2 items in this shard
+.. [100%]
+2 passed in 2.96s
+gdelfin@gb200-rack1-18:~/vllm$ python -m pytest tests/v1/worker/test_gpu_gumbel_sample.py::test_drafting_uses_a_separate_noise_stream -q
+Running 1 items in this shard
+. [100%]
+1 passed in 3.92s
+ Benchmarks
+ vllm bench serve --dataset-name speed_bench --speed-bench-dataset-subset throughput_2k --speed-bench-output-len 2048 
+— 2K in / 2K out, 512 prompts, 64 warmups, concurrency 64, temperature=1.0 top_p=0.95 top_k=20 .
+All runs use draft_sample_method: probabilistic (the salt is a no-op under the default greedy ,
+where the draft never calls gumbel_sample ). 4× GB200, TP4 except Gemma 4 (TP1).
+Baseline de9250ac9e → this PR 1529dd5363 .
+ Model 
+ N 
+ Output tok/s 
+ Acceptance length 
+ Acceptance rate % 
+ Median TTFT (ms) 
+ Median TPOT (ms) 
+ Median ITL (ms) 
+ DeepSeek V4 Flash + MTP 
+ 3 
+ 5444 → 5438 (-0.11%) 
+ 2.589 → 2.587 (-0.09%) 
+ 52.96 → 52.89 (-0.14%) 
+ 221.0 → 226.1 (+2.30%) 
+ 11.64 → 11.60 (-0.29%) 
+ 20.11 → 20.11 (+0.01%) 
+ DeepSeek V4 Flash + DSpark 
+ 5 
+ 5825 → 5942 (+2.00%) 
+ 3.514 → 3.500 (-0.39%) 
+ 50.28 → 50.00 (-0.55%) 
+ 237.1 → 225.9 (-4.74%) 
+ 10.83 → 10.52 (-2.82%) 
+ 24.05 → 23.99 (-0.23%) 
+ MiMo v2.5 Pro + DFlash 
+ 8 
+ 4111 → 4086 (-0.62%) 
+ 3.794 → 3.771 (-0.61%) 
+ 34.93 → 34.64 (-0.83%) 
+ 210.2 → 206.7 (-1.68%) 
+ 14.44 → 14.43 (-0.05%) 
+ 44.14 → 44.15 (+0.03%) 
+ Inkling NVFP4 + MTP 
+ 8 
+ 3813 → 3864 (+1.33%) 
+ 3.381 → 3.386 (+0.15%) 
+ 29.76 → 29.82 (+0.22%) 
+ 205.4 → 212.8 (+3.59%) 
+ 16.22 → 16.07 (-0.92%) 
+ 47.40 → 47.31 (-0.18%) 
+ Gemma 4 E2B + MTP 
+ 3 
+ 10609 → 10508 (-0.96%) 
+ 2.623 → 2.612 (-0.39%) 
+ 54.09 → 53.75 (-0.64%) 
+ 92.5 → 94.5 (+2.18%) 
+ 5.48 → 5.67 (+3.58%) 
+ 6.80 → 6.69 (-1.54%) 
+ Per-position acceptance rate (%), baseline → this PR:
+ Model 
+ pos 0 
+ pos 1 
+ pos 2 
+ pos 3 
+ pos 4 
+ pos 5 
+ pos 6 
+ pos 7 
+ DeepSeek V4 Flash + MTP 
+ 85.2 → 85.1 
+ 53.1 → 53.1 
+ 20.6 → 20.5 
+ — 
+ — 
+ — 
+ — 
+ — 
+ DeepSeek V4 Flash + DSpark 
+ 83.6 → 83.5 
+ 64.6 → 64.4 
+ 47.3 → 46.9 
+ 33.1 → 32.8 
+ 22.8 → 22.5 
+ — 
+ — 
+ — 
+ MiMo v2.5 Pro + DFlash 
+ 76.5 → 76.3 
+ 56.1 → 55.9 
+ 42.2 → 41.9 
+ 32.5 → 32.3 
+ 25.5 → 25.1 
+ 19.9 → 19.5 
+ 15.4 → 15.1 
+ 11.4 → 11.0 
+ Inkling NVFP4 + MTP 
+ 68.5 → 68.6 
+ 48.0 → 48.1 
+ 34.5 → 34.6 
+ 26.0 → 26.1 
+ 20.2 → 20.3 
+ 16.3 → 16.3 
+ 13.4 → 13.4 
+ 11.2 → 11.2 
+ Gemma 4 E2B + MTP 
+ 70.8 → 70.5 
+ 51.8 → 51.4 
+ 39.7 → 39.3 
+ — 
+ — 
+ — 
+ — 
+ — 
+ No regressions. Throughput deltas straddle zero (-0.96% to +2.00%) and acceptance length is
+within ±0.61% with both signs present — consistent with run-to-run variance rather than a
+systematic effect. Per-position rates show no depth-dependent degradation: MiMo's 8-deep profile
+moves uniformly by -0.2 to -0.4 pp with no trend across depth.
+ Acceptance is not expected to move: the acceptance test is p(x) > u·q(x) , whose expectation
+depends only on x ~ q , which holds in both arms. An isolated probe with fixed p / q over 2M
+independent trials put acceptance at 0.1068 (baseline) vs 0.1071 (this PR).
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ 👍 
+ 1 
+ depthfirst-app[bot] reacted with thumbs up emoji 
+ 👀 
+ 1 
+ depthfirst-app[bot] reacted with eyes emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ 👀 
+ 1 reaction 
+ [Bugfix][Model Runner V2][Spec Decode] Decouple the draft's gumbel no… 
+ …
+ 1529dd5 
+ …ise stream from the target's
+Signed-off-by: Giancarlo Delfin <gdelfin@inferact.ai>
+ mergify 
+ Bot 
+ added
+ speculative-decoding
+ dflash
+ mrv2
+ Model Runner V2 specific 
+ bug
+ Something isn't working 
+ labels
+ Aug 28, 2026 
+ github-project-automation 
+ Bot 
+ added this to Sprint - DFlash 
+ Aug 28, 2026 
+ github-project-automation 
+ Bot 
+ moved this to Backlog 
+ in Sprint - DFlash 
+ Aug 28, 2026 
+ TheEpicDolphin 
+ marked this pull request as ready for review
+ August 29, 2026 01:16 
+ TheEpicDolphin 
+ requested review from
+ WoosukKwon , 
+ njhill and 
+ yewentao256 
+ as code owners 
+ August 29, 2026 01:16 
+ claude 
+ Bot 
+ reviewed
+ Aug 29, 2026 
+ View reviewed changes 
+ claude 
+ Bot 
+ left a comment
+ Copy link
+ Copy Markdown
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Claude Code Review
+ This pull request is from a fork — automated review is disabled. A repository maintainer can comment @claude review to run a one-time review.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ TheEpicDolphin 
+ added
+ the 
+ ready
+ ONLY add when PR is ready to merge/full CI is needed 
+ label
+ Aug 29, 2026 
+ TheEpicDolphin 
+ commented
+ Aug 29, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /ci run
+ --> 
+ 🚀 
+ 1 
+ github-actions[bot] reacted with rocket emoji 
+ 👀 
+ 1 
+ github-actions[bot] reacted with eyes emoji 
+ All reactions 
+ 🚀 
+ 1 reaction 
+ 👀 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ github-actions 
+ Bot 
+ commented
+ Aug 29, 2026 
+ Copy link
+ Copy Markdown
+ ✅ Triggered Buildkite CI #86086 for commit 1529dd536348 .
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ WoosukKwon 
+ approved these changes
+ Aug 29, 2026 
+ View reviewed changes 
+ WoosukKwon 
+ left a comment
+ Copy link
+ Copy Markdown
+ Collaborator 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Thank you!
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ ❤️ 
+ 1 
+ TheEpicDolphin reacted with heart emoji 
+ All reactions 
+ ❤️ 
+ 1 reaction 
+ Hide details 
+ View details 
+ WoosukKwon 
+ merged commit fe755c8 
+ into
+ vllm-project : main 
+ Aug 29, 2026 
+ 124 checks passed
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ github-project-automation 
+ Bot 
+ moved this from Backlog 
+ to Done 
+ in Sprint - DFlash 
+ Aug 29, 2026 
+ randomvariable 
+ added a commit
+ to randomvariable/vllm
+ that referenced
+ this pull request
+ Aug 29, 2026 
+ fix(rebase): retire the fork's draft Gumbel salt helper 
+ … 
+ 0426270 
+ Upstream's draft/target noise-stream decoupling ( vllm-project#54282 ) put the fork's
+own mechanism inside the Gumbel kernel: `_DRAFT_NOISE_SALT` is the same
+`1 << 30` offset, applied under `IS_DRAFTING`, keyed off a persistent
+`sample_src_positions` buffer that the draft-input kernel advances
+device-side regardless of `ADVANCE_DRAFT_POSITIONS`.
+Keeping `draft_gumbel_pos` on top of that would salt the draw twice, so
+delete it and let the one central sampler carry the intent:
+* `_sample_probabilistic_draft` forwards `sample_src_positions`
+ untouched with `is_drafting=True`, and still forwards `active_rows`
+ for the variable-width autoregressive path.
+* `DraftModelSpeculator.sample_draft` and the DSpark/DFlash overrides
+ key by the position before the sampled token, P-1, matching upstream.
+* The autoregressive override's parameter takes the base class's name.
+Tests follow the mechanism rather than the retired helper: the sampler
+test asserts pass-through positions plus `is_drafting`, and the
+rejection-sampling distribution test keys the draft draw the same way
+production does.
+Verified: `tools/ci/static_gate.py` reports no undeclared envs
+references and no call-arg/attr-defined drift, at the same 792/139 mypy
+debt count as the pre-rebase tip; the ruff F821/F811 set over `vllm`
+and `tests` is identical to that tip; 4220 files parse.
+Co-authored-by: OMP Agent <noreply@omp.local>
+Signed-off-by: Naadir Jeewa <naadir@randomvariable.co.uk>
+ khushali9 
+ pushed a commit
+ to khushali9/vllm
+ that referenced
+ this pull request
+ Aug 29, 2026 
+ [Bugfix][Model Runner V2][Spec Decode] Decouple the draft's gumbel no… 
+ … 
+ 67c679a 
+ …ise stream from the target's ( vllm-project#54282 )
+Signed-off-by: Giancarlo Delfin <gdelfin@inferact.ai>
+Signed-off-by: khushali9 <khushali.desai9@gmail.com>
+ positive666 
+ mentioned this pull request
+ Aug 30, 2026 
+ [Perf][Spec Decode] Fuse target temperature in rejection sampler
+ #53090 
+ Open
+ askliar 
+ pushed a commit
+ to askliar/vllm
+ that referenced
+ this pull request
+ Aug 30, 2026 
+ [Bugfix][Model Runner V2][Spec Decode] Decouple the draft's gumbel no… 
+ … 
+ cc4f7b5 
+ …ise stream from the target's ( vllm-project#54282 )
+Signed-off-by: Giancarlo Delfin <gdelfin@inferact.ai>
+ puririshi98 
+ mentioned this pull request
+ Aug 31, 2026 
+ [Perf][Spec Decode] Optimize BS=1 dflash/dspark serving (+11% decode, -58% cache-hit TTFT)
+ #54485 
+ Open
+ TheEpicDolphin 
+ deleted the
+ mrv2-draft-gumbel-decouple
+ branch
+ August 31, 2026 20:08 
+ am-cohere 
+ pushed a commit
+ to am-cohere/vllm
+ that referenced
+ this pull request
+ Sep 1, 2026 
+ [Bugfix][Model Runner V2][Spec Decode] Decouple the draft's gumbel no… 
+ … 
+ 9e7280f 
+ …ise stream from the target's ( vllm-project#54282 )
+Signed-off-by: Giancarlo Delfin <gdelfin@inferact.ai>
+ Leoyzen 
+ pushed a commit
+ to Leoyzen/vllm
+ that referenced
+ this pull request
+ Sep 1, 2026 
+ [Bugfix][Model Runner V2][Spec Decode] Decouple the draft's gumbel no… 
+ … 
+ 96694a4 
+ …ise stream from the target's ( vllm-project#54282 )
+Signed-off-by: Giancarlo Delfin <gdelfin@inferact.ai>
+ mylibrar 
+ pushed a commit
+ to tanyuqian/vllm
+ that referenced
+ this pull request
+ Sep 3, 2026 
+ [Bugfix][Model Runner V2][Spec Decode] Decouple the draft's gumbel no… 
+ … 
+ b6f4e01 
+ …ise stream from the target's ( vllm-project#54282 )
+Signed-off-by: Giancarlo Delfin <gdelfin@inferact.ai>
+ SOMEONEUNSEEN 
+ mentioned this pull request
+ Sep 4, 2026 
+ [Bugfix][MRV2][SpecDecode] fix draft Gumbel noise stream and add draft logits cache
+ vllm-project/vllm-ascend#15739 
+ Draft
+ cpuchip 
+ mentioned this pull request
+ Sep 5, 2026 
+ Known issues and progress: KVarN / DFlash2 / CTX=huge (tracking)
+ syv-ai/qwen38-27b-rtx3090#25 
+ Open
+ MadeBy561 
+ mentioned this pull request
+ Sep 5, 2026 
+ fix(spec_decode): backport independent draft RNG from upstream #54282
+ local-inference-lab/vllm#653 
+ Merged
+ D-G-Dimitrov 
+ pushed a commit
+ to D-G-Dimitrov/vllm
+ that referenced
+ this pull request
+ Sep 5, 2026 
+ [Bugfix][Model Runner V2][Spec Decode] Decouple the draft's gumbel no… 
+ … 
+ 8a1c05c 
+ …ise stream from the target's ( vllm-project#54282 )
+Signed-off-by: Giancarlo Delfin <gdelfin@inferact.ai>
+(cherry picked from commit fe755c8 )
+ sheralskumar 
+ pushed a commit
+ to sheralskumar/vllm
+ that referenced
+ this pull request
+ Sep 8, 2026 
+ [Bugfix][Model Runner V2][Spec Decode] Decouple the draft's gumbel no… 
+ … 
+ 6b295a3 
+ …ise stream from the target's ( vllm-project#54282 )
+Signed-off-by: Giancarlo Delfin <gdelfin@inferact.ai>
+ voipmonitor 
+ pushed a commit
+ to local-inference-lab/vllm
+ that referenced
+ this pull request
+ Sep 11, 2026 
+ fix(spec_decode): backport independent draft RNG from upstream vllm-p… 
+ … 
+ 44e6766 
+ …roject#54282 
+Adapt upstream vllm-project/vllm commit fe755c8 for Jovian Judgement. Preserve compact MTP prefill outputs, MRoPE, per-token draft-logit caching, and local DFlash2/DSpark call sites. Extend BF16 proposal and fixed/clamped-position tests.
+Original fix by Giancarlo Delfin; JJ adaptation and additional regression coverage by MadeBy561 with Codex assistance. Prior R25 GPU results are not fresh-head qualification.
+Co-authored-by: MadeBy561 <madeby561@gmail.com>
+Co-authored-by: Codex <noreply@openai.com>
+Signed-off-by: MadeBy561 <madeby561@gmail.com>
+ voipmonitor 
+ added a commit
+ to local-inference-lab/vllm
+ that referenced
+ this pull request
+ Sep 11, 2026 
+ Merge PR #653 : fix(spec_decode): backport independent draft RNG from … 
+ … 
+ bb77921 
+ …upstream vllm-project#54282 
+Preserve the reviewed source head 44e6766 and its contributor history.
+The first parent records the ordered serving-source composition.
+Whole-tree equality and installed-artifact verification are publication gates.
+Review: #653 
+Assisted-by: OpenAI Codex
+Signed-off-by: Martin Vit <martin@voipmonitor.org>
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ claude[bot] 
+ claude[bot] left review comments 
+ WoosukKwon 
+ WoosukKwon approved these changes 
+ njhill 
+ Awaiting requested review from njhill 
+ njhill is a code owner 
+ yewentao256 
+ Awaiting requested review from yewentao256 
+ yewentao256 is a code owner 
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ bug 
+ Something isn't working 
+ dflash 
+ mrv2 
+ Model Runner V2 specific 
+ ready 
+ ONLY add when PR is ready to merge/full CI is needed 
+ speculative-decoding 
+ --> 
+ Projects
+ Sprint - DFlash 
+ Status: Done
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 2 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

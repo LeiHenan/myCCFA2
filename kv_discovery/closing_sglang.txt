@@ -1,0 +1,208 @@
+
+==========================================================================================
+### sgl-project__sglang__29847
+==========================================================================================
+   FETCHED: https://github.com/sgl-project/sglang/issues/29847  (is_pr=True, 530211 bytes)
+   number = 29847
+   title = [Feature] Add DSA CP shared KV cache
+   state = CLOSED
+   closedTime = 2026-07-22T09:46:14Z
+   mergedTime = None
+   author = taoyuanyuan
+  [? @ ?] DSA CP Shared KV Cache Motivation DSA prefill context parallelism currently keeps the main MLA KV cache private on each CP rank. This limits long-context capacity and leaves CP KV movement on the critical path. This PR adds DSA CP shared KV cache for same-node CP ranks: the DSA main KV cache is shared in L1 HBM, and DSA L2 HiCache host memory can be shared by the CP group. On GLM-5.2-FP8 / H20-3e, the shared path increases allocatable KV capacity by about 3.47x in L1 HBM and reduces DSA L2 HiCache host memory usage
+  [? @ 2026-07-01T12:16:52Z] In a context parallel multi-GPU setup, copying KV cache across ranks via peer-mapped shared memory requires synchronization. Without an explicit barrier, a rank might read stale data from another rank's segment before the write is completed, or subsequent operations might read from the local segment before the write finishes. Also, any barrier must be executed by all ranks collectively to avoid hanging, so we should not return early before the barrier. Suggested change if self.enable_cp_shared_kvcache: mask = self.
+  [? @ 2026-07-01T12:16:52Z] If thread.is_alive() is True or errors is not empty, a RuntimeError is raised, but any file descriptors already received and stored in received_fds are leaked (not closed). We should ensure all received file descriptors are closed on any failure/exception to prevent resource leaks. if thread.is_alive() or errors: for fd in received_fds.values(): try: os.close(fd) except OSError: pass if thread.is_alive(): raise RuntimeError("timed out waiting for POSIX fd exchange") raise RuntimeError("POSIX fd exchange receive fai
+  [taoyuanyuan @ 2026-07-22T09:46:15Z] Superseded by #31435
+
+==========================================================================================
+### sgl-project__sglang__29930
+==========================================================================================
+   FETCHED: https://github.com/sgl-project/sglang/issues/29930  (is_pr=True, 397233 bytes)
+   number = 29930
+   title = Feat(CP LayerSplit): layer-split prefill KV cache across CP ranks (L2/L3 HiCache, PD prefill)
+   state = CLOSED
+   closedTime = 2026-07-24T10:19:38Z
+   mergedTime = None
+   author = Outsiderwu145
+  [? @ ?] Motivation GLM-5.2 supports 1M-token context, so production prefill must hold very large prefix KV caches — especially in multi-turn workloads. On a PD-disaggregated prefill node with DSA prefill context parallelism, every attention-CP rank stores the same full KV cache (all layers). That duplicates identical KV across ranks and wastes most of the GPU/host memory budget; the per-rank token capacity stays small, long inputs get rejected, and multi-turn prefix reuse thrashes. Inspired by Zhipu's LayerSplit idea, this
+
+==========================================================================================
+### sgl-project__sglang__29948
+==========================================================================================
+   FETCHED: https://github.com/sgl-project/sglang/issues/29948  (is_pr=True, 330744 bytes)
+   number = 29948
+   title = [HiCache] Emit KV cache events for completed L3 storage backups
+   state = CLOSED
+   closedTime = 2026-08-11T03:39:29Z
+   mergedTime = None
+   author = ishandhanani
+  [? @ 2026-07-02T13:43:21Z] SGLang publishes BlockStored KV events for L1 (GPU) and L2 (CPU_PINNED) but never for L3 storage backends, so cache-aware routers cannot see blocks persisted to HiCache storage such as Mooncake. This implements the minimal Phase 1 of #29709: when a backup ack drains and the whole node reached storage, publish a BlockStored(EXTERNAL) through the existing event path. How This Was Implemented - In HiRadixCache._drain_backup and UnifiedRadixCache._drain_backup, after the host protection is released, call the existing _
+
+==========================================================================================
+### sgl-project__sglang__30091
+==========================================================================================
+   FETCHED: https://github.com/sgl-project/sglang/issues/30091  (is_pr=True, 447122 bytes)
+   number = 30091
+   title = [MLX] Windowed per-request KV cache for sliding-window layers
+   state = CLOSED
+   closedTime = 2026-08-10T04:30:25Z
+   mergedTime = None
+   author = LarrySimingDeng
+  [? @ ?] Stacked on #30050 (un-merged): the first commit here is that PR's head; review only the last commit. Will rebase once #30050 merges. Motivation Follow-up promised in #30050. That PR ran gpt-oss sliding-window layers by storing full KV history and applying the window at read time (banded mask at prefill, trailing-window truncation at decode). Numerically exact, but sliding layers paid full-context memory. This PR makes sliding-window layers keep only the trailing window tokens on the per-request KV path (--disable-r
+
+==========================================================================================
+### sgl-project__sglang__30230
+==========================================================================================
+   FETCHED: https://github.com/sgl-project/sglang/issues/30230  (is_pr=True, 526113 bytes)
+   number = 30230
+   title = [refactor] Retire the kv-cache dtype and DSA split-backend dual-applies (stack 3/11)
+   state = CLOSED
+   closedTime = 2026-07-06T20:57:33Z
+   mergedTime = None
+   author = ch-wan
+  [? @ 2026-07-06T20:15:36Z] Preserve target KV dtype when draft runners resolve auto With speculative decoding, the draft worker is initialized with the same published server_args object after the target runner has already recorded any load-time KV dtype into RuntimeContext flags. Because kv_cache_dtype is now retired from dual-apply, that runtime override no longer mutates server_args, and this resolved_view(self.server_args) read only sees the pristine/stashed value (often auto), not the published flag leaf. A draft model whose quant_config
+
+==========================================================================================
+### sgl-project__sglang__30528
+==========================================================================================
+   FETCHED: https://github.com/sgl-project/sglang/issues/30528  (is_pr=True, 455307 bytes)
+   number = 30528
+   title = Reapply "Increase the KV cache pool when using indexShare by 15%" (#30310)
+   state = CLOSED
+   closedTime = 2026-07-08T13:17:08Z
+   mergedTime = None
+   author = b8zhong
+  [mmangkad @ 2026-07-08T13:13:07Z] Thanks and sorry for the noise. When I hit the IMA, my checkout was at the #30310 merge commit, and reverting it seemed to stop the crash for a while, but it looks like it only made the issue harder to reproduce. I tested the reland in #30531 with skip-topk indexer init handling, and it seems safe to reland now.
+
+==========================================================================================
+### sgl-project__sglang__31215
+==========================================================================================
+   FETCHED: https://github.com/sgl-project/sglang/issues/31215  (is_pr=True, 314911 bytes)
+   number = 31215
+   title = [DSA] Guard move_kv_cache against page-indexed corruption for page_size>1
+   state = CLOSED
+   closedTime = 2026-07-14T17:59:43Z
+   mergedTime = None
+   author = JohnQinAMD
+  [JohnQinAMD @ 2026-07-14T17:41:16Z] Problem DSATokenToKVPool.move_kv_cache (srt/mem_cache/memory_pool.py) moves the DSA indexer cache with: for index_k in self.index_k_with_scale_buffer: # PAGE-indexed: (num_pages, page_size*(...)) index_k[tgt_loc_flat] = index_k[src_loc_flat] # tgt/src are per-TOKEN locations index_k_with_scale_buffer is page-indexed (dim-0 is num_pages, with page_size tokens packed along dim-1), but tgt_loc/src_loc are token locations. This is correct only for page_size == 1; for page_size == 64 (all CUDA DSA) it indexes the page d
+
+==========================================================================================
+### sgl-project__sglang__31646
+==========================================================================================
+   FETCHED: https://github.com/sgl-project/sglang/issues/31646  (is_pr=True, 312131 bytes)
+   number = 31646
+   title = [AMD] Quantize Q to FP8 in aiter decode unified_attention when KV cache is FP8
+   state = CLOSED
+   closedTime = 2026-08-06T06:51:23Z
+   mergedTime = None
+   author = yichiche
+  [? @ ?] Motivation On the AITER attention backend, the extend/prefill path already quantizes the query to FP8 and passes a q_descale when the KV cache is FP8 (kv_cache_dtype == fp8_e4m3), engaging the FP8 query-key kernel variant. The decode path in forward_decode's unified_attention branch, however, left the query in bf16 and passed q_descale=None, so it dispatched to the IS_Q_FP8_0 kernel variant even when the KV cache was FP8. This PR makes decode consistent with extend: when the KV cache is FP8, the query is cast to FP
+
+==========================================================================================
+### sgl-project__sglang__31676
+==========================================================================================
+   FETCHED: https://github.com/sgl-project/sglang/issues/31676  (is_pr=True, 600749 bytes)
+   number = 31676
+   title = feat: KVarN KV-cache compression for long-context inference
+   state = CLOSED
+   closedTime = 2026-07-18T18:33:10Z
+   mergedTime = None
+   author = jtabet
+  [jtabet @ 2026-07-18T18:33:09Z] Closing — opened prematurely. Will re-open after addressing CI and review feedback.
+
+==========================================================================================
+### sgl-project__sglang__31730
+==========================================================================================
+   FETCHED: https://github.com/sgl-project/sglang/issues/31730  (is_pr=True, 645226 bytes)
+   number = 31730
+   title = [XPU] Fix Encoder Decoder KV Cache Alignment
+   state = CLOSED
+   closedTime = 2026-08-25T08:37:03Z
+   mergedTime = None
+   author = SKRohit
+  [SKRohit @ 2026-07-23T11:02:52Z] @sunjiweiswift @mingfeima I have added tests. @jmunetong I have updated if len(req.prefix_indices) < encoder_reserve: to if len(req.prefix_indices) < encoder_len:. But keeping it to encoder_reserve would still work because out of supported encoder-decoder models on sglang: def is_encoder_decoder_model(model_architectures: List[str]): models = [ "WhisperForConditionalGeneration", "MllamaForConditionalGeneration", "MossVLForConditionalGeneration", ] return any(model in model_architectures for model in models) I have 
+
+==========================================================================================
+### sgl-project__sglang__32418
+==========================================================================================
+   FETCHED: https://github.com/sgl-project/sglang/issues/32418  (is_pr=True, 321987 bytes)
+   number = 32418
+   title = [hicache] Propagate override_kv_cache_dim to the draft host KV pool
+   state = CLOSED
+   closedTime = 2026-08-26T12:45:29Z
+   mergedTime = None
+   author = hpcnt-albert
+  [hpcnt-albert @ 2026-07-26T02:51:08Z] Motivation maybe_register_hicache_draft() creates the draft host KV pool with the same slot count as the target host pool, and the comment states the intent: # Create host pool for draft with the same slot count as the target host pool, # so that host indices stay 1-to-1 between target and draft KV caches. The per-token stride is not kept in sync, though. The target host pool can be constructed with override_kv_cache_dim (see build_kv_host_pool() in hybrid_pool_assembler.py), which is how the scaled fp8 KV layout i
+
+==========================================================================================
+### sgl-project__sglang__33315
+==========================================================================================
+   FETCHED: https://github.com/sgl-project/sglang/issues/33315  (is_pr=True, 347233 bytes)
+   number = 33315
+   title = [srt] Batchable context forwards over cached prefix KV
+   state = CLOSED
+   closedTime = 2026-08-26T19:33:15Z
+   mergedTime = None
+   author = rwang5203
+  [? @ ?] Motivation Interleaved generation and MoT denoise need many short guest forwards that attend to an already cached text prefix. Exporting KV for every forward is impractical. This PR makes each guest forward an ordinary prefill-only /generate request. It radix-matches the cached prefix by token IDs and batches through the existing SRT scheduler without model-specific scheduler code. The request is sessionless. A higher-level client owns logical sessions and recovery. Request contract - input_ids carries the cached p
+
+==========================================================================================
+### sgl-project__sglang__34764
+==========================================================================================
+   FETCHED: https://github.com/sgl-project/sglang/issues/34764  (is_pr=True, 313632 bytes)
+   number = 34764
+   title = Closed FP8 MLA KV cache scaling draft
+   state = CLOSED
+   closedTime = 2026-08-13T19:56:44Z
+   mergedTime = None
+   author = deepankerk
+  [deepankerk @ 2026-08-13T19:47:27Z] This draft has been closed and superseded by a clean submission. It is not intended for review.
+
+==========================================================================================
+### sgl-project__sglang__35428
+==========================================================================================
+   FETCHED: https://github.com/sgl-project/sglang/issues/35428  (is_pr=True, 654386 bytes)
+   number = 35428
+   title = [AMD] Fix gfx950 Triton compiler crash on fp8 KV-cache attention
+   state = CLOSED
+   closedTime = 2026-08-21T05:35:39Z
+   mergedTime = None
+   author = michaelzhang-ai
+  [? @ ?] Motivation test/registered/attention/test_verify_shared_kv.py::test_qwen3_5_fp8_kv_cache has never passed on stage-b-1-gpu-small-amd-mi35x since it was added (#34517); it fails inside the Triton AMD backend, not in sglang code (latest instance): python3: llvm/ADT/SmallVector.h:292: Assertion `idx < size()' failed. extend_attention.py:305:0: error: Failures have been detected while processing an MLIR pass pipeline extend_attention.py:305:0: note: Pipeline failed while executing [`ConvertTritonAMDGPUToLLVM` ...] Runt
+
+==========================================================================================
+### sgl-project__sglang__36904
+==========================================================================================
+   FETCHED: https://github.com/sgl-project/sglang/issues/36904  (is_pr=True, 489031 bytes)
+   number = 36904
+   title = [DSA] Enable tilelang fp8_e4m3 KV cache on CUDA (raw layout) — verified on sm_121
+   state = CLOSED
+   closedTime = 2026-09-06T09:28:38Z
+   mergedTime = None
+   author = beastllama
+  [Hansen523 @ 2026-08-30T03:58:11Z] Validated on SM90 (8x H20-3e) — works, ~1.8x KV capacity at identical footprint Following up from #36830, where you offered to share early. Your gate is SM89+, but your validation is sm_121, so we ran this on Hopper to close that gap. It works. Setup 8x NVIDIA H20-3e (sm_90, 140 GB each), single node. ZhipuAI/GLM-5.3-Flash FP8 weights. Because this PR branches from xinyuan/glm-5.3-flash-support at 08-28 14:56, it predates #36884 and #36885. Testing it as-is would have shown their symptoms (silently wrong output at 
+  [marknx @ 2026-08-30T08:15:25Z] Tested this PR on 2x DGX Spark (GB10, sm_121) over 10GbE TCP, TP=2, serving GLM-5.3-Flash (Glm5NextForConditionalGeneration, NVFP4-mixed self-quant) with DFLASH speculative decoding (block 6), --dsa-prefill-backend tilelang --dsa-decode-backend tilelang. 1. Bug + fix: crashes for models with qk_rope_head_dim = 0 (GLM-5.3-Flash) As-is, boot fails during CUDA graph capture / first kernel build with: ValueError: Unsupported k_dim 0 Root cause: sparse_mla_fwd_decode_partial_fp8 emits the tail path unconditionally (q_ta
+
+==========================================================================================
+### sgl-project__sglang__38595
+==========================================================================================
+   FETCHED: https://github.com/sgl-project/sglang/issues/38595  (is_pr=True, 304922 bytes)
+   number = 38595
+   title = [KV Cache] Add first-class versioned KV-hint transport
+   state = CLOSED
+   closedTime = 2026-09-11T09:26:53Z
+   mergedTime = None
+   author = chengcuiping
+  [? @ ?] Summary Add a cache-neutral, typed, versioned KvHints metadata channel from native HTTP, Python Engine, and native gRPC through request normalization, tokenization, msgpack IPC, Session reconstruction, and scheduler Req. Motivation The KV-hint RFC needs a stable transport contract before any cache implementation consumes actions. This PR provides only the cache-neutral typed/versioned transport. It does not contain or replace the KVCR backend in #36409; that follow-up can consume this canonical envelope. Canonical 
+
+==========================================================================================
+### sgl-project__sglang__38720
+==========================================================================================
+   FETCHED: https://github.com/sgl-project/sglang/issues/38720  (is_pr=True, 332268 bytes)
+   number = 38720
+   title = [Router] Honor KV-event storage tiers in the cache-aware tree
+   state = CLOSED
+   closedTime = 2026-09-11T18:23:38Z
+   mergedTime = None
+   author = Kangyan-Zhou
+  [? @ ?] Superseded — split into a stacked series and closed. The same change, byte-for-byte, now lands as #39108 (the tier-aware tree), #39109 (the sgl_router_kv_* /metrics series) and #39110 (the real-GPU e2e proof), all with their heads on sgl-project/sglang so they can chain base-to-head. Review there; this branch is gone. Motivation An engine running a hierarchical cache publishes tier-tagged KV events: a CPU_PINNED BlockStored when a block's host backup lands, a GPU BlockRemoved when its device copy is demoted, a CPU_

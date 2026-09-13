@@ -1,0 +1,1204 @@
+[https://nvbugs/5517404][fix] Use the correct cuda graph for dynamic spec dec by ziyixiong-nv · Pull Request #7728 · NVIDIA/TensorRT-LLM · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ NVIDIA
+ / 
+ TensorRT-LLM 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 2.7k 
+ Star
+ 14.6k 
+ Code 
+ Issues 
+ 587 
+ Pull requests 
+ 879 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [https://nvbugs/5517404][fix] Use the correct cuda graph for dynamic spec dec - # 7728 
+ # 7728 
+ Merged 
+ ziyixiong-nv merged 5 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from ziyixiong-nv:dev-fxiong-bug5517404 ziyixiong-nv/TensorRT-LLM:dev-fxiong-bug5517404 Copy head branch name to clipboard 
+ Sep 21, 2025 
+ Conversation Commits 5  ( 5 ) Checks Files changed 
+ Merged 
+ [https://nvbugs/5517404][fix] Use the correct cuda graph for dynamic spec dec # 7728 ziyixiong-nv merged 5 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from ziyixiong-nv:dev-fxiong-bug5517404 ziyixiong-nv/TensorRT-LLM:dev-fxiong-bug5517404 Copy head branch name to clipboard 
+ Conversation
+ ziyixiong-nv 
+ commented
+ Sep 15, 2025 
+ • 
+ edited by coderabbitai
+ Bot 
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Collaborator 
+ …spec dec
+ Summary by CodeRabbit
+ Bug Fixes
+ Correctly handles requests with zero draft tokens to prevent undefined values.
+ Aligns token sizing and padding with the active draft length, improving speculative decoding stability.
+ Refactor
+ Aligns speculative decoding control with the latest engine API for better compatibility.
+ Uses dynamic draft length calculation to reduce state mismatches.
+ Tests
+ Stabilizes dynamic speculative decoding tests by running in a single-process mode with deterministic mocking.
+ Description
+ The spec dec could be turned on/off dynamically, so we need to check engine's enable_spec_decode for the value.
+With this value, we can figure out the cuda graph that should be used.
+ Test Coverage
+ PR Checklist
+ Please review the following before submitting your PR:
+ PR description clearly explains what and why. If using CodeRabbit's summary, please make sure it makes sense.
+ PR Follows TRT-LLM CODING GUIDELINES to the best of your knowledge.
+ Test cases are provided for new code paths (see test instructions )
+ Any new dependencies have been scanned for license and vulnerabilities
+ CODEOWNERS updated if ownership changes
+ Documentation updated as needed
+ The reviewers assigned automatically/manually are appropriate for the PR.
+ Please check this after reviewing the above items as appropriate for this PR.
+ GitHub Bot Help
+ /bot [-h] ['run', 'kill', 'skip', 'reuse-pipeline'] ... 
+ Provide a user friendly way for developers to interact with a Jenkins server.
+ Run /bot [-h|--help] to print this help message.
+ See details below for each supported subcommand.
+ Details 
+ run [--reuse-test (optional)pipeline-id --disable-fail-fast --skip-test --stage-list "A10-PyTorch-1, xxx" --gpu-type "A30, H100_PCIe" --test-backend "pytorch, cpp" --add-multi-gpu-test --only-multi-gpu-test --disable-multi-gpu-test --post-merge --extra-stage "H100_PCIe-TensorRT-Post-Merge-1, xxx" --detailed-log --debug(experimental)] 
+ Launch build/test pipelines. All previously running jobs will be killed.
+ --reuse-test (optional)pipeline-id (OPTIONAL) : Allow the new pipeline to reuse build artifacts and skip successful test stages from a specified pipeline or the last pipeline if no pipeline-id is indicated. If the Git commit ID has changed, this option will be always ignored. The DEFAULT behavior of the bot is to reuse build artifacts and successful test results from the last pipeline.
+ --disable-reuse-test (OPTIONAL) : Explicitly prevent the pipeline from reusing build artifacts and skipping successful test stages from a previous pipeline. Ensure that all builds and tests are run regardless of previous successes.
+ --disable-fail-fast (OPTIONAL) : Disable fail fast on build/tests/infra failures.
+ --skip-test (OPTIONAL) : Skip all test stages, but still run build stages, package stages and sanity check stages. Note: Does NOT update GitHub check status.
+ --stage-list "A10-PyTorch-1, xxx" (OPTIONAL) : Only run the specified test stages. Examples: "A10-PyTorch-1, xxx". Note: Does NOT update GitHub check status.
+ --gpu-type "A30, H100_PCIe" (OPTIONAL) : Only run the test stages on the specified GPU types. Examples: "A30, H100_PCIe". Note: Does NOT update GitHub check status.
+ --test-backend "pytorch, cpp" (OPTIONAL) : Skip test stages which don't match the specified backends. Only support [pytorch, cpp, tensorrt, triton]. Examples: "pytorch, cpp" (does not run test stages with tensorrt or triton backend). Note: Does NOT update GitHub pipeline status.
+ --only-multi-gpu-test (OPTIONAL) : Only run the multi-GPU tests. Note: Does NOT update GitHub check status.
+ --disable-multi-gpu-test (OPTIONAL) : Disable the multi-GPU tests. Note: Does NOT update GitHub check status.
+ --add-multi-gpu-test (OPTIONAL) : Force run the multi-GPU tests in addition to running L0 pre-merge pipeline.
+ --post-merge (OPTIONAL) : Run the L0 post-merge pipeline instead of the ordinary L0 pre-merge pipeline.
+ --extra-stage "H100_PCIe-TensorRT-Post-Merge-1, xxx" (OPTIONAL) : Run the ordinary L0 pre-merge pipeline and specified test stages. Examples: --extra-stage "H100_PCIe-TensorRT-Post-Merge-1, xxx".
+ --detailed-log (OPTIONAL) : Enable flushing out all logs to the Jenkins console. This will significantly increase the log volume and may slow down the job.
+ --debug (OPTIONAL) : Experimental feature . Enable access to the CI container for debugging purpose. Note: Specify exactly one stage in the stage-list parameter to access the appropriate container environment. Note: Does NOT update GitHub check status.
+ For guidance on mapping tests to stage names, see docs/source/reference/ci-overview.md 
+and the scripts/test_to_stage_mapping.py helper.
+ kill
+ kill 
+ Kill all running builds associated with pull request.
+ skip
+ skip --comment COMMENT 
+ Skip testing for latest commit on pull request. --comment "Reason for skipping build/test" is required. IMPORTANT NOTE: This is dangerous since lack of user care and validation can cause top of tree to break.
+ reuse-pipeline
+ reuse-pipeline 
+ Reuse a previous pipeline to validate current commit. This action will also kill all currently running builds associated with the pull request. IMPORTANT NOTE: This is dangerous since lack of user care and validation can cause top of tree to break.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ ziyixiong-nv 
+ requested a review
+ from a team 
+ as a code owner 
+ September 15, 2025 10:42 
+ ziyixiong-nv 
+ requested a review
+ from achartier 
+ September 15, 2025 10:42 
+ ziyixiong-nv 
+ force-pushed 
+ the
+ dev-fxiong-bug5517404 
+ branch
+ from
+ 0dc46f8 to
+ a9189c8 
+ Compare 
+ September 15, 2025 10:45 
+ coderabbitai 
+ Bot 
+ commented
+ Sep 15, 2025 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ 📝 Walkthrough 
+ Walkthrough
+ Refactors speculative decoding to derive per-request token sizing from draft_len, updates CUDA graph runner and sampler logic accordingly, and revises a unit test to run in a single-process environment with deterministic spec-decode gating based on draft token length. No public APIs are changed.
+ Changes
+ Cohort / File(s) 
+ Summary 
+ CUDA graph runner draft length refactor 
+ tensorrt_llm/_torch/pyexecutor/cuda_graph_runner.py 
+ Removed cached max_possible_draft_len; compute token_per_request via draft_len + 1 in shared tensors and capture(). enable_spec_decode now delegates to engine.enable_spec_decode. 
+ Sampler zero-draft handling 
+ tensorrt_llm/_torch/pyexecutor/sampler.py 
+ In update_requests, added explicit else branch to set py_num_accepted_draft_tokens and py_rewind_len to 0 when draft length is zero. 
+ Spec decode test adjustments 
+ tests/unittest/_torch/speculative/test_dynamic_spec_decode.py 
+ Run test with TLLM_WORKER_USE_SINGLE_PROCESS="1" and restore afterward. Revised mock to decide spec usage based on active requests’ draft token length. Added necessary imports and minor formatting updates. 
+ Sequence Diagram(s)
+ sequenceDiagram
+ autonumber
+ actor Tester
+ participant Env as Env Var
+ participant Test as test_dynamic_spec_decode
+ participant Sampler as TorchSampler
+ participant Runner as CUDAGraphRunner
+ participant Engine as Engine
+ Tester->>Env: Save TLLM_WORKER_USE_SINGLE_PROCESS
+ Tester->>Env: Set to "1"
+ Note over Test,Sampler: Run speculative decode path
+ Test->>Sampler: update_requests(batch)
+ alt draft_len(req) > 0
+ Sampler->>Sampler: set py_num_accepted_draft_tokens, py_rewind_len
+ else zero draft
+ Sampler->>Sampler: set both fields to 0
+ end
+ Test->>Engine: should_use_spec_decode?(batch)
+ alt any active req has draft_len > 0
+ Engine-->>Test: False
+ else none have drafts
+ Engine-->>Test: True
+ end
+ Test->>Runner: capture()
+ Runner->>Runner: token_per_request = draft_len + 1
+ Runner->>Engine: enable_spec_decode
+ Test-->>Env: Restore original env var
+ Loading 
+ Estimated code review effort
+ 🎯 3 (Moderate) | ⏱️ ~25 minutes
+ Pre-merge checks and finishing touches
+ ❌ Failed checks (1 warning, 1 inconclusive) 
+ Check name 
+ Status 
+ Explanation 
+ Resolution 
+ Docstring Coverage 
+ ⚠️ Warning 
+ Docstring coverage is 22.22% which is insufficient. The required threshold is 80.00%. 
+ You can run @coderabbitai generate docstrings to improve docstring coverage. 
+ Description Check 
+ ❓ Inconclusive 
+ The Description states the core intent—speculative decoding can be toggled and the code must consult engine.enable_spec_decode to pick the correct CUDA graph—which aligns with the file-level summaries (cuda_graph_runner and related changes). However the PR leaves the Test Coverage section empty, retains template boilerplate, and does not explicitly list the relevant tests or how to validate the change, making it incomplete for reviewers. Because required test coverage and verification details are missing, the description is inconclusive as-is. 
+ Please populate the Test Coverage section with the specific tests modified or added (for example tests/unittest/_torch/speculative/test_dynamic_spec_decode.py), include instructions to run or reproduce the verification and any CI stages to check, and remove leftover template boilerplate so the Description is a concise, reviewer-ready summary of what changed and why. If no test changes are required, state that explicitly and explain why. 
+ ✅ Passed checks (1 passed) 
+ Check name 
+ Status 
+ Explanation 
+ Title Check 
+ ✅ Passed 
+ The title follows the repository template (NVBugs ID + [fix]) and succinctly captures the primary intent: selecting the correct CUDA graph for dynamic speculative decoding; this directly matches the changes described in the summary (engine.enable_spec_decode and cuda_graph_runner updates). The phrasing is concise, specific, and useful for someone scanning PR history. 
+ ✨ Finishing touches 
+ 📝 Generate Docstrings
+ 🧪 Generate unit tests 
+ Create PR with unit tests
+ Post copyable unit tests in a comment
+ Tip
+ 👮 Agentic pre-merge checks are now available in preview! 
+ Pro plan users can now enable pre-merge checks in their settings to enforce checklists before merging PRs.
+ Built-in checks – Quickly apply ready-made checks to enforce title conventions, require pull request descriptions that follow templates, validate linked issues for compliance, and more.
+ Custom agentic checks – Define your own rules using CodeRabbit’s advanced agentic capabilities to enforce organization-specific policies and workflows. For example, you can instruct CodeRabbit’s agent to verify that API documentation is updated whenever API schema files are modified in a PR. Note: Upto 5 custom checks are currently allowed during the preview period. Pricing for this feature will be announced in a few weeks.
+ Please see the documentation for more information.
+ Example:
+ reviews :
+ pre_merge_checks :
+ custom_checks :
+ - name : " Undocumented Breaking Changes " 
+ mode : " warning " 
+ instructions : | 
+ Pass/fail criteria: All breaking changes to public APIs, CLI flags, environment variables, configuration keys, database schemas, or HTTP/GraphQL endpoints must be documented in the "Breaking Change" section of the PR description and in CHANGELOG.md. Exclude purely internal or private changes (e.g., code not exported from package entry points or explicitly marked as internal). 
+ Please share your feedback with us on this Discord post .
+ Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
+ ❤️ Share 
+ X 
+ Mastodon 
+ Reddit 
+ LinkedIn 
+ Comment @coderabbitai help to get the list of available commands and usage tips. 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ziyixiong-nv 
+ commented
+ Sep 15, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ziyixiong-nv 
+ requested review from
+ QiJune and 
+ mikeiovine 
+ September 15, 2025 10:48 
+ coderabbitai 
+ Bot 
+ reviewed
+ Sep 15, 2025 
+ View reviewed changes 
+ coderabbitai 
+ Bot 
+ left a comment
+ Copy link
+ Copy Markdown
+ Contributor 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Actionable comments posted: 0 
+ Caution
+ Some comments are outside the diff and can’t be posted inline due to platform limitations.
+ ⚠️ Outside diff range comments (4) 
+ tensorrt_llm/_torch/pyexecutor/sampler.py (1) 
+ 1-1 : Missing NVIDIA Apache‑2.0 header. 
+ Per coding guidelines, prepend the NVIDIA Apache‑2.0 copyright header (current year) to this source file.
+ tensorrt_llm/_torch/pyexecutor/cuda_graph_runner.py (2) 
+ 58-69 : Static buffers sized by current draft_len break when spec decode toggles on later. Allocate for worst‑case (max_draft_len). 
+ _create_shared_static_tensors() uses self.draft_len + 1 , which is 0 when spec decode is off at construction. If spec decode is later enabled (draft_len > 0), capture slices exceed the preallocated size. Allocate using spec_config.max_draft_len + 1 instead.
+ Apply:
+ - token_per_request = self.draft_len + 1 
+ + # Allocate for worst-case so dynamic spec-decode toggling never outgrows buffers 
+ + token_per_request = ( 
+ + (self.spec_config.max_draft_len if self.spec_config is not None else 0) 
+ + + 1 
+ + ) 
+ Optionally, add a runtime guard in capture() to assert the static tensors are large enough for num_tokens_for_capture .
+ 1-1 : Missing NVIDIA Apache‑2.0 header. 
+ Add the required header at the top of this file.
+ tests/unittest/_torch/speculative/test_dynamic_spec_decode.py (1) 
+ 1-1 : Missing NVIDIA Apache‑2.0 header. 
+ Add the required header to this test file as well.
+ 🧹 Nitpick comments (5) 
+ tests/unittest/_torch/speculative/test_dynamic_spec_decode.py (5) 
+ 21-26 : Prefer pytest’s monkeypatch for env var handling. 
+ Cleaner and auto‑restores without try/finally.
+ Example:
+ - @pytest.mark.high_cuda_memory 
+ - def test_dynamic_spec_decode(): 
+ + @pytest.mark.high_cuda_memory 
+ + def test_dynamic_spec_decode(monkeypatch): 
+ - original_value = os.environ.get("TLLM_WORKER_USE_SINGLE_PROCESS") 
+ - os.environ["TLLM_WORKER_USE_SINGLE_PROCESS"] = "1" 
+ + monkeypatch.setenv("TLLM_WORKER_USE_SINGLE_PROCESS", "1") 
+ 73-76 : Patch the attribute via patch.object to avoid fragile import paths. 
+ Import the class and patch the bound attribute.
+ - with patch( 
+ - 'tensorrt_llm._torch.speculative.model_drafter.ModelDrafter.should_use_spec_decode', 
+ - side_effect=mock_should_use_spec_decode): 
+ + from tensorrt_llm._torch.speculative.model_drafter import ModelDrafter 
+ + with patch.object(ModelDrafter, 'should_use_spec_decode', 
+ + side_effect=mock_should_use_spec_decode): 
+ 77-78 : Remove redundant SamplingParams assignment. 
+ sampling_params is immediately reassigned below; drop the first assignment.
+ - sampling_params = SamplingParams(max_tokens=128, temperature=0) 
+...
+ - sampling_params = SamplingParams(max_tokens=10, temperature=0) 
+ + sampling_params = SamplingParams(max_tokens=10, temperature=0) 
+ Also applies to: 84-85
+ 64-65 : Static analysis: unused parameters in mock (ARG001). 
+ Switching to *args above resolves this; otherwise, prefix with _ to silence linters.
+ 63-72 : Make mock robust to bound/unbound call signatures; drop unused params. 
+ File: tests/unittest/_torch/speculative/test_dynamic_spec_decode.py:63-72
+ Apply:
+ - def mock_should_use_spec_decode(requests, max_batch_size, 
+ - max_num_tokens, max_draft_len): 
+ + def mock_should_use_spec_decode(*args, **_): 
+ + # Support both (self, requests, ...) and (requests, ...) signatures 
+ + requests = args[1] if len(args) == 5 else args[0] 
+ for req in requests:
+ if req.state != LlmRequestState.GENERATION_IN_PROGRESS:
+ continue
+ if get_draft_token_length(req) > 0:
+ return False
+ return True 
+ 📜 Review details 
+ Configuration used : Path: .coderabbit.yaml
+ Review profile : CHILL
+ Plan : Pro
+ 📥 Commits 
+ Reviewing files that changed from the base of the PR and between e080294 and a9189c8 .
+ 📒 Files selected for processing (3) 
+ tensorrt_llm/_torch/pyexecutor/cuda_graph_runner.py (3 hunks)
+ tensorrt_llm/_torch/pyexecutor/sampler.py (1 hunks)
+ tests/unittest/_torch/speculative/test_dynamic_spec_decode.py (2 hunks)
+ 🧰 Additional context used 
+ 📓 Path-based instructions (3) 
+ **/*.{h,hpp,hh,hxx,cpp,cxx,cc,cu,cuh,py} 
+ 📄 CodeRabbit inference engine (CODING_GUIDELINES.md) 
+ Use only spaces, no tabs; indent with 4 spaces.
+ Files:
+ tensorrt_llm/_torch/pyexecutor/sampler.py 
+ tensorrt_llm/_torch/pyexecutor/cuda_graph_runner.py 
+ tests/unittest/_torch/speculative/test_dynamic_spec_decode.py 
+ **/*.py 
+ 📄 CodeRabbit inference engine (CODING_GUIDELINES.md) 
+ **/*.py : Python code must target Python 3.8+.
+Indent Python code with 4 spaces; do not use tabs.
+Maintain module namespace when importing; prefer 'from package.subpackage import foo' then 'foo.SomeClass()' instead of importing the class directly.
+Python filenames should be snake_case (e.g., some_file.py).
+Python classes use PascalCase names.
+Functions and methods use snake_case names.
+Local variables use snake_case; prefix 'k' for variables that start with a number (e.g., k_99th_percentile).
+Global variables use upper SNAKE_CASE prefixed with 'G' (e.g., G_MY_GLOBAL).
+Constants use upper SNAKE_CASE (e.g., MY_CONSTANT).
+Avoid shadowing variables from an outer scope.
+Initialize all externally visible members of a class in the constructor.
+Prefer docstrings for interfaces that may be used outside a file; comments for in-function or file-local interfaces.
+Use Google-style docstrings for classes and functions (Sphinx-parsable).
+Document attributes and variables inline so they render under the class/function docstring.
+Avoid reflection when a simpler, explicit approach suffices (e.g., avoid dict(**locals()) patterns).
+In try/except, catch the most specific exceptions possible.
+For duck-typing try/except, keep the try body minimal and use else for the main logic.
+ Files:
+ tensorrt_llm/_torch/pyexecutor/sampler.py 
+ tensorrt_llm/_torch/pyexecutor/cuda_graph_runner.py 
+ tests/unittest/_torch/speculative/test_dynamic_spec_decode.py 
+ **/*.{cpp,cxx,cc,h,hpp,hh,hxx,cu,cuh,py} 
+ 📄 CodeRabbit inference engine (CODING_GUIDELINES.md) 
+ Prepend the NVIDIA Apache-2.0 copyright header with current year to the top of all source files (e.g., .cpp, .h, .cu, .py).
+ Files:
+ tensorrt_llm/_torch/pyexecutor/sampler.py 
+ tensorrt_llm/_torch/pyexecutor/cuda_graph_runner.py 
+ tests/unittest/_torch/speculative/test_dynamic_spec_decode.py 
+ 🧠 Learnings (4) 
+ 📚 Learning: 2025-08-28T10:25:22.370Z 
+ Learnt from: ixlmar
+PR: NVIDIA/TensorRT-LLM#7294
+File: tensorrt_llm/_torch/pyexecutor/sampler.py:887-891
+Timestamp: 2025-08-28T10:25:22.370Z
+Learning: In tensorrt_llm/_torch/pyexecutor/sampler.py, the draft_probs and target_probs tensors have shapes [1, steps] not [steps, vocab_size] as might be expected, making the .squeeze(0) operations appropriate for removing the batch dimension of size 1.
+ Applied to files: 
+ tensorrt_llm/_torch/pyexecutor/sampler.py 
+ 📚 Learning: 2025-08-01T15:14:45.673Z 
+ Learnt from: yibinl-nvidia
+PR: NVIDIA/TensorRT-LLM#6506
+File: examples/models/core/mixtral/requirements.txt:3-3
+Timestamp: 2025-08-01T15:14:45.673Z
+Learning: In TensorRT-LLM, examples directory can have different dependency versions than the root requirements.txt file. Version conflicts between root and examples dependencies are acceptable because examples are designed to be standalone and self-contained.
+ Applied to files: 
+ tests/unittest/_torch/speculative/test_dynamic_spec_decode.py 
+ 📚 Learning: 2025-08-26T09:37:10.463Z 
+ Learnt from: jiaganc
+PR: NVIDIA/TensorRT-LLM#7031
+File: tensorrt_llm/bench/dataclasses/configuration.py:90-104
+Timestamp: 2025-08-26T09:37:10.463Z
+Learning: In TensorRT-LLM, the `get_pytorch_perf_config()` method returns `self.pytorch_config` which can contain default `cuda_graph_config` values, so `llm_args` may already have this config before the extra options processing.
+ Applied to files: 
+ tests/unittest/_torch/speculative/test_dynamic_spec_decode.py 
+ 📚 Learning: 2025-07-28T17:06:08.621Z 
+ Learnt from: moraxu
+PR: NVIDIA/TensorRT-LLM#6303
+File: tests/integration/test_lists/qa/examples_test_list.txt:494-494
+Timestamp: 2025-07-28T17:06:08.621Z
+Learning: In TensorRT-LLM testing, it's common to have both CLI flow tests (test_cli_flow.py) and PyTorch API tests (test_llm_api_pytorch.py) for the same model. These serve different purposes: CLI flow tests validate the traditional command-line workflow, while PyTorch API tests validate the newer LLM API backend. Both are legitimate and should coexist.
+ Applied to files: 
+ tests/unittest/_torch/speculative/test_dynamic_spec_decode.py 
+ 🧬 Code graph analysis (1) 
+ tests/unittest/_torch/speculative/test_dynamic_spec_decode.py (2) 
+ cpp/include/tensorrt_llm/batch_manager/llmRequest.h (1) 
+ LlmRequestState (45-206)
+ tensorrt_llm/_torch/pyexecutor/llm_request.py (2) 
+ get_draft_token_length (574-585)
+ get (102-111)
+ 🪛 Ruff (0.12.2) 
+ tests/unittest/_torch/speculative/test_dynamic_spec_decode.py 
+ 64-64: Unused function argument: max_batch_size 
+ (ARG001)
+ 65-65: Unused function argument: max_num_tokens 
+ (ARG001)
+ 65-65: Unused function argument: max_draft_len 
+ (ARG001)
+ ⏰ Context from checks skipped due to timeout of 90000ms. You can increase the timeout in your CodeRabbit configuration to a maximum of 15 minutes (900000ms). (1) 
+ GitHub Check: Pre-commit Check
+ 🔇 Additional comments (4) 
+ tests/unittest/_torch/speculative/test_dynamic_spec_decode.py (2) 
+ 11-12 : LGTM: imports for LlmRequestState and get_draft_token_length. 
+ These are needed for the new mock logic.
+ 100-105 : LGTM: env var restoration in finally. 
+ Correct cleanup for out‑of‑band env mutation (if not adopting monkeypatch).
+ tensorrt_llm/_torch/pyexecutor/cuda_graph_runner.py (1) 
+ 77-79 : enable_spec_decode exists on the engine but does not supersede is_spec_decode 
+ model_engine.py still defines self.is_spec_decode and then sets self.enable_spec_decode = self.is_spec_decode (model_engine.py:298–299) — engine.enable_spec_decode is present, so cuda_graph_runner's access is safe.
+ Many code paths (model_engine.py, py_executor.py:969, tests) still reference is_spec_decode, so the claim that enable_spec_decode "supersedes" is_spec_decode is incorrect; remove or reword that assertion.
+ Likely an incorrect or invalid review comment.
+ tensorrt_llm/_torch/pyexecutor/sampler.py (1) 
+ 581-583 : Rewind preallocated draft pages on zero-draft path 
+ When get_draft_token_length(req) == 0 the code sets py_rewind_len = 0 which can skip releasing preallocated draft pages — rewind the allocated pages instead.
+ - else: 
+ - req.py_num_accepted_draft_tokens = 0 
+ - req.py_rewind_len = 0 
+ + else: 
+ + req.py_num_accepted_draft_tokens = 0 
+ + # Rewind any preallocated pages for zero-draft requests 
+ + req.py_rewind_len = getattr(req, "py_draft_pages_allocated", 0) 
+ Confirm whether py_draft_pages_allocated can be non‑zero when get_draft_token_length(req) == 0; if yes apply the change, otherwise replace with an assertion documenting the invariant.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ tensorrt-cicd 
+ commented
+ Sep 15, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #18618 [ run ] triggered by Bot
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 15, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #18618 [ run ] completed with state SUCCESS 
+ /LLM/main/L0_MergeRequest_PR pipeline #13976 completed with status: 'FAILURE'
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ziyixiong-nv 
+ force-pushed 
+ the
+ dev-fxiong-bug5517404 
+ branch
+ from
+ a9189c8 to
+ a1fea25 
+ Compare 
+ September 15, 2025 13:02 
+ ziyixiong-nv 
+ commented
+ Sep 15, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ziyixiong-nv 
+ mentioned this pull request
+ Sep 15, 2025 
+ [TRTLLM-6668][feat] Enable overlap scheduler for two-model spec decoding
+ #7651 
+ Merged
+ 1 task 
+ tensorrt-cicd 
+ commented
+ Sep 15, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #18638 [ run ] triggered by Bot
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 15, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #18638 [ run ] completed with state SUCCESS 
+ /LLM/main/L0_MergeRequest_PR pipeline #13996 completed with status: 'FAILURE'
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ mikeiovine 
+ approved these changes
+ Sep 15, 2025 
+ View reviewed changes 
+ ziyixiong-nv 
+ force-pushed 
+ the
+ dev-fxiong-bug5517404 
+ branch
+ from
+ a1fea25 to
+ 33ef542 
+ Compare 
+ September 16, 2025 00:16 
+ ziyixiong-nv 
+ commented
+ Sep 16, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 16, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #18674 [ run ] triggered by Bot
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 16, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #18674 [ run ] completed with state SUCCESS 
+ /LLM/main/L0_MergeRequest_PR pipeline #14028 completed with status: 'FAILURE'
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ziyixiong-nv 
+ commented
+ Sep 16, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 16, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #18728 [ run ] triggered by Bot
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 16, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #18728 [ run ] completed with state SUCCESS 
+ /LLM/main/L0_MergeRequest_PR pipeline #14043 completed with status: 'FAILURE'
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ziyixiong-nv 
+ force-pushed 
+ the
+ dev-fxiong-bug5517404 
+ branch
+ from
+ 75d09ca to
+ 68de057 
+ Compare 
+ September 18, 2025 06:48 
+ ziyixiong-nv 
+ commented
+ Sep 18, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 18, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #19131 [ run ] triggered by Bot
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 18, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #19131 [ run ] completed with state SUCCESS 
+ /LLM/main/L0_MergeRequest_PR pipeline #14356 completed with status: 'FAILURE'
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ziyixiong-nv 
+ force-pushed 
+ the
+ dev-fxiong-bug5517404 
+ branch
+ from
+ 68de057 to
+ 3a57ce7 
+ Compare 
+ September 18, 2025 09:01 
+ ziyixiong-nv 
+ commented
+ Sep 18, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 18, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #19162 [ run ] triggered by Bot
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ 8 hidden items
+ Load more…
+ ziyixiong-nv 
+ commented
+ Sep 19, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 19, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #19225 [ run ] triggered by Bot
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 19, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #19225 [ run ] completed with state SUCCESS 
+ /LLM/main/L0_MergeRequest_PR pipeline #14435 completed with status: 'FAILURE'
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ziyixiong-nv 
+ commented
+ Sep 19, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 19, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #19259 [ run ] triggered by Bot
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ziyixiong-nv 
+ force-pushed 
+ the
+ dev-fxiong-bug5517404 
+ branch
+ from
+ 3a57ce7 to
+ 78712e1 
+ Compare 
+ September 19, 2025 05:21 
+ tensorrt-cicd 
+ commented
+ Sep 19, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #19259 [ run ] completed with state SUCCESS 
+ /LLM/main/L0_MergeRequest_PR pipeline #14465 completed with status: 'FAILURE'
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ziyixiong-nv 
+ added 3 commits
+ September 19, 2025 01:09 
+ [https://nvbugs/5517404][fix] Use the correct cuda graph for dynamic … 
+ …
+ 2aa63c1 
+ …spec dec
+Signed-off-by: ziyixiong-nv <219238287+ziyixiong-nv@users.noreply.github.com> 
+ Update the MockEngine 
+ …
+ 195c8ad 
+ Signed-off-by: ziyixiong-nv <219238287+ziyixiong-nv@users.noreply.github.com> 
+ Fix the issue when switching from spec decoding on to off 
+ …
+ 23d55b4 
+ Signed-off-by: ziyixiong-nv <219238287+ziyixiong-nv@users.noreply.github.com> 
+ ziyixiong-nv 
+ force-pushed 
+ the
+ dev-fxiong-bug5517404 
+ branch
+ from
+ 78712e1 to
+ f021f5e 
+ Compare 
+ September 19, 2025 08:13 
+ ziyixiong-nv 
+ requested a review
+ from a team 
+ as a code owner 
+ September 19, 2025 08:13 
+ ziyixiong-nv 
+ requested a review
+ from kris1025 
+ September 19, 2025 08:13 
+ Fix a few issues 
+ …
+ 0b770ab 
+ Signed-off-by: ziyixiong-nv <219238287+ziyixiong-nv@users.noreply.github.com> 
+ ziyixiong-nv 
+ force-pushed 
+ the
+ dev-fxiong-bug5517404 
+ branch
+ from
+ f021f5e to
+ 0b770ab 
+ Compare 
+ September 19, 2025 08:17 
+ ziyixiong-nv 
+ commented
+ Sep 19, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ziyixiong-nv 
+ requested a review
+ from mikeiovine 
+ September 19, 2025 08:17 
+ tensorrt-cicd 
+ commented
+ Sep 19, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #19328 [ run ] triggered by Bot
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 19, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #19328 [ run ] completed with state SUCCESS 
+ /LLM/main/L0_MergeRequest_PR pipeline #14513 completed with status: 'FAILURE'
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ziyixiong-nv 
+ commented
+ Sep 19, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 19, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #19352 [ run ] triggered by Bot
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ mikeiovine 
+ approved these changes
+ Sep 19, 2025 
+ View reviewed changes 
+ Comment thread 
+ tensorrt_llm/_torch/pyexecutor/py_executor.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tensorrt_llm/_torch/pyexecutor/py_executor_creator.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tensorrt_llm/_torch/speculative/model_drafter.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Resvolve some comments 
+ …
+ 89d8e6d 
+ Signed-off-by: ziyixiong-nv <219238287+ziyixiong-nv@users.noreply.github.com> 
+ ziyixiong-nv 
+ commented
+ Sep 20, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 20, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #19390 [ run ] triggered by Bot
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 20, 2025 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #19390 [ run ] completed with state SUCCESS 
+ /LLM/main/L0_MergeRequest_PR pipeline #14565 completed with status: 'SUCCESS'
+Pipeline passed with automatic retried tests. Check the rerun report for details.
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Hide details 
+ View details 
+ ziyixiong-nv 
+ merged commit 897c4dd 
+ into
+ NVIDIA : main 
+ Sep 21, 2025 
+ 5 of 7 checks passed
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ MrGeva 
+ pushed a commit
+ to nv-auto-deploy/TensorRT-LLM
+ that referenced
+ this pull request
+ Sep 21, 2025 
+ [https://nvbugs/5517404][fix] Use the correct cuda graph for dynamic … 
+ … 
+ fcdf140 
+ …spec dec ( NVIDIA#7728 )
+Signed-off-by: ziyixiong-nv <219238287+ziyixiong-nv@users.noreply.github.com> 
+ nv-lschneider 
+ pushed a commit
+ to nv-lschneider/TensorRT-LLM
+ that referenced
+ this pull request
+ Sep 22, 2025 
+ [https://nvbugs/5517404][fix] Use the correct cuda graph for dynamic … 
+ … 
+ a4644da 
+ …spec dec ( NVIDIA#7728 )
+Signed-off-by: ziyixiong-nv <219238287+ziyixiong-nv@users.noreply.github.com> 
+ zheyuf 
+ mentioned this pull request
+ Sep 23, 2025 
+ [None][fix] Assign [] to req.py_draft_tokens instead of None when spec decode is off
+ #7511 
+ Merged
+ 1 task 
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ coderabbitai[bot] 
+ coderabbitai[bot] left review comments 
+ mikeiovine 
+ mikeiovine approved these changes 
+ achartier 
+ Awaiting requested review from achartier 
+ achartier was automatically assigned from NVIDIA/trt-llm-torch-runtime-devs 
+ QiJune 
+ Awaiting requested review from QiJune 
+ kris1025 
+ Awaiting requested review from kris1025 
+ kris1025 was automatically assigned from NVIDIA/trt-llm-torch-spec-decoding 
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ None yet
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 3 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

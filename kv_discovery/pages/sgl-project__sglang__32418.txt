@@ -1,0 +1,117 @@
+FETCHED: https://github.com/sgl-project/sglang/issues/32418  (is_pr=True, 321987 bytes)
+LAYOUT NODE (PR):
+  number = 32418
+  title = [hicache] Propagate override_kv_cache_dim to the draft host KV pool
+  state = CLOSED
+  closedTime = 2026-08-26T12:45:29Z
+  createdTime = 2026-07-26T02:51:08Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 2
+  baseBranch = main
+  headBranch = fix/hicache-draft-host-pool-kv-cache-dim
+  author = hpcnt-albert
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOLCAjRtoAKDNkYTgyNTJkMDE2OWUwMzM3MjI0ODJhZTE4ODdiYWMwNTZiMDc5OTA"> | fix(hicache): propagate override_kv_cache_dim to the draft host KV pool | … | 3da8252 | maybe_register_hicache_draft() builds the draft host pool with the same slot | count as the target host pool so that host indices stay 1-to-1, but it does not | forward override_kv_cache_dim. When the target host pool was built with an | override (fp8 KV storage, where the per-token stride is kv_lora_rank + block | scales + rope dims kept in the original dtype), the draft host pool fa
+EV: js-timeline-progressive-focus-container" data-gid="RRE_lADOLCAjRs8AAAABKMLUI88AAAAGoiBPfw"> | hpcnt-albert | requested review from | Ying1123, | alphabetc1, | hanming-lu, | hnyls2002, | hzh0425, | ispobock, | merrymercy, | xiezhq-hermann and | yizhang2077 | as code owners | July 26, 2026 02:51 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOLCAjRs8AAAABLuSL8A"> | gemini-code-assist | Bot | commented | Jul 26, 2026 | Copy link | Copy Markdown | Contributor | Caution | The consumer version of Gemini Code Assist on GitHub has been sunset. All code review activity has officially ceased. | --> | All reactions | --> | Sorry, something went wrong. | Uh oh! | <p class="color
+EV: js-timeline-progressive-focus-container" data-gid="CRE_kwDOLCAjRs8AAAACDLiT-w"> | hpcnt-albert | mentioned this pull request | Jul 26, 2026 | [Bug] glm-5.2-w4afp8 +l2(hicache)+l3(mooncake) kvcache dram cluster ,cache hit is slower than prefill+ decoder | #31600 | Closed | 5 tasks | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOLCAjRtoAKGYzMDAyY2NjZWNlODg0ZmI3YmNhMzlhYzdiM2U2ZjM1YWFjMGJmODc"> | test(hicache): guard draft/target host pool per-token stride parity | … | f3002cc | Asserts that a draft host pool built with the target's override_kv_cache_dim | reports the same get_size_per_token() as the target, and that dropping the | override changes it -- so the parity assertion cannot pass for the wrong | reason. | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="CE_lADOLCAjRs8AAAABKMLUI88AAAAG_rOsog"> | hpcnt-albert | closed this by deleting the head repository | Aug 26, 2026 | --> | Sign up for free | to join this conversation on GitHub. | Already have an account? | Sign in to comment | --><form id="pull-request-reviewers-form-4134825277" class="js-issue-sidebar-form" aria-label="Select reviewers" data-reviewers-team-size-check-url="/sgl-project/sglang/pull/32418/review-requests/team-size-check" data-turbo="false" action="/sgl-project/sglang/pull/324
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=hpcnt-albert date=2026-07-26T02:51:08Z]
+Motivation
+
+maybe_register_hicache_draft() creates the draft host KV pool with the same
+
+slot count as the target host pool, and the comment states the intent:
+
+# Create host pool for draft with the same slot count as the target host pool,
+# so that host indices stay 1-to-1 between target and draft KV caches.
+
+The per-token stride is not kept in sync, though. The target host pool can be
+
+constructed with override_kv_cache_dim (see build_kv_host_pool() in
+
+hybrid_pool_assembler.py), which is how the scaled fp8 KV layout is expressed:
+
+kv_lora_rank + kv_lora_rank // quant_block_size * 4 + qk_rope_head_dim * rope_storage_dtype.itemsize.
+
+maybe_register_hicache_draft() does not forward it, so MLATokenToKVPoolHost
+
+falls back to its default in get_size_per_token():
+
+self.kv_cache_dim = self.override_kv_cache_dim or (
+ self.kv_lora_rank + self.qk_rope_head_dim
+)
+
+Result: with fp8 KV + hierarchical cache + a draft (MTP/EAGLE) worker, the target
+
+and draft host pools disagree on bytes-per-token while their host indices are
+
+1-to-1 by construction. A host index therefore addresses slots of two different
+
+sizes on the two sides.
+
+The failure is layout-dependent rather than immediate: light load mostly touches
+
+the region where the two strides still overlap, so it surfaces as sporadic
+
+garbage in restored draft KV, and as batched host↔device copy failures once
+
+enough concurrent requests push transfers past the smaller stride. This matches
+
+the symptom reported in #31600 (fp8 KV + L2/L3 hierarchical cache), which has no
+
+fix on main today.
+
+Modification
+
+Forward the target host pool's override_kv_cache_dim when constructing the
+
+draft host pool, so both sides derive the same per-token stride.
+
+Scoped to the MLA branch, since override_kv_cache_dim is an
+
+MLATokenToKVPoolHost parameter. getattr(..., None) keeps the call safe for
+
+target pools that were built without an override — that path is unchanged.
+
+Tests
+
+Added TestDraftHostPoolStrideParity to
+
+test/registered/unit/mem_cache/test_dsa_pool_host_unit.py, alongside the
+
+existing DSA host-pool unit tests and using the same fixture and CUDA/ROCm
+
+guards.
+
+It asserts that a draft host pool built with the target's override reports the
+
+same get_size_per_token() as the target, and — so the parity assertion cannot
+
+pass for the wrong reason — that dropping the override changes it.
+
+Checklist
+
+- Behavior is unchanged when the target pool has no override (None is the
+
+existing default).
+
+- No new configuration or flags.
+
+- Unit test added next to the existing host-pool tests.
+
+CI States
+
+Latest PR Test (Base): ❌ Run #30185616949
+
+Latest PR Test (Extra): ❌ Run #30185616851
+
+[RENDERED BLOCK author=yizhang2077 date=2026-07-26T02:51:11Z]
+Caution
+The consumer version of Gemini Code Assist on GitHub has been sunset. All code review activity has officially ceased.

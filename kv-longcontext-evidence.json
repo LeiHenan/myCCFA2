@@ -1,0 +1,461 @@
+{
+  "meta": {
+    "topic": "KV cache for long context LLM inference (1M+ tokens, KV memory wall, chunked prefill, context parallelism, ring attention, RAG/system-prompt cache bloat, sink/NIAH accuracy, long-context KV benchmarks, attention sinks)",
+    "gathered": "2026-09-13",
+    "target_hardware_for_classification": "1x RTX PRO 6000 Blackwell 96GB, sm120, driver 580, 208 CPU cores, single node, vLLM 0.29.0, SGLang 0.5.19, Qwen3-4B",
+    "hw_rule": ">1 GPU, >96GB VRAM, NVLink, InfiniBand or multi-node => HW_RULED_OUT",
+    "searches_run": 54,
+    "urls_fetched_attempted": 59,
+    "urls_read_with_real_content": 40
+  },
+
+  "closed_shipped": [
+    {
+      "title": "vLLM v0.29.0 release notes (official GitHub release)",
+      "url": "https://github.com/vllm-project/vllm/releases/tag/v0.29.0",
+      "what_shipped": "Model Runner V2 becomes the default runner for all models (#53183). Long-context/KV-relevant shipped items: 'PCP for DSv3.2 sparse MLA (#52046)'; Kimi-K3 'DCP with DSpark (#52188)' and 'DCP partial prefix cache hits (#50493)'; 'Mamba prefix caching: internal prefill checkpoints deliver a 9%-25% TTFT improvement (#52789)'; prefix_cache_retention_interval becomes a CLI arg defaulting to 0 (#52216); 'KV cache layout standardized under a KVCacheLayout enum (#51718)'. Breaking-change note: MRV2 is now default, and vLLM 'will still fall back to use MRV1 if any of these features are configured' (sequence parallelism, dual-batch overlap, elastic EP, custom logits processors, some spec-decode methods).",
+      "evidence": "Release body read in full via r.jina.ai render of the GitHub release page. Highlights section: 'Model Runner V2 is now the default for all models ([#53183])'. Hardware & Performance section: 'PCP for DSv3.2 sparse MLA ([#52046])'. Deprecation section: 'Now that Model Runner V2 is used by default, we are considering Model Runner V1 deprecated and are targeting v0.32 for its removal.'",
+      "date": "released approx. 2026-09-09 (newreleases.io showed '4 days ago' when fetched 2026-09-13; latest tag at fetch time was v0.29.1rc0)",
+      "read_body": true
+    },
+    {
+      "title": "vLLM docs: chunked prefill is enabled by default in V1 (no opt-out)",
+      "url": "https://docs.vllm.ai/en/latest/configuration/optimization/",
+      "what_shipped": "Official vLLM optimization guide states chunked prefill is unconditionally on in V1. Verbatim: 'In V1, chunked prefill is enabled by default whenever possible. With chunked prefill enabled, the scheduling policy prioritizes decode requests.' Also documents the tuning knob max_num_batched_tokens and its failure mode: 'When chunked prefill is disabled, max_num_batched_tokens must be greater than max_model_len. In that case, if max_num_batched_tokens < max_model_len, vLLM may crash at server start-up.'",
+      "evidence": "Fetched docs page (HTTP 200) plus the raw markdown source https://raw.githubusercontent.com/vllm-project/vllm/main/docs/configuration/optimization.md which contains the full '# Chunked Prefill' section verbatim.",
+      "date": "docs current as of 2026-09-13 (latest dev-preview docs branch)",
+      "read_body": true
+    },
+    {
+      "title": "vLLM docs: Context Parallel Deployment (DCP shipped; prefill CP still under development)",
+      "url": "https://docs.vllm.ai/en/latest/serving/context_parallel_deployment/",
+      "what_shipped": "Decode Context Parallelism is shipped and documented as the simple flag -dcp <size>. Prefill context parallel is documented but explicitly NOT finished. Verbatim from the raw source: 'Both approaches are under active development.' (referring to the two prefill CP strategies: partial-query/full-KV and partial-query/partial-KV with ring-attention). DCP is described as: 'This is as simple as adding -dcp <size> to the command line. Note that size does not increase the number of GPUs we need to launch, but just reduces the KV cache duplication. The dcp size should lie in the range of [1, tp_size/H]. With larger dcp size, the KV cache duplication is reduced, but the communication overhead increases.'",
+      "evidence": "Fetched rendered page (HTTP 200) and the raw markdown source https://raw.githubusercontent.com/vllm-project/vllm/main/docs/serving/context_parallel_deployment.md in full.",
+      "date": "docs current as of 2026-09-13",
+      "read_body": true
+    },
+    {
+      "title": "vLLM docs: KV Offloading Usage Guide (OffloadingConnector, tiered CPU/FS/OBJ/P2P)",
+      "url": "https://docs.vllm.ai/en/latest/features/kv_offloading_usage/",
+      "what_shipped": "Shipped configuration surface for hierarchical KV offload: kv_connector 'OffloadingConnector' with kv_role 'kv_both'; spec_name 'CPUOffloadingSpec' (default, single CPU tier) or 'TieringOffloadingSpec' (multi-tier); secondary_tiers types 'fs', 'obj', 'p2p'; eviction_policy 'lru'/'arc' or custom CachePolicy via cache_policy_module_path; per-request selective offload via kv_transfer_params.max_offload_tokens ('Only the first max_offload_tokens tokens of the request are offloaded... This is useful when a known prefix (e.g., a system prompt or shared context) is worth caching but later request-specific tokens are not.'). Note: 'The OffloadingConnector currently supports CUDA, ROCm, and XPU only.'",
+      "evidence": "Fetched rendered page and the raw source https://raw.githubusercontent.com/vllm-project/vllm/main/docs/features/kv_offloading_usage.md in full (tables, defaults, tuning tips).",
+      "date": "docs current as of 2026-09-13",
+      "read_body": true
+    },
+    {
+      "title": "vLLM blog: 'Tiered KV Cache Offloading in vLLM' (2026-09-10)",
+      "url": "https://vllm.ai/blog/2026-09-10-tiered-kv-offloading",
+      "what_shipped": "Tiered KV offloading framework with host primary tier plus filesystem / object-store / P2P secondary tiers. Verbatim: 'The framework has been available in vLLM since v0.22 and a detailed usage guide can be found here.' Reports the cross-tier capacity curve: 'Up to ~64 conversations - HBM holds the working set... 64-128 conversations - HBM fills up; throughput drops dramatically without offloading. CPU offloading maintains performance. Beyond 128 conversations - CPU cache also fills up. Storage offloading continues serving a high cache hit ratio, more than doubling throughput compared to the alternatives.'",
+      "evidence": "Full blog body read (HTTP 200), including the Performance section and its explicit benchmark setup.",
+      "date": "2026-09-10",
+      "read_body": true
+    },
+    {
+      "title": "vLLM blog: 'Efficient Decode Context Parallelism with vLLM for Long Context Workloads' (2026-08-07)",
+      "url": "https://vllm.ai/blog/2026-08-07-decode-context-parallelism",
+      "what_shipped": "DCP as a first-class vLLM feature: 'vLLM has supported DCP for almost a year'; enabled via decode_context_parallel_size / --decode-context-parallel-size. GQA constraint documented: '(tensor_parallel_size // num_key_value_heads) >= decode_context_parallel_size'. Reports DCP reaching '6,091 tok/s/GPU at c512 while still sitting at just 82% KV usage' versus baseline TP plateauing 'near 1,863 tok/s/GPU'. Also states Future Work includes 'a longer roadmap for Prefill Context Parallelism (PCP)'.",
+      "evidence": "Full blog body read; usage snippets, constraints, and the Future Work section captured verbatim.",
+      "date": "2026-08-07",
+      "read_body": true
+    },
+    {
+      "title": "vLLM blog: 'GLM 5.3 Optimizations, Part 1: Hybrid HiSparse Offloading in vLLM' (2026-09-08)",
+      "url": "https://vllm.ai/blog/2026-09-08-glm53-part1-hybrid-sparse-offloading",
+      "what_shipped": "Hybrid HiSparse: pressure-driven KV residency over vLLM's Hybrid Memory Allocator, composed with the OffloadingConnector. Explicitly staged, not yet GA: 'We are planning to make Hybrid HiSparse widely available in vLLM v0.30. In the meantime, the exact launch commands and benchmark client setup used for these results are in the reproduction appendix below.' Also: 'HiSparse is currently implemented only for NVIDIA GPUs.'",
+      "evidence": "Full blog body read; the v0.30 staging statement and the 'NVIDIA GPUs only' limitation are quoted verbatim from the body.",
+      "date": "2026-09-08",
+      "read_body": true
+    },
+    {
+      "title": "vLLM blog: 'Inside vLLM's New KV Offloading Connector' (2026-01-08)",
+      "url": "https://vllm.ai/blog/2026-01-08-kv-offloading-connector",
+      "what_shipped": "Native CPU KV offloading connector introduced in vLLM 0.11.0, dramatically improved in 0.12.0, with --kv_offloading_backend native --kv_offloading_size <GB> landing around 0.14.0. Reports 'loading KV values from the CPU reduces TTFT by X2-X22' and 'throughput increases by up to X9, even though TTFT for this prompt size only decreased by X2'. Contains an explicit negative-ish measurement: 'For 0% hit rate, the custom kernel approach actually yields 6% worse throughput than without using CPU offloading at all.'",
+      "evidence": "Full blog body read; benchmark table (per-model physical block sizes) and the 0%-hit-rate regression sentence captured.",
+      "date": "2026-01-08",
+      "read_body": true
+    },
+    {
+      "title": "SGLang v0.5.19 release notes (official GitHub release)",
+      "url": "https://github.com/sgl-project/sglang/releases/tag/v0.5.19",
+      "what_shipped": "KV/long-context relevant shipped items: '[DCP] Support decode context parallelism on the trtllm_mla decode path' (#33926), with the stated payoff 'It pays off at long context: at 128K input, plain TP stops scaling around 680 tokens per second on eight B200s, while DCP keeps going as concurrency grows'; 'Using unified radix tree by default for all case' (#35081); HiCache items including '[Unified Tree] feat: support runtime attach/detach for historage' (#35269), '[HiCache] Fix PP inconsistency with HiCache L3' (#27010), '[HiCache] Buffer-only mode for HiCache host memory layer' (#34798), '[HiSparse] Support hisparse multi-step swap io kernel (batch-64 swap latency -48.2% on H20)' (#32162). Breaking changes note: 'The unified radix tree is now the default cache for every configuration'. Beam search 'does not yet mix with speculative decoding, disaggregation, DP attention, or HiCache'.",
+      "evidence": "Full release body read via r.jina.ai render of the GitHub release page, including the 'Breaking Changes & Upgrade Notes' and 'HiCache & Radix Cache' sections.",
+      "date": "released approx. 2026-09-05 (newreleases.io showed '8 days ago' when fetched 2026-09-13; the release contains CP V1 Deprecation PR #36222)",
+      "read_body": true
+    },
+    {
+      "title": "SGLang PR #36223 '[CP V1 Deprecation 2/5] Make strategy prefill CP canonical' - MERGED",
+      "url": "https://github.com/sgl-project/sglang/pull/36223",
+      "what_shipped": "Merged 2026-09-04 by Fridge003 (commit ff1285c). Removes the SGLANG_ENABLE_CP_V2 runtime descriptor and model allowlist, makes the strategy path available without an environment gate, removes generic DSA/prefill v1 CLI options. Part of a 5-PR stack whose parts 3/5 (#36228), 4/5 (#36229) and 5/5 (#36230) are all listed on the page as Merged.",
+      "evidence": "Fetched the PR page via r.jina.ai; the page header shows 'Merged' and 'Fridge003 merged commit ff1285c into main, Sep 4, 2026'. The Summary section lists the exact removals.",
+      "date": "merged 2026-09-04",
+      "read_body": true
+    },
+    {
+      "title": "vLLM PR #41549 '[Bugfix][KVConnector] Support DCP/PCP in OffloadingConnector' - MERGED",
+      "url": "https://github.com/vllm-project/vllm/pull/41549",
+      "what_shipped": "Merged 2026-05-05 (commit 98661fe) by maintainer orozery. Fixes that KV offloading was simply broken under context parallelism. The scale factors were wrong: 'num_blocks vs len(offload_keys): 37 vs 18 (off by xDCP)'. After the fix, multi-shot requests all return 200 OK with zero assertion failures.",
+      "evidence": "Fetched the PR page via r.jina.ai; header shows 'Merged' and 'orozery merged commit 98661fe into vllm-project:main, May 5, 2026'. Fix commit message quoted: 'Multiply OffloadingSpec hash_block_size and gpu_block_size by decode_context_parallel_size * prefill_context_parallel_size...'",
+      "date": "merged 2026-05-05",
+      "read_body": true
+    },
+    {
+      "title": "vLLM RFC #34018 'Helix (Context + Tensor) Parallelism' - CLOSED AS COMPLETED via PR #34883",
+      "url": "https://github.com/vllm-project/vllm/issues/34018",
+      "what_shipped": "The RFC was closed as completed on 2026-03-04 ('LucasWilkinson closed this as completed in #34883'). The RFC itself is notable for its own internal negative finding against Helix's headline numbers: the author (sungsooha) reports on H200 8-GPU DeepSeek-V2-Lite MLA that 'A2A and AG+RS show comparable latency in our benchmarks. The primary benefit of the A2A approach is memory efficiency', and that 'the Helix paper and TensorRT-LLM compare against pure TP (no context parallelism), showing significant latency improvements. In vLLM, standard DCP already captures the latency benefits from KV cache sharding - so our comparison is against a stronger baseline.' Maintainer LucasWilkinson's response was to fold it into DCP rather than add a new mode: 'I think we should fold these improvements into DCP rather than introducing new naming/modes; which just adds to the mental burden for users and developers.'",
+      "evidence": "Full issue thread read via r.jina.ai, including the state badge line 'LucasWilkinson closed this as completed in [#34883] on Mar 4, 2026' and both quoted comments.",
+      "date": "opened 2026-02-06; closed as completed 2026-03-04",
+      "read_body": true
+    },
+    {
+      "title": "SGLang HiCache: 'Fast Hierarchical KV Caching with Your Favorite Storage Backends' (LMSYS blog, 2025-09-10)",
+      "url": "https://www.lmsys.org/blog/2025-09-10-sglang-hicache/",
+      "what_shipped": "Shipped SGLang hierarchical KV cache (HiCache / HiRadixTree) with GPU+CPU tiers plus pluggable storage backends (Mooncake, 3FS, NIXL, local file). Reported results: 'HiCache achieved up to 6x throughput improvement and up to 80% reduction in TTFT'; community report of 'average TTFT dropped by 56%, inference throughput doubled, and the cache hit rate jumped from 40% to 80%'. Data-plane detail: 'for other layers [non-GPU] to prioritize IO efficiency... achieves up to 2x higher throughput in typical deployments' and GPU-assisted I/O kernels 'deliver up to 3x higher throughput for CPU-GPU transfers'.",
+      "evidence": "Full LMSYS blog post read; benchmark section and both community quotes captured verbatim.",
+      "date": "2025-09-10",
+      "read_body": true
+    },
+    {
+      "title": "vLLM forum: chunked prefill is mandatory in V1 and cannot be disabled",
+      "url": "https://discuss.vllm.ai/t/why-is-chunked-prefill-always-enabled-in-v1/1628",
+      "what_shipped": "Thread (Sept 2025) confirming there is no supported opt-out. User: 'I was looking at the V1 code and noticed that chunked prefill is always enabled (even if the user explicitly unsets it in the command line).' Answer: 'In vLLM V1, chunked prefill is always enabled by design and cannot be disabled... Attempts to disable it in V1 will result in an explicit error.' User's own conclusion: 'It also seems that bypassing this would violate scheduler assertions and possibly lead to bugs.'",
+      "evidence": "Full forum thread fetched (HTTP 200); the quoted text appears in posts 1-4, and the page also lists the related topic 'Vllm: error: unrecognized arguments: --no-enable-chunked-prefill'.",
+      "date": "thread dated 2025-09-18; related topics on the same page dated up to January 2026",
+      "read_body": true
+    }
+  ],
+
+  "open": [
+    {
+      "title": "vLLM issue #36311 '[Feature Request] Pluggable KV cache eviction policy with attention sink protection'",
+      "url": "https://github.com/vllm-project/vllm/issues/36311",
+      "who_is_asking": "Community contributor (sahilmalik27 / sinkhole project) filing a feature request with a working monkey-patch proof of concept (sinkhole-vllm); asking vLLM maintainers to accept a BlockEvictionPolicy protocol upstream. The issue ends with four explicit open questions to maintainers, and states 'We are happy to submit this PR once the maintainers confirm the approach.'",
+      "verbatim_quote": "vLLM's block manager evicts KV cache blocks with no awareness of **attention sink tokens** - a small set of tokens (typically 1-2) that absorb 45-55% of total attention mass across nearly all heads and layers. Evicting these tokens silently corrupts generation quality.",
+      "what_is_missing": "No upstream sink-aware eviction exists in vLLM. The issue reports a reference implementation and a monkey-patch, not a merged feature. The requested components (BlockEvictionPolicy protocol, SinkAwareEvictionPolicy, EngineArgs.protect_sink_tokens, BlockSpaceManagerV2 guard) are all still proposed. The issue itself flags unowned paths: 'Are there chunked prefill or speculative decoding paths that also call free() and would need the guard?'",
+      "read_body": true
+    },
+    {
+      "title": "vLLM PR #43374 '[Core] Experimental session KV eviction with attention sinks'",
+      "url": "https://github.com/vllm-project/vllm/pull/43374",
+      "who_is_asking": "gtiwa (Meta, per the Signed-off-by) opening a 1,002-line PR; it is labelled needs-rebase and Open, and a competing implementer (nvbfalk) subsequently proposed converging on a different primitive.",
+      "verbatim_quote": "After evicting positions [s, e), surviving tokens shift from position p to p - (e - s). Their cached K still carries the _old_ RoPE rotation. Without re-rotation, attention against post-eviction queries is numerically wrong on every RoPE model (LLaMA / Mistral / Qwen / Gemma / DeepSeek / Phi-3 / ...).",
+      "what_is_missing": "The RoPE re-rotation kernel that would make this correct. Verbatim from the PR's 'Future work': 'In-tree RoPE re-rotation kernel + a default _post_add_requests implementation, after which the experimental env var can be removed. Copy-on-write path for the shared-block case (instead of raising).' The PR is gated behind VLLM_ENABLE_EXPERIMENTAL_SESSION_EVICTION=1, raises RuntimeError when prefix caching shares blocks, requires an out-of-tree runner, and carries the needs-rebase label with merge conflicts as of 2026-06-03.",
+      "read_body": true
+    },
+    {
+      "title": "vLLM issue #47846 '[Feature]: model runner v2 support prefill context parallelism & cp8+tp8=worldsize8'",
+      "url": "https://github.com/vllm-project/vllm/issues/47846",
+      "who_is_asking": "yiminghub2024 (enterprise inference operator) comparing vLLM 0.24.0 against SGLang 0.5.14; confirmed and triaged by vLLM contributor hello-args and by yitingw1, a developer working on PCP/DCP.",
+      "verbatim_quote": "Yes, vllm doesn't support PCP yet. the PCP design is still under discuss.",
+      "what_is_missing": "Prefill context parallelism (PCP) in Model Runner V2 at all. Pasting the reported server error verbatim from the issue: 'Value error, Model Runner V2 does not yet support: prefill context parallelism'. Also missing: an orthogonal CP dimension (the reporter found 'TP8 + PCP8 results in a world size of 64 because PCP currently multiplies the world size instead of being orthogonal to TP'). Contributor hello-args: 'So I don't think there's currently a configuration that provides SGLang-style TP8 + CP8 on a single 8-GPU node.' Open work is tracked across #43809, #46570 and RFC #46358.",
+      "read_body": true
+    },
+    {
+      "title": "vLLM RFC #51948 '[RFC]: Bounded-memory video sessions - KV retention for long-running streaming-input requests'",
+      "url": "https://github.com/vllm-project/vllm/issues/51948",
+      "who_is_asking": "nvbfalk (vLLM contributor) filing an RFC with a stated two-week feedback period, CC'ing njhill, ywang96, DarkLight1337, joshuadeng and others; a companion PR series #53871/#53876 is in Draft.",
+      "verbatim_quote": "Sessions exist; memory management for sessions does not.",
+      "what_is_missing": "A KV-manager primitive to free a block-aligned token range of a live request, scheduler-side retention/eviction/consolidation, and a session API. The RFC enumerates the gaps itself: '(1) a KV-manager primitive to free a block-aligned token range of a live request (today blocks are freed only when a request ends), with the freed blocks removed from the prefix-cache index so their content can never be served to anyone else; (2) scheduler-side retention/eviction/consolidation driven by per-session parameters...; (3) a thin frontend for the session lifecycle.' It also concedes a measurement gap: 'there is no public / open-source benchmark aiming at exactly this task and it's a known limitation.'",
+      "read_body": true
+    },
+    {
+      "title": "SGLang issue #27252 '[Roadmap] Prefill Context Parallel Refactor'",
+      "url": "https://github.com/sgl-project/sglang/issues/27252",
+      "who_is_asking": "SGLang collaborator Fridge003, filing the roadmap that the [CP V1 Deprecation N/5] series (#36222/#36223/#36228/#36229/#36230) implements. Still Open with 19 tasks.",
+      "verbatim_quote": "The current context parallelism (CP) implementation has grown around model- and backend-specific branches. This makes the behavior hard to reason about and hard to extend.",
+      "what_is_missing": "The refactor itself. The issue lists the concrete unfinished pieces: 'Model coverage is asymmetric. DSA models support both zigzag and interleave; MLA and GQA models historically mostly supported zigzag; DeepSeek V4 uses interleave.' and 'Some topology choices are hardcoded in server args, such as forcing enable_dp_attention=True / dp_size=1 for interleave-style paths.' Backward-compat work is still outstanding: the stack's part 3/5 states that deprecated CP aliases are 'Deliberately kept ... which belong to the in-flight [CP V1 Deprecation N/5] series'. The issue header warns: 'This refactor design is generated by Codex under supervision. Technical details are prone to changes, but the overall design will not change.'",
+      "read_body": true
+    }
+  ],
+
+  "abandoned": [
+    {
+      "title": "SGLang 'CP V1 Deprecation 3/5: Remove generic prefill CP v1 runtime' (PR #36228) - the generic prefill context-parallel v1 runtime was DELETED",
+      "url": "https://github.com/sgl-project/sglang/pull/36228",
+      "closure_status": "REMOVED / MERGED. Header shows 'Merged' and 'Fridge003 merged commit b6c31b1 into main, Sep 7, 2026'. The PR summary reads: 'Remove generic prefill CP v1 branches and the DSA v1 in-seq-split indexer/backend path; remove the obsolete single-request scheduling restriction.' This is part 3 of a 5-part deprecation stack; parts 1, 2, 4 and 5 (#36222, #36223, #36229, #36230) are all shown as Merged.",
+      "stated_reason_verbatim": "The current context parallelism (CP) implementation has grown around model- and backend-specific branches. This makes the behavior hard to reason about and hard to extend.",
+      "date": "merged 2026-09-07",
+      "read_body": true
+    },
+    {
+      "title": "SGLang 'CP V1 Deprecation 1/5' was retitled from 'Prefill CP split' to 'CP V1 Deprecation' - i.e. the effort was reclassified as a deprecation, not a feature split",
+      "url": "https://github.com/sgl-project/sglang/pull/36222",
+      "closure_status": "OPEN as a PR, but the sibling parts of the same stack (#36223, #36228, #36229, #36230) are all Merged; #36222's own page shows 19 tasks and repeated title churn. The reliable, checkable fact is the retitle chain on the page: 'changed the title [Prefill CP split 1/5] Migrate tests to strategy-based prefill CP -> [CP V1 Deprecation 1/5] Migrate tests to strategy-based prefill CP'.",
+      "stated_reason_verbatim": "Server args are confusing. Generic CP, DSA CP, and deprecated NSA aliases use separate flags and mode fields, even though they describe the same two CP sharding strategies.",
+      "date": "opened 2026-08-24; retitled 2026-08-25",
+      "read_body": true
+    },
+    {
+      "title": "SGLang PR #38077 'fix: restore dense MLP token order under prefill CP' - CLOSED without merge, superseded by #38078",
+      "url": "https://github.com/sgl-project/sglang/pull/38077",
+      "closure_status": "CLOSED (not merged) on 2026-09-05 by its own author Fridge003, after the only GPU verification requested failed: '/rerun-test test/registered/radix_cache/unified_radix_tree/test_unified_radix_cache_kl_cp.py: 4-gpu-h100 (1 test): FAILED'. The author's closing comment is the supersession pointer: 'See #38078'. This is a negative result attached to the prefill-CP strategy migration itself.",
+      "stated_reason_verbatim": "After #36223 made strategy-based prefill CP the default CUDA path, the dense Qwen3-32B TP4/CP2 HiCache test produced corrupted generations and timed out. Each CP group carried different token rows into a dense MLP whose RowParallelLinear reduces over the full TP group, so the collective silently summed unrelated tokens.",
+      "date": "opened 2026-09-04; closed 2026-09-05",
+      "read_body": true
+    }
+  ],
+
+  "hw_ruled_out": [
+    {
+      "title": "vLLM blog: Efficient Decode Context Parallelism (DCP) benchmarks",
+      "url": "https://vllm.ai/blog/2026-08-07-decode-context-parallelism",
+      "hardware_requirement": "8x NVIDIA B200 single node, serving Kimi K2.6 in NVFP4, concurrency 16-512. DCP is structurally multi-GPU: the documented GQA constraints require (tensor_parallel_size // num_key_value_heads) >= decode_context_parallel_size, so DCP needs at least 2 GPUs even in the best case.",
+      "evidence": "Verbatim from the blog: 'We ran an experiment on a single 8xB200 node serving Kimi K2.6 in NVFP4 with vLLM'. Also: 'The DCP results in this post were measured on NVIDIA B200 GPUs with Kimi K2.6 in NVFP4'. The docs constraint is quoted from https://raw.githubusercontent.com/vllm-project/vllm/main/docs/serving/context_parallel_deployment.md.",
+      "read_body": true
+    },
+    {
+      "title": "vLLM blog: GLM 5.3 Hybrid HiSparse Offloading benchmarks",
+      "url": "https://vllm.ai/blog/2026-09-08-glm53-part1-hybrid-sparse-offloading",
+      "hardware_requirement": "8x H200 single node (TP8), GLM 5.3, 384 GiB host HiSparse pool + 128 GiB offload pool, max_num_batched_tokens=32768. Also requires a GLM 5.3-class sparse-MLA model plus a separate KV/tensor layout the target Qwen3-4B does not have.",
+      "evidence": "Verbatim: 'We benchmarked GLM 5.3 on 8x H200 using an OpenHands multi-turn agentic workload' and 'Hybrid HiSparse enables running GLM 5.3 at full 1 million context length - previously impossible on this hardware'. The reproduction appendix uses --tensor-parallel-size 8. Additional scope limit: 'HiSparse is currently implemented only for NVIDIA GPUs.'",
+      "read_body": true
+    },
+    {
+      "title": "SGLang HiCache official benchmark (LMSYS blog)",
+      "url": "https://www.lmsys.org/blog/2025-09-10-sglang-hicache/",
+      "hardware_requirement": "Two separate multi-GPU rigs: DeepSeek-R1 on 8x H20-3e using 3FS, and Qwen3-235B-A22B-Instruct-2507 on 8x H800 GPUs with 8x mlx5 RDMA NICs using Mooncake. The 3FS path additionally needs a distributed filesystem; the Mooncake path needs RDMA and a metadata server cluster.",
+      "evidence": "Verbatim from the benchmark section: '# DeepSeek R1 on 8 * H20-3e using 3FS' and '# Qwen3-235B-A22B-Instruct-2507 on 8 x H800 GPUs with 8 x mlx5 RDMA NICs using Mooncake', with launch commands using --tp 8.",
+      "read_body": true
+    },
+    {
+      "title": "Moreh SLOPE: 'Optimizing Long-Context Prefill on Multiple (Older-Generation) GPU Nodes'",
+      "url": "https://moreh.io/blog/optimizing-long-context-prefill-on-multiple-older-generation-gpu-nodes-251226/",
+      "hardware_requirement": "4-node AMD MI250 cluster, 8 devices per node (32 devices total), across-node context parallelism (Ulysses + Ring Attention). This is the clearest multi-node example: the entire premise is that 'prefill computation is confined to a single node' is the limitation being removed.",
+      "evidence": "Verbatim: 'We evaluate SLOPE's prefill performance across different parallelization configurations combining Ulysses, Ring Attention, and Pipeline Parallel in various combinations, and compare it against SGLang with TP=8 on a 4-node AMD MI250 cluster (8 devices per node).' Note this source is a positive result for ring attention, not a negative one - it is listed here only because it cannot run on the target hardware.",
+      "read_body": true
+    },
+    {
+      "title": "SGLang v0.5.19 release note: DCP on the trtllm_mla decode path",
+      "url": "https://github.com/sgl-project/sglang/releases/tag/v0.5.19",
+      "hardware_requirement": "Eight B200s (Blackwell SM100) and the trtllm_mla / CuTe DSL / Tokenspeed MLA decode backends; the measured claim is specifically about an 8-GPU scaling curve. Not applicable to a single sm120 RTX PRO 6000 with a GQA model.",
+      "evidence": "Verbatim from the release highlights: 'DCP on the default Blackwell MLA backend. Decode context parallelism now runs on trtllm_mla, not just CuTe DSL and Tokenspeed. It pays off at long context: at 128K input, plain TP stops scaling around 680 tokens per second on eight B200s, while DCP keeps going as concurrency grows ([#33926]).'",
+      "read_body": true
+    },
+    {
+      "title": "vLLM RFC #34018 Helix benchmarks (and the SGLang mirror task #19436)",
+      "url": "https://github.com/vllm-project/vllm/issues/34018",
+      "hardware_requirement": "8x H200 single node (TP=8/DCP=4, DeepSeek-V2-Lite MLA) in the RFC body; GB200 NVL72 16-GPU for the follow-on numbers. Both are multi-GPU and the GB200 case additionally depends on NVL72-class NVLink connectivity; the RFC explicitly argues A2A 'provides lower latency when all GPUs have direct connectivity (NVSwitch)'.",
+      "evidence": "Verbatim: 'E2E Results (H200 8-GPU, DeepSeek-V2-Lite MLA)' with a 256K/512K/1M TPOT table. A later comment in the same thread from the Zhipu Infra team enumerates further requirements: 'Cross-GPU KV Cache Storage (Interleaved Layout) - Support distributing KV cache across multiple GPUs...' and 'Due to GPU memory constraints during the prefill phase, a portion of the weights is asynchronously loaded via H2D transfer or gathered via all-gather to obtain the full weights.'",
+      "read_body": true
+    },
+    {
+      "title": "vLLM issue #47846 - TP8 + PCP8 world-size explosion",
+      "url": "https://github.com/vllm-project/vllm/issues/47846",
+      "hardware_requirement": "The reporter is on one H20 8-GPU node and cannot start even CP8 alone. The error text documents the structural problem: 'Value error, World size (64) is larger than the number of available GPUs (8) in this node.' Contributor yitingw1 explains: 'vLLM TP8 PCP8==worldsize64, it uses cp8tp8 in attention... In vLLM, PCP is an independent dimension compared with TP. While in SGLang, CP is included in TP.'",
+      "evidence": "Full issue thread read via r.jina.ai, including the pasted server errors and both contributor replies.",
+      "read_body": true
+    },
+    {
+      "title": "SGLang PR #38019/#38077 verification matrix - prefill CP correctness is only validated on multi-GPU H100/H200/B200 runners",
+      "url": "https://github.com/sgl-project/sglang/issues/38019",
+      "hardware_requirement": "4x H100 (the failing shard), 8-gpu-h200, 4-gpu-b200, 8-gpu-b300. There is no single-GPU prefill-CP configuration in play; the whole test matrix is multi-GPU.",
+      "evidence": "Verbatim from the issue: 'on a 4x H100 node at current main.' and the CI labels quoted in PR #36228's verification table: H200: DeepSeek V3 CP + DSA prefill CP; B200: DeepSeek V4 FP4 CP + GPT-OSS MXFP4 CP; H100: GQA prefill CP; B300: GLM-5.2 PD/MTP/CP layer-split.",
+      "read_body": true
+    },
+    {
+      "title": "vLLM x AgentX: agentic long-context serving at scale",
+      "url": "https://vllm.ai/blog/2026-09-08-vllm-agentx",
+      "hardware_requirement": "12x GB300, 16x GB300, 2x B300, up to 1,000+ chips and ~2 MW; P/D disaggregation across nodes; DEP16/DCP8 configurations. Nothing in the reported results is reachable on one 96GB GPU.",
+      "evidence": "Verbatim from the results table and text: 'DeepSeek V4 Pro 1.6T | 12 GB300s / 256', 'Kimi K3 2.8T | 16 GB300s / 48', and 'run on a public benchmark infrastructure of more than 1,000 chips and roughly 2 MW of compute'.",
+      "read_body": true
+    },
+    {
+      "title": "vLLM blog: Tiered KV Cache Offloading performance section",
+      "url": "https://vllm.ai/blog/2026-09-10-tiered-kv-offloading",
+      "hardware_requirement": "2x NVIDIA H100 (TP=2) for the headline capacity curve. The framework itself also needs a host DRAM tier sized well beyond the GPU KV cache ('For single-tier (CPU-only) setups, set cpu_bytes_to_use larger than the aggregate GPU KV cache').",
+      "evidence": "Verbatim benchmark setup: 'Model: Qwen/Qwen3.6-35B-A3B on 2x NVIDIA H100 (TP=2); Storage tier: filesystem backend on local NVMe; Workload: multi-turn conversations, 12K-token initial prompts + 4K tokens per round, 8 rounds; Max request concurrency: 64; Measures prefiller throughput only (prefill-decode disaggregated)'.",
+      "read_body": true
+    }
+  ],
+
+  "negative_result_findings_not_requiring_a_row_status": [
+    {
+      "title": "vLLM AgentX blog, section 'The bitter lessons: where we failed and what we learned'",
+      "url": "https://vllm.ai/blog/2026-09-08-vllm-agentx",
+      "quote_1_pipeline_parallelism": "Pipeline parallelism (PP) does not fit warm agentic turns",
+      "quote_1_body": "Most agentic turns, however, already have system prompts and previous turns cached, and each new request may add only a few hundred or a few thousand tokens. There is not enough fresh computation to fill the pipeline efficiently, and pipeline bubbles consume much of the potential gain. The lesson is not that PP is ineffective. It is effective for cold, compute-heavy prefills, but it should not be the default for warm, prefix-heavy turns that dominate agentic sessions.",
+      "quote_2_dcp_on_dsv4": "Decode context parallelism (DCP) does not transfer cleanly to DeepSeek V4",
+      "quote_2_body": "We invested heavily in overlapping communication with computation and in optimizing the corresponding kernels. Even after those improvements, DCP only matched DEP rather than surpassing it. The result reinforces a broader point from the execution-plane section: parallelism must follow model architecture. A strategy that succeeds for one latent-attention model may not generalize to another.",
+      "quote_3_multinode_dcp": "At larger, multi-node DCP sizes, the communication cost of sharded attention outweighs the compute it saves.",
+      "quote_4_load_balance": "Load balance does not guarantee better performance",
+      "quote_4_body": "However, in our experiments with AgentX, all of these policies underperformed simple session-aware sticky routing. The reason is cache locality... The system can therefore achieve a more balanced queue while processing fewer concurrent requests overall.",
+      "quote_5_chunked_prefill_hol": "By default, vLLM's chunked-prefill scheduler runs in first-in, first-out order. One long prefill can claim the entire token budget step after step, and the short turns queued on the same rank cannot be scheduled at all until the long prefill finishes. This is known as head-of-line blocking",
+      "quote_5_fix": "With DeepSeek V4 Pro on B300s, this increases total tokens per GPU-second (TPGS) by up to 93% and improves P90 interactivity by roughly 2.3x. The trade-off is a higher TTFT for the long request itself, so TTFT-sensitive deployments should use a larger threshold.",
+      "quote_6_pcp_limit": "PCP shards the prompt sequence (the query tensor), distributing compressor and indexer work across ranks, while giving sparse MLA a wider, more efficient head-local shape. For a 32K prompt, PCP8 achieves a 2.65x prefill speedup over TP8, substantially reducing TTFT. However, it still replicates decode-side state across ranks, so it is best suited to dedicated prefill workers.",
+      "read_body": true
+    },
+    {
+      "title": "vLLM CP docs: prefill context parallel is unfinished",
+      "url": "https://docs.vllm.ai/en/latest/serving/context_parallel_deployment/",
+      "quote": "Both approaches are under active development.",
+      "context": "Referring to the two prefill context parallel strategies (partial-query/full-KV, and partial-query/partial-KV using ring-attention). Contrast with the decode section, which is described as fully supported.",
+      "read_body": true
+    },
+    {
+      "title": "TASP: Topology-aware Sequence Parallelism - ring attention communication inefficiency",
+      "url": "https://arxiv.org/abs/2509.26541",
+      "quote": "However, it exhibits low communication efficiency, restricting its practical applicability. This inefficiency stems from the mismatch between the Ring AllGather communication primitive it adopts and the AlltoAll topology of modern accelerators. A Ring AllGather primitive is composed of iterations of ring-styled data transfer, which can only utilize a very limited fraction of an AlltoAll topology.",
+      "what_it_reports": "TASP reports 'up to 3.58 speedup than Ring Attention and its variant Zigzag-Ring Attention' on single-node and multi-node NVIDIA H100 systems and a single-node AMD MI300X system. Note the evaluation hardware is 8-GPU-class and the claimed wins are from replacing the ring primitive, not from ring attention being bad per se.",
+      "date": "v1 2025-09-30; v2 2025-10-09",
+      "read_body": true
+    },
+    {
+      "title": "Attention Entropy is a Key Factor: An Analysis of Parallel Context Encoding with Full-attention-based Pre-trained Language Models",
+      "url": "https://arxiv.org/abs/2412.16545",
+      "quote": "Because parallel patterns are not encountered during training, naively applying parallel encoding leads to performance degradation. However, the underlying reasons and potential mitigations are unclear.",
+      "what_it_reports": "Identifies 'unusually high attention entropy' as the key factor, and finds that 'we adopt two straightforward methods to reduce attention entropy by incorporating attention sinks and selective mechanisms. Experiments on various tasks reveal that these methods effectively lower irregular attention entropy and narrow performance gaps.' This is a direct negative result for splitting a context into sub-pieces and encoding them in parallel: it degrades accuracy, and the paper's own mitigation is to add attention sinks. Venue: ACL 2025. IMPORTANT CAVEAT: this is about parallel context ENCODING (chunked/parallel prefill of one sequence), not about ring-attention transport, so it should not be over-generalised.",
+      "date": "v1 2024-12-21; v2 2025-06-25 (ACL 2025)",
+      "read_body": true
+    },
+    {
+      "title": "KVDiagnosis: A Diagnostic Benchmark for KV-Cache Compression in Long-Context Language Models",
+      "url": "https://arxiv.org/abs/2608.09412",
+      "quote": "First, a 25-method taxonomy groups methods into five mechanism families... On Qwen3-8B, four evidence-aware workloads yield 59 800 supported compressed runs over 2600 sources and 12 520 C-to-W rows. Under fixed diagnostic rules, 63.2% have low or partial measured/projected coverage. Only 19 rows (0.2%) combine high measured/projected coverage with strong likelihood drift",
+      "what_it_reports": "A benchmark whose entire premise is that aggregate long-context task scores hide KV-compression failures: 'KV-cache compression reduces long-context memory, but aggregate task scores reveal neither which correct executions fail nor why.' It constructs FullCache-correct/compressed-wrong (C-to-W) sets per method and reports that 'all ten diagnostics separate failed from successful compression (stratified AUROC 0.684-0.871)'. Note this is a benchmark revealing failures, not a paper claiming compression is useless; it also reports a repair effect ('a controlled 4x evidence-attention boost repairs 29.2%').",
+      "date": "submitted 2026-08-10",
+      "read_body": true
+    },
+    {
+      "title": "The Spike, the Sparse and the Sink: Anatomy of Massive Activations and Attention Sinks (LeCun et al.)",
+      "url": "https://arxiv.org/abs/2603.05498",
+      "quote": "Through systematic experiments, we show that the co-occurrence is largely an architectural artifact of modern Transformer design, and that the two phenomena serve related but distinct functions... We identify the pre-norm configuration as the key choice that enables the co-occurrence, and show that ablating it causes the two phenomena to decouple.",
+      "what_it_reports": "Attention sinks are an artifact of the pre-norm configuration and 'operate locally: they modulate attention outputs across heads and bias individual heads toward short-range dependencies' - i.e. they are not a general long-range retrieval mechanism. It does not claim sinks are useless; the vLLM feature request cites it as the formal characterisation of the phenomenon.",
+      "date": "submitted 2026-03-05",
+      "read_body": true
+    },
+    {
+      "title": "MemGPT/Medha-adjacent head-of-line blocking claim for ring/striped attention",
+      "url": "https://arxiv.org/abs/2409.17264",
+      "quote": "Deploying million-token Large Language Models (LLMs) is challenging because production workloads are highly heterogeneous... This heterogeneity, combined with the quadratic complexity of attention, creates severe convoy effects where long-running requests stall short, interactive ones, degrading system responsiveness.",
+      "what_it_reports": "The v5 abstract states: 'Medha makes preemption practical with a co-designed set of mechanisms -- including Adaptive Chunking and Stream Pipeline Parallel that overcome the perceived inefficiencies and scaling challenges of chunking.' IMPORTANT CAVEAT: the search snippet that surfaced this paper attributed a specific 'Ring and striped attention do not allow preemption of a long context prefill phase' claim to it, but the v5 ABSTRACT I actually retrieved does NOT contain that sentence, and the title in the snippet ('Mnemosyne: Parallelization Strategies...') does not match the retrieved title ('No Request Left Behind: Tackling Heterogeneity in Long-Context LLM Inference with Medha'). I am therefore recording only the abstract text I verified and flagging the chunking claim as NOT verified verbatim.",
+      "date": "v1 2024-09-25; v5 2025-11-26",
+      "read_body": true
+    }
+  ],
+
+  "queries_run": {
+    "web_search_queries": [
+      "ring attention poor scaling efficiency negative result long context",
+      "context parallelism long context LLM scaling efficiency does not pay off",
+      "attention sink hurts long context performance failure",
+      "chunked prefill degrades accuracy vLLM",
+      "vLLM 0.29 release notes chunked prefill default",
+      "SGLang 0.5.19 release notes hierarchical KV cache",
+      "vLLM context parallelism support release",
+      "SGLang attention sink support long context",
+      "site:github.com/sgl-project/sglang docs advanced_features dcp.md decode context parallelism",
+      "SGLang 0.5.x release notes chunked prefill default long context",
+      "vLLM chunked prefill default enabled documentation",
+      "context parallelism poor scaling efficiency paper 2025 negative",
+      "ring attention scaling efficiency poor communication overhead 2025 paper",
+      "context parallelism prefill deprecation SGLang strategy-based CP",
+      "attention sink ablation does not help long context 2025",
+      "KV cache compression fails needle in a haystack long context evaluation",
+      "vLLM blog long context KV cache 2026",
+      "lmsys.org blog long context KV cache 2026",
+      "vLLM 0.29 chunked prefill max_num_batched_tokens default",
+      "SGLang HiCache long context benchmark",
+      "vLLM attention sink support issue sink token long context",
+      "SGLang attention sink sink token support long context issue",
+      "KV cache quantization degradation needle in haystack long context 2025",
+      "vLLM prefill context parallelism PCP support status 2026",
+      "RULER benchmark long context KV cache compression failure 2025 arxiv",
+      "chunked prefill accuracy degradation long context prefill chunking",
+      "system prompt cache bloat KV cache many documents RAG memory",
+      "context parallelism ring attention not worth it single node NVLink",
+      "\"Do New Attention Mechanisms Actually Fix Attention Sinks at Million-Token Context\" arxiv",
+      "attention sink does not help long context empirical study 2026 arxiv",
+      "needle in a haystack KV cache eviction fails long context 2025 arxiv",
+      "ring attention scaling efficiency poor results single node PCIe",
+      "\"The Spike, the Sparse and the Sink\" arXiv 2603.05498 attention sinks",
+      "long context KV cache offloading does not help throughput negative 2026",
+      "hierarchical KV cache CPU offload no benefit single GPU",
+      "vLLM 0.29.0 breaking changes removed KV cache feature",
+      "RULER needle in haystack KV cache compression accuracy drop 2026",
+      "\"chunked prefill\" accuracy degradation attention long context study",
+      "vLLM prefill context parallelism not supported model runner v2 issue",
+      "long context KV benchmark accuracy degradation 1M tokens 2026",
+      "sglang docs github repository docs folder markdown hicache.md path",
+      "vLLM PCP prefill context parallelism merged PR 2026",
+      "context parallelism does not help single node long context decode latency",
+      "attention sink token support vLLM merged PR 2026",
+      "\"attention sinks\" harmful long context perplexity degradation study 2026",
+      "KV cache compression needle in a haystack fails retrieval 2026 paper",
+      "sequence parallelism ring attention scaling efficiency sublinear 2026",
+      "context parallelism not worth it communication bound long context 2026",
+      "arxiv 2606.14779 Unified KV Pooling long context LLM serving",
+      "TASP topology-aware sequence parallelism ring attention limitations arxiv 2509.26541",
+      "Mesh-Attention ring attention communication inefficiency arxiv 2512.20968",
+      "chunked prefill hurts long context prefill performance study 2026",
+      "\"Attention Entropy is a Key Factor\" parallel context encoding degradation arxiv",
+      "vLLM issue 34018 Helix parallelism context tensor long context decoding"
+    ],
+    "urls_fetched": [
+      "https://github.com/vllm-project/vllm/releases/tag/v0.29.0",
+      "https://github.com/sgl-project/sglang/releases",
+      "https://github.com/vllm-project/vllm/issues/30055",
+      "https://arxiv.org/abs/2409.17264",
+      "https://api.github.com/repos/vllm-project/vllm/releases/tags/v0.29.0",
+      "https://api.github.com/repos/sgl-project/sglang/releases?per_page=30",
+      "https://docs.vllm.ai/en/latest/configuration/optimization.html",
+      "https://docs.sglang.ai/advanced_features/hicache.html",
+      "https://docs.vllm.ai/en/latest/serving/context_parallel_deployment/",
+      "https://docs.vllm.ai/en/latest/features/kv_offloading_usage/",
+      "https://newreleases.io/project/github/vllm-project/vllm/release/v0.29.0",
+      "https://docs.sglang.io/docs/advanced_features/hicache",
+      "https://raw.githubusercontent.com/vllm-project/vllm/main/docs/serving/context_parallel_deployment.md",
+      "https://raw.githubusercontent.com/sgl-project/sglang/main/docs/advanced_features/hicache.md",
+      "https://raw.githubusercontent.com/vllm-project/vllm/main/docs/features/kv_offloading_usage.md",
+      "https://raw.githubusercontent.com/sgl-project/sglang/main/docs/advanced_features/dcp.md",
+      "https://newreleases.io/project/github/sgl-project/sglang/release/v0.5.19",
+      "https://raw.githubusercontent.com/sgl-project/sglang/main/docs/advanced_features/attention_backend.md",
+      "https://raw.githubusercontent.com/vllm-project/vllm/main/docs/configuration/optimization.md",
+      "https://github.com/sgl-project/sglang/pull/36222",
+      "https://discuss.vllm.ai/t/why-is-chunked-prefill-always-enabled-in-v1/1628",
+      "https://vllm.ai/blog/2026-08-07-decode-context-parallelism",
+      "https://github.com/sgl-project/sglang/issues/27252",
+      "https://www.lmsys.org/blog/2025-09-10-sglang-hicache/",
+      "https://vllm.ai/blog/2026-01-08-kv-offloading-connector",
+      "https://vllm.ai/blog/2026-09-08-glm53-part1-hybrid-sparse-offloading",
+      "https://api.github.com/repos/sgl-project/sglang/pulls/36223",
+      "https://vllm.ai/blog/2026-09-08-vllm-agentx",
+      "https://raw.githubusercontent.com/sgl-project/sglang/main/docs/advanced_features/hicache_design.md",
+      "https://vllm.ai/blog/2026-09-10-tiered-kv-offloading",
+      "https://api.github.com/repos/vllm-project/vllm/issues/36311",
+      "https://arxiv.org/abs/2608.09412",
+      "https://github.com/sgl-project/sglang/commit/5d4301c4635bacf61a933dde0c789cdda45f1222",
+      "https://github.com/vllm-project/vllm/pull/43374",
+      "https://api.github.com/repos/vllm-project/vllm/issues/36311/comments",
+      "https://raw.githubusercontent.com/sgl-project/sglang/main/docs/advanced_features/hicache_best_practices.md",
+      "https://r.jina.ai/https://github.com/vllm-project/vllm/issues/36311",
+      "https://moreh.io/blog/optimizing-long-context-prefill-on-multiple-older-generation-gpu-nodes-251226/",
+      "https://raw.githubusercontent.com/sgl-project/sglang/main/docs/advanced_features/hicache.mdx",
+      "https://r.jina.ai/https://github.com/sgl-project/sglang/pull/36222",
+      "https://r.jina.ai/https://github.com/sgl-project/sglang/issues/27252",
+      "https://r.jina.ai/https://github.com/vllm-project/vllm/pull/43374",
+      "https://r.jina.ai/https://github.com/sgl-project/sglang/pull/36223",
+      "https://r.jina.ai/https://github.com/sgl-project/sglang/pull/36228",
+      "https://r.jina.ai/https://github.com/vllm-project/vllm/issues/51948",
+      "https://r.jina.ai/https://github.com/sgl-project/sglang/issues/38019",
+      "https://arxiv.org/abs/2603.05498",
+      "https://newreleases.io/project/github/vllm-project/vllm/release/v0.29.1",
+      "https://raw.githubusercontent.com/sgl-project/sglang/main/docs/advanced_features/hicache_design.mdx",
+      "https://r.jina.ai/https://github.com/vllm-project/vllm/issues/47846",
+      "https://r.jina.ai/https://github.com/sgl-project/sglang/releases/tag/v0.5.19",
+      "https://r.jina.ai/https://github.com/vllm-project/vllm/pull/41549",
+      "https://r.jina.ai/https://github.com/vllm-project/vllm/releases/tag/v0.29.0",
+      "https://arxiv.org/abs/2509.26541",
+      "https://r.jina.ai/https://github.com/vllm-project/vllm/issues/34018",
+      "https://arxiv.org/abs/2412.16545",
+      "https://r.jina.ai/https://github.com/sgl-project/sglang/issues/19436",
+      "https://r.jina.ai/https://github.com/sgl-project/sglang/pull/38077",
+      "https://r.jina.ai/https://github.com/sgl-project/sglang/issues/19436?state=1"
+    ],
+    "fetch_notes": [
+      "api.github.com returned HTTP 403 'API rate limit exceeded' for all 5 attempts (shared unauthenticated egress IP); GitHub issue/PR bodies were instead retrieved successfully through the r.jina.ai text renderer.",
+      "Plain github.com issue/PR/release HTML returns ~10k chars of navigation chrome before the body and was truncated by the fetcher; raw.githubusercontent.com works for repo docs, r.jina.ai works for issues/PRs/releases.",
+      "raw.githubusercontent.com 404s (docs not on the main branch at those paths): sglang docs/advanced_features/{hicache.md,attention_backend.md,dcp.md,server_arguments.md,hicache_best_practices.md,hicache_design.md,hicache.mdx}. The SGLang docs source path was confirmed to be docs/advanced_features/ via a GitHub blob URL surfaced in search (hicache_best_practices.md at commit c69844f0), but the file is not present on the branch I tried.",
+      "newreleases.io has vllm v0.29.0 and sglang v0.5.19 but returns 404 for vllm v0.29.1 (only v0.29.1rc0 exists).",
+      "SGLang issue #19436 state badge was NOT surfaced by the text renderer on two attempts, so I did not record an open/closed status for it. Its body is still useful as a vendor-neutral restatement of Helix parameters and GB200 numbers."
+    ]
+  }
+}

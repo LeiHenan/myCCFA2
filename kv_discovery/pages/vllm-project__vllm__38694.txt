@@ -1,0 +1,82 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/38694  (is_pr=False, 280309 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 38694
+  title = [RFC]: O(1) KV Cache for vLLM: 4.8x Speedup & 22x More Accurate than TurboQuant on Qwen2.5-7B
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2026-04-01T05:47:56Z
+  updatedAt = 2026-08-15T02:00:46Z
+  closedAt = None
+  author = JEWONMOON
+  labels = ['feature request', 'stale']
+
+[GRAPHQL COMMENT by gaby assoc=NONE at 2026-04-03T03:00:26Z]
+@JEWONMOON Duplicate of https://github.com/vllm-project/vllm/issues/38171
+
+[GRAPHQL COMMENT by gaby assoc=NONE at 2026-04-15T12:26:47Z]
+Turboquant support landed in https://github.com/vllm-project/vllm/pull/38479
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-07-15T02:17:24Z]
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-08-15T02:00:46Z]
+This issue has been automatically closed due to inactivity. Please feel free to reopen if you feel it is still relevant. Thank you!
+
+[GRAPHQL CLOSED by github-actions at 2026-08-15T02:00:46Z reason=NOT_PLANNED]
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=JEWONMOON date=Apr 1, 2026]
+🚀 The feature, motivation and pitch
+
+Hi vLLM team and community,
+
+First, thank you for building and maintaining PagedAttention—it’s the absolute gold standard for LLM serving.
+
+I’m opening this RFC to discuss a potential architectural pathway for extreme long-context serving (128k+). Currently, as context length $T$ grows, the memory bandwidth required during the generation phase scales at $O(T)$. While quantization (FP8, AWQ, or methods like TurboQuant/QJL) reduces the footprint, it often introduces significant variance explosion (degrading model quality) and still fundamentally scales linearly.
+
+Our research team (Singularity Principle) has developed a different mathematical approach based on trace-class admissibility, resulting in the Nuclear ZFC (NZFC) architecture. By maintaining a bounded prototype memory and using an online mass-bias direct readout, we can execute attention without fully materializing the past KV cache, freezing the query readout complexity at strictly $O(1)$.
+
+We recently completed a PyTorch-level PoC on Qwen2.5-7B (GQA, 1024 ctx). The benchmark directly compares our scatter_add_ based FixC engine against the TurboQuant baseline.
+
+Hard Metrics:
+
+- 
+Query Latency: Flat at 1.04ms ($O(1)$), compared to the baseline scaling to 16.22ms at 1K tokens.
+
+- 
+End-to-End Speedup: 3.66ms vs 17.65ms (4.8x faster).
+
+- 
+Quality (rel-L2 Error): 0.020, which is 22x more accurate than the 1-bit QJL baseline (0.437).
+
+You can reproduce these results using our Colab PoC here:
+
+👉 https://colab.research.google.com/drive/1tISt1MWcti8oubURkDhTlwS7rf_BG4wB?usp=sharing
+
+(Note: Core IP is patent-pending (PCT/KR2026/002215) but fully open for open-source evaluation and academic review).
+
+Integration Question for vLLM Maintainers:
+
+Our next milestone is writing custom Triton/CUDA kernels for the FixC engine (scatter_add_ updates and mass-log bias readout).
+
+Given vLLM's PagedAttention architecture, what would be the most non-intrusive way to introduce a custom $O(1)$ attention backend? Specifically, since NZFC modifies both the cache update (in-place accumulation) and the readout mechanics, should we look into adding a new AttentionBackend subclass, or would this require deeper modifications to the Block Manager?
+
+We would deeply appreciate any architectural feedback, code roasting, or pointers on how to best integrate this with vLLM's ecosystem.
+
+Thanks!
+
+Alternatives
+
+No response
+
+Additional context
+
+No response
+
+Before submitting a new issue...
+
+- Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page, which can answer lots of frequently asked questions.

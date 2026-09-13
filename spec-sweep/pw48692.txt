@@ -1,0 +1,834 @@
+[MRV2][Spec Decode] Adaptive Speculative Decoding - Initial Support by benchislett · Pull Request #48692 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [MRV2][Spec Decode] Adaptive Speculative Decoding - Initial Support - # 48692 
+ # 48692 
+ Closed 
+ benchislett wants to merge 17 commits into vllm-project:main vllm-project/vllm:main from benchislett:dspark-adaptive benchislett/vllm:dspark-adaptive Copy head branch name to clipboard 
+ Conversation Commits 17  ( 17 ) Checks Files changed 
+ Closed 
+ [MRV2][Spec Decode] Adaptive Speculative Decoding - Initial Support # 48692 benchislett wants to merge 17 commits into vllm-project:main vllm-project/vllm:main from benchislett:dspark-adaptive benchislett/vllm:dspark-adaptive Copy head branch name to clipboard 
+ Conversation
+ benchislett 
+ commented
+ Jul 15, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Member 
+ Purpose
+ This PR implements initial support for Adaptive Speculative Decoding using DSpark's confidence head: we enable fully variable-length per request speculative decoding with FULL CUDA Graph support. This PR does not implement online dynamic scheduling of the verification budget; instead, we rely on user-provided num_speculative_tokens_per_batch_size to determine what size pool of draft tokens to verify at each batch size.
+ This PR fleshes out a number of fundamental aspects of variable-length speculation, such as:
+ Attention metadata flags to declare compatibility with variable length decoding
+ FULL CUDA Graph compatibility
+ Structured outputs support
+ Logprobs support
+ Proper integration with statistics capture
+ Mixed prefill/decode batch compatibility
+ Testing
+ Since only FLASH_ATTENTION is currently functional, I run with Qwen3-8B-FP8 and the corresponding DeepSeek-trained DSpark . Since verification is so cheap on an 8B model, no significant speedup is measurable; that is not the objective of this PR. However, I do observe an increase in acceptance rate under a fixed verification budget:
+ Acceptance Rate Study: SPEED-Bench, All Categories, Concurrency 128, Shuffled 
+ SPEED-Bench, All Categories, Concurrency 128, Shuffled 
+ Category 
+ Baseline (K=5) 
+ Baseline (K=7) 
+ Adaptive (Max K=7, Effective K=5 Per Request) 
+ coding 
+ 4.6267 
+ 5.5640 
+ 5.0972 
+ humanities 
+ 3.2844 
+ 3.6392 
+ 3.5036 
+ math 
+ 4.2535 
+ 5.0100 
+ 4.5879 
+ multilingual 
+ 3.0081 
+ 3.4400 
+ 3.3648 
+ qa 
+ 2.9236 
+ 3.2078 
+ 3.0896 
+ rag 
+ 3.7169 
+ 4.2810 
+ 4.0475 
+ reasoning 
+ 3.9697 
+ 4.5843 
+ 4.2913 
+ roleplay 
+ 2.3373 
+ 2.4564 
+ 2.4243 
+ stem 
+ 3.5963 
+ 4.1574 
+ 3.9192 
+ summarization 
+ 2.9987 
+ 3.3062 
+ 3.1559 
+ writing 
+ 3.1799 
+ 3.4470 
+ 3.2988 
+ Overall Average 
+ 3.4450 
+ 3.9176 
+ 3.7073 
+ Measured using NVIDIA SPEED-Bench harness, thinking off, vLLM config:
+ engine_args:
+ speculative_config:
+ adaptive_verification: true
+ num_speculative_tokens_per_batch_size:
+ - [1, 128, 5]
+ attention_backend: FLASH_ATTN
+ gpu_memory_utilization: 0.75
+ attention_backend: FLASH_ATTN
+ max_num_batched_tokens: 32768
+sampling_kwargs:
+ temperature: 0.7
+ top_p: 0.8
+ top_k: 20
+dataset_kwargs:
+ shuffle_seed: 42
+ I also implement various unit tests, including E2E coverage of acceptance length, GSM8k correctness, and an assert that we're observing almost-exactly N*K draft tokens at each step.
+ Essential Elements of an Effective PR Description Checklist 
+ The purpose of the PR, such as "Fix some issue (link existing issues this PR will resolve)".
+ The test plan, such as providing test command.
+ The test results, such as pasting the results comparison before and after, or e2e results
+ (Optional) The necessary documentation update, such as updating supported_models.md and examples for a new model.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ 👍 
+ 4 
+ depthfirst-app[bot], ekagra-ranjan, olka, and zheyuf reacted with thumbs up emoji 
+ 🚀 
+ 4 
+ mgoin, ekagra-ranjan, olka, and zheyuf reacted with rocket emoji 
+ 👀 
+ 1 
+ depthfirst-app[bot] reacted with eyes emoji 
+ All reactions 
+ 👍 
+ 4 reactions 
+ 🚀 
+ 4 reactions 
+ 👀 
+ 1 reaction 
+ benchislett 
+ added 10 commits
+ July 9, 2026 15:03 
+ Adaptive verification for DSpark 
+ …
+ bed2ad9 
+ Signed-off-by: Benjamin Chislett <bchislett@nvidia.com> 
+ refactor attention behaviour requirement 
+ …
+ 95e8e83 
+ Signed-off-by: Benjamin Chislett <bchislett@nvidia.com> 
+ logprobs and structured outputs compatibility 
+ …
+ 015a47e 
+ Signed-off-by: Benjamin Chislett <bchislett@nvidia.com> 
+ auto-select attn backend and don't restrict drafter attn/cg mode 
+ …
+ 4c0e24c 
+ Signed-off-by: Benjamin Chislett <bchislett@nvidia.com> 
+ fix pre-commit 
+ …
+ e29764f 
+ Signed-off-by: Benjamin Chislett <bchislett@nvidia.com> 
+ Merge branch 'main' into dspark-adaptive 
+ …
+ 6658dfc 
+ Signed-off-by: Benjamin Chislett <bchislett@nvidia.com> 
+ fix autoselection 
+ …
+ 4ada4c6 
+ Signed-off-by: Benjamin Chislett <bchislett@nvidia.com> 
+ fallback to dynamic-SD from adaptive-SD when batch is irregular (e.g.… 
+ …
+ 6eb9504 
+ … mixed prefill/decode)
+Signed-off-by: Benjamin Chislett <bchislett@nvidia.com> 
+ fix specdec metrics 
+ …
+ 623f749 
+ Signed-off-by: Benjamin Chislett <bchislett@nvidia.com> 
+ E2E dynamic adaptive DSpark tests 
+ …
+ 12128ad 
+ Signed-off-by: Benjamin Chislett <bchislett@nvidia.com> 
+ benchislett 
+ requested review from
+ AndreasKaratzas , 
+ ApostaC , 
+ LucasWilkinson , 
+ MatthewBonanni , 
+ WoosukKwon , 
+ alexm-redhat , 
+ heheda12345 , 
+ ivanium , 
+ mgoin , 
+ njhill , 
+ orozery , 
+ robertgshaw2-redhat , 
+ sighingnow , 
+ tlrmchlsmth , 
+ vadiklyutiy , 
+ yewentao256 , 
+ youkaichao , 
+ ywang96 , 
+ zhuohan123 and 
+ zyongye 
+ as code owners 
+ July 15, 2026 05:41 
+ --> 
+ 20 hidden items
+ Load more…
+ benchislett 
+ added 4 commits
+ July 15, 2026 17:50 
+ Refactor: Scheduler-Blind DSD 
+ …
+ 4ea7674 
+ Signed-off-by: Benjamin Chislett <bchislett@nvidia.com> 
+ bugfix 
+ …
+ 8407b07 
+ Signed-off-by: Benjamin Chislett <bchislett@nvidia.com> 
+ cleanup 
+ …
+ 4e28e15 
+ Signed-off-by: Benjamin Chislett <bchislett@nvidia.com> 
+ Use device query lengths flag for attn backends 
+ …
+ 6d4f428 
+ Signed-off-by: Benjamin Chislett <bchislett@nvidia.com> 
+ benchislett 
+ reopened this
+ Jul 16, 2026 
+ benchislett 
+ requested a review
+ from luccafong 
+ as a code owner 
+ July 16, 2026 01:54 
+ mergify 
+ Bot 
+ commented
+ Jul 16, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Documentation preview: https://vllm--48692.org.readthedocs.build/en/48692/ 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ benchislett 
+ commented
+ Jul 16, 2026 
+ View reviewed changes 
+ Comment thread 
+ tests/v1/e2e/spec_decode/test_spec_decode.py 
+ "attention_backend": "FLASH_ATTN", 
+ "draft_sample_method": "probabilistic", 
+ }, 
+ gpu_memory_utilization=0.8, 
+ benchislett 
+ Jul 16, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ Author 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Was getting OOM here due to probabilistic drafting taking up lots of memory for logits, not accounted for by profiler. Not sure if this is safe for CI or not
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ benchislett 
+ commented
+ Jul 16, 2026 
+ View reviewed changes 
+ Comment thread 
+ vllm/config/speculative.py 
+ return self.num_speculative_tokens_per_batch_size is not None 
+ return ( 
+ self.num_speculative_tokens_per_batch_size is not None 
+ and not self.adaptive_verification 
+ benchislett 
+ Jul 16, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ Author 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Bit of a confusing override here; this is so the scheduler treats adaptive verification as a separate mode (and the model runner decides how many decode tokens to run)
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ benchislett 
+ commented
+ Jul 16, 2026 
+ View reviewed changes 
+ Comment thread 
+ vllm/v1/core/sched/scheduler.py 
+ scheduled_spec_token_ids 
+ and (generated_token_ids or self.num_sampled_tokens_per_step == 0) 
+ and request.async_tokens_to_discard == 0 
+ if scheduled_spec_token_ids and ( 
+ benchislett 
+ Jul 16, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ Author 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ All of this diff is just shuffling things around to fix a bug in the specdec metrics.
+Previously we were skipping the metrics observation in cases where request.async_tokens_to_discard == 0 , and clearing the entry when num_draft_tokens == 0 .
+ This overcounts the num_drafts since we're only skipping the collection of num_draft_tokens and num_accepted_tokens , throwing off the scores.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ benchislett 
+ Jul 16, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Member 
+ Author 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Needed for the test where we assert that num_drafts == K * num_drafted_tokens in the adaptive SD case.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ benchislett 
+ added 3 commits
+ July 15, 2026 22:37 
+ trim tests 
+ …
+ 7f5bb6b 
+ Signed-off-by: Benjamin Chislett <bchislett@nvidia.com> 
+ simplify tests 
+ …
+ 8c99e72 
+ Signed-off-by: Benjamin Chislett <bchislett@nvidia.com> 
+ some comments 
+ …
+ 222c80b 
+ Signed-off-by: Benjamin Chislett <bchislett@nvidia.com> 
+ benchislett 
+ commented
+ Jul 16, 2026 
+ View reviewed changes 
+ Comment thread 
+ vllm/v1/worker/gpu/model_runner.py 
+ query_start_loc = self.input_buffers.query_start_loc[: num_reqs_padded + 1] 
+ if draft_tokens: 
+ expanded_idx_mapping, expanded_local_pos = expand_idx_mapping( 
+ benchislett 
+ Jul 16, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ Author 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Much of this here is rearranging, since expanded_idx_mapping depends on cu_num_logits, which we construct explicitly in the adaptive verification pathway
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ benchislett 
+ commented
+ Jul 16, 2026 
+ View reviewed changes 
+ Comment thread 
+ vllm/v1/worker/gpu/structured_outputs.py 
+ max_num_logits: int, 
+ vocab_size: int, 
+ device: torch.device, 
+ mask_stride: int, 
+ benchislett 
+ Jul 16, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ Author 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ We update structured outputs so it can apply the bitmask to the varlen batch. mask_stride effectively makes the bitmask tensor into one that includes padding: and then we read the varlen indices in the kernel, using position_is_active to skip any slots for tokens we did not choose to verify
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ mergify 
+ Bot 
+ commented
+ Jul 17, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ This pull request has merge conflicts that must be resolved before it can be
+merged. Please rebase the PR, @benchislett .
+ https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ mergify 
+ Bot 
+ added
+ the 
+ needs-rebase
+ label
+ Jul 17, 2026 
+ matthewkotila 
+ mentioned this pull request
+ Jul 17, 2026 
+ [Frontend][Core][Spec Decode] Per-request acceptance stats in OpenAI API responses
+ #48915 
+ Merged
+ seongyun1104 
+ mentioned this pull request
+ Jul 17, 2026 
+ [Spec Decode] Context-length-aware K in DSD (RFC #48627): extend num_speculative_tokens_per_batch_size with a ctx axis
+ #48944 
+ Open
+ This was referenced Jul 20, 2026 
+ [Benchmarks] Add speculative K schedule tuner
+ #49163 
+ Closed
+ [Spec Decode] Make DFlash draft compute honor dynamic K
+ #49164 
+ Closed
+ HF-001 
+ mentioned this pull request
+ Jul 27, 2026 
+ [Feature] SD spec decode op
+ vllm-project/vllm-ascend#12368 
+ Merged
+ cyLi-Tiger 
+ commented
+ Jul 28, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ One thought on the CUDA graph design: SGLang's DSpark integration handles per-request variable verify lengths by packing the ragged batch into a compact varlen buffer and keying the graph purely on the total token count. This seems to allow much finer-grained capture tiers and noticeably less padding waste than the approach here, where decode graphs are rounded up to multiples of the scheduled query length. Might be worth considering whether a similar packed-layout design could reduce compute overhead in vLLM's adaptive verify path.
+ For example, a verify batch [8, 3, 1, 5] (4 reqs, 17 real tokens) with scheduled qlen 8 needs the 32-token FULL graph here (tiers are multiples of 8, and the 24-tier only has 24/8=3 request slots) — 15 padded rows. SGLang's ragged approach packs tokens compactly and keys the graph on total count only, fitting an 18-token tier — 1 padded row, still FULL graph.
+ cc @benchislett 
+ --> 
+ 👍 
+ 2 
+ jialefu and StanislavII reacted with thumbs up emoji 
+ ❤️ 
+ 1 
+ StanislavII reacted with heart emoji 
+ All reactions 
+ 👍 
+ 2 reactions 
+ ❤️ 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ seongyun1104 
+ mentioned this pull request
+ Jul 30, 2026 
+ [RFC]: Context-length-aware speculative token scheduling — extending num_speculative_tokens_per_batch_size with a context-length axis
+ #48627 
+ Open
+ mergify 
+ Bot 
+ added
+ the 
+ mrv2
+ Model Runner V2 specific 
+ label
+ Jul 30, 2026 
+ benchislett 
+ mentioned this pull request
+ Aug 3, 2026 
+ [Spec Decode] DSpark confidence-scheduled verification
+ #47808 
+ Merged
+ benchislett 
+ commented
+ Aug 5, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ Author 
+ Closing this PR, we will move forward and try to merge #47808 .
+ --> 
+ 🎉 
+ 1 
+ cyLi-Tiger reacted with hooray emoji 
+ All reactions 
+ 🎉 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ benchislett 
+ closed this
+ Aug 5, 2026 
+ benchislett 
+ commented
+ Aug 5, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ Author 
+ Also, @cyLi-Tiger I believe that #47808 does it as you suggest, if I am understanding you properly
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ calvarado2004 
+ mentioned this pull request
+ Aug 14, 2026 
+ [Spec Decode] Cache adaptive verification profiles
+ #52233 
+ Open
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ mgoin 
+ mgoin left review comments 
+ claude[bot] 
+ claude[bot] left review comments 
+ zyongye 
+ Awaiting requested review from zyongye 
+ zyongye is a code owner 
+ sighingnow 
+ Awaiting requested review from sighingnow 
+ sighingnow is a code owner 
+ vadiklyutiy 
+ Awaiting requested review from vadiklyutiy 
+ vadiklyutiy is a code owner 
+ WoosukKwon 
+ Awaiting requested review from WoosukKwon 
+ WoosukKwon is a code owner 
+ robertgshaw2-redhat 
+ Awaiting requested review from robertgshaw2-redhat 
+ robertgshaw2-redhat is a code owner 
+ njhill 
+ Awaiting requested review from njhill 
+ njhill is a code owner 
+ ywang96 
+ Awaiting requested review from ywang96 
+ ywang96 is a code owner 
+ alexm-redhat 
+ Awaiting requested review from alexm-redhat 
+ alexm-redhat is a code owner 
+ heheda12345 
+ Awaiting requested review from heheda12345 
+ heheda12345 is a code owner 
+ ApostaC 
+ Awaiting requested review from ApostaC 
+ ApostaC is a code owner 
+ orozery 
+ Awaiting requested review from orozery 
+ orozery is a code owner 
+ ivanium 
+ Awaiting requested review from ivanium 
+ ivanium is a code owner 
+ tlrmchlsmth 
+ Awaiting requested review from tlrmchlsmth 
+ tlrmchlsmth is a code owner 
+ yewentao256 
+ Awaiting requested review from yewentao256 
+ yewentao256 is a code owner 
+ AndreasKaratzas 
+ Awaiting requested review from AndreasKaratzas 
+ AndreasKaratzas is a code owner 
+ zhuohan123 
+ Awaiting requested review from zhuohan123 
+ zhuohan123 is a code owner 
+ youkaichao 
+ Awaiting requested review from youkaichao 
+ youkaichao is a code owner 
+ LucasWilkinson 
+ Awaiting requested review from LucasWilkinson 
+ LucasWilkinson is a code owner 
+ MatthewBonanni 
+ Awaiting requested review from MatthewBonanni 
+ MatthewBonanni is a code owner 
+ houseroad 
+ Awaiting requested review from houseroad 
+ houseroad is a code owner 
+ ProExpertProg 
+ Awaiting requested review from ProExpertProg 
+ ProExpertProg is a code owner 
+ luccafong 
+ Awaiting requested review from luccafong 
+ luccafong is a code owner 
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ documentation 
+ Improvements or additions to documentation 
+ mrv2 
+ Model Runner V2 specific 
+ needs-rebase 
+ nvidia 
+ qwen 
+ Related to Qwen models 
+ speculative-decoding 
+ v1 
+ --> 
+ Projects
+ NVIDIA 
+ Status: Done
+ +6 more
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 4 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

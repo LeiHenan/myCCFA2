@@ -1,0 +1,106 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/25939  (is_pr=False, 281978 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 25939
+  title = [RFC][P/D]: Support hybrid and flexible KV Cache transfer timing & pathway at request-level
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2025-09-30T08:45:13Z
+  updatedAt = 2026-01-30T02:16:10Z
+  closedAt = None
+  author = Shirley1Huang
+  labels = ['RFC', 'stale']
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2025-12-30T02:27:42Z]
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-01-30T02:16:09Z]
+This issue has been automatically closed due to inactivity. Please feel free to reopen if you feel it is still relevant. Thank you!
+
+[GRAPHQL CLOSED by github-actions at 2026-01-30T02:16:10Z reason=NOT_PLANNED]
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=Shirley1Huang date=Sep 30, 2025]
+Motivation.
+
+In current prefill-decode (PD) disaggregated architectures, a static strategy determining KV Cache transfer timing and method is adopted, which is uniformly applied to all requests. This inflexible approach fails to account for key trade-offs: between latency and throughput when choosing when to start KV Cache transfer(during versus after prefill), and between latency and scalability when choosing how to transfer it (via P2P communication or through a centralized store). As a result, the system cannot dynamically adapt to diverse workload requirements—such as low-latency interactive chats, high-throughput multi-round AI agent tasks, or research queries with variable-depth—hindering its capability to meet fine-grained Service Level Objective (SLO) targets across different types of tasks.
+
+Decode Scheduling Time
+Extra Data Copy
+Time Latency
+Compute/Transfer Overlap
+
+Before prefill
+
+No
+
+Low
+
+Yes
+
+After prefill
+
+Yes
+
+High
+
+No
+
+Table 1. P/D Binding Timing (KV Cache Transfer Timing) Trade-offs
+
+Proposed Change.
+
+In this RFC, we propose several changes to support hybrid and flexible KV Cache transfer timing & pathway orchestration per request in a single serving deployment to address the previously mentioned problem. Our approach builds upon the existing MultiConnector, which already enables concurrent management of multiple transfer backends. However, the current implementation lacks per-request customization. Here, we propose to extend this component to enable fine-grained, dynamic selection of P→D transfer for both timing and backend based on metadata attached to each request, which are expected to be provided by a customized proxy or router.
+
+Fig 1.Overview of Proposed Changes
+
+To be more specific, the proposed change mainly involves the following adaptations.
+
+- 
+Proxy:
+
+- We assume that the proxy determines and binds kv cache transfer timing and connector type info to each request, such as kv_prepare_request["custom_kv_transfer_params"] = {"transfer_timing": "during-prefill"/"after-prefill"， "connector_type": "nixl"/"mooncake_store"/"transfer_engine"}.
+
+- The proxy needs to differentiate routing for after-prefill and during-prefill transfer requests. For after-prefill transfer requests, the requests and kv_transfer_params can be directed to decode instances through proxy (reference implementation: tests/v1/kv_connector/nixl_integration/toy_proxy_server.py); for during-prefill transfer requests, the requests can be directed to decode instances through proxy while KVConnectorMetadata can be directly sent through ZMQ connection (reference implementation: examples/online_serving/disagg_xpyd/disagg_prefill_proxy_xpyd.py).
+
+- 
+OpenAI API:
+
+- in protocol.py, add custom_kv_transfer_params as an optional field of ChatCompletionRequest class
+
+- in serving_chat.py, retrieve custom_kv_transfer_params from the incoming request and forward it as an extra argument when calling self.engine_client.generate()
+
+- 
+Engine:
+
+- in __init__.py, add custom_kv_transfer_params as an optional field of EngineCoreRequest class
+
+- in async_llm.py, propogate custom_kv_transfer_params through the call chain generate→add_request→engine/processor.process_inputs to wrap it into EngineCoreRequest class
+
+- in core.py, extract transfer_timing and connector_type from EngineCoreRequest.custom_kv_transfer_params and integrate them to Request.kv_transfer_params after calling Request.from_engine_core_request()
+
+- 
+Scheduler & Multiconnector:
+
+- in scheduler.py, pass Request.kv_transfer_params.connector_type as an extra argument when calling multiconnector.get_num_new_matched_tokens()
+
+- in multiconnector.py, set MultiConnector._requests_to_connector() accordingly
+
+Feedback Period.
+
+No response
+
+CC List.
+
+@njhill @tlrmchlsmth @mgoin @ApostaC @robertgshaw2-redhat
+
+Any Other Things.
+
+[Feature] To ensure the lowest possible latency for high-priority requests, the feature of layer-wise asynchronous KV Cache transfer between P and D is requested.
+
+Before submitting a new issue...
+
+- Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page, which can answer lots of frequently asked questions.

@@ -1,0 +1,109 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/20626  (is_pr=False, 277134 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 20626
+  title = [RFC]: Hotness-aware multi-level KV cache management to accelerate dynamic sparse attention
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2025-07-08T12:51:56Z
+  updatedAt = 2025-11-06T02:11:30Z
+  closedAt = None
+  author = CheYulin
+  labels = ['RFC', 'stale']
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2025-10-07T02:02:24Z]
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2025-11-06T02:11:29Z]
+This issue has been automatically closed due to inactivity. Please feel free to reopen if you feel it is still relevant. Thank you!
+
+[GRAPHQL CLOSED by github-actions at 2025-11-06T02:11:30Z reason=NOT_PLANNED]
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=CheYulin date=Jul 8, 2025]
+Motivation.
+
+Background: Long-context reasoning scenarios face a dual surge in computational overhead and memory consumption, resulting in low inference efficiency and high inference costs. Dynamic sparse attention mitigates the computational surge in long sequences, but the memory bottleneck remains.
+
+Under sparse attention, accesses to the KV cache exhibit a hot-cold distribution, presenting an opportunity for heterogeneous KV cache management.
+
+- Heterogeneous KV cache leverages cheap, scalable main memory to replace expensive, limited device memory, promising significant reductions in inference costs.
+
+- By retaining frequently accessed KV cache in device memory and swapping out infrequently accessed KV cache to main memory, the memory footprint of long sequences can be reduced.
+
+Goals:
+
+- To accelerate the long sequence decoding and gurantee the accuracy, we plan implementing a hotness-ware multi-level kv cache management mechanism while keeping the sparse attention arithemetic computation unchanged,
+
+- To achive good precision, different from KV compression and KV dropping methods (issue5751, issue 12254, and pr 11938), this implementation chooses keeping the whole kv cache and select important parts to load into hbm.
+
+Proposed Change.
+
+- In ​V1​, the original logic of KVCacheManager and BlockTable is fully utilized to manage ​CPU blocks​.
+
+- A GPUCacheManager class is added to the worker to maintain the mapping between CPU blocks and ​GPU blocks​.
+
+- At each layer, it takes the block_table from attn_metadata ​, maps each CPU block to its corresponding ​GPU block​,
+
+- and then updatesattn_metadata.block_table.
+
+The Attention process works as follows:
+
+# layer-wise block allocation
+new_attn_metadata, swap_in_mapping, swap_out_mapping = forward_context.gpu_cache_manager.handle(attn_metadata, layer_name)
+# swap in
+self.impl.swap_blocks(cpu_kv_cache, kv_cache, swap_in_mapping)
+# Attention Kernel
+self.impl.forward(self,
+ query,
+ key,
+ value,
+ kv_cache,
+ new_attn_metadata,
+ output=output)
+# swap out
+self.impl.swap_blocks(kv_cache, cpu_kv_cache, swap_out_mapping)
+
+- In ​V1​, the original logic of KVCacheManager and BlockTable is fully utilized to manage ​CPU blocks​.
+
+- A GPUCacheManager class is added to the worker to maintain the mapping between CPU blocks and ​GPU blocks​.
+
+- At each layer, it takes the block_table from attn_metadata ​, maps each CPU block to its corresponding ​GPU block​,
+
+- and then updatesattn_metadata.block_table.
+
+The Attention process works as follows:
+
+# layer-wise block allocation
+new_attn_metadata, swap_in_mapping, swap_out_mapping = forward_context.gpu_cache_manager.handle(attn_metadata, layer_name)
+# swap in
+self.impl.swap_blocks(cpu_kv_cache, kv_cache, swap_in_mapping)
+# Attention Kernel
+self.impl.forward(self,
+ query,
+ key,
+ value,
+ kv_cache,
+ new_attn_metadata,
+ output=output)
+# swap out
+self.impl.swap_blocks(kv_cache, cpu_kv_cache, swap_out_mapping)
+
+Feedback Period.
+
+July 8th ~ July 30th
+
+CC List.
+
+No response
+
+Any Other Things.
+
+No response
+
+Before submitting a new issue...
+
+- Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page, which can answer lots of frequently asked questions.

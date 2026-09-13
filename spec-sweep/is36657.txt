@@ -1,0 +1,222 @@
+[RFC]: Dynamic Speculation Length (DSL) with Confidence-Threshold Early Exit for vLLM Speculative Decoding · Issue #36657 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [RFC]: Dynamic Speculation Length (DSL) with Confidence-Threshold Early Exit for vLLM Speculative Decoding   #36657 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Closed as not planned 
+ Closed as not planned 
+ [RFC]: Dynamic Speculation Length (DSL) with Confidence-Threshold Early Exit for vLLM Speculative Decoding #36657 
+ Copy link 
+ Labels
+ RFC stale Over 90 days of inactivity Over 90 days of inactivity 
+ Description
+ jmamou 
+ opened on Mar 10, 2026 
+ Issue body actions 
+ Motivation.
+ Standard speculative decoding always runs the draft model for exactly num_speculative_tokens steps per decode iteration. When the draft model is uncertain early in the speculation chain, every additional step wastes compute: the low-confidence tokens are almost certainly rejected by the target model, and the draft forward passes are lost work.
+ Setting num_speculative_tokens conservatively (e.g., 5) leaves throughput on the table during high-confidence sequences. Setting it aggressively (e.g., 20) wastes compute during low-confidence sequences. DSL resolves this tension by adapting the draft length at runtime, inspired by DISCO (Mamou et al., 2024) .
+ Proposed Change.
+ PR: #35301 
+ Add a draft_confidence_threshold field (default 0.0 , disabled) to SpeculativeConfig . When enabled, the DraftModelProposer evaluates a batch-level mean exit condition at each draft step $i$ :
+ $$\frac{1}{B} \sum_j \max_v \text{softmax}(z_{i,j}) < \tau$$ 
+ If the condition holds, drafting stops early and the tokens generated so far are returned. The output tensor is zero-padded to the full num_speculative_tokens width so that all downstream consumers (GDN attention, scheduler, KV-cache) see a fixed-shape tensor; zero-padded positions are rejected by the verifier with no effect on output quality.
+ Key design choices
+ Mean policy : the exit condition uses the batch-mean confidence, not the minimum, so a single uncertain request in a mixed batch does not short-circuit drafting for the whole batch.
+ No interface change : propose() always returns shape [batch_size, num_speculative_tokens] .
+ New DSL metrics ( dsl_num_proposals , dsl_num_early_exits , dsl_tokens_generated , dsl_tokens_requested ) propagated end-to-end from the draft model through ModelRunnerOutput , scheduler, and benchmark output.
+ Usage
+ llm = LLM (
+ model = "meta-llama/Llama-3.1-8B-Instruct" ,
+ speculative_config = {
+ "model" : "meta-llama/Llama-3.2-1B-Instruct" ,
+ "num_speculative_tokens" : 20 ,
+ "draft_confidence_threshold" : 0.6 , # enables DSL 
+ },
+) 
+ Or via CLI:
+ vllm serve meta-llama/Llama-3.1-8B-Instruct \
+ --speculative-model meta-llama/Llama-3.2-1B-Instruct \
+ --num-speculative-tokens 20 \
+ --draft-confidence-threshold 0.6 
+ Benchmark highlights (1× A100 80 GB PCIe)
+ Model pair 
+ Dataset 
+ Config 
+ vs. target 
+ vs. SD/5 
+ Llama-3.1-8B + Llama-3.2-1B 
+ mt-bench c=1 
+ DSL/20/τ=0.6 
+ 1.77× 
+ 1.44× 
+ OPT-6.7B + OPT-125M 
+ mt-bench c=1 
+ DSL/10/τ=0.6 
+ 3.10× 
+ 1.64× 
+ Llama-3.1-8B + Llama-3.2-1B 
+ random c=8 
+ DSL/15/τ=0.8 
+ 3.60× 
+ 1.52× 
+ Llama-3.1-8B + Llama-3.2-1B 
+ mt-bench c=4 
+ DSL/20/τ=0.4 
+ 1.32× 
+ 1.63× 
+ Feedback Period.
+ until 2026-03-17 
+ CC List.
+ @xuechendi 
+ @yao-matrix 
+ @bigPYJ1151 
+ @keyboardAnt 
+ @orenpereg 
+ Any Other Things.
+ Known limitation — GPU→CPU sync : the early-exit check calls .item() on a GPU scalar, forcing a host–device sync per draft step. This is negligible at small batch sizes but may become a bottleneck at high concurrency. A device-side sync-free approach is left as future work.
+ Threshold is not auto-tuned : recommended starting range is 0.4–0.6 ; optimal value is model-pair and dataset dependent.
+ Scope : DSL is supported only by DraftModelProposer (standard draft-model speculation) in this PR. SpecDecodeBaseProposer exposes a _supports_dsl = False class flag; DraftModelProposer opts in by setting it to True . EAGLE/EAGLE2 and other proposers are unaffected.
+ Before submitting a new issue...
+ Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page , which can answer lots of frequently asked questions.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ RFC stale Over 90 days of inactivity Over 90 days of inactivity 
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

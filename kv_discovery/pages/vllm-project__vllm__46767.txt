@@ -1,0 +1,102 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/46767  (is_pr=False, 261661 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 46767
+  title = TurboQuant KV cache: _continuation_prefill workspace under-sized (~1.43x) -> crash on long-context chunked prefill (v0.23.0)
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2026-06-25T20:42:25Z
+  updatedAt = 2026-06-25T20:47:34Z
+  closedAt = None
+  author = VickY0E
+  labels = []
+
+[GRAPHQL COMMENT by VickY0E assoc=NONE at 2026-06-25T20:47:33Z]
+Closing as a duplicate of #41565 (TurboQuant `_continuation_prefill` workspace under-sizing at long context). I posted the quantified ~1.43x scaling analysis (util-independent; need and cap both scale with --max-num-batched-tokens) as a comment there. Also see #43357.
+
+[GRAPHQL CLOSED by VickY0E at 2026-06-25T20:47:34Z reason=NOT_PLANNED]
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=VickY0E date=Jun 25, 2026]
+Bug summary
+
+When using a TurboQuant KV-cache dtype (turboquant_4bit_nc, turboquant_k8v4), a long-context prefill that triggers the continuation-prefill path (vllm/v1/attention/backends/turboquant_attn.py, _continuation_prefill) crashes with a workspace assertion. The workspace buffer, sized during profiling, is ~1.43× too small for the continuation path's actual request, and — being locked — cannot grow. The under-sizing ratio is constant across --max-num-batched-tokens and --gpu-memory-utilization, so it cannot be tuned around.
+
+Environment
+
+- vLLM: 0.23.0 (vllm/vllm-openai:latest)
+
+- GPU: 2× NVIDIA RTX PRO 6000 Blackwell (sm_120), --tensor-parallel-size 2
+
+- Model: nvidia/MiniMax-M2.7-NVFP4 (ModelOpt NVFP4, ~131 GB)
+
+- --kv-cache-dtype turboquant_4bit_nc (also reproduced with turboquant_k8v4 — same code path)
+
+- Linux, Docker
+
+Error
+
+File ".../vllm/v1/attention/backends/turboquant_attn.py", line 747, in _continuation_prefill
+ k_buf, v_buf = current_workspace_manager().get_simultaneous(...)
+ File ".../vllm/v1/worker/workspace.py", line 157, in _ensure_workspace_size
+ raise AssertionError(
+AssertionError: Workspace is locked but allocation from 'turboquant_attn.py:747:_continuation_prefill'
+requires 137.78 MB, current size is 96.00 MB. Workspace growth is not allowed after locking.
+
+Root-cause analysis (key)
+
+The continuation-prefill workspace need and the profiled workspace cap both scale linearly with --max-num-batched-tokens, with a fixed ~1.43× ratio — so the crash cannot be tuned away:
+
+--max-num-batched-tokens
+workspace cap
+_continuation_prefill need
+need / cap
+first failing prompt length
+
+16384
+
+96.00 MB
+
+137.78 MB
+
+1.43×
+
+~128k
+
+8192
+
+48.00 MB
+
+68.69 MB
+
+1.43×
+
+~64k
+
+Changing --gpu-memory-utilization (0.96 ↔ 0.94) changes neither number — the workspace buffer is sized independently of the KV-cache pool. The profiling pass under-allocates the workspace by a constant factor relative to what _continuation_prefill actually requests at peak.
+
+Reproduction
+
+vllm serve nvidia/MiniMax-M2.7-NVFP4 \
+ --tensor-parallel-size 2 --quantization modelopt \
+ --kv-cache-dtype turboquant_4bit_nc \
+ --max-model-len 196608 --max-num-batched-tokens 16384 \
+ --gpu-memory-utilization 0.96
+# Then send a prompt > ~128k tokens (chunked prefill -> continuation path) -> HTTP 500 / worker crash
+
+Short contexts (≤ ~32k, few chunks) succeed; the crash appears once prefill spans enough chunks for the continuation path's workspace need to exceed the locked cap.
+
+Expected behavior
+
+TurboQuant KV cache should support the model's full context window like fp8 does. On the same model/GPU, --kv-cache-dtype fp8 passes a 128k-token needle-in-a-haystack retrieval test (returns the embedded needle correctly in ~16s) that crashes TurboQuant.
+
+Additional context
+
+- Affected presets observed: turboquant_4bit_nc and turboquant_k8v4 (shared _continuation_prefill path).
+
+- Only reproduced on MiniMax-M2.7-NVFP4, but _continuation_prefill lives in the shared TurboQuant attention backend, so other models using TurboQuant KV cache are likely affected.
+
+- Appears to be a profiling-time workspace sizing bug in the TurboQuant continuation-prefill path (workspace allocated for the non-continuation path, under-sized for continuation).

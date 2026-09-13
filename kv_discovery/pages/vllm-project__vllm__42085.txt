@@ -1,0 +1,126 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/42085  (is_pr=False, 319869 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 42085
+  title = [Bug]: SimpleCPUOffloadConnector + Hybrid KV Cache Manager: GPU block pool exhaustion (popleft_n assert) on second long-context request
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2026-05-08T15:37:39Z
+  updatedAt = 2026-09-12T01:39:56Z
+  closedAt = None
+  author = v1b3coder
+  labels = ['stale']
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=v1b3coder date=May 8, 2026]
+[Bug]: SimpleCPUOffloadConnector + Hybrid KV Cache Manager: GPU block pool exhaustion (popleft_n assert) on second long-context request
+
+Describe the bug
+
+After a single long-context request completes successfully, the next request crashes the engine in the GPU block allocator. single_type_kv_cache_manager.allocate_new_blocks() calls block_pool.get_new_blocks(N) which calls free_block_queue.popleft_n(N). The free queue runs dry mid-pop and the assertion fires:
+
+File "vllm/v1/core/sched/scheduler.py", line 744, in schedule
+ new_blocks = self.kv_cache_manager.allocate_slots(...)
+File "vllm/v1/core/kv_cache_manager.py", line 400, in allocate_slots
+ new_blocks = self.coordinator.allocate_new_blocks(...)
+File "vllm/v1/core/kv_cache_coordinator.py", line 187, in allocate_new_blocks
+File "vllm/v1/core/single_type_kv_cache_manager.py", line 270, in allocate_new_blocks
+ new_blocks = self.block_pool.get_new_blocks(num_new_blocks)
+File "vllm/v1/core/block_pool.py", line 336, in get_new_blocks
+ ret = self.free_block_queue.popleft_n(num_blocks)
+File "vllm/v1/core/kv_cache_utils.py", line 269, in popleft_n
+ assert curr_block is not None
+AssertionError
+
+The EngineCore then exits, all in-flight requests get HTTP 500 / connection reset, and the API server enters EngineDeadError state.
+
+What appears to trigger it
+
+Hybrid model + SimpleCPUOffloadConnector + chunked prefill + back-to-back long-context requests:
+
+- Request S0 (≈90k tokens): cold prefill succeeds (~85s on this hardware), returns 200.
+
+- Request S1 (≈90k tokens, distinct prompt): immediately rejected with HTTP 500.
+
+- Subsequent requests: connection reset (engine dead).
+
+The crash fires in Scheduler.schedule() while building S1's first chunked-prefill step, before any model execution. So whatever GPU blocks the allocator expected to be available at that moment, were not.
+
+Hypothesis
+
+With --no-disable-hybrid-kv-cache-manager each attention group has its own single_type_kv_cache_manager and its own block_pool. For DeepSeek-V4-Flash this is full-attention + sliding-window + chunked-local. The full-attention group is the smallest (this run reports Available KV cache memory: 7.13 GiB → 145,274 tokens).
+
+When S0 finishes, SimpleCPUOffloadConnector enqueues an asynchronous CPU store of S0's KV blocks. During that store window the GPU KVCacheBlocks are still pinned (ref_cnt > 0) and are not in the free queue. If S1 starts before the store completes, the per-group free-queue accounting in single_type_kv_cache_manager can see "enough free" blocks at the higher level (e.g. KVCacheManager.allocate_slots precheck in some paths) but the per-group free_block_queue is actually empty for the bottlenecking group when popleft_n(N) is called inside the iterator over groups.
+
+popleft_n does not gracefully back off — it hard-asserts on None. There is no recovery path for "ran out mid-pop" because the higher level never expected to call it past the available count.
+
+Reproducer
+
+Hardware
+
+- 2× NVIDIA RTX PRO 6000 Blackwell Server Edition (SM120), TP=2, no NVLink
+
+Environment
+
+- vLLM: jasl/vllm fork at 9e9956117 (= upstream main ≈ 0.20.2rc1.dev73, plus SM120 + HMA-for-LMCache patches; relevant SCO files identical to upstream main per git diff upstream/main -- vllm/v1/simple_kv_offload/ vllm/v1/core/)
+
+- Plus locally cherry-picked SCO fixes that are NOT yet on upstream:
+
+- 133c2d91e Fix SimpleCPUOffload TOCTOU crash ( [Bug]: SimpleCPUOffloadScheduler crashes with AssertionError: Expected N hit tokens, got 0 (TOCTOU race in update_state_after_alloc) #39702 — fix from issue body)
+
+- ed59675d1 dedup blocks across steps in eager mode ( [Bugfix][SimpleCPUOffloadBackend] Dedup in-flight CPU offload stores across scheduler steps #41289 backport)
+
+- da4f1c711 Avoid releasing active prefix cache hits
+
+- Model: deepseek-ai/DeepSeek-V4-Flash
+
+- Python 3.12, CUDA 13.0
+
+- Container: deepseek-jasl/ds4flash:dev built from docker/Dockerfile.full
+
+Server command
+
+- --kv-cache-dtype=fp8
+- --block-size=256
+- --max-model-len=128000
+- --gpu-memory-utilization=0.97
+- --tensor-parallel-size=2
+- --kv-transfer-config={"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":137438953472}}
+- --no-disable-hybrid-kv-cache-manager
+- --no-enable-flashinfer-autotune
+- --enable-prefix-caching
+- --enable-chunked-prefill
+- --max-num-batched-tokens=16384
+- --compilation-config={"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}
+
+Trigger
+
+Two sequential chat/completions requests with distinct ~90k-token prompts (post-tokenization). Minimal repro:
+
+# S0 — succeeds (~85s prefill)
+curl -s http://localhost:11430/v1/chat/completions \
+ -H 'content-type: application/json' \
+ -d '{"model":"big","messages":[{"role":"user","content":"<~90k tokens of prompt A>"}],"max_tokens":8}'
+
+# S1 — crashes engine
+curl -s http://localhost:11430/v1/chat/completions \
+ -H 'content-type: application/json' \
+ -d '{"model":"big","messages":[{"role":"user","content":"<~90k tokens of prompt B>"}],"max_tokens":8}'
+
+The crash fires immediately when Scheduler.schedule() processes S1, before any model forward.
+
+Boot log signal
+
+INFO [gpu_worker.py:460] Available KV cache memory: 7.13 GiB
+INFO [kv_cache_utils.py:1710] GPU KV cache size: 145,274 tokens
+
+KV pool is small per-group because of the hybrid manager. Each ~90k-token prompt occupies the majority of the bottlenecking group's pool.
+
+Why this is distinct from #39702
+
+Issue #39702 is a TOCTOU race in simple_kv_offload/manager.py:267 (update_state_after_alloc), fixed by pinning blocks immediately in get_num_new_matched_tokens(). That fix is applied locally (commit 133c2d91e) and verified by inspection of the running source — _pending_cpu_hits is populated before allocate_slots() and consumed after, so the assertion at manager.py:267 no longer fires.
+
+This crash is in vllm/v1/core/kv_cache_utils.py:269 (different file, different code path, different assertion, different invariant). It manifests only after the #39702 fix is

@@ -1,0 +1,185 @@
+[Feature]: Per-sequence speculative decoding · Issue #17984 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [Feature]: Per-sequence speculative decoding   #17984 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Closed as not planned 
+ Closed as not planned 
+ [Feature]: Per-sequence speculative decoding #17984 
+ Copy link 
+ Labels
+ feature request New feature or request New feature or request stale Over 90 days of inactivity Over 90 days of inactivity 
+ Description
+ yesredpig 
+ opened on May 12, 2025 
+ Issue body actions 
+ 🚀 The feature, motivation and pitch
+ 1. Problem 
+ Currently, increasing batch size in vLLM's Speculative Decoding inference causes inefficiency.
+When using the LLaMA 1B SSM model on the LLaMA 70B Original model, a performance reversal occurs at Batchsize 32.
+In addition, when the num_speculative_tokens  (SL; speculative length) is large, the inefficiency increases further as the batch size increases (Fig. 2).
+ vLLM was also aware of the need for optimization for this. ( https://docs.google.com/document/d/1T-JaS2T1NRfdP51qzqpyakoCXxSXTtORppiwaj5asxA/edit?tab=t.0#heading=h.kk7dq05lc6q8 )
+ 2. Previous work in vLLM  
+ To handle the increasing batch size in SD, vLLM has been performing the following tasks: Batch Expansion #3103 and  MQA (Multi-Query Attention) Scorer
+ "Batch expansion" expands the batch by the factor of k (num_speculative_tokens). Each original sequence + one proposal token become a separate sequence in the expanded batch for the target model's scoring pass. Because of the "expansion" it has drawn backs as it increases memory usage and attention calculation by factor K.
+To overcome the drawbacks, MQAScorer utilizes specialized MQA kernels (when available) to score all k proposal tokens for each sequence without expanding the batch size explicitly.
+ Both Batch Expansion and MQA Scorer face performance degradation on dynamic shape & CUDA Graphs. if K ( num_speculative_tokens ) changes each iteration or across sequences. CUDA graph can't hadling the dynamic shape/size.
+ Ultimately, the current vLLM batch size processing method can only handle static SL that the K ( num_speculative_tokens ) set before inference.
+ 3. Dynamic SL  
+ Even if a piece-wise CUDA graph is applied to MQA, the inefficiency caused by each sequence in a batch having a FixedSL value is not resolved. Also, when using models such as EAGLE2 that use tree-attetion, you need to use SL 32, etc., but as the batch grows, the MQA padding space grows larger.
+ The following experiment is the result of checking until rejection occurs after setting max SL to 60. The experimental results show that OracleSL has a large range from 1 to 60, and that it infers 117 times less than when inferred by setting it to the optimal SL value of 4. Since the target model is 8B, there was no significant difference in speed, but if the target model is large, the difference between OracleSL and StaticSL will be large.
+ Previous papers have proven that it is effective to have a different SL for each sequence and a different SL for each iteration.
+ BASS ,
+ DISCO ,
+ SPRINTER ,
+ AdaEDL 
+ 4. CONCLUSION  
+ In conclusion, per-sequence decoding is necessary to apply dynamicSL to each iteration and each sequence in the batch and to resolve inefficiency due to increasing batch size.
+ My team are implementing per-sequence decoding in the flash-attention2 kernel. However, we are currently developing with vLLM 0.8.4, so it would be nice if the schedule for SD updates in vLLM V1 could be in sync.
+ Alternatives
+ No response 
+ Additional context
+ No response 
+ Before submitting a new issue...
+ Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page , which can answer lots of frequently asked questions.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ feature request New feature or request New feature or request stale Over 90 days of inactivity Over 90 days of inactivity 
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

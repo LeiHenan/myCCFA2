@@ -1,0 +1,154 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/28538  (is_pr=False, 302541 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 28538
+  title = [RFC]: 4-bit KV cache quantization through Hadamard transforms
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2025-11-12T09:33:44Z
+  updatedAt = 2026-04-06T01:04:35Z
+  closedAt = None
+  author = mratsim
+  labels = ['RFC', 'stale']
+
+[GRAPHQL COMMENT by kylesayrs assoc=CONTRIBUTOR at 2025-11-13T21:23:35Z]
+Hi @mratsim!
+
+LLM Compressor and Compressed Tensors recently added support for arbitrary quantization of attention and kv cache, you can see an example of how to create such a model [here](https://github.com/vllm-project/llm-compressor/blob/main/experimental/llama3_attention.py#L59).
+
+Additionally, LLM Compressor supports applying [R3 transforms](https://github.com/vllm-project/llm-compressor/pull/1778), which should improve accuracy recovery for per-tensor FP4 KV/attention quantization.
+
+However, quantized attention kernels and kv cache quantization are still not widely available and thus haven't been fully implemented in vLLM (see [Quantized KV Cache](https://docs.vllm.ai/en/stable/features/quantization/quantized_kvcache.html)).
+
+This area is a real opportunity for community-led research and development! Attention/KV quantized models produced through LLM Compressor can be run and evaluated in native transformers/pytorch. If these models can be shown to provide good accuracy recovery in emulation, this can further motivate the development of 4 bit attention/KV kernels in vLLM. This has been the active work of @krishnateja95, perhaps he can comment on what research areas are still left to explore.
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-02-12T02:15:05Z]
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-03-14T02:16:42Z]
+This issue has been automatically closed due to inactivity. Please feel free to reopen if you feel it is still relevant. Thank you!
+
+[GRAPHQL CLOSED by github-actions at 2026-03-14T02:16:43Z reason=NOT_PLANNED]
+
+[GRAPHQL COMMENT by captainpete assoc=NONE at 2026-03-31T04:54:50Z]
+Hi @kylesayrs,
+
+Just following the breadcrumbs for Q2 roadmap item around transforms/rotations for MXFP4 accuracy. This RFC is where I ended up.
+
+~Looking at what's already done, `BaseKVCacheMethod` is used for FP8 scales curretnly hooking into `do_kv_cache_update`. Maybe that's the right target for the KV cache side?~
+
+**update 2026-04-01**: `BaseKVCacheMethod` definitely not the right spot. Doing some digging with fresh eyes today to better get my head around this.
+
+[GRAPHQL COMMENT by captainpete assoc=NONE at 2026-04-06T01:04:35Z]
+Just filed a narrow scope PR (in my own repo, given RFC) to validate a working path: https://github.com/captainpete/vllm/pull/1
+
+Scope:
+- A bunch of guard clauses to enforce the below (something like 90% of the added loc)
+- Just deterministic Hadamard
+- The stored rotation matrices in R3 checkpoints are skipped at load; FWHT reconstructs $H$ from `head_dim`
+- FP16/BF16 only
+- Llama only
+- Checkpoint driven (`K_CACHE`/`Q_ATTN`)
+- Tested against `nm-testing/Meta-Llama-3-8B-Instruct-spinquantR3`
+
+Two things I took a guess at, some design input needed before building out further:
+1. `is_hadamard_transform_weight()` is currently per-model (easy add, 3 loc, Llama for now). Another way is extending `maybe_remap_kv_scale_name` so it comes in automatically, but that doesn't follow the existing conventions of building out the models as the snapshots start having new features.
+2. I didn't use `HadamardTransform` (compressed-tensors#436) because I ran into a naming gap: `_init_kv_cache_quant` runs on the inner `Attention` module (`self_attn.attn`) but the checkpoint stores weights at `self_attn` following the HuggingFace convention. I notice there's a lot of remapping done elsewhere. Wondering if this belongs in the loaders or per-model.
+
+I drove a few different spikes into this to figure out where everything lives and what might break. What ended up in the PR is the cleanest path reduction following exploration.
+
+Happy to build out further if I'm on the right tack. Seems most of the pieces are there for 16-bit, just not connected. 16 doesn't really validate the advantage $H$ brings, but the contracts need to be validated before building out other widths.
+
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=mratsim date=Nov 12, 2025]
+Motivation.
+
+Quantization has seen a lot of focus on rotations and Hadamard transforms in the past 2 years.
+
+This translated in a noticeable amount of interest and PRs in vLLM:
+
+- online_rotations #15162 (March)
+
+- Online Rotations to vLLM #16443 (April)
+
+- [Transform] [Quantization] Add transforms to compressed tensors #22486 (August)
+
+- [Transform] Deterministic Hadacore Transforms #24106 (September)
+
+- [Transform] [Quantization] Add QuTLASS support to vLLM #24440 (October)
+
+Given the heightened focus on long-context:
+
+- Seed-OSS supporting 512k context (128GiB in FP16)
+
+- GLM4.6 upgrading to 202K context from 128K
+
+- Qwen3-coder-30B-A3B-Instruct and Qwen3-Coder-480B-A35B-Instruct supporting 256K context, up to 1M with YaRN
+
+- Qwen3 supporting 256K context
+
+- Minimax-M2 supporting 196K context
+
+- ...
+
+storing all of that in GPUs requires a significant amount of VRAM. I suggest we start exploring int4, mxfp4 and nvfp4 quantization for the KV-cache to significantly reduce KV-cache footprint while serving.
+
+I think there is enough evidence in theoretical research and maturity in backend libraries to tackle this growing need.
+
+For example a dequantization step would introduce extra latency but Qutlass has kernels for "Fused transform + quantization + scale computation"
+
+Relevant transform libraries:
+
+- https://github.com/iST-DASLab/qutlass (quantized BLAS, integrated [Transform] [Quantization] Add QuTLASS support to vLLM #24440)
+
+- Facebook's Hadamard transforms(integrated [Transform] Deterministic Hadacore Transforms #24106)
+
+- Dao AI's lab Hadamard transform
+
+Relevant papers:
+
+- Pretraining Large Language Models with NVFP4
+
+Leveraging the NVFP4 format, we introduce a 4-bit training methodology that achieves accuracies
+
+comparable to FP8 on very strong language models. This approach preserves numerically sensitive layers
+
+in higher precision, utilizes two-dimensional (2D) block scaling to maintain same quantized representations
+
+across forward and backward passes, applies Random Hadamard transforms (Tseng et al., 2025b; Castro
+
+et al., 2025) to disperse large-magnitude outliers, and employs stochastic rounding (Tseng et al., 2025b;
+
+Chmiel et al., 2025; Chen et al., 2025; Castro et al., 2025) on gradients to reduce quantization bias.
+
+Ablation studies confirm that each component of this methodology is important for 4-bit training, especially in large-scale models and during long token horizons.
+
+- QuIP#: Even Better LLM Quantization with Hadamard Incoherence and Lattice Codebooks (February 2024)
+
+- QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs (April 2024)
+
+- SpinQuant: LLM quantization with learned rotations (May 2024), already supported in vLLM
+
+Proposed Change.
+
+I propose adding 4-bit quantized KV-cache support to vLLM.
+
+Feedback Period.
+
+No response
+
+CC List.
+
+No response
+
+Any Other Things.
+
+No response
+
+Before submitting a new issue...
+
+- Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page, which can answer lots of frequently asked questions.

@@ -1,0 +1,1005 @@
+
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ NVIDIA
+ / 
+ TensorRT-LLM 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 2.7k 
+ Star
+ 14.6k 
+ Code 
+ Issues 
+ 587 
+ Pull requests 
+ 879 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [None][refactor] BREAKING: Remove the two-model speculative decoding path and dead C++ spec-dec code - # 18721 
+ # 18721 
+ Merged 
+ zhaoyangwang-nvidia merged 24 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from zhaoyangwang-nvidia:zhaoyang/spec-dead-code-cleanup zhaoyangwang-nvidia/TensorRT-LLM:zhaoyang/spec-dead-code-cleanup Copy head branch name to clipboard 
+ Sep 13, 2026 
+ Conversation Commits 24 ( 24 ) Checks Files changed 
+ Merged 
+ [None][refactor] BREAKING: Remove the two-model speculative decoding path and dead C++ spec-dec code # 18721 zhaoyangwang-nvidia merged 24 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from zhaoyangwang-nvidia:zhaoyang/spec-dead-code-cleanup zhaoyangwang-nvidia/TensorRT-LLM:zhaoyang/spec-dead-code-cleanup Copy head branch name to clipboard 
+ Conversation
+ zhaoyangwang-nvidia 
+ commented
+ Sep 4, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Dev Engineer Review
+ Removed the unreachable two-model speculative-decoding path and related draft-model, runtime, KV-cache, telemetry, binding, kernel, and module code.
+ Retained one-model configurations. Explicit eagle3_one_model=False and mtp_eagle_one_model=False now raise ValueError .
+ Removed public APIs, including SpeculativeDecodingFastLogitsInfo::toTensor() and speculative-decoding accessors and bindings.
+ Updated AllocateKvCache and its Python binding to remove ModelConfig .
+ Updated configuration, runtime, documentation, examples, and test references for one-model behavior.
+ The API and ABI removals require downstream updates.
+ Build verification covered 110 translation units, nanobind, and executor targets. Python checks passed. Unit tests were deferred to CI.
+ Verdict: sufficient , subject to successful CI validation and downstream API updates.
+ QA Engineer Review
+ Modified or removed tests include:
+ Removed TestDeepSeekV3Lite::test_bfloat16_2_model_mtp .
+ Updated MTP CUDA-graph and eager regression coverage.
+ Restricted Eagle3 and MTP tests to one-model configurations.
+ Updated KV-cache relocation tests to use EAGLE3_ONE_MODEL .
+ Removed obsolete two-model rejection cases from KV-cache compression tests.
+ Removed explicit eagle3_one_model=False settings from configuration and speculative-decoding tests.
+ Updated disaggregated-serving and batch-slot-limit test parameters.
+ Modified test-list and test metadata files include:
+ tests/integration/test_lists/test-db/l0_b200.yml : removed the obsolete two-model MTP test.
+ tests/integration/test_lists/test-db/l0_h100.yml : consolidated batch-slot-limit test entries.
+ tests/integration/test_lists/qa/llm_function_core.txt : removed obsolete two-model cases and narrowed supported configurations.
+ tests/integration/defs/.test_durations : removed obsolete duration data and consolidated batch-slot-limit entries.
+ The modified test identifiers remain consistent with the test definitions. The test-list changes preserve formatting and contain no duplicate or invalid entries. The changes cover the removal of two-model speculative decoding and retain one-model coverage.
+ Verdict: sufficient. 
+ Description
+ This PR does two related things: it removes the two-model speculative decoding path , which had already been made unreachable and was marked for removal, and it clears out the dead code left on the C++ speculative-decoding side . Both are speculative-decoding cleanup, which is why they travel together.
+ Part 1 — Removing the two-model path (the breaking part)
+ Three separate one-model forcings had already made every two-model mode unreachable:
+ Config 
+ How it was forced 
+ EagleDecodingConfig 
+ An after-validator overwrote eagle3_one_model back to True , warning that 2-model "will be removed in a future release" 
+ MTPDecodingConfig 
+ Same pattern for mtp_eagle_one_model 
+ DraftTargetDecodingConfig 
+ Backed by _draft_target_one_model: bool = PrivateAttr(True) , never assigned anywhere 
+ Because all three modes were unreachable, SpeculativeDecodingMode.has_draft_model() was a constant False — and that predicate is the guard on the entire separate-draft-engine build. So the whole two-model machinery behind it was dead.
+ Removed: the EAGLE3 / MTP_EAGLE / DRAFT_TARGET enum members and their predicates ( has_draft_model() , needs_kv_cache_recompute() , the three is_*() ); model_drafter.py in full (905 lines — ModelDrafter , get_draft_model_prompt ); the two-model branches in speculative/utils.py ; the draft-engine construction block and forced overlap-scheduler disable in py_executor_creator.py ; _two_model_spec_dec_decoding_type() in llm_utils.py and both KV-cache-V2 guards it fed; the needs_kv_cache_recompute branch in cuda_graph_runner.py (whose enclosing helper became a pure passthrough and is inlined); the eagle3_two_model telemetry flag; and the MTP_EAGLE register_draft_model entry plus its _arch_index row.
+ Also removed as plain dead code: EagleDecodingConfig.greedy_sampling and .posterior_threshold (no reader anywhere — the one --eagle_posterior_threshold grep hit is a CLI-flow test arg for the removed TRT build path, not this pydantic field), and MTPEagleWorker.is_thop , which was written but never read (every is_thop reader is on MTPWorker , a different class).
+ Compatibility
+ eagle3_one_model and mtp_eagle_one_model are kept as fields , so existing configs that pass True — including the examples and docs in this repo — keep working unchanged. Passing False now raises an explicit ValueError instead of being silently ignored, which is the actual behavior change users will see. quickstart_advanced.py loses its --use_one_model flag accordingly.
+ Part 2 — Dead C++ speculative-decoding code
+ The root here is the TRT-engine config parsing in gptJsonConfig , which is unreachable end to end: the engine builder is gone from the repo ( tensorrt_llm/builder.py and commands/build.py no longer exist, no trtllm-build entry point), trtllm-bench rejects --backend tensorrt at parse time because ALL_SUPPORTED_BACKENDS = ["pytorch", "_autodeploy"] is passed to click.Choice , and SpeculativeDecodingMode.from_arguments() has no callers. GptJsonConfig itself is kept — it still parses name/version/precision/parallelism and loraManagerTest.cpp uses it; only the speculative-decoding branches are dropped.
+ Removing those branches leaves gptJsonConfig as the sole writer of ModelConfig::mSpeculativeDecodingMode and mSpeculativeDecodingModule , pinning the mode to None() — the only constructor hardcodes it, the setters have no remaining callers, and nanobind exposes the field read-only ( def_prop_ro ). That made the dependent branches dead too.
+ Area 
+ Removed 
+ gptJsonConfig.cpp 
+ eagle numLayers adjustment, speculative_decoding_mode parse + setter, the spec-module construction block 
+ explicitDraftTokensModule.h 
+ Whole file — a hollow subclass adding zero members over SpeculativeDecodingModule ; its sibling MedusaModule / EagleModule / LookaheadModule were already removed for the same reason and this one was missed 
+ speculativeDecodingMode.h 
+ 7 predicates with no readers, the now-unused allBitSet helper, and the whole nanobind binding class 
+ speculativeDecodingModule.h 
+ getNumPackedMasks , getMaxNumPaths , 3 setters, computeNumPackedMasks , 2 members; the constructor drops maxNumPaths 
+ modelConfig.h 
+ getMaxDecodingDraftTokens / getMaxDecodingTokens , the last consumers of isNone() 
+ allocateKvCache.cpp 
+ Two isEagle() branches that dereference a module the TLLM_CHECK proves is null — reaching them would abort. The now-unused modelConfig parameter is dropped from the header, the definition and the nanobind arg 
+ speculativeDecodingConfig.cpp 
+ SpeculativeDecodingFastLogitsInfo::toTensor + the file it emptied 
+ draftTokenTreeKernels.{h,cu} 
+ Whole file pair + extract_real_draft_tokens_op , whose only user was a smoke test asserting the op exists 
+ suffixAutomaton/ 
+ struct SABuffer (nothing declares one; the automaton uses SADynamicBuffer ) and the BatchIndex / RequestID / NumTokens typedefs 
+ Public API / ABI removal — migration boundary
+ Everything else in this PR is internal, but five public headers under cpp/include/ lose symbols. The in-repo dependency-closure build cannot validate consumers outside this repository, so those removals are stated explicitly here rather than resting on the reachability argument.
+ Removed exported symbols 
+ Header 
+ Symbol 
+ Kind 
+ executor/executor.h 
+ SpeculativeDecodingFastLogitsInfo::toTensor() const 
+ Member function (out-of-line) 
+ runtime/speculativeDecodingMode.h 
+ updatesPositionIds , requiresAttentionMask , predictsDraftTokens , needsKVCacheRewind , variableDraftLength , hasDraftLogits , needsDecoderPrologue 
+ constexpr inline predicates 
+ runtime/speculativeDecodingModule.h 
+ getNumPackedMasks , getMaxNumPaths , setMaxDraftTokens , setMaxDraftPathLen , setMaxNumPaths 
+ Inline accessors 
+ runtime/modelConfig.h 
+ ModelConfig::getMaxDecodingDraftTokens , ModelConfig::getMaxDecodingTokens 
+ Inline accessors 
+ batch_manager/allocateKvCache.h 
+ AllocateKvCache::operator() loses its modelConfig parameter 
+ Signature change 
+ The only one that is an out-of-line definition — i.e. an actual entry in the shared library's dynamic symbol table — is:
+ _ZNK12tensorrt_llm8executor33SpeculativeDecodingFastLogitsInfo8toTensorEv
+ An old binary that calls it against a new libtensorrt_llm fails at link/load time with undefined symbol . That is a loud failure, not a silent one. The rest are inline / constexpr and are emitted into each consumer's own object files, so they break at compile time ( no member named ... ), not at load time.
+ Layout changes (the part that can fail silently) 
+ Type 
+ sizeof before → after 
+ Member offsets 
+ SpeculativeDecodingFastLogitsInfo 
+ 16 → 16 (unchanged) 
+ draftRequestId 0→0, draftParticipantId 8→8 — unchanged 
+ SpeculativeDecodingModule 
+ 24 → 16 at the source level, but see the symbol diff below — the type is no longer emitted into the library at all 
+ mMaxNumPaths and mMaxNumPackedMasks are removed; surviving members keep their offsets (8, 12) 
+ So for SpeculativeDecodingFastLogitsInfo — the type reachable from executor.h , the public executor entry point — the data layout is byte-for-byte identical and only a function symbol disappears. SpeculativeDecodingModule does shrink, but it lives in runtime/ and is not reachable from executor.h (which does not include modelConfig.h ); it was only ever constructed by the TRT-engine parsing path this PR removes, so no object of the old size can be produced by the new library.
+ Migration 
+ There is no replacement for any of these. toTensor() served the fast-logits path of the TRT-engine flow, which no longer exists; the predicates and accessors described state that is now permanently unset. Callers should delete the call sites. If an external consumer turns out to depend on toTensor() , please say so on this PR — it is the one symbol here worth reconsidering.
+ Exported-symbol diff (run at this head) 
+ libtensorrt_llm.so was built twice with identical CMake flags — once from the merge-base e8654268e9 and once from this branch — and their dynamic symbol tables compared with nm -D --defined-only . Result: 35 symbols removed, 2 added , out of ~150,500. Every one is attributable to this PR:
+ Group 
+ Count 
+ What it is 
+ SpeculativeDecodingFastLogitsInfo::toTensor() 
+ 1 
+ The out-of-line member this PR deletes — the headline ABI break 
+ AllocateKvCache::operator() 
+ 1 removed, 1 added 
+ Same function, re-exported under a new mangled name because the modelConfig parameter was dropped 
+ runtime::SpeculativeDecodingModule 
+ 15 
+ Destructors, vtable, typeinfo and the shared_ptr control-block instantiations 
+ runtime::ExplicitDraftTokensModule 
+ 15 
+ Same set, for the hollow subclass this PR deletes outright 
+ nlohmann::json::at<char const(&)[17]> / [25] 
+ 2 
+ Template instantiations that existed only for the removed gptJsonConfig field lookups 
+ Logger::log<char[308]> → <char[265]> 
+ 1 removed, 1 added 
+ A log-literal length changed because the removed two-model warning is gone 
+ This corrected one claim made earlier in this PR. I had described SpeculativeDecodingModule as merely shrinking from 24 to 16 bytes. In the built library it does not shrink — it disappears from the dynamic symbol table entirely, vtable and RTTI included. The class is still declared in the header, but after this PR removes the gptJsonConfig parsing path nothing constructs it, so the compiler emits no vtable/typeinfo for it and the linker drops it. Practically this makes the layout question moot: the new library cannot produce an object of either size. But it is a larger ABI delta than "one member function", and downstream code that constructs a SpeculativeDecodingModule directly would fail to link.
+ No unexpected symbols were removed — nothing outside the speculative-decoding surface changed, which is the property the closure build could not establish on its own.
+ Notes for reviewers
+ speculativeDecodingModule.h no longer needs cudaUtils.h . Dropping that heavy header exposed two pre-existing include-what-you-use gaps that had been relying on it transitively, both fixed here: modelConfig.h uses TLLM_CHECK_WITH_INFO / TLLM_LOG_DEBUG without including assert.h or logger.h , and runtimeUtils.cpp uses TLLM_CUDA_CHECK / std::ifstream without including cudaUtils.h or <fstream> .
+ kernels/CMakeLists.txt uses file(GLOB_RECURSE ... *.cu) , so deleting the kernel file pair needs no CMake change.
+ Same-named-but-unrelated symbols deliberately not touched: executor::DecodingMode::isMedusa/isEagle/isExplicitDraftTokens (a different class from runtime::SpeculativeDecodingMode ) and the pure-Python SpeculativeDecodingMode in models/modeling_utils.py .
+ The three main kernel families under kernels/speculativeDecoding/ ( dynamicTree , kvCacheUpdate , mtp ) were scanned and are clean — nothing removed from them. Two things there look dead but are not: updateLinearKVCacheDraftTokenLocation is never reached from production code ( kv_cache_manager_v2.py hardcodes use_paged_kv_cache=True ) but test_linear_kvcache_update passes False and checks it against a ground-truth reimplementation; and the three parameters the 2D variant always receives as nullptr are shared with the 1D variant, which passes real pointers.
+ In suffixAutomaton/ , only whole-entity dead code was removed. The individually-unused members of SADynamicBuffer / SAOptional / SAFlatHashMap / NamedType are left alone — those files are adapted from Baseten's sa_spec and the members mirror the upstream std::optional / STL contract.
+ ModelConfig 's speculative-decoding members and their accessors are now written by nobody and are dead, but are left in place to keep this PR's blast radius bounded; they are a natural follow-up.
+ Test Coverage
+ tests/unittest/llmapi/test_llm_args.py
+tests/unittest/_torch/speculative/test_eagle3.py
+tests/unittest/_torch/speculative/hw_agnostic/test_kv_cache_reuse.py
+tests/unittest/_torch/speculative/hw_agnostic/test_draft_token_tree_verification.py
+tests/unittest/_torch/kv_cache_compression/test_quantization_for_cold_page.py
+tests/unittest/_torch/modeling/test_modeling_llama.py
+tests/unittest/bindings/test_bindings_ut.py
+tests/unittest/bindings/test_executor_bindings.py
+tests/unittest/_torch/thop/parallel_hw_agnostic/test_custom_ops.py
+ test_bfloat16_2_model_mtp specifically covered the removed two-model path and is deleted, along with its l0_b200.yml and .test_durations entries. Every other test only needed the two-model flag dropped or the mode swapped for its one-model equivalent — their subjects (KV cache reuse, tree verification, long prompts, cold-page compression) are unaffected. test_custom_ops.py drops the trtllm::extract_real_draft_tokens_op entry from the op-existence list.
+ Build verification (devel container, CUDA 13.2): the 110 translation units in the dependency closure of the edited C++ headers all compile, along with the nanobind and executor targets. The closure was computed with the preprocessor ( -M -MG ) rather than by grep, which is what caught the two include-what-you-use gaps above. For the suffix-automaton headers, which are included by relative path, correctness was confirmed by injecting a deliberate syntax error and observing the dependent TUs fail. The Python side is py_compile -clean and ruff -clean for undefined names; the devel image lacks transformers , so the unit tests above have not been run locally and CI is their first execution.
+ PR Checklist
+ Please review the following before submitting your PR:
+ PR description clearly explains what and why. If using CodeRabbit's summary, please make sure it makes sense.
+ PR Follows TRT-LLM CODING GUIDELINES to the best of your knowledge.
+ Test cases are provided for new code paths (see test instructions )
+ If PR introduces API changes, an appropriate PR label is added - either api-compatible or api-breaking . For api-breaking , include BREAKING in the PR title.
+ Any new dependencies have been scanned for license and vulnerabilities
+ CODEOWNERS updated if ownership changes
+ Documentation updated as needed
+ Update tava architecture diagram if there is a significant design change in PR.
+ The reviewers assigned automatically/manually are appropriate for the PR.
+ Please check this after reviewing the above items as appropriate for this PR.
+ GitHub Bot Help
+ To see a list of available CI bot commands, please comment /bot help .
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ github-actions 
+ Bot 
+ assigned 
+ zhaoyangwang-nvidia 
+ Sep 4, 2026 
+ zhaoyangwang-nvidia 
+ changed the title
+ [None][chore] Remove dead speculative decoding code left by the C++ decoder removal 
+ [None][chore] Remove dead code from the C++ speculative decoding path 
+ Sep 4, 2026 
+ zhaoyangwang-nvidia 
+ marked this pull request as ready for review
+ September 4, 2026 09:21 
+ zhaoyangwang-nvidia 
+ requested review from
+ a team 
+ as code owners 
+ September 4, 2026 09:21 
+ zhaoyangwang-nvidia 
+ requested review from
+ SimengLiu-nv , 
+ asfiyab-nvidia , 
+ eopXD , 
+ rosong11 and 
+ tongyuantongyu 
+ September 4, 2026 09:21 
+ zhaoyangwang-nvidia 
+ commented
+ Sep 4, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run --disable-fail-fast
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ coderabbitai 
+ Bot 
+ commented
+ Sep 4, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Note
+ Reviews paused
+ It looks like this branch is under active development. To avoid overwhelming you with review comments due to an influx of new commits, CodeRabbit has automatically paused this review. You can configure this behavior by changing the reviews.auto_review.auto_pause_after_reviewed_commits setting.
+ Use the following commands to manage reviews:
+ @coderabbitai resume to resume automatic reviews.
+ @coderabbitai review to trigger a single review.
+ Use the checkboxes below for quick actions:
+ ▶️ Resume reviews
+ 🔍 Trigger review
+ Walkthrough
+ This change removes two-model speculative decoding paths and obsolete public interfaces. It simplifies runtime configuration, one-model executor routing, KV-cache allocation, draft-token extraction, suffix-automaton types, examples, documentation, and validation coverage.
+ Changes
+ Speculative decoding cleanup 
+ Layer / File(s) 
+ Summary 
+ Runtime configuration removal 
+ cpp/include/tensorrt_llm/runtime/* , cpp/tensorrt_llm/runtime/gptJsonConfig.cpp , cpp/tensorrt_llm/nanobind/runtime/* 
+ Removes speculative-decoding accessors, capability helpers, module state, builder configuration, and Python bindings. 
+ One-model execution path 
+ tensorrt_llm/_torch/speculative/* , tensorrt_llm/_torch/pyexecutor/* , tensorrt_llm/llmapi/llm_args.py , tensorrt_llm/llmapi/llm_utils.py 
+ Removes legacy modes and separate draft-model execution. Eagle, DraftTarget, and MTP paths now select supported one-model modes. 
+ KV-cache allocation 
+ cpp/include/tensorrt_llm/batch_manager/allocateKvCache.h , cpp/tensorrt_llm/batch_manager/allocateKvCache.cpp , cpp/tensorrt_llm/nanobind/batch_manager/algorithms.cpp 
+ Removes the ModelConfig argument and Eagle-specific token-count overrides. 
+ Draft-token and suffix-automaton interfaces 
+ cpp/include/tensorrt_llm/executor/executor.h , cpp/tensorrt_llm/thop/specDecOp.cpp , cpp/tensorrt_llm/kernels/speculativeDecoding/* 
+ Removes fast-logits tensor serialization, draft-token extraction registration, and obsolete suffix-automaton buffer and aliases. 
+ Examples, documentation, and validation 
+ examples/llm-api/quickstart_advanced.py , docs/source/* , tests/* , tensorrt_llm/usage/* 
+ Removes deprecated options and fields. Updates documentation, manifests, test configurations, and obsolete two-model coverage. 
+ Estimated code review effort: 4 (Complex) | ~45 minutes
+ Sequence Diagram(s)
+ sequenceDiagram
+ participant LlmArgs
+ participant SpeculativeDecodingMode
+ participant PyExecutorCreator
+ participant ModelEngine
+ LlmArgs->>SpeculativeDecodingMode: Select supported one-model mode
+ SpeculativeDecodingMode->>PyExecutorCreator: Provide speculative configuration
+ PyExecutorCreator->>ModelEngine: Use standard execution path
+ PyExecutorCreator->>ModelEngine: Keep draft_model_engine=None
+ Loading 
+ Suggested reviewers: juney-nvidia 
+ Merge Risk: 🔵 Low · up to 5150f 
+ This change removes two-model speculative decoding and related APIs while retaining one-model operation. The remaining dead incremental-update code, missing rejection-path coverage, and stale two-model QA invocation create bounded cleanup and validation risk before release.
+ 🚥 Pre-merge checks | ✅ 4 | ❌ 1 
+ ❌ Failed checks (1 warning)
+ Check name 
+ Status 
+ Explanation 
+ Resolution 
+ Docstring Coverage 
+ ⚠️ Warning 
+ Docstring coverage is 20.59% which is insufficient. The required threshold is 80.00%. Docstring coverage is scoped to functions touched by this diff. Analyzed 68 functions across 26 files. (5 skipped:… 
+ Write docstrings for the functions missing them to satisfy the coverage threshold. 
+ ✅ Passed checks (4 passed) 
+ Check name 
+ Status 
+ Explanation 
+ Linked Issues check 
+ ✅ Passed 
+ Check skipped because no linked issues were found for this pull request. 
+ Out of Scope Changes check 
+ ✅ Passed 
+ Check skipped because no linked issues were found for this pull request. 
+ Title check 
+ ✅ Passed 
+ The title clearly identifies the refactor, the removal of the two-model speculative decoding path, and the related dead C++ code. It uses the required [None][type] format and marks the breaking change… 
+ Description check 
+ ✅ Passed 
+ The description is complete and directly addresses the change, rationale, compatibility impact, public API and ABI removals, migration guidance, test coverage, build verification, and checklist items. 
+ Full details: Docstring Coverage 
+ Explanation 
+ Docstring coverage is 20.59% which is insufficient. The required threshold is 80.00%. Docstring coverage is scoped to functions touched by this diff. Analyzed 68 functions across 26 files. (5 skipped: 5 unsupported.)
+ ✨ Finishing Touches 
+ 🧪 Generate unit tests (beta) 
+ Create PR with unit tests
+ Comment @coderabbitai help to get the list of available commands. 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 4, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #71511 [ run ] triggered by Bot. Commit: 7224a44 Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ zhaoyangwang-nvidia 
+ requested review from
+ a team 
+ as code owners 
+ September 4, 2026 09:56 
+ zhaoyangwang-nvidia 
+ requested review from
+ Mgluhovskoi , 
+ QiJune , 
+ bo-nv , 
+ chuangz0 and 
+ yuxianq 
+ September 4, 2026 09:56 
+ --> 
+ 177 hidden items
+ Load more…
+ zhaoyangwang-nvidia 
+ added 7 commits
+ September 10, 2026 22:24 
+ [None][fix] Reject post-construction assignment of the retired one-mo… 
+ …
+ faa2c96 
+ …del flags
+The field validators added earlier only run at construction time. Because
+`validate_assignment` is off, `config.eagle3_one_model = False` after
+construction still succeeded, leaving a value that telemetry reports by value
+while the runtime unconditionally takes the one-model path.
+`validate_assignment` cannot be turned on here: the model validators on these
+classes assign to `self` (9 such assignments in EagleDecodingConfig alone), so
+re-validating on every assignment recurses without bound. Guard the two retired
+fields in `__setattr__` instead, which is narrow enough to avoid that.
+Construction and deserialization are unaffected: pydantic's `validate_python`,
+`model_construct` and `model_copy` write `__dict__` directly rather than going
+through Python `__setattr__`, so the guard only fires on genuine
+post-construction assignment. The one in-tree self-assignment
+(`validate_eagle_config` setting the flag to True) is passed through, and no
+in-tree caller writes either field after construction.
+Signed-off-by: ZhaoyangWang <zhaoyangw@nvidia.com>
+ [None][doc] Drop the stale AllocateKvCache note from the release notes 
+ …
+ fcd8820 
+ `AllocateKvCache` was removed entirely by NVIDIA#18540 (`[None][chore] Cleanup unused
+C++ algorithms`), which this branch is now rebased onto, so the note describing
+its retained-but-stricter signature no longer describes anything that exists.
+The rest of the entry is unchanged and still accurate.
+Signed-off-by: ZhaoyangWang <zhaoyangw@nvidia.com>
+ [None][test] Drop the QA test-list row for the removed two-model MTP … 
+ …
+ cb19d9e 
+ …test
+`TestDeepSeekV3Lite::test_bfloat16_2_model_mtp` was removed with the two-model
+path, but its row survived in the QA list, so the AST test-list validator failed
+the x86_64 single-GPU job before any test ran:
+ Invalid cases: {"invalid": [".../test_bfloat16_2_model_mtp"]}
+Swept the rest of the removed tests against every list under test_lists/ and
+.test_durations; this was the only dangling entry.
+Signed-off-by: ZhaoyangWang <zhaoyangw@nvidia.com>
+ [None][refactor] BREAKING: Remove the eagle3_one_model and mtp_eagle_… 
+ …
+ ed1ab47 
+ …one_model fields
+Completes the 2-model deprecation: the fields have carried a warning since
+the two-model implementation gone they no longer select anything. Keeping a
+field whose only legal value is True — and which raises on False — just
+advertises a choice that does not exist, so delete it (review feedback).
+Removed alongside the fields, per the staged-removal checklist:
+ - the two `speculative_config.*` entries in llm_args_golden_manifest.json
+ - the matching rows in docs/source/developer-guide/telemetry.md
+There is no `TelemetryField.categorical` entry or `quickstart_advanced.py` CLI
+choice for either field, so nothing to update there.
+AutoDeploy's validate_supported_speculative_config() gated on these fields being
+True; those branches are now unreachable, so the check keeps only the
+use_mtp_vanilla and config-type conditions.
+Call sites were rewritten by locating each keyword argument through the AST
+rather than by regex, after two regex attempts reformatted hundreds of unrelated
+lines. The `parametrize`/`parametrize_with_ids` decorators are deliberately left
+alone: they are pinned to [True], and their IDs appear in the test lists and
+.test_durations, so removing them would invalidate those entries.
+Signed-off-by: ZhaoyangWang <zhaoyangw@nvidia.com>
+ [None][doc] Name the modes that actually block overlap, and refresh a… 
+ …
+ aba953d 
+ … copyright
+Review feedback. Removing the two-model MTP-Eagle cross-reference left the
+counter-signal reading "speculative decoding (mechanism auto-disables)", which
+condemns the whole feature. Per SpeculativeDecodingMode.support_overlap_scheduler
+only N-gram, user-provided drafter and save-hidden-states lack overlap support;
+one-model MTP, MTP-Eagle, Eagle3, SA, PARD/DFlash/DSpark and Draft-Target all
+keep it, so the old wording would have talked users out of a valid optimization.
+runtimeUtils.cpp is modified here and its copyright range still read 2022-2024;
+every other C++ file this PR touches is already current.
+Signed-off-by: ZhaoyangWang <zhaoyangw@nvidia.com>
+ [None][chore] Apply yapf and autoflake to the field-removal edits 
+ …
+ 4d92e6e 
+ The Pre-commit Check failed on the previous head: yapf wanted to reflow the call
+sites left short by dropping the kwarg, and autoflake found two `use_one_model`
+locals in test_eagle3.py that no longer had a reader once the argument was gone.
+Both hooks were run from the repo's pre-commit config rather than fixed by hand.
+The full suite now passes locally except the mypy hook, which cannot run on this
+host (no torch, no vendored deep_gemm); that hook passed in the CI run.
+Signed-off-by: ZhaoyangWang <zhaoyangw@nvidia.com>
+ [None][test] Drop the durations row for a test main has since deleted 
+ …
+ 7dc037b 
+ The rebase onto NVIDIA#18809 removed TestLlama3_1_8BInstruct entirely, so the
+gen_overlap_scheduler row this branch added for
+test_guided_decoding_with_eagle3 now names a test that no longer exists.
+Signed-off-by: ZhaoyangWang <zhaoyangw@nvidia.com>
+ zhaoyangwang-nvidia 
+ force-pushed 
+ the
+ zhaoyang/spec-dead-code-cleanup 
+ branch
+ from
+ b6ac613 to
+ 7dc037b 
+ Compare 
+ September 11, 2026 05:26 
+ zhaoyangwang-nvidia 
+ commented
+ Sep 11, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run --disable-fail-fast
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 11, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #72866 [ run ] triggered by Bot. Commit: 7dc037b Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 11, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #72827 [ run ] completed with state ABORTED . Commit: b6ac613 
+ Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ BowenFu 
+ approved these changes
+ Sep 11, 2026 
+ View reviewed changes 
+ xinhe-nv 
+ added a commit
+ to xinhe-nv/TensorRT-LLM
+ that referenced
+ this pull request
+ Sep 11, 2026 
+ [TRTLLM-16203][fix] Drop redundant TestGPTOSS::test_eagle3 combo 
+ … 
+ 4635472 
+ eagle3_one_model=False forces disable_overlap_scheduler=True regardless
+of overlap_scheduler, so overlap_scheduler=True/False produced identical
+server configs under two-model eagle3. Collapse the parametrization to
+the 3 distinct combos and drop the duplicate test list entries.
+Two-model eagle3 (eagle3_one_model=False) is being removed repo-wide
+( NVIDIA#18721 ), so go further and drop the eagle3_one_model axis entirely from
+this test, keeping only the one-model overlap_scheduler=True/False cases
+and updating the test list selectors to match.
+Signed-off-by: Xin He (SW-GPU) <200704525+xinhe-nv@users.noreply.github.com>
+ xinhe-nv 
+ added a commit
+ to xinhe-nv/TensorRT-LLM
+ that referenced
+ this pull request
+ Sep 11, 2026 
+ [TRTLLM-16203][fix] Drop redundant TestGPTOSS::test_eagle3 combo 
+ … 
+ f4f64e7 
+ eagle3_one_model=False forces disable_overlap_scheduler=True regardless
+of overlap_scheduler, so overlap_scheduler=True/False produced identical
+server configs under two-model eagle3. Collapse the parametrization to
+the 3 distinct combos and drop the duplicate test list entries.
+Two-model eagle3 (eagle3_one_model=False) is being removed repo-wide
+( NVIDIA#18721 ), so go further and drop the eagle3_one_model axis entirely from
+this test, keeping only the one-model overlap_scheduler=True/False cases
+and updating the test list selectors to match.
+Signed-off-by: Xin He (SW-GPU) <200704525+xinhe-nv@users.noreply.github.com>
+ tensorrt-cicd 
+ commented
+ Sep 11, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #72866 [ run ] completed with state SUCCESS . Commit: 7dc037b 
+ /LLM/main/L0_MergeRequest_PR pipeline #59843 completed with status: 'FAILURE'
+ CI Report 
+ ⚠️ Action Required: 
+ Please check the failed tests and fix your PR
+ If you cannot view the failures, ask the CI triggerer to share details
+ Once fixed, request an NVIDIA team member to trigger CI again
+ CI Agent Failure Analysis 
+ Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ zhaoyangwang-nvidia 
+ commented
+ Sep 11, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run --disable-fail-fast
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 11, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #73025 [ run ] triggered by Bot. Commit: 7dc037b Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 12, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #73025 [ run ] completed with state FAILURE . Commit: 7dc037b 
+ /LLM/main/L0_MergeRequest_PR pipeline #59982 completed with status: 'FAILURE'
+ CI Report 
+ ⚠️ Action Required: 
+ Please check the failed tests and fix your PR
+ If you cannot view the failures, ask the CI triggerer to share details
+ Once fixed, request an NVIDIA team member to trigger CI again
+ CI Agent Failure Analysis 
+ Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ zhaoyangwang-nvidia 
+ commented
+ Sep 12, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run --disable-fail-fast
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 12, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #73059 [ run ] triggered by Bot. Commit: 7dc037b Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 12, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #73059 [ run ] completed with state FAILURE . Commit: 7dc037b 
+ /LLM/main/L0_MergeRequest_PR pipeline #60010 completed with status: 'UNSTABLE'
+ CI Report 
+ ⚠️ Action Required: 
+ Please check the failed tests and fix your PR
+ If you cannot view the failures, ask the CI triggerer to share details
+ Once fixed, request an NVIDIA team member to trigger CI again
+ Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ zhaoyangwang-nvidia 
+ commented
+ Sep 12, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run --disable-fail-fast
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 12, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #73072 [ run ] triggered by Bot. Commit: 7dc037b Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 12, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #73072 [ run ] completed with state SUCCESS . Commit: 7dc037b 
+ /LLM/main/L0_MergeRequest_PR pipeline #60022 completed with status: 'UNSTABLE'
+ CI Report 
+ ⚠️ Action Required: 
+ Please check the failed tests and fix your PR
+ If you cannot view the failures, ask the CI triggerer to share details
+ Once fixed, request an NVIDIA team member to trigger CI again
+ Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ zhaoyangwang-nvidia 
+ commented
+ Sep 13, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run --disable-fail-fast
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 13, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #73115 [ run ] triggered by Bot. Commit: 7dc037b Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Sep 13, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #73115 [ run ] completed with state SUCCESS . Commit: 7dc037b 
+ /LLM/main/L0_MergeRequest_PR pipeline #60062 completed with status: 'SUCCESS'
+ CI Report 
+ Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Hide details 
+ View details 
+ zhaoyangwang-nvidia 
+ merged commit 21dc97f 
+ into
+ NVIDIA : main 
+ Sep 13, 2026 
+ 8 checks passed
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ chenfeiz0326 
+ added a commit
+ to chenfeiz0326/TensorRT-LLM
+ that referenced
+ this pull request
+ Sep 13, 2026 
+ Merge branch 'main' into user/chenfeiz/adp-exclude-retiring-from-admi… 
+ … 
+ 436d4c3 
+ …ssion
+Two conflicts, plus one semantic follow-up:
+* tensorrt_llm/_torch/speculative/utils.py -- main ( NVIDIA#18721 ) dropped the
+ two-model speculative-decoding path: the Eagle3ResourceManager branch in
+ get_spec_resource_manager and the whole ModelDrafter/draft_slots/
+ SeqSlotManager block in get_spec_drafter. Took main's side; this branch's
+ seat_pool_or_none helper and the num_seq_slots forwarding it feeds survive
+ unchanged.
+* tests/integration/test_lists/test-db/l0_a10.yml -- both sides appended an
+ entry to the same list. Kept both.
+* tests/unittest/_torch/speculative/test_spec_slot_pool_sizing.py -- the
+ "drafter's own slot pool" section tested the two-model drafter's
+ SeqSlotManager, which no longer exists. Removed those three tests rather
+ than have them assert against a deleted code path; the remaining coverage
+ (including the AST guard over every get_spec_resource_manager branch) is
+ unaffected.
+Co-Authored-By: Claude <noreply@anthropic.com>
+Signed-off-by: chenfeiz0326 <203214996+chenfeiz0326@users.noreply.github.com>
+ chenfeiz0326 
+ mentioned this pull request
+ Sep 13, 2026 
+ [https://nvbugs/6627795][fix] stop charging retiring requests against ADP admission and capacity
+ #18457 
+ Open
+ 4 tasks 
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ Funatiq 
+ Funatiq left review comments 
+ coderabbitai[bot] 
+ coderabbitai[bot] left review comments 
+ BowenFu 
+ BowenFu approved these changes 
+ mikeiovine 
+ mikeiovine approved these changes 
+ arysef 
+ arysef approved these changes 
+ eopXD 
+ eopXD approved these changes 
+ VALLIS-NERIA 
+ VALLIS-NERIA approved these changes 
+ QiJune 
+ QiJune approved these changes 
+ Shixiaowei02 
+ Shixiaowei02 approved these changes 
+ 2ez4bz 
+ 2ez4bz approved these changes 
+ yuxianq 
+ yuxianq approved these changes 
+ Mgluhovskoi 
+ Mgluhovskoi approved these changes 
+ tburt-nv 
+ tburt-nv approved these changes 
+ chenfeiz0326 
+ chenfeiz0326 approved these changes 
+ SimengLiu-nv 
+ Awaiting requested review from SimengLiu-nv 
+ SimengLiu-nv was automatically assigned from NVIDIA/trt-llm-kv-cache-manager-devs 
+ rosong11 
+ Awaiting requested review from rosong11 
+ rosong11 is a code owner automatically assigned from NVIDIA/trt-llm-kernels-devs 
+ tongyuantongyu 
+ Awaiting requested review from tongyuantongyu 
+ tongyuantongyu is a code owner automatically assigned from NVIDIA/trt-llm-runtime-devs 
+ asfiyab-nvidia 
+ Awaiting requested review from asfiyab-nvidia 
+ asfiyab-nvidia is a code owner automatically assigned from NVIDIA/trt-llm-runtime-devs 
+ chuangz0 
+ Awaiting requested review from chuangz0 
+ chuangz0 is a code owner automatically assigned from NVIDIA/trt-llm-disagg-devs 
+ bo-nv 
+ Awaiting requested review from bo-nv 
+ bo-nv is a code owner automatically assigned from NVIDIA/trt-llm-disagg-devs 
+ yechank-nvidia 
+ Awaiting requested review from yechank-nvidia 
+ yechank-nvidia is a code owner automatically assigned from NVIDIA/trt-llm-models-devs 
+ LarryXFly 
+ Awaiting requested review from LarryXFly 
+ LarryXFly is a code owner automatically assigned from NVIDIA/trt-llm-qa 
+ mzweilz 
+ Awaiting requested review from mzweilz 
+ mzweilz is a code owner automatically assigned from NVIDIA/trt-llm-infra-devs 
+ laikhtewari 
+ Awaiting requested review from laikhtewari 
+ laikhtewari is a code owner automatically assigned from NVIDIA/trt-llm-doc-owners 
+ Fridah-nv 
+ Awaiting requested review from Fridah-nv 
+ Fridah-nv is a code owner automatically assigned from NVIDIA/trt-llm-torch-autodeploy-devs 
+ hyukn 
+ Awaiting requested review from hyukn 
+ hyukn is a code owner automatically assigned from NVIDIA/trt-llm-perf-devs 
+ dhansen-nvidia 
+ Awaiting requested review from dhansen-nvidia 
+ dhansen-nvidia is a code owner automatically assigned from NVIDIA/trt-llm-perf-devs 
+ +1 more reviewer
+ sylvesterkaczmarek 
+ sylvesterkaczmarek left review comments 
+ Reviewers whose approvals may not affect merge requirements 
+ --> 
+ Assignees
+ zhaoyangwang-nvidia 
+ Labels
+ api-breaking 
+ Accepted LLM API contract change that is backwards-incompatible 
+ ci: full pre-merge approved 
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 17 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

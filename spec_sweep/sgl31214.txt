@@ -1,0 +1,540 @@
+
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ sgl-project
+ / 
+ sglang 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 8.8k 
+ Star
+ 35.9k 
+ Code 
+ Issues 
+ 890 
+ Pull requests 
+ 4.4k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ [ROCm] Fix EAGLE spec-decode verify silently sampling greedy on HIP - # 31214 
+ # 31214 
+ Closed 
+ JohnQinAMD wants to merge 2 commits into sgl-project:main sgl-project/sglang:main from JohnQinAMD:fix/rocm-eagle-spec-verify-sampling JohnQinAMD/sglang-amd:fix/rocm-eagle-spec-verify-sampling Copy head branch name to clipboard 
+ Conversation Commits 2 ( 2 ) Checks Files changed 
+ Closed 
+ [ROCm] Fix EAGLE spec-decode verify silently sampling greedy on HIP # 31214 JohnQinAMD wants to merge 2 commits into sgl-project:main sgl-project/sglang:main from JohnQinAMD:fix/rocm-eagle-spec-verify-sampling JohnQinAMD/sglang-amd:fix/rocm-eagle-spec-verify-sampling Copy head branch name to clipboard 
+ Conversation
+ JohnQinAMD 
+ commented
+ Jul 14, 2026 
+ • 
+ edited by github-actions
+ Bot 
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Motivation
+ On ROCm/HIP, EAGLE speculative decoding always commits argmax (greedy) in verify . It ignores
+ temperature and top_p :
+ if sampling_info . is_all_greedy or _is_cpu or _is_npu or _is_hip or _is_xpu :
+ target_predict = torch . argmax (...) # greedy 
+ _is_hip is in that list because the sampling-verify ops
+( tree_speculative_sampling_target_only , top_k_renorm_prob , top_p_renorm_prob ) are only imported
+under is_cuda()/is_musa() . So any EAGLE spec-decode run at temperature>0 on ROCm decodes
+greedy . On long reasoning output that turns into repetition loops. This is not model specific.
+ Modifications
+ eagle_utils.py — move the check into a small _verify_uses_greedy(...) helper, which returns
+exactly the old answer on every non-HIP platform. Add a Triton top-p renorm (pivot binary search)
+and a HIP wrapper to stand in for the CUDA-only sgl_kernel ops, and guard the CUDA-only imports.
+HIP then goes through the pure-Triton chain_speculative_sampling_triton .
+ arg_groups/speculative_hook.py — turn on speculative_use_rejection_sampling by default on HIP
+for EAGLE/EAGLE3 with topk==1, default accept thresholds, and non-deterministic mode, so users do
+not have to know about a flag. These conditions are a strict subset of the checks that raise just
+below, so turning it on can never break a config that used to work.
+ Accuracy Tests
+ Both sides were run on this branch with the same settings. Only the patch differs. GLM-5.2-FP8,
+8x MI355X, NEXTN spec decode ( num_steps=1, eagle_topk=1, draft_tokens=2 ), GPQA-Diamond 198
+questions, temperature=1.0 / top_p=0.95 , max_tokens=98304 .
+ old code 
+ this PR 
+ GPQA-Diamond 
+ 0.702 ± 0.033 
+ 0.904 ± 0.021 
+ answers that used up the whole token budget 
+ 78/198 (39.4%) 
+ 5/198 (2.5%) 
+ mean response length 
+ 134,921 chars 
+ 7,860 chars 
+ accuracy on answers that did finish 
+ 0.9333 
+ 0.9223 
+ +20.2 points, about 5.2 sigma. The cause is not model quality. On the questions where the old
+code finishes, it scores 0.9333, which matches the patched build. It loses because 39.4% of its
+answers never finish : greedy verify at temperature>0 falls into repetition loops and burns the
+whole budget without giving an answer. You can also see it in wall-clock time (about 2x) and in a
+first attempt that died because requests went past the default 1800s per-request timeout.
+ A probe on a non-greedy batch confirms which branch runs: old code takes GREEDY(argmax) , this PR
+takes SAMPLING . The same run shows the speculative_hook.py half working, with the server logging
+ enabling speculative_use_rejection_sampling by default and no error.
+ Speed Tests and Profiling
+ This is a correctness fix; the sampling path costs the same. Throughput under NEXTN spec decode on GSM8K n=200: 740-771 tok/s before, 764 tok/s after.
+ GSM8K cannot show this bug because it runs greedy, so argmax is already the right answer there.
+It is only a no-regression check: 0.945-0.960 old vs 0.940 patched at n=200, throughput 740-771 vs
+764 tok/s.
+ Known gaps (pre-existing, not regressions)
+ On HIP, EAGLE topk==1 with --enable-deterministic-inference or non-default accept thresholds is
+left alone on purpose, because rejection sampling really is incompatible there. HIP tree drafting 
+(topk>1) still uses greedy, because the Triton chain sampler only handles chains.
+ _renorm_top_k_top_p_hip decides whether to run the top-k sort with bool((top_ks < vocab).any()) ,
+which is a device sync on every verify step. Passing sampling_info.need_top_k_sampling and
+ need_top_p_sampling (what the CUDA branch already uses) would remove it. That measured well under
+0.5% of a decode step, so I left it out to keep this PR a pure bug fix whose numbers match the code.
+ How to reproduce 
+ Image lmsysorg/sglang-rocm:v0.5.17-rocm720-mi35x-20260817 , /data/huggingface/GLM-5.2-FP8 . Use
+FP8, not MXFP4: on that image quark.py imports a name its overrides.py does not have, so the
+server dies while loading weights.
+ # Unit tests. Pass the GPU devices even for CPU-only tests: importing sglang pulls in aiter, 
+ # which runs rocminfo at import time. 
+docker run --rm --device=/dev/kfd --device=/dev/dri --group-add video \
+ --security-opt seccomp=unconfined --shm-size 16g -v " $PWD :/wt " -w /wt -e PYTHONPATH=/wt/python \
+ lmsysorg/sglang-rocm:v0.5.17-rocm720-mi35x-20260817 \
+ bash -lc ' python3 -m pytest test/registered/unit/spec/test_eagle_gate_routing.py \ 
+ test/registered/spec/eagle/test_rocm_eagle_renorm.py -q ' 
+ # Serve with spec decode 
+python3 -m sglang.launch_server --model-path /data/huggingface/GLM-5.2-FP8 --trust-remote-code \
+ --tp-size 8 --page-size 64 --kv-cache-dtype fp8_e4m3 \
+ --dsa-prefill-backend tilelang --dsa-decode-backend tilelang \
+ --speculative-algorithm NEXTN --speculative-num-steps 1 \
+ --speculative-eagle-topk 1 --speculative-num-draft-tokens 2 \
+ --reasoning-parser glm45 --context-length 163840 --mem-fraction-static 0.75 --port 30000
+ # GPQA-Diamond. lm-eval pinned at b315ef3b05176acc9732bb7fdec116abe1ecc476, 
+ # task gpqa_diamond_cot_n_shot. 
+python3 -m lm_eval --model local-chat-completions --apply_chat_template \
+ --tasks gpqa_diamond.yaml --output_path " $RESULTS " --log_samples \
+ --model_args " model= $MODEL ,base_url=http://0.0.0.0:30000/v1/chat/completions,api_key=EMPTY, \ 
+ eos_string=</s>,max_retries=5,num_concurrent=64,timeout=7200,tokenized_requests=False,max_length=163840 " \
+ --limit 198 --gen_kwargs " max_tokens=98304,temperature=1.0,top_p=0.95 " 
+ --limit 198 takes one permutation per question ( process_docs uses n_repeats=2 ). You need
+ HF_TOKEN , the dataset is gated. lm-eval has to fall back to reasoning_content when content is
+empty, or every graded answer from a thinking model is an empty string.
+ Two things to watch when probing the branch. Gate the probe on not sampling_info.is_all_greedy :
+server warmup sends a greedy request, so a plain one-shot probe tells you nothing. And do not use
+output diversity as a test: the old code still returns 8 out of 8 different completions at
+ temperature=1.0 , because the bonus token goes through the normal sampler.
+ AI assistance
+ This PR was developed with AI assistance (Claude). The AI helped with the rebase and conflict
+resolution, wrote the unit tests, and ran the measurements reported above. All code and results were
+reviewed and verified by the author on real hardware; the commits carry a Co-authored-by trailer.
+ Checklist
+ Format your code according to the Format code with pre-commit .
+ Add unit tests according to the Run and add unit tests .
+ Update documentation according to Write documentations .
+ Provide accuracy and speed benchmark results according to Test the accuracy and Benchmark the speed .
+ Follow the SGLang code style guidance .
+ CI States
+ Latest PR Test (Base): ❌ Run #33038846825 
+Latest PR Test (Extra): ❌ Run #33038846496 
+Latest PR Test (AMD ROCm 7.2): ❌ Run #33038846762 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ JohnQinAMD 
+ requested review from
+ Qiaolin-Yu , 
+ Ying1123 , 
+ hnyls2002 and 
+ merrymercy 
+ as code owners 
+ July 14, 2026 17:40 
+ github-actions 
+ Bot 
+ added
+ amd
+ speculative-decoding
+ labels
+ Jul 14, 2026 
+ gemini-code-assist 
+ Bot 
+ commented
+ Jul 14, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Warning
+ You have reached your daily quota limit. Please wait up to 24 hours and I will start processing your requests again!
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ JohnQinAMD 
+ force-pushed 
+ the
+ fix/rocm-eagle-spec-verify-sampling 
+ branch
+ from
+ 920bfcd to
+ a5d3967 
+ Compare 
+ July 14, 2026 18:52 
+ ErenAta16 
+ approved these changes
+ Jul 14, 2026 
+ View reviewed changes 
+ ErenAta16 
+ left a comment
+ Copy link
+ Copy Markdown
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Checked the pivot-search kernel and the routing logic separately.
+ _top_p_renorm_kernel : binary search for the largest tau with sum(p>=tau) >= top_p is the standard trick for sort-free top-p. 30 iterations against a probability in [0,1] gets tau to roughly 1e-9 precision, comfortably inside the <1e-6 tolerance claimed against the sort-based reference. The top_p >= 1.0 passthrough keeps that path bit-exact with CUDA's existing no-op behavior instead of running the approximation unnecessarily.
+ _verify_uses_greedy / the speculative_hook.py default flip: the new auto-enable conditions (topk==1, both accept thresholds at 1.0, not deterministic-inference) mirror the pre-existing validation block below it, so the flip can't produce a config that block would've rejected anyway. Lazy-importing sgl_kernel under if not _is_hip is correct: the gate guarantees the HIP branch always goes through rejection sampling, so the CUDA-only import is genuinely dead on that path, not just usually-true.
+ The new test compares the kernel against an independent torch nucleus reference (its own sort/cumsum implementation, not a restatement of the kernel's math) rather than a golden file, which is the right way to catch a broken pivot search instead of just pinning current output. Good fix for a real correctness gap, ROCm was silently downgrading EAGLE verify to greedy regardless of temperature/top_p.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ kkHuang-amd 
+ commented
+ Jul 15, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Could you add the e2e gsm8 testing result for greedy and non-greedy cases?
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ JohnQinAMD 
+ commented
+ Jul 15, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ Could you add the e2e gsm8 testing result for greedy and non-greedy cases?
+ Thanks @kkHuang-amd @ErenAta16 for the review
+ e2e GSM8K on GLM-5.2-MXFP4 (EAGLE topk==1 chain + rejection sampling, MI350X/ROCm), full test set (N=1319):
+ decode 
+ GSM8K 
+ greedy (temp=0) 
+ 96.59% (1274/1319) 
+ sampling (temp=0.6) 
+ 96.74% (1276/1319) 
+ Sampling ≈ greedy — temp>0 now samples correctly on HIP instead of the pre-fix silent-greedy fallback.
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ErenAta16 
+ commented
+ Jul 15, 2026 
+ Copy link
+ Copy Markdown
+ The e2e gsm8k ask is reasonable, flagging that I don't have ROCm hardware to generate that myself, so it'll need to come from someone with access to the target device. The kernel-level fix stands on its own regardless: the GPU-free unit test isolates the actual bug (pivot-search binary search validated against an independent torch reference, plus the auto-enable/rejection-sampling flip checked against the existing validation block), so the e2e run would be confirming end-to-end behavior on top of an already-verified kernel, not the only evidence for correctness.
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ long10024070 
+ mentioned this pull request
+ Jul 18, 2026 
+ [ROCm][MI35X] Enable GLM-5.2-MXFP4 MTP speculative decoding
+ #31683 
+ Closed
+ This was referenced Jul 19, 2026 
+ [CI Monitor] Daily Report - 2026-07-19
+ bingxche/sglang-ci-bot#140 
+ Open
+ [CI Monitor] Daily Report - 2026-07-22
+ bingxche/sglang-ci-bot#143 
+ Open
+ [CI Monitor] Daily Report - 2026-07-25
+ bingxche/sglang-ci-bot#146 
+ Open
+ dorado269 
+ mentioned this pull request
+ Aug 5, 2026 
+ [Bug] Accumulate sampling penalties per accepted token under speculative decoding
+ #33643 
+ Draft
+ JohnQinAMD 
+ force-pushed 
+ the
+ fix/rocm-eagle-spec-verify-sampling 
+ branch
+ from
+ a5d3967 to
+ c510a7f 
+ Compare 
+ August 18, 2026 07:51 
+ JohnQinAMD 
+ mentioned this pull request
+ Aug 18, 2026 
+ [GLM-5.2] Keep GlmMoeDsa MoE e_score_correction_bias in fp32
+ #31213 
+ Closed
+ 5 tasks 
+ JohnQinAMD 
+ force-pushed 
+ the
+ fix/rocm-eagle-spec-verify-sampling 
+ branch
+ 4 times, most recently
+ from
+ bdbcfb6 to
+ af37b6a 
+ Compare 
+ August 19, 2026 17:35 
+ amd-bot 
+ mentioned this pull request
+ Aug 25, 2026 
+ [CI Monitor] Daily Report - 2026-08-25
+ bingxche/sglang-ci-bot#177 
+ Open
+ JohnQinAMD 
+ and others 
+ added 2 commits
+ August 27, 2026 04:10 
+ [ROCm] Fix EAGLE spec-decode verify silently sampling greedy on HIP 
+ …
+ ea96904 
+ The sgl_kernel sampling-verify ops (tree_speculative_sampling_target_only,
+top_k/top_p_renorm_prob) are CUDA/MUSA-only, so HIP fell through eagle_sample's
+gate to argmax(greedy), silently ignoring temperature/top_p and degenerating
+into repetition loops at temp>0.
+Route HIP through the pure-Triton chain sampler (reject_sampling.py) when
+rejection sampling is active and the batch isn't all-greedy, with a Triton
+pivot-search top-p renorm (_renorm_top_k_top_p_hip) replacing the CUDA-only
+renorm ops. The gate is factored into a pure helper (_verify_uses_greedy) that
+reduces to the original predicate byte-for-byte on every non-HIP platform;
+CUDA-only imports are guarded so HIP never ImportErrors. top_p>=1.0 is an exact
+no-op to stay bit-exact with CUDA's top_p_renorm_prob(p, 1.0)==p.
+Tests: gate-routing truth table (CPU) and renorm-vs-nucleus numerical
+equivalence (GPU).
+Co-authored-by: Claude Opus 5 (1M context) <noreply@anthropic.com>
+ [ROCm] Default rejection sampling on for HIP EAGLE verify 
+ …
+ 17184fd 
+ Without this, the ROCm sampling fix only helps HIP users who pass
+--speculative-use-rejection-sampling; everyone else still silently gets argmax
+verify. Default the flag on in _handle_eagle_family when running on HIP with an
+EAGLE/EAGLE3 topk=1 config whose options are compatible with rejection sampling
+(default accept thresholds, non-deterministic), unless the user opted in
+explicitly. The conditions mirror the validation below so the flip never turns a
+previously-working config into a raise, and CUDA behavior is untouched. Setting
+the flag makes the draft worker emit the target-vocab proposal (draft_probs)
+that the Triton chain sampler consumes.
+Co-authored-by: Claude Opus 5 (1M context) <noreply@anthropic.com>
+ JohnQinAMD 
+ force-pushed 
+ the
+ fix/rocm-eagle-spec-verify-sampling 
+ branch
+ from
+ af37b6a to
+ 17184fd 
+ Compare 
+ August 27, 2026 04:15 
+ amd-bot 
+ mentioned this pull request
+ Aug 27, 2026 
+ [CI Monitor] Daily Report - 2026-08-27
+ bingxche/sglang-ci-bot#179 
+ Open
+ JohnQinAMD 
+ mentioned this pull request
+ Aug 27, 2026 
+ [ROCm] Fix EAGLE spec-decode verify silently sampling greedy on HIP
+ xiaobochen-amd/sglang#2 
+ Merged
+ 5 tasks 
+ JohnQinAMD 
+ commented
+ Sep 7, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ Closing in favour of #37134 , which carries the same fix adapted to the current arg_groups API ( get_platform().is_hip and the resolving view instead of is_hip() and raw server_args ). This one was written against the July API, and has since gone conflicting against main for that reason.
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ JohnQinAMD 
+ closed this
+ Sep 7, 2026 
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ Ying1123 
+ Awaiting requested review from Ying1123 
+ Ying1123 is a code owner 
+ merrymercy 
+ Awaiting requested review from merrymercy 
+ merrymercy is a code owner 
+ hnyls2002 
+ Awaiting requested review from hnyls2002 
+ hnyls2002 is a code owner 
+ Qiaolin-Yu 
+ Awaiting requested review from Qiaolin-Yu 
+ Qiaolin-Yu is a code owner 
+ 1 more reviewer
+ ErenAta16 
+ ErenAta16 approved these changes 
+ Reviewers whose approvals may not affect merge requirements 
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ amd 
+ speculative-decoding 
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 3 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

@@ -1,0 +1,684 @@
+
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ huggingface
+ / 
+ transformers 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 34.5k 
+ Star
+ 165k 
+ Code 
+ Issues 
+ 821 
+ Pull requests 
+ 1.6k 
+ Actions 
+ Projects 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Actions
+ Projects
+ Security and quality
+ Insights
+ Speculative decoding: candidate generators return a q they did not sample from, breaking losslessness with do_sample=True #47932 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Closed 
+ Closed 
+ Speculative decoding: candidate generators return a q they did not sample from, breaking losslessness with do_sample=True #47932 
+ Copy link 
+ Description
+ pjordanandrsn 
+ opened on Aug 12, 2026 
+ Issue body actions 
+ System Info
+ transformers version: 5.16.0.dev0 (source checkout at main, d1123114da1ab4395198146f4f84dae7fe8b693e)
+Platform: macOS-26.4.1-arm64-arm-64bit-Mach-O
+Python version: 3.14.6
+PyTorch version: 2.11.0
+Accelerator: CPU for the first two scripts; the real-checkpoint run used one NVIDIA A100-SXM4-80GB
+ Who can help?
+ @Cyrilvallez 
+ Information
+ The official example scripts
+ My own modified scripts
+ Tasks
+ An officially supported task in the examples folder (such as GLUE/SQuAD, ...)
+ My own task or dataset (give details below)
+ Reproduction
+ _speculative_sampling treats the candidate_logits returned by a candidate generator as q , the drafter's
+proposal distribution. Three of the block drafters return logits that are not the distribution their tokens were
+drawn from, so with do_sample=True the acceptance test is run against the wrong q .
+ The mismatch
+ In DFlashTokenCandidateGenerator.get_candidates , each token is sampled from the processor-applied logits
+( candidate_generator.py#L1674-L1685 ):
+ if self . logits_processor is not None :
+ candidate_ids = input_ids 
+ for i in range ( candidate_logits . shape [ 1 ]):
+ next_token_logits = self . logits_processor ( candidate_ids , candidate_logits [:, i , :]. float ())
+ if self . do_sample :
+ probs = nn . functional . softmax ( next_token_logits , dim = - 1 , dtype = torch . float32 )
+ next_token = torch . multinomial ( probs , num_samples = 1 )
+ but the method returns the raw candidate_logits 
+( #L1696 ).
+ next_token_logits is discarded.
+ Those returned logits then become q in
+ _speculative_sampling ,
+which uses them for the acceptance ratio
+( utils.py#L4013-L4022 )
+and for the [p - q]+ residual it samples from on rejection
+( #L4045 ).
+ With a top-k warper the drafter samples from q(x)/Z ( Z = raw mass kept by the warper) but reports q(x) , so
+ p_i/q_i is computed a factor 1/Z too large and draft tokens are accepted more often than the algorithm allows.
+ Reproduction
+ The drafter's vocab projection is pinned to a fixed logits vector, so its raw distribution is known exactly and
+every drafted position is an i.i.d. draw from it. This measures what the drafter actually draws and compares it
+with what it hands back.
+ """Shows that DFlashTokenCandidateGenerator returns logits that are not the distribution it sampled from. 
+ Run against transformers main. The drafter's vocab projection is pinned to a fixed 
+ logits vector, so the drafter's raw distribution is known exactly and every drafted 
+ position is an i.i.d. draw from it. 
+ """ 
+ import torch 
+ from torch import nn 
+ from transformers import GenerationConfig 
+ from transformers . generation . candidate_generator import DFlashTokenCandidateGenerator 
+ from transformers . generation . logits_process import LogitsProcessorList , TopKLogitsWarper 
+ from transformers . models . muse_glimmer_assistant import (
+ MuseGlimmerAssistantConfig ,
+ MuseGlimmerAssistantModel ,
+)
+ from transformers . modeling_outputs import BaseModelOutputWithPast 
+ VOCAB_SIZE = 8 
+ HIDDEN_SIZE = 32 
+ BLOCK_SIZE = 8 
+ PROMPT_LENGTH = 6 
+ TOP_K = 3 
+ # The drafter's raw next-token logits, identical at every drafted position. 
+ RAW_LOGITS = torch . tensor ([ 3.0 , 2.6 , 2.2 , 1.0 , 0.6 , 0.2 , 0.0 , - 0.4 ])
+ class PinnedOutputEmbeddings ( nn . Module ):
+ """Stands in for the main model's LM head, so the drafter's distribution is fixed and known.""" 
+ def forward ( self , hidden_states ):
+ logits = RAW_LOGITS . to ( hidden_states . device ). expand ( * hidden_states . shape [: 2 ], VOCAB_SIZE )
+ return logits . clone ()
+ def build_inputs ():
+ config = MuseGlimmerAssistantConfig (
+ vocab_size = VOCAB_SIZE ,
+ hidden_size = HIDDEN_SIZE ,
+ head_dim = 8 ,
+ num_hidden_layers = 3 ,
+ num_attention_heads = 4 ,
+ num_key_value_heads = 2 ,
+ intermediate_size = 37 ,
+ block_size = BLOCK_SIZE ,
+ target_layer_ids = [ 0 , 2 ],
+ mask_token_id = 1 ,
+ bos_token_id = 2 ,
+ eos_token_id = 3 ,
+ pad_token_id = 4 ,
+ )
+ assistant_model = MuseGlimmerAssistantModel ( config ). eval ()
+ input_embeddings = nn . Embedding ( VOCAB_SIZE , HIDDEN_SIZE )
+ input_ids = torch . zeros ( 1 , PROMPT_LENGTH , dtype = torch . long )
+ model_kwargs = {
+ "position_ids" : torch . arange ( PROMPT_LENGTH )[ None ],
+ "attention_mask" : torch . ones ( 1 , PROMPT_LENGTH , dtype = torch . long ),
+ }
+ model_outputs = BaseModelOutputWithPast (
+ last_hidden_state = torch . randn ( 1 , PROMPT_LENGTH , HIDDEN_SIZE ),
+ hidden_states = tuple ( torch . randn ( 1 , PROMPT_LENGTH , HIDDEN_SIZE ) for _ in range ( 4 )),
+ )
+ return assistant_model , input_embeddings , input_ids , model_kwargs , model_outputs 
+ def draft_once ( assistant_model , input_embeddings , input_ids , model_kwargs , model_outputs ):
+ """One fresh drafting round; returns the drafted tokens and the logits handed back to the caller.""" 
+ generation_config = GenerationConfig ( do_sample = True , top_k = TOP_K , max_length = 1024 )
+ candidate_generator = DFlashTokenCandidateGenerator (
+ assistant_model = assistant_model ,
+ main_model_input_embeddings = input_embeddings ,
+ main_model_output_embeddings = PinnedOutputEmbeddings (),
+ generation_config = generation_config ,
+ # exactly what `generate()` hands the drafter for `do_sample=True, top_k=3` 
+ logits_processor = LogitsProcessorList ([ TopKLogitsWarper ( top_k = TOP_K )]),
+ )
+ candidate_ids , candidate_logits = candidate_generator . get_candidates (
+ input_ids = input_ids ,
+ model_kwargs = model_kwargs ,
+ model_outputs = model_outputs ,
+ is_first_iteration = False ,
+ n_last_matches = 0 ,
+ )
+ return candidate_ids [ 0 , PROMPT_LENGTH :], candidate_logits 
+ def main ():
+ torch . manual_seed ( 0 )
+ assistant_model , input_embeddings , input_ids , model_kwargs , model_outputs = build_inputs ()
+ counts = torch . zeros ( VOCAB_SIZE )
+ returned_logits = None 
+ rounds = 600 
+ for _ in range ( rounds ):
+ drafted , candidate_logits = draft_once (
+ assistant_model , input_embeddings , input_ids , model_kwargs , model_outputs 
+ )
+ counts += torch . bincount ( drafted , minlength = VOCAB_SIZE )
+ returned_logits = candidate_logits 
+ empirical = counts / counts . sum ()
+ # `_speculative_sampling` reads the returned logits as q. 
+ q_returned = returned_logits [ 0 , 0 ]. softmax ( dim = - 1 )
+ # What the drafter actually sampled from: top-k applied, then renormalised. 
+ q_actual = TopKLogitsWarper ( top_k = TOP_K )( input_ids , RAW_LOGITS [ None ]. clone ()). softmax ( dim = - 1 )[ 0 ]
+ kept = q_actual > 0 
+ Z = q_returned [ kept ]. sum ()
+ print ( f"transformers: { __import__ ( 'transformers' ). __version__ } " )
+ print ( f"draws: { int ( counts . sum ()) } over { rounds } drafting rounds, top_k= { TOP_K } \n " )
+ print ( "token q returned (raw) q sampled from empirical" )
+ for token in range ( VOCAB_SIZE ):
+ print ( f" { token :>5 } { q_returned [ token ]:>16.4f } { q_actual [ token ]:>14.4f } { empirical [ token ]:>9.4f } " )
+ print ( f" \n mass the returned q puts on the tokens the drafter can actually draw: Z = { Z :.4f } " )
+ print ( f"acceptance ratio p/q is therefore inflated by 1/Z = { 1 / Z :.4f } x for every accepted token" )
+ max_dev_returned = ( empirical - q_returned ). abs (). max ()
+ max_dev_actual = ( empirical - q_actual ). abs (). max ()
+ print ( f" \n max |empirical - q returned| = { max_dev_returned :.4f } " )
+ print ( f"max |empirical - q sampled from| = { max_dev_actual :.4f } " )
+ unreachable = ( ~ kept ) & ( q_returned > 0.01 )
+ print (
+ f"tokens the returned q gives >1% but the drafter never proposes: " 
+ f" { unreachable . nonzero (). flatten (). tolist () } " 
+ )
+ if __name__ == "__main__" :
+ main ()
+ Output:
+ transformers: 5.16.0.dev0
+draws: 4200 over 600 drafting rounds, top_k=3
+token q returned (raw) q sampled from empirical
+ 0 0.4017 0.4718 0.4707
+ 1 0.2692 0.3162 0.3093
+ 2 0.1805 0.2120 0.2200
+ 3 0.0544 0.0000 0.0000
+ 4 0.0364 0.0000 0.0000
+ 5 0.0244 0.0000 0.0000
+ 6 0.0200 0.0000 0.0000
+ 7 0.0134 0.0000 0.0000
+mass the returned q puts on the tokens the drafter can actually draw: Z = 0.8514
+acceptance ratio p/q is therefore inflated by 1/Z = 1.1746x for every accepted token
+max |empirical - q returned| = 0.0691
+max |empirical - q sampled from| = 0.0080
+tokens the returned q gives >1% but the drafter never proposes: [3, 4, 5, 6, 7]
+ The drafted tokens track the processed distribution, not the returned one. The returned q also puts 15% of its
+mass on five tokens the drafter can never propose, which is the mass the [p - q]+ residual is built from.
+ What that costs, on real models at the real defaults
+ There is no small DFlash checkpoint published, so the section above pins a synthetic head to get a known
+drafter distribution. To get the magnitude on real distributions, this takes a real drafter and a real target,
+substitutes q exactly the way the drafters above do, and runs the library's own _speculative_sampling .
+ Z is the quantity that sets the error: the raw mass sitting on the tokens top_k=50 keeps. The committed-token
+distribution is computed in closed form and cross-checked against the library's verifier at the end of the run.
+ Script 
+ """Measures the mismatch on real models, at the sampling defaults `generate()` actually uses. 
+ `top_k` defaults to 50, so a drafter over a 49k-token vocabulary proposes from a renormalised 
+ distribution whose raw mass is Z. This measures Z on a real drafter, then measures what reporting 
+ the un-renormalised distribution as `q` does to the committed-token distribution. 
+ The committed distribution is computed in closed form and cross-checked against the library's own 
+ `_speculative_sampling` on a subset of positions. 
+ """ 
+ import torch 
+ from transformers import AutoModelForCausalLM , AutoTokenizer 
+ from transformers . generation . logits_process import TopKLogitsWarper 
+ from transformers . generation . utils import _speculative_sampling 
+ DRAFTER = "HuggingFaceTB/SmolLM2-135M" 
+ TARGET = "HuggingFaceTB/SmolLM2-360M" 
+ TOP_K = 50 # the `generate()` default for do_sample=True 
+ POSITIONS = 400 # real next-token distributions to measure 
+ MC_POSITIONS = 6 # positions to cross-check against the library's verifier 
+ MC_DRAWS = 20_000 
+ PROMPTS = [
+ "The main difference between a hash table and a balanced tree is" ,
+ "When the rain finally stopped, the streets outside were" ,
+ "To install the package on a fresh machine, first" ,
+ "She had never seen the ocean before, and her first thought was" ,
+ "The committee met for three hours and eventually decided that" ,
+ "In a distributed system, consensus is hard because" ,
+ "He opened the letter slowly, already knowing what it would" ,
+ "The recipe calls for butter, but you can substitute" ,
+]
+ def collect_real_distributions ( drafter , target , tokenizer ):
+ """Runs the drafter forward on real text and returns aligned (raw drafter, target) logits.""" 
+ warper = TopKLogitsWarper ( top_k = TOP_K )
+ rows = []
+ for prompt in PROMPTS :
+ input_ids = tokenizer ( prompt , return_tensors = "pt" ). input_ids 
+ # Let the drafter extend its own text, so the contexts are the kind it actually drafts from 
+ with torch . no_grad ():
+ input_ids = drafter . generate (
+ input_ids ,
+ do_sample = True ,
+ top_k = TOP_K ,
+ max_new_tokens = POSITIONS // len ( PROMPTS ),
+ pad_token_id = tokenizer . eos_token_id ,
+ )
+ drafter_logits = drafter ( input_ids ). logits [ 0 ]. float ()
+ target_logits = target ( input_ids ). logits [ 0 ]. float ()
+ for position in range ( input_ids . shape [ 1 ] - 1 ):
+ context = input_ids [:, : position + 1 ]
+ q_raw = drafter_logits [ position ]
+ # what the drafter samples from, and what the verifier compares against 
+ q_processed = warper ( context , q_raw [ None ]. clone ())[ 0 ]
+ p_processed = warper ( context , target_logits [ position ][ None ]. clone ())[ 0 ]
+ rows . append (( q_raw , q_processed , p_processed , context . shape [ 1 ]))
+ return rows 
+ def committed_distribution ( p , q_reported , q_actual ):
+ """Closed form of what `_speculative_sampling` commits at position 0, for candidate_length=1.""" 
+ # `is_accepted = r_i <= probability_ratio` with r_i ~ U(0,1), so acceptance is min(1, p/q_reported) 
+ ratio = torch . where ( q_reported > 0 , p / q_reported . clamp_min ( torch . finfo ( p . dtype ). tiny ), torch . zeros_like ( p ))
+ accept_prob = ratio . clamp ( max = 1.0 )
+ committed = q_actual * accept_prob 
+ reject_mass = 1.0 - committed . sum ()
+ residual = ( p - q_reported ). clamp ( min = 0 )
+ residual_sum = residual . sum ()
+ if residual_sum > 0 :
+ residual = residual / residual_sum 
+ return committed + reject_mass * residual , committed . sum ()
+ def monte_carlo_committed ( p_logits , q_reported_logits , q_actual_probs , draws ):
+ """Same quantity, but measured through the library's own verifier.""" 
+ counts = torch . zeros ( p_logits . shape [ - 1 ])
+ new_logits = torch . stack ([ p_logits , p_logits ])[ None ]
+ candidate_logits = q_reported_logits [ None , None ]
+ drafted = torch . multinomial ( q_actual_probs , num_samples = draws , replacement = True )
+ for i in range ( draws ):
+ candidate_input_ids = torch . tensor ([[ 0 , drafted [ i ]]])
+ valid_tokens , _ = _speculative_sampling (
+ candidate_input_ids , candidate_logits , 1 , new_logits , is_done_candidate = False 
+ )
+ counts [ valid_tokens [ 0 , 0 ]] += 1 
+ return counts / counts . sum ()
+ def quantiles ( values , points = ( 0.05 , 0.25 , 0.5 , 0.75 , 0.95 )):
+ tensor = torch . tensor ( values )
+ return { point : torch . quantile ( tensor , point ). item () for point in points }
+ def main ():
+ torch . manual_seed ( 0 )
+ tokenizer = AutoTokenizer . from_pretrained ( DRAFTER )
+ drafter = AutoModelForCausalLM . from_pretrained ( DRAFTER , dtype = torch . float32 ). eval ()
+ target = AutoModelForCausalLM . from_pretrained ( TARGET , dtype = torch . float32 ). eval ()
+ rows = collect_real_distributions ( drafter , target , tokenizer )
+ z_values , tv_raw , tv_processed , accept_raw , accept_processed , ctx_lens = [], [], [], [], [], []
+ for q_raw , q_processed , p_processed , ctx_len in rows :
+ q_raw_probs = q_raw . softmax ( dim = - 1 )
+ q_actual = q_processed . softmax ( dim = - 1 )
+ p = p_processed . softmax ( dim = - 1 )
+ # Z: the raw mass sitting on the tokens the warper kept 
+ z = q_raw_probs [ q_actual > 0 ]. sum (). item ()
+ z_values . append ( z )
+ buggy , accepted_buggy = committed_distribution ( p , q_raw_probs , q_actual )
+ fixed , accepted_fixed = committed_distribution ( p , q_actual , q_actual )
+ tv_raw . append ( 0.5 * ( buggy - p ). abs (). sum (). item ())
+ tv_processed . append ( 0.5 * ( fixed - p ). abs (). sum (). item ())
+ accept_raw . append ( accepted_buggy . item ())
+ accept_processed . append ( accepted_fixed . item ())
+ ctx_lens . append ( ctx_len )
+ print ( f"transformers: { __import__ ( 'transformers' ). __version__ } " )
+ print ( f"drafter: { DRAFTER } target: { TARGET } vocab: { drafter . config . vocab_size } " )
+ print ( f"top_k= { TOP_K } (the `generate()` default), { len ( rows ) } real next-token positions" )
+ # Very short contexts are high-entropy, so they strip the most mass and flatter the result. 
+ # Reported separately rather than pooled, since real drafting happens after a real prompt. 
+ for label , keep in (
+ ( "all positions" , lambda i : True ),
+ ( ">= 8 tokens of context" , lambda i : ctx_lens [ i ] >= 8 ),
+ ):
+ index = [ i for i in range ( len ( rows )) if keep ( i )]
+ z_subset = [ z_values [ i ] for i in index ]
+ tv_subset = [ tv_raw [ i ] for i in index ]
+ inflation = [ 1.0 / z_values [ i ] for i in index ]
+ zq , iq , tvq = quantiles ( z_subset ), quantiles ( inflation ), quantiles ( tv_subset )
+ print ( f" \n === { label } (n= { len ( index ) } ) ===" )
+ print ( "Z, the raw mass on the tokens top_k=50 keeps:" )
+ print (
+ f" p05 { zq [ 0.05 ]:.4f } p25 { zq [ 0.25 ]:.4f } median { zq [ 0.5 ]:.4f } " 
+ f"p75 { zq [ 0.75 ]:.4f } p95 { zq [ 0.95 ]:.4f } " 
+ )
+ print ( "acceptance-ratio inflation 1/Z:" )
+ print (
+ f" p05 { iq [ 0.05 ]:.4f } p25 { iq [ 0.25 ]:.4f } median { iq [ 0.5 ]:.4f } " 
+ f"p75 { iq [ 0.75 ]:.4f } p95 { iq [ 0.95 ]:.4f } worst { max ( inflation ):.4f } x" 
+ )
+ print ( "total variation between committed tokens and the target, q raw (as on main):" )
+ print (
+ f" p05 { tvq [ 0.05 ]:.4f } p25 { tvq [ 0.25 ]:.4f } median { tvq [ 0.5 ]:.4f } " 
+ f"p75 { tvq [ 0.75 ]:.4f } p95 { tvq [ 0.95 ]:.4f } worst { max ( tv_subset ):.4f } " 
+ )
+ print ( f" same quantity with q processed (control): max { max ( tv_processed [ i ] for i in index ):.2e } " )
+ print ( f"mean draft acceptance rate, q raw (as on main): { sum ( accept_raw [ i ] for i in index ) / len ( index ):.4f } " )
+ print (
+ f"mean draft acceptance rate, q processed: " 
+ f" { sum ( accept_processed [ i ] for i in index ) / len ( index ):.4f } " ,
+ flush = True ,
+ )
+ print ( flush = True )
+ # Cross-check the closed form against the library's verifier on the positions where it matters most. 
+ # Without this the numbers above would only be my model of the code, not the code. 
+ print (
+ f"closed form vs library `_speculative_sampling`, { MC_POSITIONS } worst positions x { MC_DRAWS } draws" ,
+ flush = True ,
+ )
+ print ( " position TV(analytic) TV(measured) |analytic - measured|" , flush = True )
+ long_context = [ i for i in range ( len ( rows )) if ctx_lens [ i ] >= 8 ]
+ worst = sorted ( long_context , key = lambda i : - tv_raw [ i ])[: MC_POSITIONS ]
+ deviations = []
+ for index in worst :
+ q_raw , q_processed , p_processed , _ = rows [ index ]
+ q_actual = q_processed . softmax ( dim = - 1 )
+ p = p_processed . softmax ( dim = - 1 )
+ analytic , _ = committed_distribution ( p , q_raw . softmax ( dim = - 1 ), q_actual )
+ measured = monte_carlo_committed ( p_processed , q_raw , q_actual , MC_DRAWS )
+ deviation = 0.5 * ( analytic - measured ). abs (). sum (). item ()
+ deviations . append ( deviation )
+ print (
+ f" { index :>8 } { tv_raw [ index ]:>12.4f } { 0.5 * ( measured - p ). abs (). sum (). item ():>12.4f } " 
+ f" { deviation :>21.4f } " ,
+ flush = True ,
+ )
+ print ( f" \n max |closed form - library| = { max ( deviations ):.4f } (Monte Carlo noise floor at this draw count)" )
+ if __name__ == "__main__" :
+ main ()
+ transformers: 5.16.0.dev0
+drafter: HuggingFaceTB/SmolLM2-135M target: HuggingFaceTB/SmolLM2-360M vocab: 49152
+top_k=50 (the `generate()` default), 477 real next-token positions
+=== all positions (n=477) ===
+Z, the raw mass on the tokens top_k=50 keeps:
+ p05 0.4795 p25 0.7638 median 0.8815 p75 0.9605 p95 0.9922
+acceptance-ratio inflation 1/Z:
+ p05 1.0079 p25 1.0411 median 1.1344 p75 1.3093 p95 2.0857 worst 7.7577x
+total variation between committed tokens and the target, q raw (as on main):
+ p05 0.0024 p25 0.0184 median 0.0485 p75 0.0979 p95 0.2023 worst 0.3065
+ same quantity with q processed (control): max 1.85e-07
+mean draft acceptance rate, q raw (as on main): 0.7825
+mean draft acceptance rate, q processed: 0.7276
+=== >= 8 tokens of context (n=421) ===
+Z, the raw mass on the tokens top_k=50 keeps:
+ p05 0.5430 p25 0.7865 median 0.8922 p75 0.9655 p95 0.9934
+acceptance-ratio inflation 1/Z:
+ p05 1.0067 p25 1.0357 median 1.1208 p75 1.2715 p95 1.8416 worst 3.0212x
+total variation between committed tokens and the target, q raw (as on main):
+ p05 0.0021 p25 0.0156 median 0.0447 p75 0.0896 p95 0.1680 worst 0.2608
+ same quantity with q processed (control): max 1.85e-07
+mean draft acceptance rate, q raw (as on main): 0.7786
+mean draft acceptance rate, q processed: 0.7302
+closed form vs library `_speculative_sampling`, 6 worst positions x 20000 draws
+ position TV(analytic) TV(measured) |analytic - measured|
+ 210 0.2608 0.2674 0.0149
+ 471 0.2518 0.2554 0.0166
+ 140 0.2440 0.2462 0.0176
+ 153 0.2320 0.2308 0.0154
+ 94 0.2152 0.2197 0.0149
+ 396 0.2130 0.2124 0.0180
+ max |closed form - library| = 0.0180 (Monte Carlo noise floor at this draw count)
+ Reading the >= 8 tokens of context block, which is the representative one — very short contexts are
+high-entropy, so they strip the most mass and overstate the effect, and both populations are reported rather than
+pooled for that reason. The drafter proposes from a distribution whose raw mass is a median of 0.89 , so p/q is
+computed a median of 1.12x too large, 1.84x at p95, and 3.02x at the worst position ( 7.76x if the
+one-token contexts are included). The committed tokens sit a median total variation of 0.045 from the target
+distribution and 0.168 at p95, and draft acceptance runs at 0.779 where the algorithm allows 0.730 .
+ The last block is the control that makes those numbers mean anything: passing the processed logits as q puts
+the committed distribution within 1.85e-07 of the target, and the closed form agrees with the library's actual
+verifier to within Monte Carlo noise at 20k draws. The deviation is the substituted q , not the measurement.
+ Confirmed on the real DFlash checkpoints
+ Run on an NVIDIA A100-SXM4-80GB with meta-models/Muse-Glimmer-30B + meta-models/Muse-Glimmer-30B-assistant in bf16, transformers 5.16.0.dev0 at the pinned
+commit. generate(assistant_model=..., speculation_type="dflash", do_sample=True) ran end to end and produced
+coherent text, so this is the real generator on real weights.
+ The sampling settings are the model's own shipped ones ( {"do_sample": true, "top_k": 64, "top_p": 0.95, "temperature": 1.0} ), which generate() turns into TopKLogitsWarper , TopPLogitsWarper . For each
+prompt the first drafted token was sampled 3000 times from a fixed drafter state, and the
+empirical distribution compared against the two candidates for q .
+ prompt 
+ Z 
+ 1/Z 
+ drafter support 
+ TV vs returned q 
+ TV vs sampled q 
+ mass q gives unreachable tokens 
+ The main difference between a hash… 
+ 0.9386 
+ 1.065x 
+ 8 
+ 0.0655 
+ 0.0141 
+ 0.0614 
+ When the rain finally stopped, the… 
+ 0.8221 
+ 1.216x 
+ 52 
+ 0.1863 
+ 0.0432 
+ 0.1779 
+ To install the package on a fresh … 
+ 0.9013 
+ 1.110x 
+ 27 
+ 0.1067 
+ 0.0228 
+ 0.0987 
+ She had never seen the ocean befor… 
+ 0.9099 
+ 1.099x 
+ 19 
+ 0.0960 
+ 0.0176 
+ 0.0901 
+ In every prompt the drafted tokens track the distribution the drafter sampled from, not the one it returned — the
+returned q is off by 4x to 5x more in total variation. Note the support column: top_p=0.95 collapses a
+202048-token vocabulary to between 8 and 52 candidates, and the returned q spreads 6-18% of its mass over tokens
+the drafter cannot propose at all. That mass is what the [p - q]+ residual is built from on rejection.
+ Expected behavior
+ generate() should sample from the target model's distribution regardless of whether speculative decoding is
+enabled. assistant_ensemble_weight documents this as the property you opt out of
+( configuration_utils.py#L354-L359 ):
+ Defaults to None , which keeps decoding lossless.
+ With assistant_ensemble_weight=None and the drafters below, decoding is not lossless.
+ Affected generators
+ Generator 
+ Samples from 
+ Returns as q 
+ Affected 
+ DFlashTokenCandidateGenerator 
+ processor-applied logits ( #L1678-L1685 ) 
+ raw logits ( #L1696 ) 
+ yes 
+ MTPCandidateGenerator → MtpModel.forward 
+ processor-applied logits ( modeling_layers.py#L540-L546 ) 
+ raw logits ( #L537 , returned at #L558-L560 ) 
+ yes, same shape 
+ SinglePositionMultiTokenCandidateGenerator 
+ outputs.logits.argmax , no processors, regardless of do_sample ( #L1388 ) 
+ raw logits ( #L1414-L1415 ) 
+ yes, differently 
+ SinglePositionMultiTokenCandidateGenerator deviates further: it accepts a logits_processor and the parent
+stores it ( #L171 ),
+but get_candidates never reads it and never samples — the draft is deterministic even with do_sample=True . Its
+returned logits are at least the ones the argmax was taken over, but the true proposal is a point mass on that
+argmax, so q_i is again smaller than the probability the token was actually proposed with. If greedy drafting is
+intended there, the returned logits still do not describe the proposal.
+ I verified the DFlash path empirically (above) and the other two by reading; I did not run MTP or
+ SinglePosition end to end.
+ Reachability
+ All three receive the target's logits_processor from _get_candidate_generator 
+( MTP #L1035-L1041 ,
+ SinglePosition #L1055-L1063 ,
+ DFlash #L1064-L1071 ),
+so DFlash and MTP always take the processor branch, and _assisted_decoding routes to _speculative_sampling 
+whenever do_sample=True and the generator returned logits
+( #L3744-L3752 ).
+Nothing gates do_sample against speculation_type="dflash" or use_mtp .
+ An empty LogitsProcessorList is identity, so the mismatch needs at least one non-identity processor. With
+ do_sample=True that is the default: top_k defaults to 50 , which appends a TopKLogitsWarper 
+( #L1315-L1318 ).
+ It is also the shipped default for the DFlash model itself, so this does not need an unusual configuration.
+ meta-models/Muse-Glimmer-30B/generation_config.json 
+ships "do_sample": true, "top_k": 64, "top_p": 0.95 , and with that config _get_logits_processor builds:
+ > >> gc = GenerationConfig . from_pretrained ( "meta-models/Muse-Glimmer-30B" )
+ > >> gc . update ( ** gc . _get_default_generation_params (), defaults_only = True )
+ > >> { "do_sample" : gc . do_sample , "top_k" : gc . top_k , "top_p" : gc . top_p , "temperature" : gc . temperature }
+{ 'do_sample' : True , 'top_k' : 64 , 'top_p' : 0.95 , 'temperature' : 1.0 }
+ > >> [ type ( p ). __name__ for p in model . _get_logits_processor ( generation_config = gc , ...)]
+[ 'TopKLogitsWarper' , 'TopPLogitsWarper' ]
+ Two non-identity warpers, on a 202048-token vocabulary, on the checkpoint the DFlash generator was added for.
+ Why the existing guard does not catch it
+ There is already a test for exactly this property —
+ test_speculative_sampling_target_distribution ,
+added in #34553 to prevent issues like #32867 . It cannot catch this, by construction: it calls
+ _speculative_sampling directly with hand-written candidate_logits , so q is the distribution the draft came
+from by assumption . The bug is in the contract between the generator and the verifier, and the test never runs a
+generator.
+ Nothing else covers that contract either. tests/generation/test_candidate_generator.py has three test classes on
+main ( TestAssistantToTargetTranslator , TestAssistantVocabTranslatorCache , TestUniversalSpeculativeDecoding )
+and none for DFlash or MTP. The MuseGlimmer assistant model tests are
+ skipped 
+with "Need some test work, as it needs different inputs (dflash speculator model)" , and test_generate_with_mtp 
+checks that mtp.* weights reload, not that the drafts are distributed correctly.
+ The gap a regression test would need to close: assert that the logits a generator returns describe the
+distribution its tokens were actually drawn from. The first script above is one shape that does it.
+ Relationship to open work
+ Checked so this is not a duplicate:
+ Add TP-plan for muse_glimmer and fix dflash for sharded embedding #47913 (open, DFlash selective hidden-state capture and TP sharding) touches candidate_generator.py , but its
+diff does not change the sampling block or the return — different concern.
+ Fix DFlash candidate token device mismatch with device_map="auto" #47877 (open) fixes a DFlash device mismatch under device_map="auto" ; unrelated.
+ Fix EOS for candidate generators #47931 (open) crops DFlash drafts at the first EOS. Same method, different defect: that one is about which 
+drafted tokens are committed, this one is about which distribution they were drawn from. Neither fixes
+the other, and this defect predates it.
+ [Generation] Add static ensemble verification for lossy speculative decoding #45979 (merged) added assistant_ensemble_weight and the "keeps decoding lossless" wording this report relies on.
+ I did not find an existing issue or PR for the mismatch itself.
+ Severity, stated honestly
+ Nothing crashes and the output is still fluent text — this is a silent distribution shift, and only with
+ do_sample=True . Greedy assisted decoding is unaffected: it does not go through _speculative_sampling , and it
+keeps draft tokens only where they equal the target's own argmax
+( #L3771-L3779 ),
+so the committed tokens are the target's greedy output whatever the drafter proposed.
+ What I have and have not shown. The DFlash mismatch is confirmed on the real checkpoints, at the model's own
+shipped sampling settings, on four prompts x 3000 draws each. The SmolLM2 section is a different claim: it puts a
+number on what the substituted q costs the committed distribution, which needs a target and a drafter I can
+run many thousands of verifier rounds against. Z depends on the model, the sampling parameters and the position,
+so other pairs and settings will land elsewhere — a top_k large enough to keep essentially all the mass makes
+the error vanish, and a smaller top_k / top_p or a temperature above 1 makes it worse.
+ Two gaps I did not close. I did not measure the end-to-end committed-token distribution on Muse-Glimmer itself —
+that needs enough verifier rounds to resolve a distribution over a 202048-token vocabulary, which is a much longer
+run than the one above. And I did not run MTP or SinglePositionMultiTokenCandidateGenerator at all; those two
+are reported from reading the code, and the table above should not be read as covering them.
+ I have not opened a PR — CONTRIBUTING asks to coordinate on an issue first, and the right fix depends on whether
+the processed logits should be returned or the drafter should stop applying processors. Happy to submit one if
+that would help.
+ AI-assistance disclosure: this report was prepared with AI assistance (Claude Opus 5). Every code reference was
+checked against d1123114da1ab4395198146f4f84dae7fe8b693e , and every script here was run on the environments
+listed above — the pasted output is what they printed, not reconstructed. 
+ Co-Authored-By: Claude Opus 5 noreply@anthropic.com 
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

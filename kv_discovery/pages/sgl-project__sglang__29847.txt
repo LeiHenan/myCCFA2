@@ -1,0 +1,807 @@
+FETCHED: https://github.com/sgl-project/sglang/issues/29847  (is_pr=True, 530211 bytes)
+LAYOUT NODE (PR):
+  number = 29847
+  title = [Feature] Add DSA CP shared KV cache
+  state = CLOSED
+  closedTime = 2026-07-22T09:46:14Z
+  createdTime = 2026-07-01T12:13:13Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 1
+  baseBranch = main
+  headBranch = dsa-cp-shared-kv-cache
+  author = taoyuanyuan
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="RRE_lADOLCAjRs8AAAABHTt0QM8AAAAGYs-qvg"> | taoyuanyuan | requested review from | Fridge003, | HaiShaw, | JustinTong0323, | Qiaolin-Yu, | Ying1123, | alphabetc1, | ch-wan, | hanming-lu, | hebiao064, | hnyls2002, | hzh0425, | ispobock, | merrymercy, | sogalin, | wisclmy0611, | xiezhq-hermann, | yizhang2077 and | zijiexia | as code owners | July 1, 2026 12:13 | github-actions | Bot | added | the | documentation | Improvements or additions to documentation | label | Jul 1, 2026 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="PRR_kwDOLCAjRs8AAAABErUFyg"> | gemini-code-assist | Bot | reviewed | Jul 1, 2026 | View reviewed changes | gemini-code-assist | Bot | left a comment | Copy link | Copy Markdown | Contributor | There was a problem hiding this comment. | <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22
+EV: js-timeline-progressive-focus-container" data-gid="CTDE_lADOLCAjRs8AAAABHTt0QM8AAAAGYu__Tw"> | taoyuanyuan | marked this pull request as draft | July 1, 2026 13:02 | taoyuanyuan | force-pushed | the | dsa-cp-shared-kv-cache | branch | 2 times, most recently | from | 294d1a0 to | f5b91bd | Compare | July 6, 2026 15:06 | taoyuanyuan | marked this pull request as ready for review | July 6, 2026 15:08 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOLCAjRs8AAAABI7oEGg"> | gemini-code-assist | Bot | commented | Jul 6, 2026 | Copy link | Copy Markdown | Contributor | Warning | You have reached your daily quota limit. Please wait up to 24 hours and I will start processing your requests again! | --> | All reactions | --> | Sorry, something went wrong. | Uh oh! | There was an error while loading. <a class="Link--inText
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOOpz6UtoAKGRiMzlmYmQ5ZmI1ZGYzZTVlMTcwNWQ0ZmI2ODA3ZDI5NDk4YTQ0ODg"> | Add DSA CP shared KV cache | … | db39fbd | Co-authored-by: foraxe <1055696449@qq.com> | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="HRFPE_lADOLCAjRs8AAAABHTt0QM8AAAAGb2N_vw"> | taoyuanyuan | force-pushed | the | dsa-cp-shared-kv-cache | branch | 2 times, most recently | from | db39fbd to | c8b91f4 | Compare | July 12, 2026 16:33 | taoyuanyuan | requested review from | 1am9trash and | fzyzcjy | as code owners | July 12, 2026 16:33 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="RRE_lADOLCAjRs8AAAABHTt0QM8AAAAGfZmWAg"> | taoyuanyuan | requested review from | YAMY1234, | hubertlu-tw, | kkHuang-amd and | rainj-me | as code owners | July 12, 2026 16:33 | github-actions | Bot | added | the | deepseek | label | Jul 12, 2026 | taoyuanyuan | force-pushed | the | dsa-cp-shared-kv-cache | branch | from | c8b91f4 to | db39fbd | Compare | July 13, 2026 00:43
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOLCAjRs8AAAABLKpkHg"> | taoyuanyuan | commented | Jul 22, 2026 | Copy link | Copy Markdown | Author | Superseded by #31435 | --> | All reactions | --> | Sorry, something went wrong. | Uh oh! | There was an error while loading. Please reload this page. | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="CE_lADOLCAjRs8AAAABHTt0QM8AAAAGl-drRw"> | taoyuanyuan | closed this | Jul 22, 2026 | --> | Sign up for free | to join this conversation on GitHub. | Already have an account? | Sign in to comment | --><input type="hidden" data-csrf="
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=? date=?]
+DSA CP Shared KV Cache
+
+Motivation
+
+DSA prefill context parallelism currently keeps the main MLA KV cache private on
+
+each CP rank. This limits long-context capacity and leaves CP KV movement on
+
+the critical path. This PR adds DSA CP shared KV cache for same-node CP ranks:
+
+the DSA main KV cache is shared in L1 HBM, and DSA L2 HiCache host memory can be
+
+shared by the CP group.
+
+On GLM-5.2-FP8 / H20-3e, the shared path increases allocatable KV capacity by
+
+about 3.47x in L1 HBM and reduces DSA L2 HiCache host memory usage by about
+
+8x in the tested CP=8 configuration. Prefill/TTFT is the first release target,
+
+and shared L2 HiCache host-hit restore reduces TTFT by 37.8% versus base
+
+host-hit in the tested restore workload. Decode is functional and remains an
+
+optimization follow-up.
+
+This makes the current path a good fit for the prefill/P side of PD
+
+disaggregation, while D-side decode optimization continues.
+
+Summary of the current measured result:
+
+- L1 HBM KV capacity: 3.47x higher allocatable KV tokens.
+
+- L2 HiCache host memory: about 8x lower DSA KV/indexer host memory across
+
+the CP group by using one owner allocation plus follower attachments.
+
+- L1 prefill/TTFT: roughly on par with base, within about 2% in the main
+
+release target scenario.
+
+- L1 decode: functional, with a current +7.6% TPOT gap to optimize in the
+
+4k input / 1k output / b10 benchmark.
+
+- L2 HiCache host-hit restore: 37.8% lower TTFT than base host-hit in the
+
+tested restore workload.
+
+Modifications
+
+- Add --enable-dsa-cp-shared-kv-cache for same-node DSA CP shared KV.
+
+- Introduce a reusable SharedKV layout helper for rank-major slot translation
+
+and L2 transfer-index selection; DSA CP is the first adapter.
+
+- Share the DSA main KV cache in L1 HBM with a rank-major VMM layout, so CP
+
+ranks can read peer KV directly instead of materializing a full private copy.
+
+- Share DSA L2 HiCache host memory within the CP group, using the same
+
+owner/follower synchronization shape as SharedMLA ( feat(hicache): shared L2 KV cache pool for MLA models (SharedMLA) #28027).
+
+- Replace the former KV all-gather happens-before edge with a mandatory CP write
+
+fence before peer KV reads.
+
+- Keep DSA indexer HBM private in this phase, and add tests/docs for the L1/L2
+
+shared main-KV path.
+
+Design Notes
+
+- L1 uses a rank-major shared KV layout. Each CP rank writes its owner pages;
+
+attention reads through the translated global page table.
+
+- L2 uses shared host memory for the DSA main KV. Rank 0 owns storage backup,
+
+and restore writes each rank's owner shard back into local HBM.
+
+- The shared-KV layout helper is generic, while this PR only enables the DSA
+
+adapter.
+
+Capacity
+
+GLM-5.2-FP8 on H20-3e, tp=8, attn_cp=8, kv-cache-dtype=fp8_e4m3,
+
+mem-fraction-static=0.86.
+
+path
+allocatable KV tokens
+relative capacity
+
+base
+
+339,712
+
+1.00x
+
+shared
+
+1,179,200
+
+3.47x
+
+Example capacity logs:
+
+KV Cache is allocated. dtype: torch.float8_e4m3fn, #tokens: 339712
+KV Cache is allocated. dtype: torch.float8_e4m3fn, #tokens: 1179200
+DSA CP shared L2 host memory: create/attach ... kind=dsa_l2
+
+The gain is below cp_size because DSA indexer HBM remains private per rank in
+
+this phase.
+
+Correctness And Accuracy
+
+- Code checks passed: py_compile, git diff --check, and the DSA shared KV
+
+unit tests.
+
+- Serving checks passed for fixed greedy prompts and long-context P-side
+
+output=1 cases; cache hits were 0.
+
+- Community accuracy sanity with python3 -m sglang.test.run_eval:
+
+eval
+examples
+base score
+shared score
+delta
+
+GSM8K
+
+200
+
+0.630
+
+0.650
+
++2.0 pp
+
+MMLU
+
+64
+
+0.750
+
+0.796875
+
++4.6875 pp
+
+These small-sample evals do not show an accuracy regression; positive deltas are
+
+treated as sampling variance.
+
+Performance
+
+Official sglang.benchmark.serving, dataset random-ids, flush-cache,
+
+cache hit 0.0%, same pod/model/server configuration.
+
+Startup command:
+
+python3 -m sglang.launch_server \
+ --model-path /home/models/GLM-5.2-FP8 \
+ --trust-remote-code \
+ --host 0.0.0.0 \
+ --port 30080 \
+ --tp-size 8 \
+ --attn-cp-size 8 \
+ --enable-dsa-prefill-context-parallel \
+ --kv-cache-dtype fp8_e4m3 \
+ --max-total-tokens 131072 \
+ --mem-fraction-static 0.86 \
+ --enable-cache-report \
+ --skip-server-warmup \
+ --dsa-prefill-backend flashmla_sparse \
+ --dsa-decode-backend flashmla_kv \
+ --cuda-graph-max-bs-decode 32
+
+Shared adds:
+
+--enable-dsa-cp-shared-kv-cache
+
+Benchmark command shape:
+
+python3 -m sglang.benchmark.serving \
+ --backend sglang \
+ --host 127.0.0.1 \
+ --port 30080 \
+ --dataset-name random-ids \
+ --model /home/models/GLM-5.2-FP8 \
+ --tokenizer /home/models/GLM-5.2-FP8 \
+ --num-prompts ${BATCH} \
+ --random-input-len ${INPUT_LEN} \
+ --random-output-len ${OUTPUT_LEN} \
+ --random-range-ratio 1.0 \
+ --request-rate inf \
+ --max-concurrency ${BATCH} \
+ --output-file ${OUTPUT_FILE} \
+ --output-details \
+ --disable-tqdm \
+ --cache-report \
+ --flush-cache \
+ --warmup-requests 0 \
+ --seed 740
+
+Prefill / TTFT benchmark:
+
+workload
+path
+actual concurrency
+TTFT mean
+delta vs base
+
+32k input / 1 output / b1
+
+base
+
+1.00
+
+3211.11 ms
+
+baseline
+
+32k input / 1 output / b1
+
+shared
+
+1.00
+
+3240.08 ms
+
++0.9%
+
+64k input / 1 output / b1
+
+base
+
+1.00
+
+6393.48 ms
+
+baseline
+
+64k input / 1 output / b1
+
+shared
+
+1.00
+
+6473.70 ms
+
++1.3%
+
+128k input / 1 output / b1
+
+base
+
+1.00
+
+13476.65 ms
+
+baseline
+
+128k input / 1 output / b1
+
+shared
+
+1.00
+
+13568.75 ms
+
++0.7%
+
+Decode benchmark:
+
+workload
+path
+actual concurrency
+TPOT mean
+TPOT median
+output throughput
+delta vs base
+
+4k input / 1k output / b10
+
+base
+
+9.99
+
+30.87 ms
+
+30.45 ms
+
+293.00 tok/s
+
+baseline
+
+4k input / 1k output / b10
+
+shared
+
+9.99
+
+33.21 ms
+
+32.76 ms
+
+272.95 tok/s
+
++7.6%
+
+L2 HiCache host-hit benchmark:
+
+The L2 restore run uses the same serving configuration plus:
+
+--max-total-tokens 131072 \
+--enable-hierarchical-cache \
+--hicache-ratio 10 \
+--hicache-write-policy write_through \
+--hicache-io-backend kernel \
+--hicache-mem-layout page_first
+
+workload
+path
+L2 state
+host cached tokens
+TTFT mean
+delta
+
+100k input / 1 output / b1
+
+shared
+
+cold
+
+[RENDERED BLOCK author=? date=2026-07-01T12:16:52Z]
+Code Review
+
+This pull request introduces support for DSA CP (Context Parallel) shared KV cache in L1 HBM and HiCache L2, adding a CUDA VMM-based peer-mapped shared memory utility and updating the attention backend, cache controllers, and memory pools. The review feedback highlights several critical issues: potential resource leaks of virtual address space and mapped segments during exceptions in VMM mapping, a file descriptor leak in the POSIX FD exchange upon timeout or failure, a potential Triton compilation error due to mismatched pointer types when output_dtype is specified, and a missing synchronization barrier in move_kv_cache when copying KV cache across ranks.
+
+ Important
+The consumer version of Gemini Code Assist on GitHub is being sunset. Starting June 18, 2026, new organization installations will be blocked, and all code review activity will officially cease on July 17, 2026.
+
+For more details on the timeline and next steps, please review the Help Documentation.
+
+[RENDERED BLOCK author=? date=2026-07-01T12:16:52Z]
+If an exception occurs during the mapping loop, any successfully mapped segments are not unmapped, and the reserved virtual address range base_va is leaked. We should unmap the mapped segments using cuMemUnmap and free the reserved virtual address range using cuMemAddressFree before re-raising the exception.
+
+ 
+ 
+ 
+ Suggested change
+ 
+
+ 
+
+ 
+ 
+ 
+ 
+
+ except Exception:
+
+ 
+
+ 
+ 
+
+ for handle in imported_handles:
+
+ 
+
+ 
+ 
+
+ drv.cuMemRelease(handle)
+
+ 
+
+ 
+ 
+
+ raise
+
+ 
+
+ 
+ 
+
+ except Exception:
+
+ 
+
+ 
+ 
+
+ for i in range(len(mapped_handles)):
+
+ 
+
+ 
+ 
+
+ try:
+
+ 
+
+ 
+ 
+
+ drv.cuMemUnmap(int(base_va) + i * aligned_bytes, aligned_bytes)
+
+ 
+
+ 
+ 
+
+ except Exception:
+
+ 
+
+ 
+ 
+
+ pass
+
+ 
+
+ 
+ 
+
+ try:
+
+ 
+
+ 
+ 
+
+ drv.cuMemAddressFree(base_va, total_bytes)
+
+ 
+
+ 
+ 
+
+ except Exception:
+
+ 
+
+ 
+ 
+
+ pass
+
+ 
+
+ 
+ 
+
+ for handle in imported_handles:
+
+ 
+
+ 
+ 
+
+ try:
+
+ 
+
+ 
+ 
+
+ drv.cuMemRelease(handle)
+
+ 
+
+ 
+ 
+
+ except Exception:
+
+ 
+
+ 
+ 
+
+ pass
+
+ 
+
+ 
+ 
+
+ raise
+
+[RENDERED BLOCK author=? date=2026-07-01T12:16:52Z]
+If output_dtype is specified and differs from slot_indices.dtype (e.g., int32 vs int64), src and dst passed to dsa_cp_shared_slot_indices_kernel will have different pointer types. Inside the Triton kernel, storing int64 values into an int32* pointer will cause a compilation error or undefined behavior. We should cast slot_indices to output_dtype first to ensure matching types.
+
+ 
+ 
+ 
+ Suggested change
+ 
+
+ 
+
+ 
+ 
+ 
+ 
+
+ if not slot_indices.is_cuda:
+
+ 
+
+ 
+ 
+
+ return None
+
+ 
+
+ 
+ 
+
+ out = torch.empty_like(slot_indices, dtype=output_dtype or slot_indices.dtype)
+
+ 
+
+ 
+ 
+
+ if not slot_indices.is_cuda:
+
+ 
+
+ 
+ 
+
+ return None
+
+ 
+
+ 
+ 
+
+ if output_dtype is not None and slot_indices.dtype != output_dtype:
+
+ 
+
+ 
+ 
+
+ slot_indices = slot_indices.to(output_dtype)
+
+ 
+
+ 
+ 
+
+ out = torch.empty_like(slot_indices)
+
+[RENDERED BLOCK author=? date=2026-07-01T12:16:52Z]
+In a context parallel multi-GPU setup, copying KV cache across ranks via peer-mapped shared memory requires synchronization. Without an explicit barrier, a rank might read stale data from another rank's segment before the write is completed, or subsequent operations might read from the local segment before the write finishes. Also, any barrier must be executed by all ranks collectively to avoid hanging, so we should not return early before the barrier.
+
+ 
+ 
+ 
+ Suggested change
+ 
+
+ 
+
+ 
+ 
+ 
+ 
+
+ if self.enable_cp_shared_kvcache:
+
+ 
+
+ 
+ 
+
+ mask = self._owned_cp_shared_write_mask(tgt_loc_flat)
+
+ 
+
+ 
+ 
+
+ if not torch.any(mask):
+
+ 
+
+ 
+ 
+
+ return
+
+ 
+
+ 
+ 
+
+ local_tgt = self._translate_cp_shared_write_loc(tgt_loc_flat[mask])
+
+ 
+
+ 
+ 
+
+ shared_src = self.translate_loc_to_cp_shared_device(src_loc_flat[mask])
+
+ 
+
+ 
+ 
+
+ for local_kv_cache, global_kv_cache in zip(
+
+ 
+
+ 
+ 
+
+ self.cp_shared_kv_buffer, self.kv_buffer
+
+ 
+
+ 
+ 
+
+ ):
+
+ 
+
+ 
+ 
+
+ local_kv_cache[local_tgt] = global_kv_cache[shared_src]
+
+ 
+
+ 
+ 
+
+ return
+
+ 
+
+ 
+ 
+
+ if self.enable_cp_shared_kvcache:
+
+ 
+
+ 
+ 
+
+ mask = self._owned_cp_shared_write_mask(tgt_loc_flat)
+
+ 
+
+ 
+ 
+
+ if torch.any(mask):
+
+ 
+
+ 
+ 
+
+ local_tgt = self._translate_cp_shared_write_loc(tgt_loc_flat[mask])
+
+ 
+
+ 
+ 
+
+ shared_src = self.translate_loc_to_cp_shared_device(src_loc_flat[mask])
+
+ 
+
+ 
+ 
+
+ for local_kv_cache, global_kv_cache in zip(
+
+ 
+
+ 
+ 
+
+ self.cp_shared_kv_buffer, self.kv_buffer
+
+ 
+
+ 
+ 
+
+ ):
+
+ 
+
+ 
+ 
+
+ local_kv_cache[local_tgt] = global_kv_cache[shared_src]
+
+ 
+
+ 
+ 
+
+ from sglang.srt.layers.dp_attention import get_attention_cp_group
+
+ 
+
+ 
+ 
+
+ current_platform.synchronize()
+
+ 
+
+ 
+ 
+
+ get_attention_cp_group().barrier()
+
+ 
+
+ 
+ 
+
+ return
+
+[RENDERED BLOCK author=? date=2026-07-01T12:16:52Z]
+If thread.is_alive() is True or errors is not empty, a RuntimeError is raised, but any file descriptors already received and stored in received_fds are leaked (not closed). We should ensure all received file descriptors are closed on any failure/exception to prevent resource leaks.
+
+ if thread.is_alive() or errors:
+ for fd in received_fds.values():
+ try:
+ os.close(fd)
+ except OSError:
+ pass
+ if thread.is_alive():
+ raise RuntimeError("timed out waiting for POSIX fd exchange")
+ raise RuntimeError("POSIX fd exchange receive failed") from errors[0]
+ missing = set(range(world_size)).difference({rank}, received_fds.keys())
+ if missing:
+ for fd in received_fds.values():
+ try:
+ os.close(fd)
+ except OSError:
+ pass
+ raise RuntimeError(f"missing POSIX fds from ranks {sorted(missing)}")
+ return received_fds
+
+[RENDERED BLOCK author=taoyuanyuan date=2026-07-06T15:08:24Z]
+Warning
+You have reached your daily quota limit. Please wait up to 24 hours and I will start processing your requests again!
+
+[RENDERED BLOCK author=taoyuanyuan date=2026-07-22T09:46:15Z]
+Superseded by #31435

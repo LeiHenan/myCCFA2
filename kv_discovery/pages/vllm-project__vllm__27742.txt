@@ -1,0 +1,150 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/27742  (is_pr=False, 308645 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 27742
+  title = [RFC]: KV cache layout combining all layers per block
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2025-10-29T11:54:15Z
+  updatedAt = 2026-05-30T02:20:49Z
+  closedAt = None
+  author = orozery
+  labels = ['RFC', 'stale']
+
+[GRAPHQL COMMENT by ApostaC assoc=COLLABORATOR at 2025-10-29T17:41:02Z]
+This idea is interesting. How will it support HMA models in the future?
+
+cc @heheda12345 
+
+[GRAPHQL COMMENT by orozery assoc=COLLABORATOR at 2025-10-29T17:57:39Z]
+> This idea is interesting. How will it support HMA models in the future?
+
+The challenge is how to support the layout with minimal code changes.
+For uniform models, it's a small change since we create views with the old shape.
+More generally, we can use this trick to combine any layers that have the same page size.
+For layers with different page sizes I currently don't see an easy way.
+
+[GRAPHQL COMMENT by heheda12345 assoc=COLLABORATOR at 2025-10-30T06:42:47Z]
+I think it can be compatible with HMA theoretically. One goal of HMA is to make all different types of kv cache agree on the same page size so it may help on this layout.
+
+[GRAPHQL COMMENT by orozery assoc=COLLABORATOR at 2025-10-30T06:50:36Z]
+> I think it can be compatible with HMA theoretically. One goal of HMA is to make all different types of kv cache agree on the same page size so it may help on this layout.
+
+Looking at `get_kv_cache_groups` I see 4 cases:
+1. is_kv_cache_type_attention_free
+2. is_kv_cache_spec_uniform
+3. UniformTypeKVCacheSpecs
+4. is_kv_cache_page_size_uniform
+
+(1) is not interesting.
+(2) is the case we're currently targeting.
+(4) seems feasible (I guess this is what you meant)
+
+But in (3) you could have different page sizes per layers.
+
+[GRAPHQL COMMENT by heheda12345 assoc=COLLABORATOR at 2025-10-30T06:51:36Z]
+BTW deepseek v3.2 has two types of kv cache with different hidden size. For a model with different hidden size $h1$, $h2$, ..., $h_n$, we can do something like:
+```
+total = h1 + h2 + ... + h_n
+buffer = torch.empty(shape=((num_blocks + 1) * total,))
+kv_cache_2 = buffer[h1: h1 + num_blocks * total].view(num_blocks, total)
+# the kv cache of layer 2 page p can be accessed via:
+kv_cache_2[p, :h2]
+```
+
+[GRAPHQL COMMENT by heheda12345 assoc=COLLABORATOR at 2025-10-30T06:52:32Z]
+lol we have the same concern
+
+[GRAPHQL COMMENT by tlrmchlsmth assoc=MEMBER at 2025-10-30T16:07:26Z]
+>We have tested this with both the NixlConnector and the OffloadingConnector and saw that the transfer time is improved by a factor of X4 (tested on Llama-3.1-8B-Instruct).
+
+Nice! Can you link the performance numbers you have for this? This change makes sense to me if we can resolve the non-homogenous page size per layer issue
+
+[GRAPHQL COMMENT by orozery assoc=COLLABORATOR at 2025-10-30T16:28:39Z]
+> This change makes sense to me if we can resolve the non-homogenous page size per layer issue
+
+I think we can start off the uniform layers case. It is a low-hanging fruit which I guess covers most of the current use-cases.
+I already have a small PR prepared (#27743).
+Another PR adapting the NixlConnector is in progress, and it should be relatively small as well. 
+
+[GRAPHQL COMMENT by orozery assoc=COLLABORATOR at 2025-10-30T16:30:25Z]
+> Nice! Can you link the performance numbers you have for this? 
+
+Liran has been working on this. I will ask him to post it here.
+
+
+[GRAPHQL COMMENT by liran-s assoc=NONE at 2025-10-30T17:17:22Z]
+> > Nice! Can you link the performance numbers you have for this?
+> 
+> Liran has been working on this. I will ask him to post it here.
+
+Here are initial performance numbers we did:
+https://docs.google.com/spreadsheets/d/1i9Pd7vC1R1OnhLEE4tJTecL2COVw-j1lQLxtE-daPOE/edit?usp=sharing
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-01-29T02:14:12Z]
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+[GRAPHQL COMMENT by orozery assoc=COLLABORATOR at 2026-01-29T08:44:42Z]
+We added support for uniform models in #27743.
+Keeping this RFC open as we plan to extend support for hybrid models as well.
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=orozery date=Oct 29, 2025]
+Motivation.
+
+High-level goal: optimize the transfer time of KV data from/to the vllm KV cache by reducing per-transfer fragmentation at the vllm KV cache side.
+
+The 2 main use-cases we're considering are:
+
+- NixlConnector
+
+- OffloadingConnector
+
+So our goal is to try and optimize the time each of these connectors spend for a single transfer (GPU->CPU of the offloading connector, and GPU->host_buffer/other agent for NixlConnector).
+
+The transfer unit is a block of KV-data corresponding to some aligned (default)16-tokens out of some request.
+
+We consider the case of simple models where all layers have the same layout (i.e. not using the Hybrid Memory Allocator), although this can be explored in the future.
+
+For this case, the current layout for the vllm KV cache is (roughly) this:
+
+As you can see, the KV data that needs to be transferred is breaked down to num_layers non-contiguous segments.
+
+This does not take into account the k_or_v and num_kv_heads dimensions which may further cause extra fragmentation.
+
+In this RFC, we propose a new KV cache layout that for each block, will place all KV data for all layers contiguously:
+
+This will reduce the number of fragments to copy by a factor of num_layers.
+
+We have tested this with both the NixlConnector and the OffloadingConnector and saw that the transfer time is improved by a factor of X4 (tested on Llama-3.1-8B-Instruct).
+
+Furthermore, we tested plain model execution and saw no noticeable degradation in performance.
+
+Proposed Change.
+
+We propose to change the KV tensor allocation in gpu_model_runner.py to support this new layout, allocating a single tensor for all layers (instead of 1 per layer as it is today).
+
+This new layout will only be selected if:
+
+- The model has a simple uniform layout (not HMA)
+
+- A KV connector is configured and, the KV connector class explicitly prefers (via a new classmethod) to use the new layout.
+
+Feedback Period.
+
+No response
+
+CC List.
+
+@njhill @NickLucche @robertgshaw2-redhat @heheda12345 @LucasWilkinson @tdoublep @tlrmchlsmth
+
+Any Other Things.
+
+No response
+
+Before submitting a new issue...
+
+- Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page, which can answer lots of frequently asked questions.

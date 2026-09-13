@@ -1,0 +1,962 @@
+[Spec-Decode] Add DynamicProposer for per-sequence dynamic speculative decoding by yang926 · Pull Request #26504 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [Spec-Decode] Add DynamicProposer for per-sequence dynamic speculative decoding - # 26504 
+ # 26504 
+ Closed 
+ yang926 wants to merge 19 commits into vllm-project:main vllm-project/vllm:main from yang926:main yang926/vllm_1008:main Copy head branch name to clipboard 
+ Conversation Commits 19  ( 19 ) Checks Files changed 
+ Closed 
+ [Spec-Decode] Add DynamicProposer for per-sequence dynamic speculative decoding # 26504 yang926 wants to merge 19 commits into vllm-project:main vllm-project/vllm:main from yang926:main yang926/vllm_1008:main Copy head branch name to clipboard 
+ Conversation
+ yang926 
+ commented
+ Oct 9, 2025 
+ • 
+ edited by github-actions
+ Bot 
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Purpose
+ This PR introduces a new speculative decoding method, eagle_dynamic , which enables adaptive adjustment of the number of speculative tokens ( k ). This addresses the idea of adaptive speculation discussed in issue dynamic SL in #17984 .
+ The existing speculative decoding methods in vLLM use a fixed k for all sequences. This can be inefficient, as a high k is wasteful for sequences with low acceptance rates, while a low k misses opportunities on highly predictable sequences.
+ This implementation introduces a DynamicProposer that monitors the historical acceptance rate for each request. It then dynamically increases or decreases k to keep the rate around a user-configurable target threshold. This aims to optimize throughput by tailoring the speculation length to the difficulty of the content being generated.
+ Key Changes: 
+ Adds a new speculative method: eagle_dynamic .
+ Implements DynamicProposer which adjusts k per-sequence.
+ Introduces a new engine argument, --acceptance-rate-threshold to allow users to tune the target acceptance rate.
+ The data pipeline between the GPUModelRunner and the Scheduler has been updated to correctly handle variable-length draft proposals, ensuring accurate statistics and stable operation even when k differs between sequences in the same batch.
+ Test Plan
+ The feature was tested end-to-end to observe the behavior in a live environment by running the vLLM engine with the eagle_dynamic method enabled. The dynamic adjustment of k can be observed in the logs.
+ Command to run an E2E test: 
+ # The following command reflects the models used in testing. 
+python -m vllm.entrypoints.openai.api_server \
+ --model meta-llama/Llama-3.1-8B-Instruct \
+ --speculative-config ' {"method": "eagle_dynamic", "model": "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B", "num_speculative_tokens": 5, "acceptance_rate_threshold": 0.3} ' \
+ --max-model-len 4096 
+ Test Result
+ End-to-end testing confirms that the k value (the denominator in accepted/k ) adapts dynamically and independently for each request based on its performance.
+ The logs below show req=7 increasing its k from 9 to 10 due to high acceptance, while req=5 decreases its k from 8 to 7 after a poor acceptance step.
+ # k values are different for each request (req=5 has k=8, req=7 has k=9)
+INFO [gpu_model_runner.py:949] EAGLE acceptance step: req=5 accepted=1/8 emitted=[123977, 627] | req=7 accepted=3/9 emitted=[11879, 374, 264, 27626]
+INFO [gpu_model_runner.py:949] EAGLE acceptance step: req=5 accepted=1/8 emitted=[9, 116453] | req=7 accepted=3/9 emitted=[430, 1524, 279, 25655]
+# req=7 has a good acceptance rate, so its k increases from 9 to 10
+INFO [gpu_model_runner.py:949] EAGLE acceptance step: req=5 accepted=0/8 emitted=[118917] | req=7 accepted=4/10 emitted=[6299, 649, 1304, 264, 2466]
+# req=5 has a poor acceptance rate, so its k decreases from 8 to 7
+INFO [gpu_model_runner.py:949] EAGLE acceptance step: req=5 accepted=3/7 emitted=[114564, 104554, 18918, 86422] | req=7 accepted=3/10 emitted=[6811, 11, 323, 430]
+ Essential Elements of an Effective PR Description Checklist 
+ The purpose of the PR, such as "Fix some issue (link existing issues this PR will resolve)".
+ The test plan, such as providing test command.
+ The test results, such as pasting the results comparison before and after, or e2e results
+ (Optional) The necessary documentation update, such as updating supported_models.md and examples for a new model.
+ (Optional) Release notes update. If your change is user facing, please update the release notes draft in the Google Doc .
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ 👍 
+ 1 
+ QingNagi reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ yang926 
+ marked this pull request as ready for review
+ October 9, 2025 16:05 
+ yang926 
+ requested review from
+ ApostaC , 
+ ProExpertProg , 
+ WoosukKwon , 
+ alexm-redhat , 
+ benchislett , 
+ comaniac , 
+ heheda12345 , 
+ hmellor , 
+ houseroad , 
+ luccafong , 
+ mgoin , 
+ njhill , 
+ robertgshaw2-redhat , 
+ simon-mo , 
+ tlrmchlsmth , 
+ yewentao256 , 
+ youkaichao and 
+ ywang96 
+ as code owners 
+ October 9, 2025 16:05 
+ mergify 
+ Bot 
+ added
+ speculative-decoding
+ v1
+ labels
+ Oct 9, 2025 
+ chatgpt-codex-connector 
+ Bot 
+ reviewed
+ Oct 9, 2025 
+ View reviewed changes 
+ chatgpt-codex-connector 
+ Bot 
+ left a comment
+ Copy link
+ Copy Markdown
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ 💡 Codex Review
+ Here are some automated review suggestions for this pull request.
+ ℹ️ About Codex in GitHub 
+ Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
+ Open a pull request for review
+ Mark a draft as ready
+ Comment " @codex review".
+ If Codex has suggestions, it will comment; otherwise it will react with 👍.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ Comment thread 
+ vllm/v1/worker/gpu_model_runner.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ hmellor 
+ commented
+ Oct 9, 2025 
+ Copy link
+ Copy Markdown
+ Member 
+ Please fix pre-commit 
+ cc @benchislett @luccafong for review
+ --> 
+ 👍 
+ 1 
+ yang926 reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ mergify 
+ Bot 
+ added
+ the 
+ ci/build
+ label
+ Oct 10, 2025 
+ mergify 
+ Bot 
+ commented
+ Oct 10, 2025 
+ Copy link
+ Copy Markdown
+ Contributor 
+ This pull request has merge conflicts that must be resolved before it can be
+merged. Please rebase the PR, @yang926 .
+ https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ mergify 
+ Bot 
+ added
+ the 
+ needs-rebase
+ label
+ Oct 10, 2025 
+ yang926 
+ force-pushed 
+ the
+ main 
+ branch
+ from
+ c73928b to
+ 3cb2d54 
+ Compare 
+ October 10, 2025 05:02 
+ mergify 
+ Bot 
+ removed
+ the 
+ needs-rebase
+ label
+ Oct 10, 2025 
+ mergify 
+ Bot 
+ commented
+ Oct 14, 2025 
+ Copy link
+ Copy Markdown
+ Contributor 
+ This pull request has merge conflicts that must be resolved before it can be
+merged. Please rebase the PR, @yang926 .
+ https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ mergify 
+ Bot 
+ added
+ the 
+ needs-rebase
+ label
+ Oct 14, 2025 
+ --> 
+ 79 hidden items
+ Load more…
+ yang926 
+ added 7 commits
+ February 6, 2026 12:54 
+ fix: Resolve pre-commit errors (mypy type hints and dataclasses) 
+ …
+ aca25e4 
+ Signed-off-by: yang926 <yang926@naver.com> 
+ fix: Resolve CI mypy errors and apply ruff formatting 
+ …
+ 665e803 
+ Signed-off-by: yang926 <yang926@naver.com> 
+ fix: Resolve MacOS PydanticUserError in StructuredOutputsParams 
+ …
+ f278e08 
+ Signed-off-by: yang926 <yang926@naver.com> 
+ fix: Prevent unwanted SpeculativeConfig initialization in arg_utils 
+ …
+ 99351a4 
+ Signed-off-by: yang926 <yang926@naver.com> 
+ Fix dynamic speculative decoding: init logic, tensor types, and deadlock 
+ …
+ 56d1dd1 
+ Signed-off-by: yang926 <yang926@naver.com> 
+ Remove old_code directory 
+ …
+ a812840 
+ Signed-off-by: yang926 <yang926@naver.com> 
+ feat: Update dynamic speculative decoding example with more prompts a… 
+ …
+ 215874a 
+ …nd batch size control, and consolidate proposer logging into a single batch summary.
+Signed-off-by: yang926 <yang926@naver.com> 
+ mergify 
+ Bot 
+ commented
+ Feb 6, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Documentation preview: https://vllm--26504.org.readthedocs.build/en/26504/ 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ mergify 
+ Bot 
+ commented
+ Feb 6, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ This pull request has merge conflicts that must be resolved before it can be
+merged. Please rebase the PR, @yang926 .
+ https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ yang926 
+ added 3 commits
+ February 6, 2026 16:13 
+ Merge branch 'main' into main 
+ …
+ 92b2516 
+ Signed-off-by: Mingyu Yang <yang926@naver.com> 
+ Remove test code 
+ …
+ c79e734 
+ Signed-off-by: yang926 <yang926@naver.com> 
+ Merge branch 'main' of https://github.com/yang926/vllm_1008 
+ 9f346eb 
+ mergify 
+ Bot 
+ commented
+ Feb 6, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Hi @yang926 , the pre-commit checks have failed. Please run:
+ uv pip install pre-commit
+pre-commit install
+pre-commit run --all-files 
+ Then, commit the changes and push to your branch.
+ For future commits, pre-commit will run automatically on changed files before each commit.
+ Tip
+ Is mypy or markdownlint failing? 
+ mypy and markdownlint are run differently in CI. If the failure is related to either of these checks, please use the following commands to run them locally:
+ # For mypy (substitute "3.10" with the failing version if needed) 
+pre-commit run --hook-stage manual mypy-3.10
+ # For markdownlint 
+pre-commit run --hook-stage manual markdownlint 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ yang926 
+ added 4 commits
+ February 6, 2026 16:23 
+ refactor: Replace print statements with logger.debug and rename `last… 
+ …
+ 5bb7b72 
+ …_token_indices` to `token_indices_to_sample`.
+Signed-off-by: yang926 <yang926@naver.com> 
+ chore: DCO compliance for code contributions 
+ …
+ 6b2a84e 
+ Signed-off-by: yang926 <yang926@naver.com> 
+ Merge branch 'main' into main 
+ 41bcd6c 
+ Merge branch 'main' into main 
+ 4becd37 
+ yang926 
+ commented
+ Feb 9, 2026 
+ Copy link
+ Copy Markdown
+ Author 
+ @hmellor @benchislett @luccafong 
+I've recently completed a significant rebase to catch up with the latest updates in main.
+During this process, I also refined the algorithm implementation.
+The overall logic and functionality remain consistent with the original PR description.
+If you have a chance, I would greatly appreciate a review. I'm also looking forward to feedback from other maintainers as well.
+Thanks!
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ mergify 
+ Bot 
+ commented
+ Apr 14, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ This pull request has merge conflicts that must be resolved before it can be
+merged. Please rebase the PR, @yang926 .
+ https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ bananighosh 
+ mentioned this pull request
+ Jun 4, 2026 
+ [Feature][Spec-Decode]: Cascade: Utility-Driven Adaptive k for MoE Speculative Decoding in V1
+ #44506 
+ Open
+ 1 task 
+ KookiesNKareem 
+ commented
+ Jun 12, 2026 
+ Copy link
+ Copy Markdown
+ Glad to see per-request dynamic k getting built, the variable-length proposal plumbing here is exactly what any adaptive policy needs. I recently benchmarked this PR's policy shape (EWMA acceptance with a target band) and want to share data that might be useful for the signal design, plus a related gap.
+ Setup: Qwen2.5-7B FP16 target with an AWQ copy of itself as the draft, A40, ShareGPT prompts, greedy, prototyped on vLLM 0.6.3 (harness, controller, and raw logs: https://github.com/KookiesNKareem/spec-goodput-control ).
+ The acceptance-threshold signal struggled on this workload: acceptance is nearly flat across load (0.86-0.91 from batch 1 to 32) while the right action flips from +23% (speculate at b=1) to -16% (disable at b=32). I ran acceptance-targeting at two setpoints against picking k by measured goodput (output tokens / wall-time per finished request, probing k in {1..4} plus off):
+ batch 
+ acc-target 0.80 
+ acc-target 0.90 
+ goodput 
+ target-only 
+ 1 
+ 49.2 tok/s 
+ 46.4 
+ 56.4 (k4) 
+ 33.8 
+ 32 
+ 682.7 (k1) 
+ 735.0 (k1) 
+ 715.1 (off) 
+ 867.8 
+ Neither setpoint works at both ends: acceptance dips at wide k, so they never hold k=4 at b=1, and they can't disable at b=32 where acceptance still reads a healthy 0.83. The goodput probe found k=4 at b=1 (+67%), which my own offline sweep had missed. So it might be worth considering measured goodput (or utility, cf. #44506 ) as the adaptation signal on top of this PR's plumbing.
+ The related gap: "off" isn't free. Even with the proposer fully skipped, a spec-configured engine loses 15-18% vs a clean engine at b=32. Same check on main (0.22.1): 1081 tok/s clean vs 920 with an ngram spec config attached (-15%), and V1 currently has no runtime off at all. Until off is a real action with "off = target-only" as the bar, that caps every adaptive-k policy, including this one.
+ Happy to help test this PR, or to prototype a goodput-based signal on top of it.
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ hmellor 
+ reviewed
+ Jun 24, 2026 
+ View reviewed changes 
+ Comment thread 
+ vllm/engine/arg_utils.py 
+ Comment on lines
+ +1360
+ to 
+ +1361
+ return SpeculativeConfig(**self.speculative_config) 
+ hmellor 
+ Jun 24, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Why?
+ Suggested change
+ return SpeculativeConfig(**self.speculative_config) 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ hmellor 
+ reviewed
+ Jun 24, 2026 
+ View reviewed changes 
+ Comment thread 
+ vllm/engine/arg_utils.py 
+ logits_processor_pattern: str | None = ModelConfig.logits_processor_pattern 
+ speculative_config: dict[str, Any] | None = None 
+ acceptance_rate_threshold: float | None = None 
+ hmellor 
+ Jun 24, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Not necessary
+ Suggested change
+ acceptance_rate_threshold: float | None = None 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ hmellor 
+ reviewed
+ Jun 24, 2026 
+ View reviewed changes 
+ Comment thread 
+ vllm/engine/arg_utils.py 
+ Comment on lines
+ +1198
+ to 
+ +1203
+ vllm_group.add_argument( 
+ "--acceptance-rate-threshold", 
+ type=float, 
+ default=SpeculativeConfig.acceptance_rate_threshold, 
+ help=SpeculativeConfig.acceptance_rate_threshold.__doc__, 
+ ) 
+ hmellor 
+ Jun 24, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Not necessary
+ Suggested change
+ vllm_group . add_argument ( 
+ "--acceptance-rate-threshold" , 
+ type = float , 
+ default = SpeculativeConfig . acceptance_rate_threshold , 
+ help = SpeculativeConfig . acceptance_rate_threshold . __doc__ , 
+ ) 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ hmellor 
+ reviewed
+ Jun 24, 2026 
+ View reviewed changes 
+ Comment thread 
+ vllm/engine/arg_utils.py 
+ Comment on lines
+ +1378
+ to 
+ +1380
+ if self.speculative_config is None: 
+ self.speculative_config = {} 
+ hmellor 
+ Jun 24, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Never reached
+ Suggested change
+ if self . speculative_config is None : 
+ self . speculative_config = {} 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ hmellor 
+ reviewed
+ Jun 24, 2026 
+ View reviewed changes 
+ Comment thread 
+ vllm/engine/arg_utils.py 
+ Comment on lines
+ +1390
+ to 
+ +1395
+ if self.acceptance_rate_threshold is not None: 
+ self.speculative_config["acceptance_rate_threshold"] = ( 
+ self.acceptance_rate_threshold 
+ ) 
+ hmellor 
+ Jun 24, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Not necessary
+ Suggested change
+ if self . acceptance_rate_threshold is not None : 
+ self . speculative_config [ "acceptance_rate_threshold" ] = ( 
+ self . acceptance_rate_threshold 
+ ) 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ hmellor 
+ reviewed
+ Jun 24, 2026 
+ View reviewed changes 
+ Comment thread 
+ vllm/config/speculative.py 
+ Comment on lines
+ +449
+ to 
+ +454
+ eagle_method = self.method 
+ if eagle_method == "eagle_dynamic": 
+ if "eagle3" in self.draft_model_config.model.lower(): 
+ eagle_method = "eagle3" 
+ else: 
+ eagle_method = "eagle" 
+ hmellor 
+ Jun 24, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Why are we adding a new method if it just redirects to the other 2 types? Is it not a real type?
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ hmellor 
+ requested changes
+ Jun 24, 2026 
+ View reviewed changes 
+ hmellor 
+ left a comment
+ Copy link
+ Copy Markdown
+ Member 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Blocking as there are a lot of basic Python issues in the simple parts of this PR
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ hmellor 
+ commented
+ Jun 24, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ Closing as stale
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ LJX-xixi 
+ mentioned this pull request
+ Jul 10, 2026 
+ [RFC]: Per-request effective proposal lengths for adaptive speculative decoding
+ #48202 
+ Closed
+ 1 task 
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ chatgpt-codex-connector[bot] 
+ chatgpt-codex-connector[bot] left review comments 
+ hmellor 
+ hmellor requested changes 
+ benchislett 
+ Awaiting requested review from benchislett 
+ benchislett is a code owner 
+ luccafong 
+ Awaiting requested review from luccafong 
+ luccafong is a code owner 
+ WoosukKwon 
+ Awaiting requested review from WoosukKwon 
+ WoosukKwon is a code owner 
+ robertgshaw2-redhat 
+ Awaiting requested review from robertgshaw2-redhat 
+ robertgshaw2-redhat is a code owner 
+ njhill 
+ Awaiting requested review from njhill 
+ njhill is a code owner 
+ ywang96 
+ Awaiting requested review from ywang96 
+ comaniac 
+ Awaiting requested review from comaniac 
+ alexm-redhat 
+ Awaiting requested review from alexm-redhat 
+ heheda12345 
+ Awaiting requested review from heheda12345 
+ ApostaC 
+ Awaiting requested review from ApostaC 
+ simon-mo 
+ Awaiting requested review from simon-mo 
+ youkaichao 
+ Awaiting requested review from youkaichao 
+ youkaichao is a code owner 
+ mgoin 
+ Awaiting requested review from mgoin 
+ mgoin is a code owner 
+ tlrmchlsmth 
+ Awaiting requested review from tlrmchlsmth 
+ tlrmchlsmth is a code owner 
+ houseroad 
+ Awaiting requested review from houseroad 
+ houseroad is a code owner 
+ yewentao256 
+ Awaiting requested review from yewentao256 
+ yewentao256 is a code owner 
+ ProExpertProg 
+ Awaiting requested review from ProExpertProg 
+ ProExpertProg is a code owner 
+ noooop 
+ Awaiting requested review from noooop 
+ patrickvonplaten 
+ Awaiting requested review from patrickvonplaten 
+ sighingnow 
+ Awaiting requested review from sighingnow 
+ markmc 
+ Awaiting requested review from markmc 
+ russellb 
+ Awaiting requested review from russellb 
+ aarnphm 
+ Awaiting requested review from aarnphm 
+ DarkLight1337 
+ Awaiting requested review from DarkLight1337 
+ NickLucche 
+ Awaiting requested review from NickLucche 
+ NickLucche is a code owner 
+ LucasWilkinson 
+ Awaiting requested review from LucasWilkinson 
+ chaunceyjiang 
+ Awaiting requested review from chaunceyjiang 
+ tjtanaa 
+ Awaiting requested review from tjtanaa 
+ pavanimajety 
+ Awaiting requested review from pavanimajety 
+ orozery 
+ Awaiting requested review from orozery 
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ ci/build 
+ deepseek 
+ Related to DeepSeek models 
+ documentation 
+ Improvements or additions to documentation 
+ frontend 
+ multi-modality 
+ Related to multi-modality (#4194) 
+ needs-rebase 
+ nvidia 
+ performance 
+ Performance-related issues 
+ qwen 
+ Related to Qwen models 
+ speculative-decoding 
+ structured-output 
+ v1 
+ --> 
+ Projects
+ NVIDIA 
+ Status: Done
+ +6 more
+ Structured Output 
+ Status: Done
+ +6 more
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 7 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

@@ -1,0 +1,82 @@
+-----
+### Motivation.
+
+In speculative decoding, we can save verification cost by selectively verifying a different number of draft tokens per request in each step. There are various techniques of selecting and tuning which / how many tokens to submit for verification, but all share a common benefit: reducing verification overhead with per-request variable-length query lengths in a batch.
+
+
+
+### Proposed Change.
+
+We will support verification input batches with heterogeneous query lengths for each decode request. We will separate the concerns of total verification token budget and allocation of that budget among the draft tokens. The scheduler chooses a host-visible total token budget, and the worker distributes that budget across requests entirely on-device, avoiding serialization of the query lengths to/from the host. This allows us to maintain asynchronous scheduling and CUDA graph compatibility.
+
+This will involve changes to the scheduler, model runner input preparation, cuda graph management, and speculator-scheduler implementations (for the actual logic to decide which tokens to propose).
+
+I propose to build off of the [batch-level Dynamic Speculative Decoding](https://github.com/vllm-project/vllm/pull/45953) support (which already has full-graph compatibility) in ModelRunnerV2.
+
+### Feedback Period.
+
+_No response_
+
+### CC List.
+
+@TheEpicDolphin @WoosukKwon @LucasWilkinson @mgoin @ekagra-ranjan @simon-mo @zyongye 
+
+### Any Other Things.
+
+## Challenges
+
+### Varlen kernel support
+
+Attention kernels take as input the number of *requests* in addition to the query offset pointers.
+For decoding, many attention kernels omit the latter and simply assume either 1 (autoregressive) or N (uniform speculative) query lengths per request.
+
+Many, but not all, attention kernels already support variable length queries per request:
+- FlashAttention Decode (Hopper/Blackwell GQA): supports varlen queries via `flash_attn_varlen_func` arguments `max_seqlen_q` and `cu_seqlens_q`. (Definitely FA3, not sure about varlen full-graph for FA4)
+- FlashInfer TRTLLM-Gen Decode (Blackwell GQA): supports varlen queries via `max_q_len` and `cum_seq_lens_q`, but not plugged into vLLM yet
+- FlashInfer TRTLLM-Gen MLA Decode (Blackwell MLA): no support
+- FlashAttention MLA: Currently uniform-query CG compatibility, but supports varlen Q, might be compatible
+- DeepSeek V4 Indexed attention: Underlying Sparse MLA kernel supports varlen, but seems to need some plumbing to fully support varlen
+- MiniM
+-----
+Working on a prototype in MRV2 here: https://github.com/vllm-project/vllm/pull/47808 this prototype does not involve the scheduler; instead the scheduler always schedules `num_speculative_tokens + 1` and the model runner in-essence rejects tokens without even bothering to verify them. This simplifies the scheduler <> model-runner communication alot at the cost of potentially not using the full `max_num_batched_tokens` in some cases
+-----
+### Motivation.
+
+In speculative decoding, we can save verification cost by selectively verifying a different number of draft tokens per request in each step. There are various techniques of selecting and tuning which / how many tokens to submit for verification, but all share a common benefit: reducing verification overhead with per-request variable-length query lengths in a batch.
+
+
+
+### Proposed Change.
+
+We will support verification input batches with heterogeneous query lengths for each decode request. We will separate the concerns of total verification token budget and allocation of that budget among the draft tokens. The scheduler chooses a host-visible total token budget, and the worker distributes that budget across requests entirely on-device, avoiding serialization of the query lengths to/from the host. This allows us to maintain asynchronous scheduling and CUDA graph compatibility.
+
+This will involve changes to the scheduler, model runner input preparation, cuda graph management, and speculator-scheduler implementations (for the actual logic to decide which tokens to propose).
+
+I propose to build off of the [batch-level Dynamic Speculative Decoding](https://github.com/vllm-project/vllm/pull/45953) support (which already has full-graph compatibility) in ModelRunnerV2.
+
+### Feedback Period.
+
+_No response_
+
+### CC List.
+
+@TheEpicDolphin @WoosukKwon @LucasWilkinson @mgoin @ekagra-ranjan @simon-mo @zyongye 
+
+### Any Other Things.
+
+## Challenges
+
+### Varlen kernel support
+
+Attention kernels take as input the number of *requests* in addition to the query offset pointers.
+For decoding, many attention kernels omit the latter and simply assume either 1 (autoregressive) or N (uniform speculative) query lengths per request.
+
+Many, but not all, attention kernels already support variable length queries per request:
+- FlashAttention Decode (Hopper/Blackwell GQA): supports varlen queries via `flash_attn_varlen_func` arguments `max_seqlen_q` and `cu_seqlens_q`. (Definitely FA3, not sure about varlen full-graph for FA4)
+- FlashInfer TRTLLM-Gen Decode (Blackwell GQA): supports varlen queries via `max_q_len` and `cum_seq_lens_q`, but not plugged into vLLM yet
+- FlashInfer TRTLLM-Gen MLA Decode (Blackwell MLA): no support
+- FlashAttention MLA: Currently uniform-query CG compatibility, but supports varlen Q, might be compatible
+- DeepSeek V4 Indexed attention: Underlying Sparse MLA kernel supports varlen, but seems to need some plumbing to fully support varlen
+- MiniM
+-----
+Working on a prototype in MRV2 here: https://github.com/vllm-project/vllm/pull/47808 this prototype does not involve the scheduler; instead the scheduler always schedules `num_speculative_tokens + 1` and the model runner in-essence rejects tokens without even bothering to verify them. This simplifies the scheduler <> model-runner communication alot at the cost of potentially not using the full `max_num_batched_tokens` in some cases

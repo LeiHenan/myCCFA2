@@ -1,0 +1,185 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/47966  (is_pr=True, 371456 bytes)
+LAYOUT NODE (PR):
+  number = 47966
+  title = [Draft] Investigate silent EngineCore hang in multimodal cache eviction
+  state = CLOSED
+  closedTime = 2026-08-11T21:29:22Z
+  createdTime = 2026-07-08T05:40:45Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 1
+  baseBranch = main
+  headBranch = fix-mm-receiver-cache-thread-safety
+  author = AG0708
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOTRJkCdoAKGJmMDYzZDQ5ZTg1ODc5OWY2YWQ4MzhjZTYyYjY0ZmNkZWM4ZmE5ZDc"> | [Bugfix] Prevent silent EngineCore hang from unsynchronized multimoda… | … | bf063d4 | …l receiver cache access | The MultiModalReceiverCache is mutated from EngineCore's input socket | thread (preprocess_add_request) while reset_mm_cache utility calls run | on the busy loop thread. LRUCache is not thread-safe: torn interleavings | desync cachetools' order/data/currsize bookkeeping, after which the | eviction loop in cachetools' Cache.__setitem__ spins forever because | 
+EV: js-timeline-progressive-focus-container" data-gid="RRE_lADOI7xefs8AAAABICuG888AAAAGcv2Png"> | AG0708 | requested review from | DarkLight1337, | NickLucche, | tjtanaa and | ywang96 | as code owners | July 8, 2026 05:40 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="PRR_kwDOI7xefs8AAAABFTv7pw"> | claude | Bot | reviewed | Jul 8, 2026 | View reviewed changes | claude | Bot | left a comment | Copy link | Copy Markdown | There was a problem hiding this comment. | Choose a reason for hiding this comment | The reason will be displayed to describe this comment to others. Learn more. | --> | Choose a reason | Spam | Abuse | Off Topic | <opt
+EV: js-timeline-progressive-focus-container" data-gid="LE_lADOI7xefs8AAAABICuG888AAAAGcv3OZg"> | mergify | Bot | added | multi-modality | Related to multi-modality (#4194) | bug | Something isn't working | labels | Jul 8, 2026 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOI7xefs8AAAABJMOGsQ"> | github-actions | Bot | commented | Jul 8, 2026 | Copy link | Copy Markdown | 👋 Hi! Thank you for contributing to the vLLM project. | 💬 Join our developer Slack at https://slack.vllm.ai to discuss your PR in #pr-reviews, coordinate on features in #feat- channels, or join special interest groups in #sig- channels. | PRs do not trigger a full CI run by default. Once the PR is approved and ready to go, your PR reviewer(s) can run CI to test the changes comprehensively before merging. | To run CI, PR reviewers can eith
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOI7xefs8AAAABJNIQuw"> | DarkLight1337 | commented | Jul 8, 2026 | Copy link | Copy Markdown | Member | reset_mm_cache is not meant to be called when there are requests in progress, I think there is no need to make this thread-safe. cc @ywang96 | --> | All reactions | --> | Sorry, something went wrong. | Uh oh! | There was an error while loading. <a class="Link--inTextBlock" data-turbo="false
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOI7xefs8AAAABJfiN0A"> | AG0708 | commented | Jul 10, 2026 | Copy link | Copy Markdown | Author | Good point — I re-checked the production path. preprocess_add_request explicitly documents exclusive access after initialization, and EngineCoreProc starts only one input-processing thread. The reporter also did not mention invoking reset_mm_cache/pause while serving. | So my concurrent-clear stress test demonstrates that the cache can desynchronize under that interleaving, but it does not establish that this was the cause of the reported pro
+EV: js-timeline-progressive-focus-container" data-gid="CTDE_lADOI7xefs8AAAABICuG888AAAAGeNVGmg"> | AG0708 | marked this pull request as draft | July 10, 2026 04:42 | AG0708 | changed the title | [Bugfix] Prevent silent EngineCore hang from unsynchronized multimodal receiver cache access | [Draft] Investigate silent EngineCore hang in multimodal cache eviction | Jul 10, 2026 | vedantjh2 | mentioned this pull request | Jul 17, 2026 | [Bug]: EngineCore process_input_sockets thread hangs indefinitely in mm cache eviction (popitem), no exception raised, requests silently stuck (single GPU, Qwen3.5-27B)
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOI7xefs8AAAABOXcZZw"> | AG0708 | commented | Aug 11, 2026 | Copy link | Copy Markdown | Author | Closing this as promised after re-evaluating it against the supported production path. The concurrent-clear reproduction proves only that an unsupported reset/add interleaving can desynchronize the cache; reset_mm_cache is not meant to run with requests in flight, and no supported single-owner path reproduction or new evidence has emerged. The production root cause of #47958 therefore remains unestablished, so the receiver lock and defensive 
+EV: js-timeline-progressive-focus-container" data-gid="CE_lADOI7xefs8AAAABICuG888AAAAG0sTM-A"> | AG0708 | closed this | Aug 11, 2026 | --> | Sign up for free | to join this conversation on GitHub. | Already have an account? | Sign in to comment | --><input type="hidden" data-csrf="true" name="authenticity_token" val
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=AG0708 date=2026-07-08T05:40:45Z]
+Important
+Investigation status: this PR is now a draft. A maintainer correctly
+
+pointed out that MultiModalReceiverCache is single-thread-owned during
+
+normal serving. The concurrent-clear reproduction proves an unsupported
+
+reset/add interleaving can corrupt the cache, but it does not establish
+
+the root cause of #47958. I have asked the reporter whether any reset,
+
+pause/sleep, or utility path ran and for the installed cachetools version.
+
+The receiver-lock change will be removed. If a supported-path reproduction
+
+cannot be established, this PR will be closed rather than presented as a
+
+production fix.
+
+Purpose
+
+Fixes #47958: after days under multimodal load, EngineCore's input socket
+
+thread hangs forever inside LRUCache.popitem with no exception; new requests
+
+never reach the scheduler, GPU goes idle, /health stays 200.
+
+Root cause, confirmed by deterministic CPU-only reproduction:
+
+- MultiModalReceiverCache is mutated from two threads with no
+
+synchronization — the input socket thread (preprocess_add_request →
+
+get_and_update_features) and the busy loop thread (reset_mm_cache →
+
+clear_cache). vLLM's LRUCache is not thread-safe.
+
+- Torn interleavings desync cachetools' bookkeeping: a key can remain in the
+
+LRU order dict while missing from the data dict. A 3-thread stress on a
+
+bare LRUCache produces this (and KeyError escapes from get()) within
+
+~0.5s; under production load the window is tiny, matching "hangs after
+
+days".
+
+- Once desynced, any insert that triggers eviction livelocks: cachetools'
+
+Cache.__setitem__ loops while currsize + size > maxsize: popitem(),
+
+popitem() selects the stale key, and LRUCache.pop() silently returns
+
+the default for a key missing from the data dict — nothing is removed and
+
+currsize never drops. This matches the reporter's py-spy stack exactly
+
+(popitem → cachetools __setitem__ → get_and_update_item →
+
+preprocess_add_request).
+
+Changes
+
+- vllm/multimodal/cache.py: guard MultiModalReceiverCache.get_and_update_item
+
+/ touch_receiver_cache_item / clear_cache with a threading.Lock
+
+(ShmObjectStoreReceiverCache already takes a lock for the same reason).
+
+- vllm/utils/cache.py: LRUCache.popitem() now drops stale order entries
+
+with a warning instead of silently popping nothing, so any future
+
+bookkeeping desync degrades loudly instead of livelocking the engine. No
+
+behavior change when the cache is consistent.
+
+Test Plan
+
+New regression tests (all CPU-only):
+
+- tests/utils_/test_cache.py::test_popitem_skips_stale_order_entry — a
+
+manufactured stale order entry is healed; popitem returns the real LRU
+
+entry. Fails before the fix (returns ("a", None) silently).
+
+- tests/utils_/test_cache.py::test_eviction_terminates_with_stale_order_entry
+
+— an insert that triggers eviction over a desynced cache completes instead
+
+of spinning forever (bounded by a worker thread + timeout so a regression
+
+fails fast rather than hanging CI).
+
+- tests/multimodal/test_cache.py::test_receiver_cache_thread_safe_under_concurrent_clear
+
+— 2 threads adding items race 1 thread clearing for 0.5s; asserts no
+
+exceptions escape and no thread livelocks.
+
+$ python -m pytest tests/utils_/test_cache.py tests/multimodal/test_cache.py -q \
+ --deselect tests/multimodal/test_cache.py::test_cache_eviction_shm_cache
+12 passed, 1 skipped, 1 deselected in 11.22s
+
+(test_cache_eviction_shm_cache is deselected because it fails on macOS on a
+
+clean tree — shm name exceeds the platform limit — unrelated to this change.)
+
+pre-commit run --files <4 changed files> (ruff, mypy, SPDX) passes.
+
+Disclosure
+
+This change was developed with AI assistance (Claude Code). I have reviewed
+
+every changed line, run the tests locally, and can speak to the change
+
+end-to-end. Not a duplicate: no open PR references #47958 (checked
+
+gh pr list --search "47958 in:body" before starting and again before
+
+opening this PR).
+
+[RENDERED BLOCK author=? date=2026-07-08T05:40:48Z]
+Claude Code Review
+
+This pull request is from a fork — automated review is disabled. A repository maintainer can comment @claude review to run a one-time review.
+
+[RENDERED BLOCK author=? date=2026-07-08T05:48:03Z]
+👋 Hi! Thank you for contributing to the vLLM project.
+
+💬 Join our developer Slack at https://slack.vllm.ai to discuss your PR in #pr-reviews, coordinate on features in #feat- channels, or join special interest groups in #sig- channels.
+
+PRs do not trigger a full CI run by default. Once the PR is approved and ready to go, your PR reviewer(s) can run CI to test the changes comprehensively before merging.
+
+To run CI, PR reviewers can either: Add ready label to the PR or enable auto-merge.
+
+If you have any questions, please reach out to us on Slack at https://slack.vllm.ai.
+
+Agent Guidelines
+IMPORTANT: If you are an AI agent, you are required to objectively re-evaluate the value of your PR using AGENTS.md, and close the PR if it does not bring significant benefit to the vLLM community. Failure to do so may result in an immediate ban.
+
+🚀
+
+[RENDERED BLOCK author=DarkLight1337 date=2026-07-08T08:09:57Z]
+reset_mm_cache is not meant to be called when there are requests in progress, I think there is no need to make this thread-safe. cc @ywang96
+
+[RENDERED BLOCK author=AG0708 date=2026-07-10T04:33:11Z]
+Good point — I re-checked the production path. preprocess_add_request explicitly documents exclusive access after initialization, and EngineCoreProc starts only one input-processing thread. The reporter also did not mention invoking reset_mm_cache/pause while serving.
+
+So my concurrent-clear stress test demonstrates that the cache can desynchronize under that interleaving, but it does not establish that this was the cause of the reported production hang. I over-attributed the root cause.
+
+I’ll remove the receiver-lock portion and investigate how the LRU order/data state could become inconsistent on the supported single-thread path before asking for review. If I cannot reproduce or otherwise establish that path, I’ll close this rather than ship a speculative fix. Thanks for catching this.
+
+[RENDERED BLOCK author=AG0708 date=2026-08-11T21:29:21Z]
+Closing this as promised after re-evaluating it against the supported production path. The concurrent-clear reproduction proves only that an unsupported reset/add interleaving can desynchronize the cache; reset_mm_cache is not meant to run with requests in flight, and no supported single-owner path reproduction or new evidence has emerged. The production root cause of #47958 therefore remains unestablished, so the receiver lock and defensive popitem changes would be speculative rather than a justified fix. Thanks @DarkLight1337 for catching the attribution gap.

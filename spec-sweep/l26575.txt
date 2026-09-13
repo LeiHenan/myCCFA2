@@ -1,0 +1,232 @@
+spec: respect safe draft caps before block decode by devesssi · Pull Request #26575 · ggml-org/llama.cpp · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ggml-org
+ / 
+ llama.cpp 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 23.1k 
+ Star
+ 128k 
+ Code 
+ Issues 
+ 901 
+ Pull requests 
+ 1.6k 
+ Discussions 
+ Actions 
+ Projects 
+ Wiki 
+ Security and quality 
+ 13 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Wiki
+ Security and quality
+ Insights
+ spec: respect safe draft caps before block decode - # 26575 
+ # 26575 
+ Open 
+ devesssi wants to merge 1 commit into ggml-org:master ggml-org/llama.cpp:master from devesssi:agent/spec-draft-boundary-clamp devesssi/llama.cpp:agent/spec-draft-boundary-clamp Copy head branch name to clipboard 
+ Conversation Commits 1  ( 1 ) Checks Files changed 
+ Open 
+ spec: respect safe draft caps before block decode # 26575 devesssi wants to merge 1 commit into ggml-org:master ggml-org/llama.cpp:master from devesssi:agent/spec-draft-boundary-clamp devesssi/llama.cpp:agent/spec-draft-boundary-clamp Copy head branch name to clipboard 
+ Conversation
+ devesssi 
+ commented
+ Aug 4, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Overview
+ This PR updates the draft-dflash / draft-dspark batching path to respect the effective per-sequence draft cap before constructing the draft decode block, where doing so is layout-safe.
+ For non-DSpark drafts, the decoded draft length is now capped with min(params.n_max, dp.n_max) instead of always decoding the full shared params.n_max .
+ For DSpark, the existing uniform-block requirement is preserved. If all actively drafting sequences share the same effective cap, we decode that smaller uniform block. Otherwise, the previous behavior is retained and the existing truncation in common_speculative_draft() handles the result.
+ This addresses the behavior discussed in #26478 , where the draft decode path could advance speculative state beyond a sequence's effective draft budget before truncation, which appears related to the reported gap in KV positions near the 16k context boundary.
+ Additional information
+ This is intentionally a narrow change.
+ Only the shared DFlash/DSpark draft batching path is modified.
+ Verification, acceptance, rollback, and server-side prompt bookkeeping are unchanged.
+ The existing DSpark fallback for mixed per-sequence draft limits is preserved.
+ I inspected the affected code path and verified the logic locally. I wasn't able to run a full build because cmake was unavailable in my environment, so this change should still receive the usual CI and maintainer validation.
+ Requirements
+ I have read and agree with the [ contributing guidelines ]( https://github.com/ggml-org/llama.cpp/blob/master/CONTRIBUTING.md )
+ AI usage disclosure: YES — AI was used to help analyze the existing implementation, discuss possible approaches, and improve the wording of this PR description. I manually inspected the code, implemented the change, reviewed the diff, and take responsibility for the submitted code.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ spec: respect safe draft caps before block decode 
+ 272dc40 
+ ggml-gh-bot 
+ Bot 
+ commented
+ Aug 4, 2026 
+ Copy link
+ Copy Markdown
+ Hi @devesssi , thanks for your contribution!
+ Per our contribution guidelines , the automated PR checker found the following issue(s) that need your attention:
+ PR Template not respected : Please respect the template when creating a new pull request. Make sure to fill out all required sections. 
+ Please note that maintainers reserve the right to make final decisions on PRs. If you believe there is a mistake, please comment below. 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ devesssi 
+ mentioned this pull request
+ Aug 4, 2026 
+ Eval bug: lllama-spec failure at 16k boundary due to non-consecutive KV cache position tracking (Y != X + 1)
+ #26478 
+ Open
+ devesssi 
+ commented
+ Aug 4, 2026 
+ Copy link
+ Copy Markdown
+ Author 
+ Updated the PR description to follow the required template.
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ devesssi 
+ marked this pull request as ready for review
+ August 4, 2026 15:29 
+ devesssi 
+ requested a review
+ from a team 
+ as a code owner 
+ August 4, 2026 15:29 
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ No reviews
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ None yet
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 1 participant
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

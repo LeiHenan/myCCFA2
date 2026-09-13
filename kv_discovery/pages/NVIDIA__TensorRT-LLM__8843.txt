@@ -1,0 +1,151 @@
+FETCHED: https://github.com/NVIDIA/TensorRT-LLM/issues/8843  (is_pr=False, 291726 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 8843
+  title = What is the default KV cache dtype with `trtllm-serve`, and can I lower it for better VRAM efficiency?
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2025-10-31T12:17:54Z
+  updatedAt = 2025-12-23T03:32:19Z
+  closedAt = None
+  author = NEWbie0709
+  labels = ['KV-Cache Management', 'question', 'stale', 'waiting for feedback']
+
+[GRAPHQL COMMENT by NEWbie0709 assoc=NONE at 2025-11-03T10:36:28Z]
+By the way, can I ask why, using the same model, when I run it with Ollama (Nemotron 9B v2 Q4_K_M), my VRAM can handle about a 50K context, but when I use TRT-LLM Serve, it can only handle up to around 30K before the program crashes?
+
+[GRAPHQL COMMENT by QiJune assoc=COLLABORATOR at 2025-11-06T13:14:53Z]
+Hi @NEWbie0709 ,
+
+>1. What is the effective default KV cache dtype here when using kv_cache_dtype="auto"
+
+The KV cache dtype "auto" means use the value in the hf_quant_config.json, which is defined in https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2-NVFP4/blob/main/hf_quant_config.json#L8.
+
+```
+"kv_cache_quant_algo": null,
+```
+
+Since the kv_cache_quant_algo is null, which means KV cache is not quantized, the effective KV cache dtype is bfloat16.
+
+> 2. Can I lower the KV cache precision (e.g., FP8) to reduce VRAM and push longer context?
+
+Yes, you can try to FP8 KV cache. Usually, the TRT-LLM attention kernels should support it.
+
+> 3. How do i lower it?
+
+There are 2 ways:
+1. modify the `kv_cache_quant_algo` in `hf_quant_config.json`, please set it to `FP8`.
+
+```yaml
+"kv_cache_quant_algo":"FP8",
+```
+2. set it at runtime, you can set it in `extra_llm_api_options.yaml` of `trtllm-serve`
+
+```yaml
+kv_cache_config:
+  dtype: fp8
+  free_gpu_memory_fraction: 0.95
+  enable_block_reuse: false
+```
+
+```bash
+trtllm-serve nvidia/NVIDIA-Nemotron-Nano-9B-v2-NVFP4 --extra_llm_api_options extra_llm_api_options.yaml
+```
+
+> 4. Is KV cache dtype configurable at serve time (trtllm-serve) or only at build time (trtllm-build)?
+
+At serve time(trtllm-serve). We don't use `trtllm-build` command in TRT-LLM PyTorch backend any more.
+
+
+> 5. If only at build time, what are the recommended flags for Blackwell RTX (5090) vs smaller VRAM cards (5060 Ti) to optimize 30k context?
+
+It can be set at runtime.
+
+
+[GRAPHQL COMMENT by zejunchen-zejun assoc=NONE at 2025-11-10T09:04:17Z]
+The kv_cache_dtype config item has been deprecated for now?
+
+[GRAPHQL COMMENT by NEWbie0709 assoc=NONE at 2025-11-24T04:19:45Z]
+@QiJune
+ Sorry for the late reply. After I added dtype: fp8, it seems like the total VRAM usage is still the same.
+
+<img width="319" height="113" alt="Image" src="https://github.com/user-attachments/assets/6c4a6ffc-2e97-4960-8953-b8706c0ef9d0" />
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2025-12-09T03:28:17Z]
+Issue has not received an update in over 14 days. Adding stale label.
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2025-12-23T03:32:18Z]
+This issue was closed because it has been 14 days without activity since it has been marked as stale.
+
+[GRAPHQL CLOSED by github-actions at 2025-12-23T03:32:19Z reason=NOT_PLANNED]
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=NEWbie0709 date=Oct 31, 2025]
+System Info
+
+System Info
+
+GPU / Driver
+
+NVIDIA-SMI 580.102.01
+
+Driver Version: 581.57
+
+CUDA Version: 13.0
+
+GPU: NVIDIA GeForce RTX 5060 Ti (16 GB)
+
+OS: Ubuntu (Docker container based on tensorrt_llm)
+
+CUDA compiler
+
+nvcc: NVIDIA (R) Cuda compiler driver
+
+Build cuda_13.0.r13.0/compiler.36260728_0
+
+Cuda compilation tools, release 13.0, V13.0.48
+
+Python
+
+Python 3.12.3
+
+PyTorch / TensorRT
+
+torch: 2.8.0a0+34c6371d24.nv25.8
+
+tensorrt: 10.13.2.6
+
+tensorrt_llm: (installed, version auto-linked to TRT 10.13)
+
+How would you like to use TensorRT-LLM
+
+I’m serving nvidia/NVIDIA-Nemotron-Nano-9B-v2-NVFP4 using the official container:
+
+docker run --rm -it --ipc host --gpus all --ulimit memlock=-1 --ulimit stack=67108864 -p 8000:8000 nvcr.io/nvidia/tensorrt-llm/release:1.2.0rc1
+
+trtllm-serve "nvidia/NVIDIA-Nemotron-Nano-9B-v2-NVFP4" \
+ --extra_llm_api_options ./extra-llm-api-config.yml \
+ --max_num_tokens 30000 \
+ --max_seq_len 30000 \
+ --max_batch_size 1 \
+ --port 8000 --host 0.0.0.0
+
+From the logs I see:
+
+> [TRT-LLM] [I] Validating KV Cache config against kv_cache_dtype="auto"
+> [TRT-LLM] [I] KV cache quantization set to "auto". Using checkpoint KV quantization.
+
+My questions:
+
+1. What is the effective default KV cache dtype here when using kv_cache_dtype="auto" on consumer RTX GPUs (5060 Ti, 5090)?
+2. Can I lower the KV cache precision (e.g., FP8) to reduce VRAM and push longer context?
+3. How do i lower it?
+4. Is KV cache dtype configurable at serve time (trtllm-serve) or only at build time (trtllm-build)?
+5. If only at build time, what are the recommended flags for Blackwell RTX (5090) vs smaller VRAM cards (5060 Ti) to optimize 30k context?
+
+### Before submitting a new issue...
+
+- [x] Make sure you already searched for relevant issues, and checked the [documentation](https://nvidia.github.io/TensorRT-LLM/) and [examples](https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples) for answers to frequently asked questions.

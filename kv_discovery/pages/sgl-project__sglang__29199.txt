@@ -1,0 +1,114 @@
+FETCHED: https://github.com/sgl-project/sglang/issues/29199  (is_pr=True, 342756 bytes)
+LAYOUT NODE (PR):
+  number = 29199
+  title = Add experimental agent-aware KV cache hints
+  state = CLOSED
+  closedTime = 2026-08-08T07:35:15Z
+  createdTime = 2026-06-24T19:05:41Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 2
+  baseBranch = main
+  headBranch = agent-aware-kv-cache-hints
+  author = githubshaurya
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="RRE_lADOLCAjRs8AAAABGmKJtM8AAAAGUu8-oA"> | githubshaurya | requested review from | CatherineSue, | JustinTong0323, | Ying1123, | alphabetc1, | hanming-lu, | hnyls2002, | hzh0425, | ispobock, | merrymercy, | slin1237, | xiezhq-hermann and | yizhang2077 | as code owners | June 24, 2026 19:05 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOLCAjRs8AAAABHasPFg"> | gemini-code-assist | Bot | commented | Jun 24, 2026 | Copy link | Copy Markdown | Contributor | Warning | You have reached your daily quota limit. Please wait up to 24 hours and I will start processing your requests again! | --> | All reactions | --> | Sorry, something went wrong. | Uh oh! | There was an error while loading. <a class="Link--inTex
+EV: js-timeline-progressive-focus-container" data-gid="HRFPE_lADOLCAjRs8AAAABGmKJtM8AAAAGUvSLJA"> | githubshaurya | force-pushed | the | agent-aware-kv-cache-hints | branch | from | e778255 to | f7a5f19 | Compare | June 24, 2026 19:14 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOLCAjRs8AAAABHcDDwQ"> | githubshaurya | commented | Jun 24, 2026 | Copy link | Copy Markdown | Author | Could a maintainer please add the run-ci label or run /tag-and-rerun-ci when convenient? I have fixed the local pre-commit formatting issue and ran the targeted unit tests locally. | @janimo @binarycrayon @fronx @heiner | --> | All reactions | --> | <path
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOLCAjRtoAKGNiN2I3N2M4OTA4YzRlYWZiMjU3OTQ1ZDE4ZjIxNzdkMjZhOThhOTM"> | Add experimental agent-aware KV cache hints | cb7b77c | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="HRFPE_lADOLCAjRs8AAAABGmKJtM8AAAAGVDDKNw"> | githubshaurya | force-pushed | the | agent-aware-kv-cache-hints | branch | from | f7a5f19 to | cb7b77c | Compare | June 25, 2026 07:10 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOLCAjRtoAKDhkYzc2NzVhNWUzMGEwM2Q3ZjM1MjQ2MzY4MmU2YTIyMWYwM2Y4MDc"> | pre-commit tests passed | 8dc7675 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="LE_lADOLCAjRs8AAAABGmKJtM8AAAAGVPISRw"> | github-actions | Bot | added | the | model-gateway | label | Jun 25, 2026 | githubshaurya | closed this by deleting the head repository | Aug 8, 2026 | --> | Sign up for free | to join this conversation on GitHub. | Already have an account? | Sign in to comment | <div id="pr-conversation-sideb
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=githubshaurya date=2026-06-24T19:05:41Z]
+Summary
+
+This PR adds the first experimental slice of agent-aware KV cache support.
+
+Changes include:
+
+- Add optional agent_hints request metadata for OpenAI-compatible chat and completion requests.
+
+- Propagate agent_hints through request normalization, tokenizer manager, scheduler request construction, and session request handling.
+
+- Annotate radix-cache nodes with optional agent metadata such as workflow ID, agent ID, step ID, parent step ID, TTL, expected tool duration, and reuse hint.
+
+- Add an experimental agent_aware radix eviction policy.
+
+- Add unit coverage for protocol parsing, request normalization, radix metadata annotation, and eviction priority behavior.
+
+Motivation
+
+Agentic workloads often issue multi-step requests where KV reuse value depends on workflow context, expected tool latency, and future reuse likelihood.
+
+This PR keeps the implementation intentionally narrow:
+
+- Existing behavior is unchanged by default.
+
+- agent_hints is optional metadata.
+
+- The new eviction behavior is only used when the experimental agent_aware policy is selected.
+
+- TTL and reuse hints are soft eviction-ranking signals, not hard pinning.
+
+References
+
+SGLang / RadixAttention: motivates KV-cache reuse for structured, multi-call language model programs. This PR builds on that idea by attaching optional workflow metadata to radix-cache nodes.
+
+PagedAttention / vLLM: shows that KV-cache memory management is a core bottleneck in LLM serving. This PR adds a small policy hook for metadata-aware cache eviction.
+
+KVFlow: directly motivates workflow-aware KV-cache management for multi-agent workloads, where LRU can evict entries shortly before reuse. This PR implements only a narrow metadata and eviction-ranking subset of that idea.
+
+Mooncake: treats KV cache as a first-class serving resource. This PR follows the same high-level direction, but does not implement distributed KV-cache scheduling or transfer.
+
+LMCache: motivates explicit KV-cache reuse across engines and queries. This PR does not add a KV-cache API, but prepares a small metadata path useful for future cache-control work.
+
+Scope
+
+This PR does not implement:
+
+- Programmatic KV cache APIs
+
+- Router changes
+
+- Distributed cache migration
+
+- HiCache / Mooncake / NIXL integration
+
+- Hard cache pinning
+
+- Cross-worker KV movement
+
+- Shared-prefix routing
+
+Those are larger follow-up areas.
+
+Tests
+
+Ran targeted tests:
+
+python -m pytest -q test/registered/unit/managers/test_io_struct.py -k agent
+python -m pytest -q test/registered/unit/mem_cache/test_evict_policy.py -k agent
+python -m pytest -q test/registered/unit/entrypoints/openai/test_protocol.py -k agent
+python -m pytest -q test/registered/unit/mem_cache/test_radix_cache_unit.py -k agent
+
+Also ran compile checks on touched Python files.
+
+CI States
+
+Latest PR Test (Base): ❌ Run #28167511676
+
+Latest PR Test (Extra): ❌ Run #28167511420
+
+[RENDERED BLOCK author=yizhang2077 date=2026-06-24T19:05:59Z]
+Warning
+You have reached your daily quota limit. Please wait up to 24 hours and I will start processing your requests again!
+
+[RENDERED BLOCK author=githubshaurya date=2026-06-24T22:20:16Z]
+Could a maintainer please add the run-ci label or run /tag-and-rerun-ci when convenient? I have fixed the local pre-commit formatting issue and ran the targeted unit tests locally.
+
+@janimo @binarycrayon @fronx @heiner

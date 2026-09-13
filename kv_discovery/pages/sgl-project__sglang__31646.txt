@@ -1,0 +1,224 @@
+FETCHED: https://github.com/sgl-project/sglang/issues/31646  (is_pr=True, 312131 bytes)
+LAYOUT NODE (PR):
+  number = 31646
+  title = [AMD] Quantize Q to FP8 in aiter decode unified_attention when KV cache is FP8
+  state = CLOSED
+  closedTime = 2026-08-06T06:51:23Z
+  createdTime = 2026-07-18T04:43:10Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 1
+  baseBranch = main
+  headBranch = amd/decode-qfp8-unified-attn
+  author = yichiche
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOPILT_NoAKGFiN2E1MzdkODA2NzI1Y2RiNTc3NTI1ZGU0ZWU4ZWZkYzk1YjNjNWI"> | [AMD] Quantize Q to FP8 in aiter decode unified_attention when KV cac… | … | ab7a537 | …he is FP8 | In forward_decode's unified_attention path, when kv_cache_dtype is fp8 | the query is now cast to fp8 and q_descale is passed (using layer.k_scale, | falling back to self.k_scale) instead of q_descale=None. This engages the | IS_Q_FP8_1 kernel variant to match the fp8 KV cache path, consistent with | the extend path which already quantizes Q. | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="RRE_lADOLCAjRs8AAAABJQ9xDs8AAAAGjfRoBQ"> | yichiche | requested review from | Fridge003, | HaiShaw, | Qiaolin-Yu, | hebiao064, | ispobock and | merrymercy | as code owners | July 18, 2026 04:43 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOLCAjRs8AAAABKp2hMQ"> | gemini-code-assist | Bot | commented | Jul 18, 2026 | Copy link | Copy Markdown | Contributor | Warning | You have reached your daily quota limit. Please wait up to 24 hours and I will start processing your requests again! | --> | All reactions | --> | Sorry, something went wrong. | Uh oh! | There was an error while loading. <a class="Link--inTex
+EV: js-timeline-progressive-focus-container" data-gid="CTDE_lADOLCAjRs8AAAABJQ9xDs8AAAAGqo5Hqw"> | yichiche | marked this pull request as draft | July 29, 2026 01:07 | yichiche | closed this | Aug 6, 2026 | --> | Sign up for free | to join this conversation on GitHub. | Already have an account? | Sign in to comment | <div class="prc-PageLayout-HorizontalDivider-JLVqp prc-PageLayout-PaneHorizontalDi
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=? date=?]
+Motivation
+
+On the AITER attention backend, the extend/prefill path already quantizes the query to FP8 and passes a q_descale when the KV cache is FP8 (kv_cache_dtype == fp8_e4m3), engaging the FP8 query-key kernel variant. The decode path in forward_decode's unified_attention branch, however, left the query in bf16 and passed q_descale=None, so it dispatched to the IS_Q_FP8_0 kernel variant even when the KV cache was FP8.
+
+This PR makes decode consistent with extend: when the KV cache is FP8, the query is cast to FP8 and q_descale is supplied, so decode uses the same IS_Q_FP8_1_IS_KV_FP8_1 unified-attention kernel as the FP8 KV path intends. This is also a prerequisite for checkpoints that carry real per-tensor Q/K FP8 scales (e.g. AttnFP8-quantized checkpoints), where the FP8 query path improves both attention throughput and numerics.
+
+Modifications
+
+- python/sglang/srt/layers/attention/aiter_backend.py, AiterAttnBackend.forward_decode, use_triton_unified_attention branch:
+
+- When self.kv_cache_dtype == fp8_dtype, cast q = q.to(fp8_dtype) and set q_descale = layer.k_scale if layer.k_scale is not None else self.k_scale.
+
+- Pass q_descale=q_descale to unified_attention(...) instead of the previous hard-coded q_descale=None.
+
+- No change to the bf16 KV path (when kv_cache_dtype != fp8_dtype, q_descale stays None and Q remains bf16).
+
+Trace-confirmed kernel dispatch (Qwen3.5-397B-A17B-MXFP4, TP2, MI355, decode CudaGraphReplay):
+
+KV cache dtype
+decode attention kernel variant
+
+bf16 (unchanged)
+
+kernel_unified_attention_3d_..._IS_Q_FP8_0_IS_KV_FP8_0
+
+fp8 (this PR)
+
+kernel_unified_attention_3d_..._IS_Q_FP8_1_IS_KV_FP8_1
+
+The FP8 path additionally issues a small float8_copy kernel to quantize Q (~4.8 µs/iter at conc64, summed over 15 attention layers).
+
+Accuracy Tests
+
+GSM8K, 5-shot, 200 questions, same server config, bf16 KV vs FP8 KV (this PR active on the FP8 server). Qwen3.5-397B-A17B-MXFP4, TP2, MI355.
+
+Config
+Accuracy
+Invalid
+
+bf16 KV (baseline)
+
+0.945
+
+0.005
+
+fp8 KV (this PR)
+
+0.930
+
+0.000
+
+The Qwen3.5-MXFP4 checkpoint ships no k/v scales, so FP8 KV runs with scale = 1.0 (server logs the expected warning); the ~1.5-pt drop is attributable to scale-1.0 FP8 KV, not to the Q-FP8 change specifically. On checkpoints with real Q/K FP8 scales the FP8 query path is accuracy-neutral-to-positive.
+
+Benchmarking and Profiling
+
+End-to-end (random, ISL 8192 / OSL 1024, range-ratio 0.8, ignore-eos, request-rate inf; num_prompts = concurrency × 10). Δ = FP8 KV (this PR) vs bf16 KV.
+
+Concurrency
+total tok/s bf16
+total tok/s fp8
+Δ throughput
+Median TPOT bf16 (ms)
+Median TPOT fp8 (ms)
+
+4
+
+3,445.6
+
+3,349.0
+
+−2.81%
+
+10.2
+
+10.4
+
+8
+
+5,475.4
+
+5,418.5
+
+−1.04%
+
+12.6
+
+12.7
+
+16
+
+7,709.6
+
+7,653.8
+
+−0.72%
+
+17.9
+
+18.1
+
+32
+
+10,206.2
+
+10,355.2
+
++1.46%
+
+27.3
+
+27.3
+
+64
+
+13,253.4
+
+13,119.8
+
+−1.01%
+
+43.0
+
+43.0
+
+128
+
+16,384.5
+
+16,481.8
+
++0.59%
+
+69.8
+
+69.4
+
+Decode attention kernel (profiling, num_prompts = concurrency × 2; per decode iteration, summed over 15 attention layers, TP-0). This isolates the kernel the PR engages:
+
+Concurrency
+unified_attention bf16 (IS_Q_FP8_0, TILE16)
+unified_attention fp8 (IS_Q_FP8_1, TILE32)
+Δ
+Q→fp8 float8_copy (fp8 only)
+
+4
+
+11.6 µs/call
+
+12.8 µs/call
+
++9.8%
+
++4.3 µs/call
+
+64
+
+100.8 µs/call
+
+84.7 µs/call
+
+−16.0%
+
++4.8 µs/call
+
+At high concurrency the FP8 KV/Q attention kernel is meaningfully faster (−16% at conc64, KV-read-bandwidth bound); at low concurrency it is slightly slower (batch too small to be bandwidth-bound, plus the added Q-quant). On this MoE model decode is MoE-bound (attention is ~7–11% of the decode iteration), so the net end-to-end effect is within run-to-run noise (±3%).
+
+Note on scope: this A/B compares FP8 KV (with this PR) vs bf16 KV, not FP8-KV-with-Q-FP8 vs FP8-KV-without. The kernel table above is the direct, trace-confirmed effect of this change (the IS_Q_FP8_0 → IS_Q_FP8_1 dispatch and the added float8_copy); the end-to-end table is provided for context.
+
+Checklist
+
+- Format your code according to the Format code with pre-commit.
+
+- Add unit tests according to the Run and add unit tests.
+
+- Update documentation according to Write documentations.
+
+- Provide accuracy and speed benchmark results according to Test the accuracy and Benchmark the speed.
+
+- Follow the SGLang code style guidance.
+
+Review Process
+
+- Ping Merge Oncalls to start the PR flow. See the PR Merge Process.
+
+- Get approvals from CODEOWNERS and other reviewers.
+
+- Trigger CI tests with comments or contact authorized users to do so.
+
+- /tag-run-ci-label, /rerun-failed-ci, /tag-and-rerun-ci
+
+- After green CI and required approvals, ask Merge Oncalls to merge.
+
+CI States
+
+Latest PR Test (Base): ❌ Run #29631023592
+
+Latest PR Test (Extra): ❌ Run #29631023521
+
+[RENDERED BLOCK author=merrymercy date=2026-07-18T04:43:14Z]
+Warning
+You have reached your daily quota limit. Please wait up to 24 hours and I will start processing your requests again!

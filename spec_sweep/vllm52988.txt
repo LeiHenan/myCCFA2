@@ -1,0 +1,785 @@
+
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [Spec decode] Support variable-length decode for Kimi-K3 adaptive ver - # 52988 
+ # 52988 
+ Open 
+ qiching wants to merge 6 commits into vllm-project:main vllm-project/vllm:main from qiching:k3-adaptive-varlen qiching/vllm:k3-adaptive-varlen Copy head branch name to clipboard 
+ Conversation Commits 6 ( 6 ) Checks Files changed 
+ Open 
+ [Spec decode] Support variable-length decode for Kimi-K3 adaptive ver # 52988 qiching wants to merge 6 commits into vllm-project:main vllm-project/vllm:main from qiching:k3-adaptive-varlen qiching/vllm:k3-adaptive-varlen Copy head branch name to clipboard 
+ Conversation
+ qiching 
+ commented
+ Aug 19, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Summary
+ Make Kimi-K3's MLA and KDA decode paths capturable as FULL varlen CUDA graphs so they work under adaptive DSpark verification ( #47808 ), which schedules ragged per-request draft budgets and requires device-sourced query lengths. Before this change K3's FLASHINFER_MLA reported UNIFORM_BATCH / UNIFORM , and the decode builders derived per-request query length from a measured/averaged count, so a graph captured on a uniform dummy did not match ragged replay.
+ Changes
+ FlashInfer MLA ( flashinfer_mla.py )
+ Promote _cudagraph_support to AttentionCGSupport.ALWAYS and query_len_support to QueryLenSupport.VARLEN .
+ On the causal spec-decode path, pass cum_seq_lens_q + max_q_len to trtllm_batch_decode_with_kv_cache_mla (flashinfer Is it always better to have more GPUs during parallel inference? Why is it better for me to have two graphics cards in parallel than four graphics cards #3238 ); assert this path runs on trtllm-gen and does not return LSE (mutually exclusive with DCP).
+ Flatten non-causal and DCP decode rows by mapping each row to its request with searchsorted on the device query offsets instead of repeat_interleave(uniform_len) .
+ Carry query_start_loc_device , cum_seq_lens_q , and max_query_len on the decode metadata; set cum_seq_lens_q only when max_query_len > 1 .
+ MLA common ( mla_attention.py + subclass builders)
+ Thread a promised max_query_len through MLACommonMetadataBuilder._build_decode (clamped to reorder_batch_threshold ) and the flashmla , flashattn_mla , rocm_aiter_mla , and dots3_note builders.
+ KDA ( kda_metadata.py )
+ Promote KimiK3KDAMetadataBuilder to AttentionCGSupport.ALWAYS .
+ Route every active decode through the spec path by masking on is_prefilling rather than draft count.
+ Return True from supports_device_cpu_query_lens_mismatch .
+ KDA RecoverSSM ( kda_metadata.py , opt-in via --use-replayssm , off by default)
+ Make RecoverSSM co-exist with the adaptive path so it can drop the KDA spec-decode SSM state from num_spec+1 slots to 1 per request (kernels already in [K3] support recoverssm for K3 #51855 ):
+ Restore self.layer_names on the builder so RecoverSSM's commit context can resolve the per-layer forward context (the GDN base does not retain it; inert when RecoverSSM is off).
+ Demote spec rows whose query_len exceeds num_spec+1 out of the RecoverSSM path instead of raising. Adaptive's cost-table profiler probes token counts past the cudagraph limit by even-splitting them over the capped request slots, producing eager dummy rows longer than RecoverSSM's num_spec+1 verify buffers; real captured/serving decode rows are always <= num_spec+1 , so they are unaffected.
+ Mamba-hybrid model state ( mamba_hybrid.py )
+ Prefer the batch's promised max_query_len , and classify spec-decode rows off is_prefilling rather than num_scheduled_tokens == draft_count + 1 .
+ K3 DSpark draft ( dspark_mla.py )
+ Build the confidence head when the config enables it, load its weights (skipped only when the draft did not build one), and expose compute_confidence .
+ Related Issue: #51867 
+ Test plan
+ Updated the MLA backend metadata tests for the new _build_decode 
+signature ( test_mla_backends.py , test_rocm_aiter_mla_mtp_split.py ).
+ Adaptive DSpark spec decode on Kimi-K3 (TP8, fp8 KV).
+ RecoverSSM + adaptive on Kimi-K3: boots and serves through full-graph capture; validated against the base-adaptive checks (accuracy/coherence artifacts were overwritten by later runs and are being regenerated).
+ Validation
+ Kimi-K3 (target) + Inferact/Kimi-K3-DSpark (draft), TP8 on 8×B300, FP8 KV cache, attention_backend=FLASHINFER_MLA , num_speculative_tokens=7 , enable_adaptive_verification=true . (Numbers below are RecoverSSM off; it is opt-in.)
+ Accuracy — lossless vs. no-spec (GSM8K, in-tree runner, 1319 questions, 5-shot, temperature 0)
+ max-concurrency 
+ no-spec 
+ adaptive 
+ 16 
+ 0.949 
+ 0.949 
+ 64 
+ 0.951 
+ 0.949 
+ 128 
+ 0.948 
+ 0.948 
+ Adaptive matches no-spec within run-to-run noise (invalid-response rate ~0.1% in every 
+ run), i.e. adaptive verification is lossless at temperature 0. 
+ Coherence (MTBench, 80 prompts, temperature 1)
+ Adaptive: 80/80 successful requests, 0 failed, ~19.5K generated tokens; no repetition or degeneration in the saved completions.
+ Speculative-decoding health (speed_bench, temperature 1, c16)
+ Acceptance rate 28.95%, acceptance length 3.03, per-position acceptance decaying 74.5% (pos 0) → 6.9% (pos 6) — non-zero at every position, confirming the draft + confidence head + varlen verification path is exercised end to end.
+ RecoverSSM (opt-in) health
+ Adaptive + RecoverSSM serves through full-graph capture with healthy acceptance length (2.4–2.9 across c1–c256), confirming the RecoverSSM verify/commit path is exercised end to end; matches base-adaptive accuracy/coherence.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ 👍 
+ 1 
+ depthfirst-app[bot] reacted with thumbs up emoji 
+ 👀 
+ 1 
+ depthfirst-app[bot] reacted with eyes emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ 👀 
+ 1 reaction 
+ [Spec decode] Support variable-length decode for Kimi-K3 adaptive ver… 
+ …
+ b4db2e5 
+ …ification
+Adaptive speculative decoding trims each request's draft length on device, so
+decode steps carry ragged per-request query lengths. Kimi-K3 could not serve
+those: FlashInfer MLA advertised UNIFORM query lengths and reshaped q into a
+dense [num_decodes, 1+k] block, and both attention builders reported
+UNIFORM_BATCH cudagraph support, which the adaptive path rejects.
+Wire the trtllm-gen ragged decode entry point (flashinfer vllm-project#3238 ) through the
+MLA backend, driving the kernel with the device cumulative query offsets and a
+CPU max_query_len upper bound instead of a uniform reshape. Promote the MLA and
+K3 KDA builders to ALWAYS so ragged decode steps replay from a full graph, and
+let K3 KDA declare the device/CPU query-length mismatch its spec-decode kernels
+already tolerate, since they plan from device query_start_loc and
+num_accepted_tokens rather than the CPU copy.
+Also build the K3 DSpark draft's acceptance-confidence head from config instead
+of skipping it as training-only, as adaptive verification needs it to schedule
+the per-request draft budget.
+Signed-off-by: Albert Cheng <albecheng@nvidia.com>
+ mergify 
+ Bot 
+ added
+ kimi
+ k3
+ nvidia
+ labels
+ Aug 19, 2026 
+ github-project-automation 
+ Bot 
+ added this to NVIDIA 
+ Aug 19, 2026 
+ qiching 
+ added 2 commits
+ August 19, 2026 11:20 
+ Trim comments on the Kimi-K3 varlen path 
+ …
+ 92e20fd 
+ Condense the explanatory comments added with the ragged decode wiring; no
+functional change.
+Signed-off-by: Albert Cheng <albecheng@nvidia.com>
+ Scope the KDA device/CPU query-length rationale to what holds 
+ …
+ a1ff1aa 
+ The previous comment generalised from the pure spec-decode branch. The mixed
+spec/non-spec branch still partitions tokens by CPU totals, so name that
+assumption rather than implying the device offsets drive every path.
+Signed-off-by: Albert Cheng <albecheng@nvidia.com>
+ LucasWilkinson 
+ reviewed
+ Aug 19, 2026 
+ View reviewed changes 
+ Comment thread 
+ vllm/v1/attention/backends/mla/flashinfer_mla.py 
+ Outdated
+ Comment on lines
+ +178
+ to 
+ +180
+ max_query_len = ( 
+ int(query_lens_cpu.max().item()) if query_lens_cpu.numel() else 1 
+ ) 
+ LucasWilkinson 
+ Aug 19, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ we should pull max_query_len from CommonAttentionMetadata ; with adaptive spec-decode we uniformly distribute the budget on the CPU side but this may not be the case on the GPU side. So CommonAttentionMetadata.max_query_len represents the real max ( query_lens_cpu.max().item() may be less)
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ qiching 
+ Aug 21, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ thanks @LucasWilkinson now _build_decode now takes max_query_len from CommonAttentionMetadata instead of measuring query_lens_cpu.max() . I also made the FlashInfer MLA flatten map rows via searchsorted on the device offsets and routed every active KDA decode through the spec path, would appreciate you sanity checking those two.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ qiching 
+ Aug 27, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ @LucasWilkinson could you take a look? thanks!
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ mergify 
+ Bot 
+ added
+ the 
+ dflash
+ label
+ Aug 19, 2026 
+ github-project-automation 
+ Bot 
+ added this to Sprint - DFlash 
+ Aug 19, 2026 
+ github-project-automation 
+ Bot 
+ moved this to Backlog 
+ in Sprint - DFlash 
+ Aug 19, 2026 
+ mergify 
+ Bot 
+ commented
+ Aug 20, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ This pull request has merge conflicts that must be resolved before it can be
+merged. Please rebase the PR, @qiching .
+ https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ mergify 
+ Bot 
+ added
+ the 
+ needs-rebase
+ label
+ Aug 20, 2026 
+ Make FlashInfer MLA and KDA ragged decode CUDA-graph-safe under adapt… 
+ …
+ 261b452 
+ …ive spec
+Adaptive verification hands out ragged per-request draft budgets, which the
+FULL-cudagraph decode path did not survive: FlashInfer MLA flattened decode
+rows with repeat_interleave(uniform_len) and KDA classified spec rows by draft
+count, so a graph captured on a uniform dummy replayed against ragged batches
+and corrupted the KDA SSM state (NaN, 0% acceptance).
+- Thread the promised max_query_len through MLACommon._build_decode so builders
+ pick the varlen branch/tiling that the graph will actually replay.
+- Map flattened decode rows to their request via searchsorted on the device
+ query offsets (static shape, no D2H sync) instead of a uniform repeat.
+- Route every active KDA decode through the spec path so capture and ragged
+ replay bake the same branch and persistent staging.
+- Classify mamba-hybrid spec rows off is_prefilling, not the rewritten
+ num_scheduled_tokens.
+Signed-off-by: Albert Cheng (Engrg-Hardware 1) <albecheng@login-bia01.bia.clusters.nvidia.com>
+ mergify 
+ Bot 
+ added
+ rocm
+ Related to AMD ROCm 
+ mrv2
+ Model Runner V2 specific 
+ labels
+ Aug 21, 2026 
+ github-project-automation 
+ Bot 
+ added this to AMD 
+ Aug 21, 2026 
+ github-project-automation 
+ Bot 
+ moved this to Todo 
+ in AMD 
+ Aug 21, 2026 
+ qiching 
+ mentioned this pull request
+ Aug 26, 2026 
+ [Feature][DSpark]: Enable varlen for Kimi K3 (KDA)
+ #51867 
+ Open
+ 1 task 
+ Trim comments on the Kimi-K3 varlen path and drop the RecoverSSM laye… 
+ …
+ c055f4e 
+ …r_names hook
+Keep only the load-bearing rationale (ALWAYS/VARLEN promotion, promised-vs-measured
+max_query_len, searchsorted flattening, spec-row classification) and drop the
+comments that just restate the code. Also revert the KDA builder's self.layer_names
+assignment, which only existed for the deferred RecoverSSM path.
+ qiching 
+ marked this pull request as ready for review
+ August 27, 2026 03:39 
+ qiching 
+ requested review from
+ AndreasKaratzas , 
+ MatthewBonanni , 
+ WoosukKwon , 
+ njhill , 
+ pavanimajety , 
+ tjtanaa and 
+ yewentao256 
+ as code owners 
+ August 27, 2026 03:39 
+ claude 
+ Bot 
+ reviewed
+ Aug 27, 2026 
+ View reviewed changes 
+ claude 
+ Bot 
+ left a comment
+ Copy link
+ Copy Markdown
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Claude Code Review
+ This pull request is from a fork — automated review is disabled. A repository maintainer can comment @claude review to run a one-time review.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ Suppressor72 
+ mentioned this pull request
+ Aug 28, 2026 
+ [Tracking][Spec Decode] Adaptive DSpark Bring-Up Tracker
+ #51303 
+ Open
+ 1 task 
+ TheEpicDolphin 
+ commented
+ Aug 29, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Hi @qiching , would you mind rebasing?
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Enable KDA RecoverSSM under adaptive spec decode 
+ …
+ 9e69f07 
+ RecoverSSM drops the KDA spec-decode SSM state from num_spec+1 slots to 1
+per request, relieving the KV concurrency cap adaptive hits on Kimi-K3.
+Two builder changes let it survive full-graph capture:
+- Restore self.layer_names so RecoverSSM's commit context can resolve the
+ per-layer forward context (GDN base drops it; inert when RecoverSSM is off).
+- Demote spec rows whose query_len exceeds num_spec+1 out of the RecoverSSM
+ path instead of raising. Adaptive's cost-table profiler probes token counts
+ past the cudagraph limit by even-splitting them over the capped request
+ slots, yielding eager dummy rows longer than the verify buffers; real
+ captured/serving decode rows are always <= num_spec+1.
+Signed-off-by: Albert Cheng <albecheng@nvidia.com>
+ qiching 
+ force-pushed 
+ the
+ k3-adaptive-varlen 
+ branch
+ from
+ f94ee8e to
+ 9e69f07 
+ Compare 
+ September 9, 2026 01:17 
+ MatthewBonanni 
+ mentioned this pull request
+ Sep 11, 2026 
+ [9/N][Attention] Support adaptive verification in FlashMLA Sparse
+ #56474 
+ Draft
+ TheEpicDolphin 
+ suggested changes
+ Sep 11, 2026 
+ View reviewed changes 
+ TheEpicDolphin 
+ left a comment
+ Copy link
+ Copy Markdown
+ Collaborator 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Thx for the PR! Left some feedback
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ Comment thread 
+ vllm/v1/attention/backends/mla/flashinfer_mla.py 
+ Comment on lines
+ +128
+ to 
+ +129
+ # Ragged decode (flashinfer #3238); unset for single-token decode. 
+ cum_seq_lens_q: torch.Tensor | None = None 
+ TheEpicDolphin 
+ Sep 10, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ This property seems redundant because it's just query_start_loc_device when max_query_len > 1 . Can we remove it?
+ Also, can we rename query_start_loc_device => query_start_loc , which conforms better to the general metadata naming?
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ Comment thread 
+ vllm/v1/attention/backends/mla/flashinfer_mla.py 
+ Comment on lines
+ +410
+ to 
+ +414
+ assert decode_backend is None, ( 
+ "FlashInferMLA ragged decode requires trtllm-gen, but num_heads=" 
+ f"{runtime_num_heads} forces the cute-dsl backend, which does not " 
+ "support cum_seq_lens_q." 
+ ) 
+ TheEpicDolphin 
+ Sep 10, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Is this assert needed? codex is flagging that cutedsl in the currently pinned flashinfer version supports cum_seq_lens_q.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ Comment thread 
+ vllm/v1/attention/backends/mla/flashinfer_mla.py 
+ class FlashInferMLAMetadataBuilder(MLACommonMetadataBuilder[FlashInferMLAMetadata]): 
+ # trtllm-gen tiles ragged queries from cum_seq_lens_q (flashinfer #3238), so one 
+ # k+1 graph replays any 1..k+1 mix (full varlen decode, not piecewise). 
+ _cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.ALWAYS 
+ TheEpicDolphin 
+ Sep 11, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ ALWAYS is too lenient here as well, for the same reason as above for kda.py . This would allow replaying the captured graph for prefill/mixed batches during cudagraph_mode=FULL , but the capture run does not record the prefill kernels because it doesn't enter this branch: https://github.com/vllm-project/vllm/blob/main/vllm/models/kimi_k3/nvidia/mla.py#L685-L696 
+ Should be downgraded to UNIFORM_BATCH 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ Comment thread 
+ vllm/models/kimi_k3/nvidia/kda_metadata.py 
+ Comment on lines
+ +299
+ to 
+ +301
+ # ALWAYS (overrides GDN's UNIFORM_BATCH): KDA reads per-request offsets off 
+ # device within a fixed k+1 window, so one k+1 graph replays any 1..k+1 mix. 
+ _cudagraph_support = AttentionCGSupport.ALWAYS 
+ TheEpicDolphin 
+ Sep 11, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ I think ALWAYS is too lenient. When cudagraph_mode=FULL , prefills and mixed batches will be admitted into full cudagraphs, but that's unsafe for KDA because the captured batch is always decode-shaped, but KimiK3DeltaAttention._forward branches on composition: 
+ vllm/vllm/models/kimi_k3/nvidia/kda.py 
+ Line 1098
+ in
+ c1b69aa 
+ if m . num_prefills > 0 : 
+, so those prefill kernels are never recorded, and wouldn't run during replay for prefill/mixed batches. 
+ You can downgrade this to UNIFORM_BATCH and adaptive verification should still work. query_len_support = VARLEN is the property that matters for ragged decode.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ github-project-automation 
+ Bot 
+ moved this to In review 
+ in NVIDIA 
+ Sep 11, 2026 
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ LucasWilkinson 
+ LucasWilkinson left review comments 
+ claude[bot] 
+ claude[bot] left review comments 
+ tjtanaa 
+ Awaiting requested review from tjtanaa 
+ tjtanaa is a code owner 
+ AndreasKaratzas 
+ Awaiting requested review from AndreasKaratzas 
+ AndreasKaratzas is a code owner 
+ WoosukKwon 
+ Awaiting requested review from WoosukKwon 
+ WoosukKwon is a code owner 
+ njhill 
+ Awaiting requested review from njhill 
+ njhill is a code owner 
+ yewentao256 
+ Awaiting requested review from yewentao256 
+ yewentao256 is a code owner 
+ pavanimajety 
+ Awaiting requested review from pavanimajety 
+ pavanimajety is a code owner 
+ MatthewBonanni 
+ Awaiting requested review from MatthewBonanni 
+ MatthewBonanni is a code owner 
+ +1 more reviewer
+ TheEpicDolphin 
+ TheEpicDolphin requested changes 
+ Reviewers whose approvals may not affect merge requirements 
+ At least 1 approving review is required to merge this pull request.
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ dflash 
+ k3 
+ kimi 
+ mrv2 
+ Model Runner V2 specific 
+ needs-rebase 
+ nvidia 
+ rocm 
+ Related to AMD ROCm 
+ --> 
+ Projects
+ AMD 
+ Status: Todo
+ NVIDIA 
+ Status: In review
+ +6 more
+ Sprint - DFlash 
+ Status: Backlog
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 3 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

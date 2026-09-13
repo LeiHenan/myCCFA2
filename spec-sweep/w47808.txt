@@ -1,0 +1,606 @@
+[Spec Decode] DSpark confidence-scheduled verification by LucasWilkinson · Pull Request #47808 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [Spec Decode] DSpark confidence-scheduled verification - # 47808 
+ # 47808 
+ Merged 
+ vllm-bot merged 45 commits into vllm-project:main vllm-project/vllm:main from neuralmagic:codex/dspark-capacity-realloc neuralmagic/vllm:codex/dspark-capacity-realloc Copy head branch name to clipboard 
+ Aug 12, 2026 
+ Conversation Commits 45  ( 45 ) Checks Files changed 
+ Merged 
+ [Spec Decode] DSpark confidence-scheduled verification # 47808 vllm-bot merged 45 commits into vllm-project:main vllm-project/vllm:main from neuralmagic:codex/dspark-capacity-realloc neuralmagic/vllm:codex/dspark-capacity-realloc Copy head branch name to clipboard 
+ Conversation
+ LucasWilkinson 
+ commented
+ Jul 7, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Adaptively sizes the DSpark draft-verification budget from per-request confidence instead of always verifying every drafted token. Motivation: fixed-k speculation collapses at high concurrency — once the GPU saturates, verifying 7 drafts per request burns more compute than the accepted tokens return, dropping below non-speculative decoding (see table).
+ Design
+ A Triton kernel ranks draft slots by survival probability (cumprod of per-position confidence) and admits the prefix maximizing estimated accepted tokens per millisecond.
+ Step costs come from curves profiled with dummy steps at startup: a step function at/below the cudagraph capture limit (padding is physical), linear interpolation above it.
+ Batch-level budget sizing runs on CPU from double-buffered stale confidences (no sync); per-request allocation runs on GPU from live values.
+ Per-request confidence is smoothed with an EMA ( adaptive_verification_ema_alpha , default 0.8 — measured bias-zero crossing across batch sizes).
+ Decode cudagraphs become varlen: captured on the token grid, dispatched via max_query_len , every captured slot non-empty. Requires AttentionCGSupport.ALWAYS , which the DSV4 backends report on SM100.
+ Results
+ DeepSeek-V4-Flash-DSpark, TP=4, SM100 (B300), speed_bench 256 prompts, 512 output tokens; throughput measured at 32881ec177 ; subsequent HEAD commits are audit fixes off the captured-graph hot path (decode max_q_len sourcing, CPU upper-bound restoration, non-adaptive request-ordering revert to main), accuracy re-validated at HEAD. Output tok/s:
+ Adaptive matches fixed-k within ±3% at c≤64 and preserves the spec-decode win at high concurrency where fixed-k goes underwater (at c=256, fixed 7-token is 33% below no-spec). Acceptance length falls from ~3.9 to 3.5 at c=256 — the budget deliberately trims drafts as verification tokens become expensive. Note: the no-spec arm ran with a co-tenant job on the other half of the node; its numbers are directionally correct but modestly depressed. Adaptive/fixed arms ran on an idle node.
+ Accuracy (re-measured at HEAD after the audit fixes below): GSM8K 0.945 (c=16) / 0.951 (c=64), 0 invalid (bar 0.84); MTBench 80/80 completed, completions manually checked for repetition/degeneration — none found.
+ Reproduction commands 
+ Server (all measurements; ablations via the noted config deltas):
+ vllm serve deepseek-ai/DeepSeek-V4-Flash-DSpark \
+ --tokenizer-mode deepseek_v4 --trust-remote-code \
+ --dtype bfloat16 --max-model-len 8192 \
+ --tensor-parallel-size 4 --enable-expert-parallel --block-size 256 \
+ --gpu-memory-utilization 0.5 --kv-cache-dtype fp8 \
+ --max-num-batched-tokens 16384 --max-num-seqs 256 \
+ --compilation-config ' {"max_cudagraph_capture_size":1024} ' \
+ --speculative-config ' {"method":"dspark","model":"deepseek-ai/DeepSeek-V4-Flash-DSpark","attention_backend":"FLASH_ATTN","num_speculative_tokens":7,"draft_sample_method":"probabilistic","enable_adaptive_verification":true} ' 
+ fixed 7-token baseline: "enable_adaptive_verification":false 
+ no-spec baseline: omit --speculative-config 
+ Benchmark harness — vllm bench serve (the Python implementation; the CLI falls back to it automatically when the optional Rust vllm-rs binary is absent). If your install ships a Rust binary that rejects any flag below, invoke the Python implementation directly — still repo-only:
+ python -c ' from vllm.benchmarks.serve import add_cli_args, main 
+ from vllm.utils.argparse_utils import FlexibleArgumentParser 
+ p = FlexibleArgumentParser(); add_cli_args(p); main(p.parse_args()) ' < flags... > 
+ GSM8K (in-tree runner; 1319 questions, 5-shot, temperature 0):
+ python tests/evals/gsm8k/gsm8k_eval.py --port 8000 \
+ --num-questions 1319 --num-shots 5 --max-tokens 256 \
+ --temperature 0 --max-concurrency 16 # and 64 
+ MTBench coherence (80 prompts, temperature 1; inspect the saved completions for repetition/degeneration, not just the completion count):
+ vllm bench serve --backend openai-chat --endpoint /v1/chat/completions \
+ --base-url http://127.0.0.1:8000 --model dspark-full \
+ --tokenizer deepseek-ai/DeepSeek-V4-Flash-DSpark --tokenizer-mode deepseek_v4 \
+ --dataset-name hf --dataset-path philschmid/mt-bench \
+ --num-prompts 80 --no-oversample --hf-output-len 256 \
+ --max-concurrency 16 --request-rate inf --temperature 1 \
+ --save-result --save-detailed 
+ Throughput sweep (per concurrency; one warmup pass at --speed-bench-output-len 256 --num-prompts 64 --max-concurrency 32 first):
+ for c in 1 16 32 64 128 256 ; do 
+ vllm bench serve \
+ --backend openai-chat --base-url http://127.0.0.1:8000 \
+ --endpoint /v1/chat/completions --model dspark-full \
+ --tokenizer deepseek-ai/DeepSeek-V4-Flash-DSpark --tokenizer-mode deepseek_v4 \
+ --dataset-name speed_bench --dataset-path < speed-bench-dir > \
+ --speed-bench-dataset-subset qualitative \
+ --skip-chat-template --disable-shuffle --temperature 1.0 \
+ --speed-bench-output-len 512 --num-prompts 256 --max-concurrency $c \
+ --save-result --result-filename adaptive_on_c ${c} .json
+ done 
+ --disable-shuffle plus the fixed prompt set gives every arm identical prompts in identical order; output_throughput from the result JSON is the tok/s reported above. The prompt set is an internal speed-bench "qualitative" subset; any fixed prompt set of comparable length distribution reproduces the relative behavior, e.g. --dataset-name random --random-input-len 1024 --random-output-len 512 .
+ Limitations
+ Output logprobs are rejected when confidence-based verification is enabled (verification compacts logits after the forward pass).
+ Non-SM100 falls back to PIECEWISE decode graphs: correct, but without the varlen-FULL-graph throughput win.
+ Tests
+ pytest tests/v1/spec_decode/test_adaptive_verification.py \
+ tests/v1/spec_decode/test_dynamic_sd_cug.py tests/v1/cudagraph/ -q
+ All pass; full pre-commit green. GSM8K eval config added at tests/evals/gsm8k/configs/DeepSeek-V4-Flash-DSpark-confidence-TP4.yaml .
+ Not a duplicate
+ Canonical PR for DSpark confidence-based verification; no other open PR touches adaptive draft budgeting.
+ AI assistance was used for this change (see commit trailers).
+ 🤖 Generated with Claude Code 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ 👍 
+ 9 
+ olka, depthfirst-app[bot], olka-amd, Future-Outlier, seongyun1104, xiaguan, SachinVarghese, jialefu, and JaredforReal reacted with thumbs up emoji 
+ 🚀 
+ 4 
+ olka, mgoin, qianlihuang, and Future-Outlier reacted with rocket emoji 
+ 👀 
+ 2 
+ depthfirst-app[bot] and PavelPaha reacted with eyes emoji 
+ All reactions 
+ 👍 
+ 9 reactions 
+ 🚀 
+ 4 reactions 
+ 👀 
+ 2 reactions 
+ mergify 
+ Bot 
+ added
+ qwen
+ Related to Qwen models 
+ nvidia
+ speculative-decoding
+ labels
+ Jul 7, 2026 
+ github-project-automation 
+ Bot 
+ added this to NVIDIA 
+ Jul 7, 2026 
+ mergify 
+ Bot 
+ added
+ the 
+ v1
+ label
+ Jul 7, 2026 
+ LucasWilkinson 
+ force-pushed 
+ the
+ codex/dspark-capacity-realloc 
+ branch
+ 3 times, most recently
+ from
+ e4457cf to
+ 9b3a024 
+ Compare 
+ July 8, 2026 03:15 
+ mergify 
+ Bot 
+ commented
+ Jul 8, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ This pull request has merge conflicts that must be resolved before it can be
+merged. Please rebase the PR, @LucasWilkinson .
+ https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ mergify 
+ Bot 
+ added
+ the 
+ needs-rebase
+ label
+ Jul 8, 2026 
+ LucasWilkinson 
+ force-pushed 
+ the
+ codex/dspark-capacity-realloc 
+ branch
+ from
+ 9b3a024 to
+ f4ee8d9 
+ Compare 
+ July 8, 2026 18:24 
+ mergify 
+ Bot 
+ added
+ performance
+ Performance-related issues 
+ and removed
+ needs-rebase
+ labels
+ Jul 8, 2026 
+ LucasWilkinson 
+ force-pushed 
+ the
+ codex/dspark-capacity-realloc 
+ branch
+ 17 times, most recently
+ from
+ a36535e to
+ df8a2f8 
+ Compare 
+ July 12, 2026 19:48 
+ --> 
+ 281 hidden items
+ Load more…
+ mgoin 
+ approved these changes
+ Aug 12, 2026 
+ View reviewed changes 
+ xhdidi 
+ commented
+ Aug 13, 2026 
+ Copy link
+ Copy Markdown
+ @xhdidi what HW are you on?
+ H20
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ This was referenced Aug 13, 2026 
+ Evaluate a load-aware speculative-depth governor
+ randomvariable/vllm#18 
+ Open
+ Track upstream spec-decode and sparse-MLA performance stack
+ randomvariable/vllm#20 
+ Open
+ calvarado2004 
+ mentioned this pull request
+ Aug 14, 2026 
+ [Spec Decode] Cache adaptive verification profiles
+ #52233 
+ Open
+ therealnaveenkamal 
+ mentioned this pull request
+ Aug 14, 2026 
+ [Feature][DSpark]: Logprobs adaptive verification
+ #52242 
+ Merged
+ 4 tasks 
+ kfastino 
+ mentioned this pull request
+ Aug 14, 2026 
+ [Misc][Spec Decode] Detect DeepSeek-V4 DSpark checkpoints from config
+ #52165 
+ Open
+ 4 tasks 
+ oops-oom 
+ mentioned this pull request
+ Aug 15, 2026 
+ [Bugfix][Spec Decode][Structured Output] DSpark: fix the grammar bitmask mapping when the draft budget is zero
+ #52436 
+ Merged
+ njhill 
+ mentioned this pull request
+ Aug 15, 2026 
+ [ModelRunner V2] Speculative Decoding NGram GPU Implementations
+ #40704 
+ Open
+ 4 tasks 
+ pavelzak 
+ mentioned this pull request
+ Aug 16, 2026 
+ [Bugfix] Take padded path for ragged decode batches in sparse_attn_indexer
+ #52500 
+ Open
+ This was referenced Aug 16, 2026 
+ [Bug]: upgrade vllm from 0.26.0 to 0.27.0 run deepseek v4 flash error
+ #51758 
+ Open
+ [Feature]: Support NVFP4 DeepSeek-V4-Flash-0731 with FP4 KV cache + DSpark speculative decoding on SM121 (DGX Spark)
+ #52447 
+ Open
+ [Bugfix][Spec Decode] Restore DeepSeek-V4 DSpark draft quantization
+ #51835 
+ Closed
+ weiguihua2 
+ commented
+ Aug 18, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Hello, I have a question. If cudagraph is changed to AttentionCGSupport.ALWAYS, does the prefill support the full graph mode in common scenarios? This is because the --compilation-config '{"cudagraph_mode": "FULL_AND_PIECEWISE"}' can be configured.
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ilmarkov 
+ mentioned this pull request
+ Aug 18, 2026 
+ [Attention] Enable adaptive verification for FLASHINFER_MLA_SPARSE_DSV4
+ #52724 
+ Merged
+ 4 tasks 
+ mgoin 
+ mentioned this pull request
+ Aug 18, 2026 
+ [Feature][DSpark]: Enable varlen for GLM-5.x/DSV3.2 (Sparse MLA)
+ #52785 
+ Closed
+ 1 task 
+ LucasWilkinson 
+ mentioned this pull request
+ Aug 18, 2026 
+ [Spec Decode] Enable adaptive verification on DSv4 + sm90
+ #52795 
+ Merged
+ 4 tasks 
+ JackChuang 
+ mentioned this pull request
+ Aug 18, 2026 
+ [Speculative] Derive the DSpark verify-budget cost table at CUDA graph capture
+ sgl-project/sglang#35413 
+ Open
+ 5 tasks 
+ QiliangCui 
+ mentioned this pull request
+ Aug 19, 2026 
+ [DSv4] Accept backend_cls in VllmDeepseekV4SWACache for vLLM #47808
+ vllm-project/tpu-inference#3428 
+ Merged
+ zhangxinyuehfad 
+ mentioned this pull request
+ Aug 20, 2026 
+ [CI] main2main vllm 0814 cdc4824
+ vllm-project/vllm-ascend#14131 
+ Merged
+ coderabbitai 
+ Bot 
+ mentioned this pull request
+ Aug 22, 2026 
+ quant: Ornith-1.5 NVFP4 + IQ ladder (community requests), and harden the eval harness
+ protoLabsAI/protoLab#34 
+ Open
+ jyan-R 
+ mentioned this pull request
+ Aug 24, 2026 
+ [Spec Decode] Verify in head dtype and drop the FP32 chunk workaround
+ #53630 
+ Open
+ 4 tasks 
+ xhdidi 
+ commented
+ Aug 26, 2026 
+ Copy link
+ Copy Markdown
+ VLLM enables chunked prefill by default. In real-world applications with long context lengths and many batches being a mix of prefill and decode batches, the current cost curve, which only applies to pure decode batches, is ineffective, and the performance gain from enable-adaptive-verification is minimal. Have you considered adding cost data to a piecewise CUDA graph?
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ qiching 
+ mentioned this pull request
+ Aug 26, 2026 
+ [Spec decode] Support variable-length decode for Kimi-K3 adaptive ver
+ #52988 
+ Open
+ 3 tasks 
+ eecspan 
+ mentioned this pull request
+ Aug 27, 2026 
+ [Spec Decode][ROCm] Add FLy: entropy-gated deferred verification for draft-model speculative decoding
+ #53987 
+ Open
+ wxsIcey 
+ mentioned this pull request
+ Aug 27, 2026 
+ [Feature][MRV2]DSpark confidence-scheduled verification
+ vllm-project/vllm-ascend#15098 
+ Open
+ harshit-sarvam 
+ mentioned this pull request
+ Aug 27, 2026 
+ [Bug]: [dspark] Adaptive verification profiles a batch shape the scheduler cannot produce
+ #54046 
+ Open
+ 1 task 
+ seongyun1104 
+ mentioned this pull request
+ Sep 9, 2026 
+ [BugFix] Drafter attention backend auto-selection picks FlashInfer on SM90 fix
+ #48579 
+ Open
+ drslark 
+ mentioned this pull request
+ Sep 13, 2026 
+ [RFC]: Follow vllm-47808, adaptive verification for DSpark
+ vllm-project/vllm-ascend#15107 
+ Open
+ seongyun1104 
+ mentioned this pull request
+ Sep 13, 2026 
+ [RFC]: The dynamic-SD K decision is a batch-keyed array index — agreeing on its shape before more signals arrive
+ #54749 
+ Open
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ depthfirst-app[bot] 
+ depthfirst-app[bot] left review comments 
+ claude[bot] 
+ claude[bot] left review comments 
+ mgoin 
+ mgoin approved these changes 
+ njhill 
+ njhill approved these changes 
+ benchislett 
+ benchislett approved these changes 
+ sighingnow 
+ Awaiting requested review from sighingnow 
+ sighingnow is a code owner 
+ zhuohan123 
+ Awaiting requested review from zhuohan123 
+ zhuohan123 is a code owner 
+ youkaichao 
+ Awaiting requested review from youkaichao 
+ youkaichao is a code owner 
+ tlrmchlsmth 
+ Awaiting requested review from tlrmchlsmth 
+ tlrmchlsmth is a code owner 
+ houseroad 
+ Awaiting requested review from houseroad 
+ houseroad is a code owner 
+ ProExpertProg 
+ Awaiting requested review from ProExpertProg 
+ ProExpertProg is a code owner 
+ heheda12345 
+ Awaiting requested review from heheda12345 
+ ApostaC 
+ Awaiting requested review from ApostaC 
+ orozery 
+ Awaiting requested review from orozery 
+ ivanium 
+ Awaiting requested review from ivanium 
+ NickLucche 
+ Awaiting requested review from NickLucche 
+ NickLucche is a code owner 
+ tjtanaa 
+ Awaiting requested review from tjtanaa 
+ tjtanaa is a code owner 
+ Harry-Chen 
+ Awaiting requested review from Harry-Chen 
+ Harry-Chen is a code owner 
+ khluu 
+ Awaiting requested review from khluu 
+ khluu is a code owner 
+ MatthewBonanni 
+ Awaiting requested review from MatthewBonanni 
+ MatthewBonanni is a code owner 
+ +1 more reviewer
+ TheEpicDolphin 
+ TheEpicDolphin left review comments 
+ Reviewers whose approvals may not affect merge requirements 
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ ci/build 
+ documentation 
+ Improvements or additions to documentation 
+ mrv2 
+ Model Runner V2 specific 
+ nvidia 
+ performance 
+ Performance-related issues 
+ qwen 
+ Related to Qwen models 
+ ready 
+ ONLY add when PR is ready to merge/full CI is needed 
+ speculative-decoding 
+ v1 
+ --> 
+ Projects
+ NVIDIA 
+ Status: Done
+ +6 more
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ [RFC]: Packed Variable Length Speculative Decoding
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 11 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

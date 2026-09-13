@@ -1,0 +1,249 @@
+FETCHED: https://github.com/NVIDIA/TensorRT-LLM/issues/13682  (is_pr=True, 343312 bytes)
+LAYOUT NODE (PR):
+  number = 13682
+  title = Mixed precision kv cache
+  state = CLOSED
+  closedTime = 2026-04-30T23:55:48Z
+  createdTime = 2026-04-30T23:53:21Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 3
+  baseBranch = main
+  headBranch = mixed-precision-kv-cache
+  author = jjia-droid
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOSI4A3toAKDE1YzNkMGNmOTIzZWY4YTAzZDYzOWNjMzk5YWY4MWZmMjM3N2JmNDE"> | root | and others | added 3 commits | April 28, 2026 15:58 | [TRTLLM-None][feat] Add mixed-precision per-layer KV cache dtype support | … | 15c3d0c | Extends KVCacheManager V1 to support per-layer KV cache dtypes (e.g., | "0-3:fp8,4-35:nvfp4") by grouping pools in WindowBlockManager by | (numKvHeads, dtype) instead of numKvHeads alone, replacing the previous | MixedPrecisionKVCacheManager wrapper with a single unified manager. | - C++: WindowBlockManager accepts optional
+EV: js-timeline-progressive-focus-container" data-gid="RRE_lADOKH5No88AAAABA_56nc8AAAAF1YM_9Q"> | jjia-droid | requested review from | a team | as code owners | April 30, 2026 23:53 | jjia-droid | requested review from | HuiGao-NV, | Superjomn and | achartier | April 30, 2026 23:53 | github-actions | Bot | assigned | jjia-droid | Apr 30, 2026 | jjia-droid | closed this | Apr 30, 2026 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOKH5No88AAAABA7IY5A"> | coderabbitai | Bot | commented | May 1, 2026 | Copy link | <clipboard-copy role="menuitem" value="<!-- This is an auto-generated comment: summarize by coderabbit.ai --> | <!-- This is an auto-generated comment: failure by coderabbit.ai --> | > [!CAUTION] | > ## Review failed | > | > Pull request was closed or merged during review | <!-- end of auto-generated comment: failure by coderabbit.ai --> | <!-- walkthrough_start --> | <details> | <summary>📝 Walkthrough</summary> | ## Walkthrough | The changes introduce per
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=jjia-droid date=2026-04-30T23:53:21Z]
+Summary by CodeRabbit
+
+Release Notes
+
+- 
+New Features
+
+- Added per-layer KV cache mixed-precision support—configure different data types for different transformer layers to optimize memory and performance.
+
+- Introduced flexible KV cache dtype specification: uniform, layer-range syntax, or per-layer mapping.
+
+- Enhanced batch sequence processing for improved KV cache allocation efficiency.
+
+- 
+Bug Fixes
+
+- Corrected FP4/scale memory accounting calculations.
+
+- 
+Documentation
+
+- Added debug logging for KV cache buffer initialization and reuse analysis.
+
+Description
+
+Test Coverage
+
+PR Checklist
+
+Please review the following before submitting your PR:
+
+- 
+PR description clearly explains what and why. If using CodeRabbit's summary, please make sure it makes sense.
+
+- 
+PR Follows TRT-LLM CODING GUIDELINES to the best of your knowledge.
+
+- 
+Test cases are provided for new code paths (see test instructions)
+
+- 
+Any new dependencies have been scanned for license and vulnerabilities
+
+- 
+CODEOWNERS updated if ownership changes
+
+- 
+Documentation updated as needed
+
+- 
+Update tava architecture diagram if there is a significant design change in PR.
+
+- 
+The reviewers assigned automatically/manually are appropriate for the PR.
+
+- 
+ Please check this after reviewing the above items as appropriate for this PR.
+
+GitHub Bot Help
+
+To see a list of available CI bot commands, please comment /bot help.
+
+[RENDERED BLOCK author=? date=?]
+Caution
+
+Review failed
+
+Pull request was closed or merged during review
+
+📝 Walkthrough
+Walkthrough
+
+The changes introduce per-layer KV cache dtype support and refactor the prefix-reuse workflow in KV cache management. Key updates include threading perLayerDtype through manager constructors, replacing prefix-reuse probing with a new analyzePrefixReuse API, and implementing a multi-request two-phase batch allocation workflow. Python bindings and configuration interfaces are extended to support per-layer dtype specifications via range syntax or per-layer dicts.
+
+Changes
+
+Cohort / File(s)
+Summary
+
+Core C++ KV Cache Manager 
+ cpp/tensorrt_llm/batch_manager/kvCacheManager.cpp
+
+Adds per-layer dtype support via perLayerDtype map threaded through constructors; replaces findNewContextBlock/countReusableBlocks with new analyzePrefixReuse returning PrefixReuseSummary; introduces addSequenceBatch implementing two-phase batch prefix-reuse workflow; updates FP4/FP8 scale memory accounting; extends getNeededBlocksOneStep and getRemainingBlocksToCompletion to accept optional cached summary.
+
+Python Bindings 
+ cpp/tensorrt_llm/nanobind/batch_manager/kvCacheManager.cpp
+
+Exposes new batch and prefix-reuse APIs (addSequenceBatch, analyzePrefixReuse); adds PrefixReuseSummary Python binding; enhances BlockKey with __eq__ and __hash__; updates constructor signature to include per_layer_dtype; rebinds scheduling methods with explicit cached_summary default.
+
+Attention Operator 
+ cpp/tensorrt_llm/thop/attentionOp.cpp
+
+Updates buildKvCachePoolPointers to handle 2D and 3D hostKvCachePoolPointers tensor layouts for mixed-precision KV caches; removes strict 2D constraint; computes pool pointers from appropriately dimensioned indices.
+
+Torch Linear Module 
+ tensorrt_llm/_torch/modules/linear.py
+
+Adds kv_scales and inv_kv_scales frozen parameters to FP8 QDQ and rowwise linear initialization for NVFP4 KV-cache scale handling.
+
+Executor Utilities 
+ tensorrt_llm/_torch/pyexecutor/_util.py, tensorrt_llm/_torch/pyexecutor/model_loader.py
+
+Adds per-layer KV cache dtype parsing and passing to manager construction; extends V1 VSWA speculative decoding budgeting to split bytes between target and draft; detects per-layer dtype specs to skip global quantization override.
+
+Resource Manager 
+ tensorrt_llm/_torch/pyexecutor/resource_manager.py
+
+Adds per_layer_dtype storage and forwarding; updates KV cache byte accounting to compute per-layer; reworks prefix-reuse probing to use analyze_prefix_reuse; refactors first-context KV allocation and dummy sequence allocation into batched paths; adds history_length hints to align block optimization.
+
+LLM API Configuration 
+ tensorrt_llm/llmapi/llm_args.py
+
+Adds TOKENIZER_ALIASES constant; introduces parse_kv_cache_dtype_spec function supporting uniform, range-syntax, and per-layer dict formats; updates KvCacheConfig.dtype to Union[str, Dict[int, str]]; extends validator to accept dicts and range-syntax strings.
+
+Tests 
+ tests/unittest/llmapi/test_kv_cache_dtype_override.py, tests/unittest/llmapi/test_kv_cache_dtype_spec.py
+
+Adds validation tests for range-based dtype specs and dedicated unit tests for parse_kv_cache_dtype_spec covering uniform/range/dict parsing and error cases.
+
+Sequence Diagram
+
+ 
+ 
+ sequenceDiagram
+ participant Client as KVCacheManager
+ participant BlockMgr as BlockManager
+ participant WinBlockMgr as WindowBlockManager
+ participant RadixTree as PrefixRadixTree
+ participant MemPool as MemoryPool
+
+ Client->>Client: addSequenceBatch(requestInfos, llmRequests)
+ Client->>Client: For each window size, dispatch to BlockManager
+ 
+ Client->>BlockMgr: addSequenceBatch(sequences, inputLengths,<br/>numContextBlocks, llmRequests)
+ BlockMgr->>WinBlockMgr: addSequenceBatch(Phase 1 & 2 workflow)
+ 
+ activate WinBlockMgr
+ WinBlockMgr->>RadixTree: Phase 1: Claim matching blocks<br/>via PrefixReuseTracker
+ RadixTree-->>WinBlockMgr: Block match results
+ 
+ WinBlockMgr->>MemPool: Phase 2: Onboard/allocate blocks<br/>(copy vs reuse vs placeholder)
+ MemPool-->>WinBlockMgr: Allocation complete
+ WinBlockMgr-->>BlockMgr: Update LlmRequest with<br/>alloc/reuse/miss deltas
+ deactivate WinBlockMgr
+ 
+ BlockMgr-->>Client: Batch allocation summary
+ Client->>LlmRequest: Accumulate per-request<br/>allocation results
+
+ 
+
+ 
+
+ 
+ 
+ Loading
+
+ 
+
+Estimated code review effort
+
+🎯 4 (Complex) | ⏱️ ~60 minutes
+
+🚥 Pre-merge checks | ✅ 2 | ❌ 3
+❌ Failed checks (2 warnings, 1 inconclusive)
+
+Check name
+Status
+Explanation
+Resolution
+
+Description check
+
+⚠️ Warning
+
+The PR description is mostly empty, containing only a template with checkboxes and placeholders rather than actual implementation details or explanation.
+
+Fill in the Description and Test Coverage sections with clear explanations of what was changed and why, and list the relevant test cases that validate the changes.
+
+Docstring Coverage
+
+⚠️ Warning
+
+Docstring coverage is 15.71% which is insufficient. The required threshold is 80.00%.
+
+Write docstrings for the functions missing them to satisfy the coverage threshold.
+
+Title check
+
+❓ Inconclusive
+
+The title 'Mixed precision kv cache' is vague and generic, lacking specificity about what is being accomplished.
+
+Revise the title to be more specific, such as '[TRTLLM-XXXX][feat] Add per-layer mixed-precision KV cache dtype support' to clearly indicate the main change.
+
+✅ Passed checks (2 passed)
+
+Check name
+Status
+Explanation
+
+Linked Issues check
+
+✅ Passed
+
+Check skipped because no linked issues were found for this pull request.
+
+Out of Scope Changes check
+
+✅ Passed
+
+Check skipped because no linked issues were found for this pull request.
+
+✏️ Tip: You can configure your own custom pre-merge checks in the settings.
+
+✨ Finishing Touches
+
+🧪 Generate unit tests (beta)
+
+- Create PR with unit tests
+
+⚔️ Resolve merge conflicts
+
+- Resolve merge conflict in branch mixed-precision-kv-cache
+
+Review rate limit: 9/10 reviews remaining, refill in 6 minutes.
+
+Comment @coderabbitai help to get the list of available commands and usage ti

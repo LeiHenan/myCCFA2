@@ -1,0 +1,339 @@
+FETCHED: https://github.com/NVIDIA/TensorRT-LLM/issues/16288  (is_pr=True, 374894 bytes)
+LAYOUT NODE (PR):
+  number = 16288
+  title = [None][feat] Ring-buffer reuse of out-of-window SWA pages during decode in KV cache manager v2
+  state = CLOSED
+  closedTime = 2026-08-17T07:59:41Z
+  createdTime = 2026-07-12T17:17:22Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 2
+  baseBranch = main
+  headBranch = feat/swa-decode-ring-reuse
+  author = lishicheng1996-nv
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="RRE_lADOKH5No88AAAABIiehoc8AAAAGfaQ9MA"> | lishicheng1996-nv | requested review from | a team | as code owners | July 12, 2026 17:17 | lishicheng1996-nv | requested a review | from mikeiovine | July 12, 2026 17:17 | github-actions | Bot | assigned | lishicheng1996-nv | Jul 12, 2026 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOKH5No88AAAABJysdkw"> | coderabbitai | Bot | commented | Jul 12, 2026 | • | edited | Loading | Uh oh! | There was an error while loading. Please reload this page. | Copy link | <clipboard-copy role="menuitem" value="<!-- This is an auto-generated comment: summarize by coderabbit.ai --> | <!-- review_stack_entry_start --> | [![Review Change Stack](https://storage.googleapis.com/coderabbit_public_assets/review-stack-in-coderabbit-ui.svg)](https://app.coderabbit.ai/change-stack/NVIDIA/TensorRT-LLM/pull/16288?utm_source=github_walkthrough&ut
+EV: js-timeline-progressive-focus-container" data-gid="PRR_kwDOKH5No88AAAABFvo7sw"> | coderabbitai | Bot | reviewed | Jul 12, 2026 | View reviewed changes | coderabbitai | Bot | left a comment | Copy link | <clipboard-copy role="menuitem" value="**Actionable comments posted: 1** | <details> | <summary>🧹 Nitpick comments (1)</summary><blockquote> | <details> | <summary>tests/unittest/kv_cache_manager_v2_tests/test_kv_cache_manager_v2.py (1)</summary><blockquote> | `658-712`: _📐 Maintainability & Code Quality_ | _🔵 Trivial_ | _⚡ Quick win_ | **Solid steady-state coverage; consider adding pocket-life
+EV: js-timeline-progressive-focus-container" data-gid="CTDE_lADOKH5No88AAAABIiehoc8AAAAGfkkMWA"> | lishicheng1996-nv | marked this pull request as draft | July 13, 2026 03:36 | lishicheng1996-nv | changed the title | [None][feat] Reuse freshly out-of-window SWA pages for new decode blocks in KV cache manager v2 | [None][feat] Ring-buffer reuse of out-of-window SWA pages during decode in KV cache manager v2 | Jul 13, 2026 | lishicheng1996-nv | force-pushed | the | feat/swa-decode-ring-reuse | branch | from | 75943b8 to | 12a194e | Compare | July 13, 2026 08:33 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOR-y1XNoAKDBlMjNhN2ViNmM0MGFmOTQ0OGM1NWJmMmM1ZDMyNTlmOWZlZDFkZjQ"> | [None][feat] Ring-buffer reuse of out-of-window SWA pages during deco… | … | 0e23a7e | …de in KV cache manager v2 | During decode with a sliding window, every tokens_per_block tokens retire one | out-of-window block and allocate one new block. Today the staled page takes a | full free-list round-trip (release with a ready event, later re-allocation with | cross-stream event bookkeeping) while the new block draws a different slot from | the allocator. | This change adds a
+EV: js-timeline-progressive-focus-container" data-gid="HRFPE_lADOKH5No88AAAABIiehoc8AAAAGful-kQ"> | lishicheng1996-nv | force-pushed | the | feat/swa-decode-ring-reuse | branch | 2 times, most recently | from | 04aca57 to | ec4e718 | Compare | July 14, 2026 07:25 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOR-y1XNoAKDA3MGZlNmJiOTA3ZWE5M2Y5YzUzZDAxNzQwZmZjNGNmYjUwYmQ0NmU"> | [None][fix] Pin pocketed SWA pages against eviction and re-validate a… | … | 070fe6b | …t reuse | Addresses review: with lower cache levels configured, unlocking a stale page | that is still held schedules it for eviction (HELD pages below the last cache | level are evictable), so a parked page could be migrated off GPU between park | and consume, invalidating the park-time checks. | - At park, remove the page from the eviction controller (same idiom as | _PageHolder.loc
+EV: js-timeline-progressive-focus-container" data-gid="HRFPE_lADOKH5No88AAAABIiehoc8AAAAGgeOpmg"> | lishicheng1996-nv | force-pushed | the | feat/swa-decode-ring-reuse | branch | from | ec4e718 to | 070fe6b | Compare | July 14, 2026 07:29 | lishicheng1996-nv | added | the | api-compatible | Accepted LLM API contract change that is backwards-compatible | label | Jul 14, 2026 | lishicheng1996-nv | closed this | Aug 17, 2026 | --><form class="d-none js-timeline-marker-form" data-turbo="false" action="/_graphql/MarkNotific
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=? date=?]
+Description
+
+During decode with a sliding-window-attention (SWA) layer, every tokens_per_block tokens the window slides across a block boundary: one out-of-window block is retired and one new block is allocated. Today the staled page takes a full free-list round-trip (release with a ready event, later re-allocation with cross-stream event bookkeeping) while the new block draws a different slot from the global allocator.
+
+This PR makes the sliding window's KV storage behave as a ring buffer during decode: at steady state a sequence's SWA footprint is served by the same ~3 physical blocks in rotation (for a 131-token window), with the newest tokens overwriting the block that just left the window — instead of an allocate-new/free-old round-trip per boundary crossing.
+
+It is implemented as an opt-in per-sequence reuse pocket in KV cache manager v2 (kv_cache_config.enable_swa_ring_reuse, default off): a resize() that orphans a freshly staled page parks it; a later resize() that needs a new block consumes the parked page's slot directly. On the same CUDA stream the recycled slot is immediately safe to overwrite, so e.g. for a 131-token window a sequence's SWA footprint is served by the same ~3 physical blocks in rotation instead of continuous allocate-then-free.
+
+Safety gating (behavior is unchanged except for which physical slot backs the new block):
+
+- only fully-orphaned pages are parked: uncommitted, with committing disallowed for the cache (so the block radix tree cannot retain them for prefix reuse) and GPU-resident;
+
+- the pocket is bounded (2 pages per life cycle), consumed and refilled only on resize() success paths, so the OutOfPagesError revert path (_lock_held_blocks) is unaffected;
+
+- the pocket is drained on suspend()/close().
+
+Plumbed through KvCacheConfig.enable_swa_ring_reuse (prototype) -> pyexecutor KVCacheManagerV2 -> KVCacheManagerConfig.
+
+Test Coverage
+
+- 
+New TestSwaRingReuse in tests/unittest/kv_cache_manager_v2_tests/test_kv_cache_manager_v2.py: drives a disaggregated-decode-style uncommitted generation across 8 window advances with FakeEngine refcheck at every step, plus deterministic allocator-traffic assertions:
+
+- flag off: one slot request per boundary crossing per life cycle (2 x crossings);
+
+- flag on: the windowed life cycle allocates only until its first page is parked (crossings + 1).
+
+- 
+Existing TestNoBatching battery passes unchanged under the patched module (flag off is a no-op: two cheap branches).
+
+- 
+Perf A/B on DeepSeek-V4 disaggregated GEN (GB200, dep32/EP32, 256K ISL, per-rank batch 84, MTP3, MoE backend MEGAMOE_DEEPGEMM, 2688/2688 requests completed on both arms):
+
+arm
+output tok/s per GEN GPU
+mean TPOT
+
+flag off
+
+3481.6
+
+26.932 ms
+
+flag on
+
+3513.2 (+0.9%)
+
+26.900 ms
+
+PR Checklist
+
+Please review the following before submitting your PR:
+
+- 
+PR description clearly explains what and why. If using CodeRabbit's summary, please make sure it makes sense.
+
+- 
+PR Follows TRT-LLM CODING GUIDELINES to the best of your knowledge.
+
+- 
+Test cases are provided for new code paths (see test instructions)
+
+- 
+If PR introduces API changes, an appropriate PR label is added - either api-compatible or api-breaking. For api-breaking, include BREAKING in the PR title.
+
+- 
+Any new dependencies have been scanned for license and vulnerabilities
+
+- 
+CODEOWNERS updated if ownership changes
+
+- 
+Documentation updated as needed
+
+- 
+Update tava architecture diagram if there is a significant design change in PR.
+
+- 
+The reviewers assigned automatically/manually are appropriate for the PR.
+
+- 
+ Please check this after reviewing the above items as appropriate for this PR.
+
+GitHub Bot Help
+
+To see a list of available CI bot commands, please comment /bot help.
+
+Summary by CodeRabbit
+
+- 
+New Features
+
+- Added an experimental option to reuse stale sliding-window-attention cache pages during decoding.
+
+- Reused pages can reduce new cache-slot allocations and improve memory efficiency.
+
+- The option is disabled by default and only applies to eligible, fully released pages.
+
+- 
+Bug Fixes
+
+- Ensured the new cache-reuse setting is consistently passed through runtime configuration.
+
+- 
+Tests
+
+- Added coverage verifying both disabled behavior and reduced allocation activity when reuse is enabled.
+
+[RENDERED BLOCK author=? date=?]
+📝 Walkthrough
+Walkthrough
+
+Adds an experimental SWA decode slot-reuse configuration, wires it through KV cache manager construction, recycles eligible stale pages during resize, clears parked pages on lifecycle transitions, and tests allocator traffic with the option enabled and disabled.
+
+Changes
+
+SWA decode slot reuse
+
+Layer / File(s)
+Summary
+
+Configuration and manager wiring 
+ tensorrt_llm/llmapi/llm_args.py, tensorrt_llm/runtime/kv_cache_manager_v2/..., tensorrt_llm/_torch/pyexecutor/kv_cache_manager_v2.py
+
+Adds the experimental enable_swa_decode_slot_reuse option to public configuration types and passes it into KVCacheManagerConfigPy.
+
+Reuse pocket lifecycle 
+ tensorrt_llm/runtime/kv_cache_manager_v2/_core/_kv_cache.py
+
+Tracks parked stale SWA pages per life cycle, consumes them during resize, limits eligibility and capacity, and clears them on close or suspend.
+
+Allocator traffic validation 
+ tests/unittest/kv_cache_manager_v2_tests/test_kv_cache_manager_v2.py
+
+Exercises uncommitted decode with the option enabled and disabled, asserting the expected GPU slot allocation counts.
+
+Estimated code review effort: 3 (Moderate) | ~30 minutes
+
+Sequence Diagram(s)
+
+ 
+ 
+ sequenceDiagram
+ participant KVCacheManagerV2
+ participant _KVCache
+ participant StorageManager
+ participant SWAReusePocket
+ KVCacheManagerV2->>_KVCache: resize with reuse enabled
+ _KVCache->>SWAReusePocket: consume parked page slots
+ _KVCache->>StorageManager: request remaining GPU slots
+ _KVCache->>SWAReusePocket: park eligible stale orphaned pages
+
+ 
+
+ 
+
+ 
+ 
+ Loading
+
+ 
+
+Suggested reviewers: mikeiovine
+
+🚥 Pre-merge checks | ✅ 4 | ❌ 1
+❌ Failed checks (1 warning)
+
+Check name
+Status
+Explanation
+Resolution
+
+Docstring Coverage
+
+⚠️ Warning
+
+Docstring coverage is 0.00% which is insufficient. The required threshold is 80.00%.
+
+Write docstrings for the functions missing them to satisfy the coverage threshold.
+
+✅ Passed checks (4 passed)
+
+Check name
+Status
+Explanation
+
+Linked Issues check
+
+✅ Passed
+
+Check skipped because no linked issues were found for this pull request.
+
+Out of Scope Changes check
+
+✅ Passed
+
+Check skipped because no linked issues were found for this pull request.
+
+Title check
+
+✅ Passed
+
+The title is concise, specific, and matches the PR's main change: ring-buffer reuse for SWA pages in KV cache manager v2.
+
+Description check
+
+✅ Passed
+
+The description includes the required Description, Test Coverage, and PR Checklist sections and provides concrete implementation and test details.
+
+✨ Finishing Touches
+
+🧪 Generate unit tests (beta)
+
+- Create PR with unit tests
+
+Comment @coderabbitai help to get the list of available commands.
+
+[RENDERED BLOCK author=? date=?]
+Actionable comments posted: 1
+
+🧹 Nitpick comments (1)
+
+tests/unittest/kv_cache_manager_v2_tests/test_kv_cache_manager_v2.py (1)
+658-712: 📐 Maintainability & Code Quality | 🔵 Trivial | ⚡ Quick win
+
+Solid steady-state coverage; consider adding pocket-lifecycle edge cases in tests/unittest/kv_cache_manager_v2_tests/test_kv_cache_manager_v2.py.
+
+Coverage for the primary decode steady-state (disabled vs. enabled allocator traffic + refcheck correctness) is sufficient and the math checks out. However, the PR's own safety claims aren't directly exercised here:
+
+- suspend()/close() draining _swa_reuse_pocket (e.g., suspend mid-decode with a warmed-up pocket, then resume and verify the next crossing allocates fresh rather than reusing a stale/invalid pocket entry).
+
+- The 2-entries-per-life-cycle pocket cap (e.g., a resize() that stales two blocks in one call, such as a larger history_length jump).
+
+- OutOfPagesError rollback interaction with the pocket (PR description states rollback is unchanged, but no test asserts pocket state survives a failed resize() untouched).
+
+These are follow-up-worthy rather than blocking, given the core mechanism is already well-covered.
+
+🤖 Prompt for AI Agents
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+In `@tests/unittest/kv_cache_manager_v2_tests/test_kv_cache_manager_v2.py` around
+lines 658 - 712, Extend the KV cache manager tests around
+_run_uncommitted_decode to cover pocket lifecycle safety: suspend and close must
+drain _swa_reuse_pocket, and after resume the next block crossing must allocate
+fresh storage rather than reuse stale entries. Add a resize scenario that stales
+two blocks in one call to verify the two-entry-per-lifecycle cap. Add an
+OutOfPagesError resize test asserting rollback leaves the pocket state
+unchanged.
+
+Source: Path instructions
+
+🤖 Prompt for all review comments with AI agents
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+Inline comments:
+In `@tensorrt_llm/runtime/kv_cache_manager_v2/_core/_kv_cache.py`:
+- Around line 888-905: Revalidate each pocketed holder’s page immediately before
+reuse in the `_swa_reuse_pocket` pop path, including `cache_level` and
+`has_valid_slot` (and existing commitment checks), before calling
+`move_to_new_slot()`. Remove stale or no-longer-eligible holders instead of
+reusing them, or otherwise pin them against migration so pocketed pages remain
+valid until reuse.
+
+---
+
+Nitpick comments:
+In `@tests/unittest/kv_cache_manager_v2_tests/test_kv_cache_manager_v2.py`:
+- Around line 658-712: Extend the KV cache manager tests around
+_run_uncommitted_decode to cover pocket lifecycle safety: suspend and close must
+drain _swa_reuse_pocket, and after resume the next block crossing must allocate
+fresh storage rather than reuse stale entries. Add a resize scenario that stales
+two blocks in one call to verify the two-entry-per-lifecycle cap. Add an
+OutOfPagesError resize test asserting rollback leaves the pocket state
+unchanged.
+
+🪄 Autofix (Beta)
+Fix all unresolved CodeRabbit comments on this PR:
+
+- Push a commit to this branch (recommended)
+
+- Create a new PR with the fixes
+
+ℹ️ Review info
+
+⚙️ Run configuration
+Configuration used: Path: .coderabbit.yaml
+
+Review profile: CHILL
+
+Plan: Enterprise
+
+Run ID: 7c06be1f-ab1e-49b8-b52b-8a2d1ccc7082
+
+📥 Commits
+Reviewing files that changed from the base of the PR and between 5e77882 and 75943b8.
+
+📒 Files selected for processing (6)
+
+- tensorrt_llm/_torch/pyexecutor/kv_cache_manager_v2.py
+
+- tensorrt_llm/llmapi/llm_args.py
+
+- tensorrt_llm/runtime/kv_cache_manager_v2/__init__.pyi
+
+- tensorrt_llm/runtime/kv_cache_manager_v2/_config.py
+
+- tensorrt_llm/runtime/kv_cache_manager_v2/_core/_kv_cache.py
+
+- tests/unittest/kv_cache_manager_v2_tests/test_kv_cache_manager_v2.py

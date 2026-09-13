@@ -1,0 +1,1593 @@
+[speculative decoding] Add dynamic speculation length with confidence-threshold early exit by jmamou · Pull Request #35301 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [speculative decoding] Add dynamic speculation length with confidence-threshold early exit - # 35301 
+ # 35301 
+ Open 
+ jmamou wants to merge 3 commits into vllm-project:main vllm-project/vllm:main from jmamou:dsl jmamou/vllm:dsl Copy head branch name to clipboard 
+ Conversation Commits 3  ( 3 ) Checks Files changed 
+ Open 
+ [speculative decoding] Add dynamic speculation length with confidence-threshold early exit # 35301 jmamou wants to merge 3 commits into vllm-project:main vllm-project/vllm:main from jmamou:dsl jmamou/vllm:dsl Copy head branch name to clipboard 
+ Conversation
+ jmamou 
+ commented
+ Feb 25, 2026 
+ • 
+ edited by github-actions
+ Bot 
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Purpose
+ This PR introduces confidence-threshold based Dynamic Speculative Length (DSL) support for speculative decoding and adds end-to-end DSL observability, inspired by DISCO (Mamou et al., 2024) and the HuggingFace blog post .
+ Functional changes
+ Adds draft_confidence_threshold to speculative config (default 0.0 , disabled by default).
+ Implements confidence-based early-exit in speculative decoding drafting when DSL is enabled.
+ Propagates DSL metrics through scheduler/output/benchmark paths:
+ total proposals
+ early exits
+ tokens generated
+ tokens requested
+ Improves draft-token CPU copy handling for variable-width draft outputs.
+ Why this matters
+ Avoids unnecessary speculative compute when confidence is low.
+ Makes DSL behavior measurable and tunable.
+ Keeps backward compatibility by default ( draft_confidence_threshold=0.0 ).
+ Usage
+ Enable DSL by adding draft_confidence_threshold to the speculative configuration:
+ from vllm import LLM 
+ llm = LLM (
+ model = "meta-llama/Llama-3.1-8B-Instruct" ,
+ speculative_config = {
+ "model" : "meta-llama/Llama-3.2-1B-Instruct" ,
+ "num_speculative_tokens" : 20 ,
+ "draft_confidence_threshold" : 0.6 , # <-- enables DSL 
+ },
+) 
+ Or via CLI:
+ vllm serve meta-llama/Llama-3.1-8B-Instruct \
+ --speculative-model meta-llama/Llama-3.2-1B-Instruct \
+ --num-speculative-tokens 20 \
+ --draft-confidence-threshold 0.6 
+ Setting draft_confidence_threshold=0.0 (default) disables DSL and restores standard speculative decoding behaviour.
+ Algorithm
+ Based on the dynamic speculation lookahead approach of DISCO (Mamou et al., 2024) ( blog ). At each draft token step $i$ (from 0 to num_speculative_tokens - 2 ), the proposer:
+ Runs the draft model forward pass to obtain logits.
+ Computes the softmax probability of the argmax token: $p_i = \max_v \text{softmax}(z_i)$ .
+ Evaluates a batch-level mean exit condition: if the average confidence across the batch $\frac{1}{B}\sum_j p_{i,j} &lt; \tau$ (where $\tau$ = draft_confidence_threshold ), drafting stops and the tokens generated so far are returned.
+ Otherwise continues to step $i+1$ .
+ The drafted sequence is always padded to num_speculative_tokens by the caller regardless of how many tokens were actually generated; the unused slots are masked by the verifier.
+ Batch policy (mean): the exit condition is the average confidence over the batch, making a single low-confidence request less likely to cause an early exit and giving higher-confidence requests more benefit of the doubt.
+ Known limitations / trade-offs
+ GPU→CPU sync per draft step: the early-exit check calls .item() on a GPU scalar, forcing a host–device synchronisation at every token step when DSL is active. This is negligible at small batch sizes but may become a bottleneck under high concurrency. A pure device-side solution (e.g., storing the flag in a GPU tensor and avoiding the sync) would remove this overhead.
+ Batch-level exit policy (mean): all requests in the batch still stop at the same draft step (no ragged outputs), but the exit decision is based on the mean confidence rather than the minimum. This makes the policy resilient to isolated low-confidence requests in a mixed batch. A per-request policy would be more efficient but requires variable-length draft outputs and more complex KV-cache bookkeeping.
+ Threshold sensitivity: the optimal threshold is model-pair and dataset dependent; there is currently no auto-tuning. Starting from 0.4–0.6 and sweeping is recommended.
+ Test Plan
+ Scope
+ DSL metrics field coverage in ModelRunnerOutput 
+ DSL metrics helper coverage in EagleProposer 
+ Scheduler propagation of DSL counters into speculative decoding stats
+ Regression checks for:
+ Empty speculative outputs
+ No speculative token scheduling during prefill chunking
+ Commands
+ pytest -q tests/v1/test_outputs.py::TestModelRunnerOutputDSL
+pytest -q tests/v1/spec_decode/test_eagle.py -k " dsl_metrics " 
+pytest -q tests/v1/core/test_scheduler.py -k " spec_decoding_stats_empty_output or schedule_spec_decoding_dsl_metrics_propagation or no_spec_tokens_scheduled_for_prefill_chunks 
+ Benchmark
+ Hardware: 1× NVIDIA A100 80 GB PCIe
+ Dataset: philschmid/mt-bench (10 prompts, output_len=1024 , temperature=0 , max_concurrency=1 )
+ vLLM version: v0.1.dev14014+g6963a1497 (branch dsl , mean batch policy)
+ Model pair 1: meta-llama/Llama-3.1-8B-Instruct + meta-llama/Llama-3.2-1B-Instruct 
+ Mode 
+ Spec tokens 
+ Threshold 
+ Throughput (tok/s) 
+ Speedup vs target 
+ Speedup vs spec 
+ target 
+ — 
+ — 
+ 70.88 
+ 1.00× 
+ — 
+ SD 
+ 5 
+ — 
+ 116.57 
+ 1.23× 
+ 1.00× 
+ SD w/DSL 
+ 10 
+ 0.4 
+ 163.00 
+ 1.72× 
+ 1.39× 
+ SD w/DSL 
+ 20 
+ 0.6 
+ 168.16 
+ 1.77× 
+ 1.44× 
+ SD w/DSL 
+ 20 
+ 0.8 
+ 144.88 
+ 1.52× 
+ 1.24× 
+ Best DSL configuration: 20 tokens, threshold=0.6 → 1.77× vs target, 1.44× vs spec_decode 
+ Model pair 2: facebook/opt-6.7b + facebook/opt-125m 
+ Mode 
+ Spec tokens 
+ Threshold 
+ Throughput (tok/s) 
+ Speedup vs target 
+ Speedup vs spec 
+ target 
+ — 
+ — 
+ 102.54 
+ 1.00× 
+ — 
+ SD 
+ 5 
+ — 
+ 193.66 
+ 1.88× 
+ 1.00× 
+ SD w/DSL 
+ 10 
+ 0.6 
+ 317.91 
+ 3.10× 
+ 1.64× 
+ SD w/DSL 
+ 20 
+ 0.8 
+ 315.33 
+ 3.07× 
+ 1.62× 
+ Best DSL configurations:
+ 10 tokens, threshold=0.6 → 317.91 tok/s, 3.10× vs target, 1.64× vs spec_decode 
+ 20 tokens, threshold=0.8 → 315.33 tok/s, 3.07× vs target, 1.62× vs spec_decode 
+ Hardware: 1× NVIDIA A100 80 GB PCIe
+ Dataset: random synthetic (80 prompts, input_len=1024 , output_len=512 , temperature=0 , max_concurrency=1 )
+ vLLM version: v0.1.dev14014+g6963a1497 (branch dsl , mean batch policy)
+ Model pair 1: meta-llama/Llama-3.1-8B-Instruct + meta-llama/Llama-3.2-1B-Instruct (random, c=1)
+ Mode 
+ Spec tokens 
+ Threshold 
+ Throughput (tok/s) 
+ Speedup vs target 
+ Speedup vs SD 
+ target 
+ — 
+ — 
+ 265.05 
+ 1.00× 
+ — 
+ SD 
+ 5 
+ — 
+ 343.25 
+ 1.29× 
+ 1.00× 
+ SD w/DSL 
+ 10 
+ 0.8 
+ 499.11 
+ 1.88× 
+ 1.45× 
+ SD w/DSL 
+ 15 
+ 0.4 
+ 502.11 
+ 1.89× 
+ 1.46× 
+ SD w/DSL 
+ 15 
+ 0.8 
+ 508.75 
+ 1.92× 
+ 1.48× 
+ SD w/DSL 
+ 20 
+ 0.6 
+ 449.18 
+ 1.69× 
+ 1.30× 
+ Best DSL configuration: 15 tokens, threshold=0.8 → 508.75 tok/s, 1.92× vs target, 1.48× vs SD 
+ Hardware: 1× NVIDIA A100 80 GB PCIe
+ Dataset: philschmid/mt-bench (80 prompts, output_len=512 , temperature=0 , max_concurrency=1 )
+ vLLM version: v0.1.dev14014+g6963a1497 (branch dsl , mean batch policy)
+ Note: With output_len=512 at max_concurrency=1 , SD/5 is roughly on par with target for Llama (1.06×). DSL exits early, avoiding unnecessary speculative compute, and gains further: 10t/0.6 → 1.62× vs target, 1.53× vs SD .
+ Model pair 1: meta-llama/Llama-3.1-8B-Instruct + meta-llama/Llama-3.2-1B-Instruct (mt-bench 80-prompt, c=1)
+ Mode 
+ Spec tokens 
+ Threshold 
+ Throughput (tok/s) 
+ Speedup vs target 
+ Speedup vs SD 
+ target 
+ — 
+ — 
+ 102.56 
+ 1.00× 
+ — 
+ SD 
+ 5 
+ — 
+ 108.58 
+ 1.06× 
+ 1.00× 
+ SD w/DSL 
+ 10 
+ 0.6 
+ 166.31 
+ 1.62× 
+ 1.53× 
+ SD w/DSL 
+ 15 
+ 0.6 
+ 153.98 
+ 1.50× 
+ 1.42× 
+ Best DSL configuration: 10 tokens, threshold=0.6 → 166.31 tok/s, 1.62× vs target, 1.53× vs SD 
+ Hardware: 1× NVIDIA A100 80 GB PCIe
+ Dataset: random synthetic (80 prompts, input_len=128 , output_len=128 , max_concurrency=8 )
+ vLLM version: v0.1.dev14014+g6963a1497 (branch dsl , mean batch policy)
+ Model pair 1: meta-llama/Llama-3.1-8B-Instruct + meta-llama/Llama-3.2-1B-Instruct (random, c=8)
+ Mode 
+ Spec tokens 
+ Threshold 
+ Throughput (tok/s) 
+ Speedup vs target 
+ Speedup vs SD 
+ target 
+ — 
+ — 
+ 266.85 
+ 1.00× 
+ — 
+ SD 
+ 5 
+ — 
+ 632.76 
+ 2.37× 
+ 1.00× 
+ SD w/DSL 
+ 15 
+ 0.8 
+ 960.55 
+ 3.60× 
+ 1.52× 
+ SD w/DSL 
+ 20 
+ 0.6 
+ 782.94 
+ 2.93× 
+ 1.24× 
+ Best DSL configuration: 15 tokens, threshold=0.8 → 960.55 tok/s, 3.60× vs target, 1.52× vs SD 
+ Hardware: 1× NVIDIA A100 80 GB PCIe
+ Dataset: philschmid/mt-bench (80 prompts, output_len=512 , temperature=0 , max_concurrency=4 )
+ vLLM version: v0.1.dev14014+g6963a1497 (branch dsl , mean batch policy)
+ Note: OPT mt-bench c=4 target produced >97% failures even after retrying with output_len=256 ; no target baseline available. OPT DSL/SD runs below used output_len=256 . Llama mt-bench c=4 results used output_len=512 .
+ Model pair 1: meta-llama/Llama-3.1-8B-Instruct + meta-llama/Llama-3.2-1B-Instruct (mt-bench, c=4)
+ Mode 
+ Spec tokens 
+ Threshold 
+ Throughput (tok/s) 
+ Speedup vs target 
+ Speedup vs SD 
+ target 
+ — 
+ — 
+ 136.89 
+ 1.00× 
+ — 
+ SD 
+ 5 
+ — 
+ 111.23 
+ 0.81× 
+ 1.00× 
+ SD w/DSL 
+ 15 
+ 0.8 
+ 165.85 
+ 1.21× 
+ 1.49× 
+ SD w/DSL 
+ 20 
+ 0.4 
+ 181.35 
+ 1.32× 
+ 1.63× 
+ SD w/DSL 
+ 20 
+ 0.8 
+ 150.39 
+ 1.10× 
+ 1.35× 
+ Best DSL configuration: 20 tokens, threshold=0.4 → 181.35 tok/s, 1.32× vs target, 1.63× vs SD 
+Note: SD is slower than target at c=4 (0.81×); 10-token DSL configs mostly unstable (>70% failures).
+ Model pair 2: facebook/opt-6.7b + facebook/opt-125m (mt-bench, c=4, output_len=256)
+ Target failed (>97% failures at c=4); speedup reported vs SD only.
+ Mode 
+ Spec tokens 
+ Threshold 
+ Throughput (tok/s) 
+ Speedup vs SD 
+ SD 
+ 5 
+ — 
+ 192.56 
+ 1.00× 
+ SD w/DSL 
+ 10 
+ 0.8 
+ 299.28 
+ 1.55× 
+ SD w/DSL 
+ 20 
+ 0.4 
+ 294.65 
+ 1.53× 
+ SD w/DSL 
+ 20 
+ 0.6 
+ 289.69 
+ 1.50× 
+ SD w/DSL 
+ 15 
+ 0.8 
+ 252.63 
+ 1.31× 
+ Best DSL configuration: 10 tokens, threshold=0.8 → 299.28 tok/s, 1.55× vs SD 
+ Observations
+ No functional test failures observed in the targeted DSL coverage.
+ Non-blocking pytest deprecation warnings were present (SWIG-related).
+ mt-bench (concurrency=1, short outputs): With output_len=512 at single concurrency, SD/5 is roughly on par with target for Llama (1.06×). DSL exits early, avoiding unnecessary speculative compute: 10t/0.6 → 1.62× vs target, 1.53× vs SD .
+ mt-bench (concurrency=1, long outputs): With output_len=1024 (original 10-prompt runs), DSL yields large gains (up to +44% on Llama, up to +64% on OPT). Long outputs give many draft steps for confident exits.
+ Random inputs (long), concurrency=1: With longer sequences (input=1024, output=512), DSL outperforms SD at single-request concurrency for Llama — best 15t/0.8 → 1.92× vs target, 1.48× vs SD . The extra draft steps in longer sequences give DSL more opportunity to exit early selectively. OPT random c=1 still favors plain SD (2.67× vs 1.97× best DSL).
+ mt-bench (concurrency=4): SD is slower than target for Llama (0.81×), yet DSL recovers and surpasses target — reaching 1.32× vs target and 1.63× vs SD with 20 tokens/0.4. For OPT c=4 (output_len=256, no valid target), DSL/10/0.8 reaches 1.55× vs SD (299.28 tok/s).
+ Random inputs, concurrency=8: DSL now substantially outperforms SD for Llama (up to +52% with 15 tokens, threshold=0.8: 3.60× vs target vs SD's 2.37×). The mean batch policy is key here — with 8 concurrent requests sharing the drafting step, a confident batch can consistently use more draft tokens, amplifying DSL's benefit.
+ Mean batch policy: the policy change from any to mean matters most at concurrency > 1. A single uncertain request no longer short-circuits drafting for the whole batch.
+ Threshold sensitivity: optimal values differ across model pairs and datasets. For mt-bench the sweet spot is 0.4–0.6 at c=4; for random inputs at c=4, threshold=0.4–0.8 with 20 tokens gives best results.
+ References
+ @article { mamou2024accelerating ,
+ title = { Accelerating Speculative Decoding using Dynamic Speculation Length } ,
+ author = { Mamou, Jonathan and Pereg, Oren and Korat, Daniel and Berchansky, Moshe and Timor, Nadav and Wasserblat, Moshe and Schwartz, Roy } ,
+ journal = { arXiv preprint arXiv:2405.04304 } ,
+ year = { 2024 } ,
+ url = { https://arxiv.org/abs/2405.04304 } 
+}
+ @misc { mamou2024disco_blog ,
+ author = { Mamou, Jonathan and Pereg, Oren and Gante, Joao and Tunstall, Lewis and Korat, Daniel } ,
+ title = { Faster Assisted Generation with Dynamic Speculation } ,
+ year = { 2024 } ,
+ howpublished = { Hugging Face Blog } ,
+ url = { https://huggingface.co/blog/dynamic_speculation_lookahead } 
+} 
+ Essential Elements of an Effective PR Description Checklist 
+ The purpose of the PR, such as "Fix some issue (link existing issues this PR will resolve)".
+ The test plan, such as providing test command.
+ The test results, such as pasting the results comparison before and after, or e2e results
+ (Optional) The necessary documentation update, such as updating supported_models.md and examples for a new model.
+ (Optional) Release notes update. If your change is user facing, please update the release notes draft in the Google Doc .
+ cc: @orenpereg @keyboardAnt 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ ❤️ 
+ 1 
+ keyboardAnt reacted with heart emoji 
+ All reactions 
+ ❤️ 
+ 1 reaction 
+ mergify 
+ Bot 
+ added
+ performance
+ Performance-related issues 
+ speculative-decoding
+ v1
+ labels
+ Feb 25, 2026 
+ gemini-code-assist 
+ Bot 
+ reviewed
+ Feb 25, 2026 
+ View reviewed changes 
+ gemini-code-assist 
+ Bot 
+ left a comment
+ Copy link
+ Copy Markdown
+ Contributor 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Code Review
+ This pull request introduces a confidence-threshold-based Dynamic Speculative Length (DSL) for speculative decoding, a valuable optimization that can improve throughput by avoiding unnecessary computation when the draft model's confidence is low. The implementation includes the addition of a draft_confidence_threshold configuration, the core early-exit logic in the proposer, and comprehensive observability through new metrics. The changes are well-structured, thoroughly tested, and accompanied by clear documentation and benchmark results demonstrating significant performance gains. Overall, this is a high-quality contribution that enhances vLLM's speculative decoding capabilities.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ 🚀 
+ 1 
+ jmamou reacted with rocket emoji 
+ All reactions 
+ 🚀 
+ 1 reaction 
+ github-actions 
+ Bot 
+ commented
+ Feb 25, 2026 
+ Copy link
+ Copy Markdown
+ 👋 Hi! Thank you for contributing to the vLLM project.
+ 💬 Join our developer Slack at https://slack.vllm.ai to discuss your PR in #pr-reviews, coordinate on features in #feat- channels, or join special interest groups in #sig- channels.
+ Just a reminder: PRs would not trigger full CI run by default. Instead, it would only run fastcheck CI which starts running only a small and essential subset of CI tests to quickly catch errors.
+ You ask your reviewers to trigger select CI tests on top of fastcheck CI.
+ Once the PR is approved and ready to go, your PR reviewer(s) can run CI to test the changes comprehensively before merging.
+ To run CI, PR reviewers can either: Add ready label to the PR or enable auto-merge.
+ If you have any questions, please reach out to us on Slack at https://slack.vllm.ai .
+ 🚀
+ --> 
+ 👍 
+ 1 
+ jmamou reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ mergify 
+ Bot 
+ commented
+ Mar 2, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ This pull request has merge conflicts that must be resolved before it can be
+merged. Please rebase the PR, @jmamou .
+ https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork 
+ --> 
+ 👍 
+ 1 
+ jmamou reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ mergify 
+ Bot 
+ added
+ needs-rebase
+ and removed
+ needs-rebase
+ labels
+ Mar 2, 2026 
+ voipmonitor 
+ reviewed
+ Mar 9, 2026 
+ View reviewed changes 
+ voipmonitor 
+ left a comment
+ Copy link
+ Copy Markdown
+ Contributor 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Bug: CUDA index-out-of-bounds crash with GDN attention backend
+ When DSL triggers early exit, draft_token_ids_list has fewer elements than num_speculative_tokens . After torch.stack , the resulting tensor shape is [batch_size, N] where N < num_speculative_tokens . Downstream code (specifically gdn_attn.py:237 — block_table_tensor[spec_state_indices] ) expects the full width and crashes with:
+ /pytorch/aten/src/ATen/native/cuda/IndexKernel.cu:111: operator(): block: [0,0,0], thread: [11,0,0]
+Assertion `-sizes[i] <= index && index < sizes[i] && "index out of bounds"` failed.
+ Repro: Qwen3.5-397B-A17B-NVFP4, TP4, --speculative-config '{"method":"qwen3_next_mtp","num_speculative_tokens":20, "draft_confidence_threshold": 0.6}' 
+ Fix
+ Pad draft_token_ids to full num_speculative_tokens width after torch.stack . The zero-padded positions will be rejected during verification anyway, so quality is unaffected.
+ # [batch_size, num_speculative_tokens]
+ draft_token_ids = torch.stack(draft_token_ids_list, dim=1)
+ # Pad to full num_speculative_tokens width if DSL early exit produced
+ # fewer tokens — downstream (GDN attention, scheduler) expects fixed shape.
+ if draft_token_ids.shape[1] < self.num_speculative_tokens:
+ pad_width = self.num_speculative_tokens - draft_token_ids.shape[1]
+ draft_token_ids = torch.nn.functional.pad(
+ draft_token_ids, (0, pad_width), value=0)
+ Tested on RTX PRO 6000 Blackwell (SM120), 4× GPUs. Crash gone, DSL early exit works correctly.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ 👍 
+ 1 
+ jmamou reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ This was referenced Mar 10, 2026 
+ [RFC]: Dynamic Speculation Length (DSL) with Confidence-Threshold Early Exit for vLLM Speculative Decoding
+ #36657 
+ Closed
+ [V1][Spec Decode] Add Dynamic SD
+ #32374 
+ Merged
+ mergify 
+ Bot 
+ commented
+ Mar 22, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ This pull request has merge conflicts that must be resolved before it can be
+merged. Please rebase the PR, @jmamou .
+ https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ mergify 
+ Bot 
+ added
+ needs-rebase
+ and removed
+ needs-rebase
+ labels
+ Mar 22, 2026 
+ jmamou 
+ commented
+ Mar 25, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ @benchislett @tomasruizt 
+ Update: Padding Fix and Async DSL Sync support
+ Changes since initial submission
+ Two issues were addressed after the initial benchmarks were posted:
+ Draft-token padding fix (commit e9c5588a3 — "trim scheduler draft slots to actual early-exit count" ):
+When DSL exited early (fewer than num_speculative_tokens tokens drafted), the CPU token list
+returned to the scheduler still contained the full padded width. This caused the verifier to
+process padding positions that were never actually drafted, wasting verification compute on every
+early exit. The GPU tensor is intentionally kept at [B, K] (the model runner uses a fixed
+stride of num_speculative_tokens when indexing into the flattened draft-token tensor), but
+the CPU list is now trimmed to the actual early-exit count before being handed to the scheduler.
+ Async early-exit loop (commits 1447128dc + current HEAD):
+The original ConfidenceThresholdPolicy called .item() on a GPU scalar at each draft step,
+causing blocking host–device synchronisations per request. The new design moves all
+comparison state to GPU tensors ( update() uses only masked_fill_ / logical_or_ ) and
+uses the Isolating While Condition 
+pattern to both eliminate blocking syncs:
+ update() performs GPU tensor ops then kicks off an async 1-byte D→H copy of the exit
+flag ( _exited_gpu ) to a pinned CPU buffer on a dedicated CUDA stream.
+ The loop checks policy.exited at the top of the next iteration . Python loop overhead
+(slot mapping, metadata rebuild) is sufficient for the copy to complete, so
+ event.synchronize() has near-zero additional latency.
+ On exit, the draft-token tensor is F.pad -ded back to [B, K] so that
+ _prepare_input_ids keeps its fixed num_speculative_tokens stride.
+ This reduces blocking syncs to near-free async syncs.
+ Updated Benchmarks
+ Hardware: 1× NVIDIA A100 80 GB PCIe
+ vLLM version: v0.16.0rc2.dev1480+gee9dc6d87 (branch dsl , commit d35682337 — async early-exit loop)
+ Server flags: --max-num-seqs 1 --gpu-memory-utilization 0.95 --max-model-len 2048 
+ Metric: Output token throughput (tok/s)
+ Note on metric: These results report output token throughput only (matching vllm bench serve 
+default output). The original PR description reported total token throughput (input + output).
+Speedup ratios are unaffected since all modes share the same input.
+ Set A — mt-bench , 10 prompts, max_concurrency=1 , output_len=1024 
+ Model pair 1: meta-llama/Llama-3.1-8B-Instruct + meta-llama/Llama-3.2-1B-Instruct 
+ Mode 
+ Spec tokens 
+ Threshold 
+ Throughput (tok/s) 
+ Speedup vs target 
+ Speedup vs SD 
+ target 
+ — 
+ — 
+ 91.10 
+ 1.00× 
+ — 
+ SD 
+ 5 
+ — 
+ 59.85 
+ 0.66× 
+ 1.00× 
+ SD w/DSL 
+ 10 
+ 0.4 
+ 104.28 
+ 1.14× 
+ 1.74× 
+ SD w/DSL 
+ 20 
+ 0.8 
+ 163.72 
+ 1.80× 
+ 2.74× 
+ Best DSL configuration: 20 tokens, threshold=0.8 → 163.72 tok/s, 1.80× vs target, 2.74× vs SD 
+ SD/5 is slower than target (0.66×) at output_len=1024 — a known characteristic of speculative
+decoding at long outputs where the overhead of generating and verifying K draft tokens
+outweighs the gains. DSL/20/0.8 avoids this by exiting early, achieving 1.80× vs target.
+ Model pair 2: facebook/opt-6.7b + facebook/opt-125m 
+ Mode 
+ Spec tokens 
+ Threshold 
+ Throughput (tok/s) 
+ Speedup vs target 
+ Speedup vs SD 
+ target 
+ — 
+ — 
+ 95.81 
+ 1.00× 
+ — 
+ SD 
+ 5 
+ — 
+ 192.60 
+ 2.01× 
+ 1.00× 
+ SD w/DSL 
+ 20 
+ 0.8 
+ 210.56 
+ 2.20× 
+ 1.09× 
+ Best DSL configuration: 20 tokens, threshold=0.8 → 210.56 tok/s, 2.20× vs target, 1.09× vs SD 
+ Set B — mt-bench , 80 prompts, output_len=512 , max_concurrency=1 
+ Model pair 1: meta-llama/Llama-3.1-8B-Instruct + meta-llama/Llama-3.2-1B-Instruct 
+ Mode 
+ Spec tokens 
+ Threshold 
+ Throughput (tok/s) 
+ Speedup vs target 
+ Speedup vs SD 
+ target 
+ — 
+ — 
+ 40.43 
+ 1.00× 
+ — 
+ SD 
+ 5 
+ — 
+ 73.33 
+ 1.81× 
+ 1.00× 
+ SD w/DSL 
+ 10 
+ 0.6 
+ 102.00 
+ 2.52× 
+ 1.39× 
+ SD w/DSL 
+ 15 
+ 0.6 
+ 101.05 
+ 2.50× 
+ 1.38× 
+ Best DSL configuration: 10 tokens, threshold=0.6 → 102.00 tok/s, 2.52× vs target, 1.39× vs SD 
+ With output_len=512 at single concurrency, SD/5 already gives a large boost (1.81×) because
+mt-bench prompts are highly predictable. DSL improves further by exiting early once confidence
+drops, recouping the overhead of larger draft budgets.
+ Set C — random synthetic, 80 prompts, input_len=128 , output_len=128 , max_concurrency=8 
+ Note: The server is configured with --max-num-seqs 1 , which serialises all requests
+regardless of client concurrency. The async early-exit loop significantly improves high-k
+DSL performance even in this setting by skipping up to K−k_valid draft forward passes per
+step. A rerun with --max-num-seqs ≥ max_concurrency would show further gains from
+batch-level confidence averaging.
+ Model pair 1: meta-llama/Llama-3.1-8B-Instruct + meta-llama/Llama-3.2-1B-Instruct 
+ Mode 
+ Spec tokens 
+ Threshold 
+ Throughput (tok/s) 
+ Speedup vs target 
+ Speedup vs SD 
+ target 
+ — 
+ — 
+ 72.96 
+ 1.00× 
+ — 
+ SD 
+ 5 
+ — 
+ 139.62 
+ 1.91× 
+ 1.00× 
+ SD w/DSL 
+ 20 
+ 0.6 
+ 219.00 
+ 3.00× 
+ 1.57× 
+ Set D — mt-bench , 80 prompts, output_len=512 , max_concurrency=4 
+ Note: Same --max-num-seqs 1 caveat as Set C applies here. As in Set C, the async
+early-exit loop substantially improves high-k DSL configurations.
+ Model pair 1: meta-llama/Llama-3.1-8B-Instruct + meta-llama/Llama-3.2-1B-Instruct 
+ Mode 
+ Spec tokens 
+ Threshold 
+ Throughput (tok/s) 
+ Speedup vs target 
+ Speedup vs SD 
+ target 
+ — 
+ — 
+ 116.31 
+ 1.00× 
+ — 
+ SD 
+ 5 
+ — 
+ 154.41 
+ 1.33× 
+ 1.00× 
+ SD w/DSL 
+ 15 
+ 0.8 
+ 222.73 
+ 1.91× 
+ 1.44× 
+ SD w/DSL 
+ 20 
+ 0.8 
+ 190.42 
+ 1.64× 
+ 1.23× 
+ Best DSL configuration: 15 tokens, threshold=0.8 → 222.73 tok/s, 1.91× vs target, 1.44× vs SD 
+ Observations
+ Async early-exit impact (Sets D & E): The most dramatic improvement from the early-exit
+loop is visible at high concurrency with large K. Set C DSL/20/0.6 improves from 21.36 → 219.00
+tok/s ( +925% ); Set D DSL/15/0.8 improves from 34.42 → 222.73 tok/s ( +547% ). At k=20
+with typical exits at step 3–5, the loop now skips 15–17 forward passes per decode step — the
+dominant cost in these configurations. The 1-byte async D→H copy adds negligible overhead.
+ Single-concurrency scenarios (Sets A & C): DSL consistently beats SD at c=1.
+Set B: 2.52× vs target, 1.39× vs SD (k=10/τ=0.6). Set A Llama: DSL/20/0.8 at
+ 1.80× vs target, 2.74× vs SD — note SD/5 is itself slower than target (0.66×) at
+output_len=1024, showing that DSL's early exit rescues speculative decoding at long outputs.
+ OPT: DSL beats SD at mt-bench: Set A OPT DSL/20/0.8 achieves 2.20× vs target,
+1.09× vs SD (210.56 tok/s).
+ Best confirmed speedups (output tok/s): 
+ Set C Llama random (c=8): 3.00× vs target, 1.57× vs SD (DSL k=20/τ=0.6)
+ Set D Llama mt-bench (c=4): 1.91× vs target, 1.44× vs SD (DSL k=15/τ=0.8)
+ Set B Llama mt-bench (c=1): 2.52× vs target, 1.39× vs SD (DSL k=10/τ=0.6)
+ Set A Llama mt-bench (c=1, long): 1.80× vs target, 2.74× vs SD (DSL k=20/τ=0.8)
+ Set A OPT mt-bench (c=1): 2.20× vs target, 1.09× vs SD (DSL k=20/τ=0.8)
+ Threshold / token-count sensitivity: DSL/20/0.6 excels on short-output high-concurrency
+workloads (Set C: 3.00×) where early exit triggers quickly and skips most drafts. High
+thresholds (0.8) with moderate K (15) are the most consistently safe choice across diverse
+workloads.
+ --> 
+ 🚀 
+ 1 
+ keyboardAnt reacted with rocket emoji 
+ All reactions 
+ 🚀 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tomasruizt 
+ commented
+ Mar 26, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ The speedups are super interesting! A couple of questions:
+ Synthetic random inputs don't really reflect acceptance lengths under realistic conditions, right? Not sure about how much weight metrics with these inputs should carry. Let me know if you see it differently.
+ How did you decide for K=5 for SD? Depending on models and dataset type different Ks are optimal. E.g. in some configs SD is slower than vanilla decoding, using lower K would have helped here. It seems that users still are expected to tune num_spec_tokens K and the threshold c, so the baseline SD should also choose optimal K for a fair comparison.
+ Did you analyze performance over changing batch size? If not, why?
+ What is the mental model for the importance of output_length? Less time spent in prefill?
+If answers to my questions are in the papers, just let me know 👍
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ jmamou 
+ commented
+ Mar 29, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ @tomasruizt thanks for the valuable comments!
+ Synthetic random inputs don't really reflect acceptance lengths under realistic conditions, right? Not sure about how much weight metrics with these inputs should carry. Let me know if you see it differently.
+ Correct. Synthetic inputs are used here primarily to measure throughput under controlled load. They do understate acceptance rates compared to real workloads. I plan to run additional exp on real workloads.
+ How did you decide for K=5 for SD? Depending on models and dataset type different Ks are optimal. E.g. in some configs SD is slower than vanilla decoding, using lower K would have helped here. It seems that users still are expected to tune num_spec_tokens K and the threshold c, so the baseline SD should also choose optimal K for a fair comparison.
+ I agree the baseline should also be evaluated at its optimal K. Note that that I reported also vanilla (target row). Anyway, I plan to add a sweep over K for baseline SD.
+ Did you analyze performance over changing batch size? If not, why?
+ Our benchmarks were run at different concurrencies but I have not yet swept batch size. I will add a batch size sweep.
+ What is the mental model for the importance of output_length? Less time spent in prefill?
+ Correct, for short outputs, prefill dominates and DSL savings are diluted. For long outputs, decode dominates and DSL's per-step savings compound over more steps, making the speedup more visible. This is why we report output_length as a variable — it shows where DSL's benefit saturates and is most relevant.
+ --> 
+ 👍 
+ 1 
+ tomasruizt reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tomasruizt 
+ commented
+ Mar 29, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ @jmamou About the output_length point: If you compare the TPOT metric rather than tok/s you can cleanly separate the decoding performance gains of DSL from the prefill phase (which is captured in the TTFT metric).
+ --> 
+ 👍 
+ 1 
+ jmamou reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ jmamou 
+ commented
+ Mar 29, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ @tomasruizt I ran additional experiments with optimal K for SD, real workloads and added TPOT.
+ I added evaluations on ShareGPT and mt-bench to complement the random-input results (see below).
+I ran also a K sweep (K=3,4,5,6,7) on a held-out train split (20 prompts, seed=42) for each dataset to select the optimal K for SD, then evaluated on a separate test set (80 prompts, seed=123).
+ Train-phase K sweep (total token throughput, tok/s): 
+ Dataset 
+ K=3 
+ K=4 
+ K=5 
+ K=6 
+ K=7 
+ ShareGPT 
+ 95 
+ 96 
+ 170 
+ 184 
+ 222 ← optimal 
+ mt-bench 
+ 72 
+ 160 
+ 167 
+ 173 ← optimal 
+ 73 
+ We applied the same train/test discipline for DSL, running a grid search over K∈{5,10,15,20} × τ∈{0.4,0.6,0.8} on the same train split:
+ ShareGPT optimal: K=15, τ=0.8 
+ mt-bench optimal: K=10, τ=0.6 
+ Test-set results (80 prompts, seed=123, c=1, output_len=512, Llama-3.1-8B + Llama-3.2-1B)
+ Dataset 
+ Mode 
+ Config 
+ Throughput 
+ TPOT 
+ Tput vs vanilla 
+ Tput vs SD 
+ TPOT vs vanilla 
+ TPOT vs SD 
+ ShareGPT 
+ Vanilla 
+ — 
+ 94 tok/s 
+ 10.79 ms 
+ 1.00× 
+ — 
+ 1.00× 
+ — 
+ ShareGPT 
+ SD (opt K) 
+ K=7 
+ 116 tok/s 
+ 10.75 ms 
+ 1.23× 
+ — 
+ 1.00× 
+ — 
+ ShareGPT 
+ DSL (opt K, τ) 
+ K=15/τ=0.8 
+ 155 tok/s 
+ 9.10 ms 
+ 1.65× 
+ 1.34× 
+ 1.19× 
+ 1.18× 
+ mt-bench 
+ Vanilla 
+ — 
+ 64 tok/s 
+ 11.00 ms 
+ 1.00× 
+ — 
+ 1.00× 
+ — 
+ mt-bench 
+ SD (opt K) 
+ K=6 
+ 81 tok/s 
+ 10.35 ms 
+ 1.27× 
+ — 
+ 1.06× 
+ — 
+ mt-bench 
+ DSL (opt K, τ) 
+ K=10/τ=0.6 
+ 115 tok/s 
+ 9.74 ms 
+ 1.80× 
+ 1.42× 
+ 1.13× 
+ 1.06× 
+ DSL with train-optimised (K, τ) outperforms best-K SD by 34–42% in throughput and 6–18% in TPOT on held-out test data across both real-text datasets.
+ DSL still requires tuning (K, τ), so the number of hyperparameters is the same as SD+K. The practical advantage is that DSL with a reasonably large K (e.g. K=15) and a moderate τ (e.g. 0.6–0.8) is robust across datasets : the confidence threshold self-regulates at runtime by exiting early when the draft model is uncertain. A fixed-K SD with suboptimal K has no such recourse — e.g. SD/K=7 drops to 0.65× vanilla throughput on ShareGPT test (slower than vanilla decoding), while DSL/K=15/τ=0.8 is at 1.65× .
+ --> 
+ 👍 
+ 2 
+ tomasruizt and keyboardAnt reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 2 reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tomasruizt 
+ commented
+ Mar 29, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ @jmamou Thanks for the quick reply! Two questions:
+ In table 1, SD achieves 222 tok/s throughput on ShareGPT, but then only 116 tok/s on table 2. What am I missing?
+ Also in table 1, mt-bench: the crash from K=6 to K=7 is really surprising! Do you know what is going on?
+ --> 
+ 👍 
+ 2 
+ jmamou and keyboardAnt reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 2 reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ jmamou 
+ commented
+ Mar 30, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ @tomasruizt 
+ In table 1, SD achieves 222 tok/s throughput on ShareGPT, but then only 116 tok/s on table 2. What am I missing?
+ The vLLM server has enable_prefix_caching=True . Train-phase job (table 1) ran vllm bench serve 
+ twice on the same 20 ShareGPT prompts (seed=42) without restarting the server:
+ Invocation 
+ Prefix cache hit rate (10-s rolling avg from server logs) 
+ Throughput 
+ 1st 
+ peaks 46% during warmup, drops to 0% once new prompts arrive 
+ 83.77 tok/s 
+ 2nd 
+ sustained 13–25% (same 20 prompts replayed, KV blocks still resident) 
+ 222.36 tok/s ← reported 
+ I picked the last (2nd invacation) value, so the cache-inflated 222 tok/s was reported.
+ The test run (table 2, 80 diverse prompts, seed=123) also has enable_prefix_caching=True but sees
+ 0.0% hits — 80 prompts (~16K input tokens) fill and evict the cache as they run, so there
+is nothing to reuse. That gives the clean 116 tok/s .
+ The K-selection remains valid: all K values in the train sweep share the same warm-cache
+second-run bias, so the relative ranking (K=7 best for ShareGPT) is unaffected. The train
+numbers should not be reported as absolute throughput.
+ Also in table 1, mt-bench: the crash from K=6 to K=7 is really surprising! Do you know what is going on?
+ The same issue — K=6 and K=7 ran in the same server session, so their prefix cache states diverged:
+ Config 
+ TTFT 
+ TPOT 
+ Prefix cache hit rate 
+ Throughput 
+ K=6 / mt-bench 
+ 65 ms 
+ 6.47 ms 
+ 48–80% (warm) 
+ 173 tok/s 
+ K=7 / mt-bench 
+ 4913 ms 
+ 6.15 ms 
+ 0–3% (evicted) 
+ 73 tok/s 
+ The TPOT is almost identical — the entire 2.4× gap comes from TTFT. K=6 got a warm cache (65 ms
+prefill); K=7's extra draft-token allocation pressure evicted the cached KV blocks during
+warmup, leaving it with cold prefill (4913 ms).
+ The K=6 selection from the train sweep is not confirmed . The lower TPOT for K=7 (6.15 ms vs 6.47 ms) and
+higher accepted length (4.73 vs 3.88) suggest K=7 might actually be better on a clean
+measurement.
+ --> 
+ 👍 
+ 2 
+ tomasruizt and keyboardAnt reacted with thumbs up emoji 
+ ❤️ 
+ 1 
+ keyboardAnt reacted with heart emoji 
+ All reactions 
+ 👍 
+ 2 reactions 
+ ❤️ 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tomasruizt 
+ commented
+ Mar 30, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ @jmamou Thanks for being so transparent! I suggest using vllm serve ... --no-enable-prefix-caching and focusing on the TPOT metric. Otherwise, we are mixing up speedups with KV-cache hits, and looking at inflated throughput metrics.
+ --> 
+ 👍 
+ 2 
+ jmamou and keyboardAnt reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 2 reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ jmamou 
+ marked this pull request as ready for review
+ March 30, 2026 16:30 
+ jmamou 
+ requested review from
+ ApostaC , 
+ WoosukKwon , 
+ alexm-redhat , 
+ heheda12345 , 
+ njhill , 
+ robertgshaw2-redhat and 
+ ywang96 
+ as code owners 
+ March 30, 2026 16:30 
+ --> 
+ 2 hidden items
+ Load more…
+ jmamou 
+ requested review from
+ MatthewBonanni , 
+ ProExpertProg , 
+ hmellor , 
+ houseroad , 
+ luccafong , 
+ mgoin , 
+ tlrmchlsmth , 
+ yewentao256 and 
+ youkaichao 
+ as code owners 
+ March 30, 2026 16:30 
+ claude 
+ Bot 
+ reviewed
+ Mar 30, 2026 
+ View reviewed changes 
+ claude 
+ Bot 
+ left a comment
+ Copy link
+ Copy Markdown
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Claude Code Review
+ This pull request is from a fork — automated review is disabled. A repository maintainer can comment @claude review to run a one-time review.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ benchislett 
+ commented
+ Mar 30, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ I have looked through the benchmarks here and I feel there is more noise than signal. Let's align directly, either via DM or in the spec decoding SIG meeting. My high-level concerns are:
+ Unfair comparisons against draft model setups with unusual choices of K, inexhaustive sweep is leaving out a lot of nuance.
+ No comparisons with EAGLE3
+ Unreliable benchmarking methodology (synthetic data, ShareGPT are poor choices of dataset)
+ Synchronizations, even when offset by one iteration of drafting, will not be enough overlap to hide all the CPU overhead (e.g. prepare_inputs). In such cases, this may not be sufficient to provide speedup compared to optimal-K EAGLE speculative decoding at low batch sizes.
+ At higher batch sizes, I feel like the mean K per turn will be fairly consistent due to the large sample set of which we are taking the average (admittedly, this is assuming a somewhat homogeneous workload)
+ --> 
+ 👍 
+ 3 
+ jmamou, easonfzw, and shreyas269 reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 3 reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ jmamou 
+ force-pushed 
+ the
+ dsl 
+ branch
+ from
+ e5831bf to
+ 574cb0f 
+ Compare 
+ May 11, 2026 11:54 
+ mergify 
+ Bot 
+ mentioned this pull request
+ May 11, 2026 
+ [CPU] Fix rotary embedding for CPU without flash-attn ops
+ #42225 
+ Merged
+ 4 tasks 
+ jmamou 
+ added 3 commits
+ May 14, 2026 02:14 
+ enable dsl for EAGLE 
+ …
+ 8df5d86 
+ Signed-off-by: jmamou <jonathan.mamou@intel.com> 
+ feat: implement DSL (Dynamic Speculative Length) in CPU spec decode 
+ …
+ f641db0 
+ - Add confidence calculation with _greedy_sample_with_confidence method
+- Implement dynamic k adjustment: stop when min confidence drops below threshold
+- Handle early stopping with zero-padding to maintain fixed output shape
+- Use simple batch-wide strategy: stop all when any sequence confidence drops
+This completes the DSL feature for CPU speculative decoding, building on
+the draft_confidence_threshold config parameter already in the dsl branch. 
+ feat: add draft_confidence_threshold config parameter for DSL 
+ …
+ 59bc4e2 
+ Signed-off-by: jmamou <jonathan.mamou@intel.com> 
+ jmamou 
+ force-pushed 
+ the
+ dsl 
+ branch
+ from
+ 574cb0f to
+ 59bc4e2 
+ Compare 
+ May 14, 2026 09:24 
+ benchislett 
+ mentioned this pull request
+ May 25, 2026 
+ [Core][Spec Decode] Dynamic verification for dflash
+ #43522 
+ Closed
+ 4 tasks 
+ easonfzw 
+ commented
+ May 28, 2026 
+ Copy link
+ Copy Markdown
+ @jmamou Hi jmamou, thank you for your excellent work. I am currently conducting tests based on your commits, running the Llama-8B + Eagle-3 configuration on vLLM version 0.18.1. The results from two specific experimental groups—one with draft_tokens=10 and DSL_rate=0.0 , and the other with draft_tokens=10 and DSL_rate=0.7 —show virtually no speedup. Would it be possible for you to perform a comparative experiment on the Llama-8B + Eagle-3 setup? Thank you.
+ --> 
+ 👍 
+ 1 
+ jmamou reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ keyboardAnt 
+ commented
+ May 28, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ @jmamou Hi jmamou, thank you for your excellent work. I am currently conducting tests based on your commits, running the Llama-8B + Eagle-3 configuration on vLLM version 0.18.1. The results from two specific experimental groups—one with draft_tokens=10 and DSL_rate=0.0 , and the other with draft_tokens=10 and DSL_rate=0.7 —show virtually no speedup. Would it be possible for you to perform a comparative experiment on the Llama-8B + Eagle-3 setup? Thank you.
+ @easonfzw , is my understanding correct that vanilla SD ( DSL_rate=0.0 ) doesn't speed up autoregressive in your setup? Have you been able to measure any speedup of DSL ( DSL_rate=0.7 ) over vanilla SD ( DSL_rate=0.0 ) for draft_tokens=10 ?
+ --> 
+ 👍 
+ 1 
+ jmamou reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ easonfzw 
+ commented
+ May 28, 2026 
+ Copy link
+ Copy Markdown
+ @keyboardAnt Thank you for responding to my issue. Based on my current experiments—conducted using Eagle3 with draft_tokens=10 —the vanilla SD configuration ( DSL_rate=0.0 ) demonstrates a speedup compared to running without SD. Furthermore, the results for vanilla SD with DSL_rate=0.0 and DSL_rate=0.7 are comparable; specifically, setting DSL_rate=0.7 did not yield any additional speedup relative to DSL_rate=0.0 . @jmamou Hi could you help on this? thanks a lot.
+ --> 
+ 👍 
+ 1 
+ jmamou reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ keyboardAnt 
+ commented
+ May 28, 2026 
+ Copy link
+ Copy Markdown
+ @keyboardAnt Thank you for responding to my issue. Based on my current experiments—conducted using Eagle3 with draft_tokens=10 —the vanilla SD configuration ( DSL_rate=0.0 ) demonstrates a speedup compared to running without SD. Furthermore, the results for vanilla SD with DSL_rate=0.0 and DSL_rate=0.7 are comparable; specifically, setting DSL_rate=0.7 did not yield any additional speedup relative to DSL_rate=0.0 . @jmamou Hi could you help on this? thanks a lot.
+ @easonfzw , can you please try to rerun your benchmark with a larger cap on the number of drafts (e.g., draft_tokens=100 )?
+ --> 
+ 👍 
+ 1 
+ jmamou reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ jmamou 
+ commented
+ May 28, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ @easonfzw Thanks for running this — the result is consistent with what we'd expect for DSL in this regime, and it's a useful data point.
+ DSL's speedup comes from skipping draft forward passes when the draft model's confidence collapses early. The savings scale roughly as (K_max − k_effective) × draft_forward_cost . With Eagle3 at draft_tokens=10 two effects compress that gap:
+ Each Eagle3 draft step is much cheaper than a separate draft-model forward pass — it's a single transformer layer reusing the target's hidden state, no full prefill/decode pipeline. So even when DSL correctly skips drafts, the wall-clock saving per skipped draft is small, and closer in magnitude to DSL's own bookkeeping (extra logits read, mask ops, async D→H copy, padding back to [B, K] ).
+ Eagle3's logit confidences may not calibrate to acceptance the way a standard draft model's do. DSL's exit signal is essentially softmax(logits).max() > τ , used as a proxy for acceptance probability. But Eagle3 is trained to predict target hidden states , not to produce well-calibrated next-token distributions, so the threshold may fire at the wrong points relative to actual verifier rejections.
+ So at K=10 with Eagle3, DSL ≈ SD is the expected outcome.
+ To be upfront: DSL is a weaker fit for Eagle than for draft-model SD . The cheap-draft point (1) caps DSL's upper-bound benefit regardless of how well it's tuned, and the calibration point (2) just means τ values that work for draft-model SD probably don't transfer — Eagle3's logits still correlate with acceptance (they go through the target LM head), they're just noisier as an exit signal, so τ would need to be re-swept for Eagle3 specifically. Where DSL could still help with Eagle is at very large K_max (50, 100) where many skips × small per-skip savings can still beat the bookkeeping overhead, on long-tail prompts where Eagle's accepted length collapses, or at high batch sizes where unused draft positions cost the verifier. At moderate K and low batch size — the regime you're testing — DSL has little headroom by construction.
+ To see whether DSL recovers anything in your setup, two things would help:
+ Increase draft_tokens (e.g. 20, 50, 100, as @keyboardAnt already suggested). DSL only pays off when K_max is materially above the natural optimum so there is wasted-draft headroom for it to reclaim. At Eagle3's natural K (≈3–6 on most workloads), DSL has little to do by construction.
+ Disable prefix caching and report TPOT , not throughput:
+ vllm serve ... --no-enable-prefix-caching 
+ Otherwise prefix-cache hit-rate drift between runs can dominate the throughput delta and obscure the actual decode-side effect (this came up earlier in the thread with the draft-model setup).
+ If you can share TPOT numbers for:
+ (a) Eagle3 vanilla SD at its optimal K, vs
+ (b) Eagle3 + DSL at (K, τ) swept over K ∈ {10, 20, 50} × τ ∈ {0.4, 0.6, 0.8} ,
+ all with prefix caching off and a fixed seed, that would be the cleanest comparison.
+ Could you also share which device you ran on? The DSL bookkeeping vs. draft-skip trade-off shifts with device compute/memory bandwidth, so that affects the interpretation.
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ benchislett 
+ mentioned this pull request
+ Jun 8, 2026 
+ [Spec Decode] Adaptive verifier step-length for DFlash/PARD (D-Cut-style)
+ #44885 
+ Closed
+ 7 tasks 
+ smart-lty 
+ mentioned this pull request
+ Jun 30, 2026 
+ [Spec Decode] Add D-cut: Adaptive Verification Depth Pruning for Batched Speculative Decoding
+ #47131 
+ Open
+ LJX-xixi 
+ mentioned this pull request
+ Jul 10, 2026 
+ [RFC]: Per-request effective proposal lengths for adaptive speculative decoding
+ #48202 
+ Closed
+ 1 task 
+ coderabbitai 
+ Bot 
+ mentioned this pull request
+ Aug 22, 2026 
+ quant: Ornith-1.5 NVFP4 + IQ ladder (community requests), and harden the eval harness
+ protoLabsAI/protoLab#34 
+ Open
+ github-actions 
+ Bot 
+ commented
+ Aug 29, 2026 
+ Copy link
+ Copy Markdown
+ This pull request has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this pull request should remain open. Thank you!
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ github-actions 
+ Bot 
+ added
+ the 
+ stale
+ Over 90 days of inactivity 
+ label
+ Aug 29, 2026 
+ seongyun1104 
+ mentioned this pull request
+ Sep 7, 2026 
+ [Bug][Spec Decode]: DFlash is a net loss at long context (~185k) on hybrid GDN models - drafter re-scans full accumulated KV every cycle; no per-sequence-length disable hook
+ #54691 
+ Open
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ claude[bot] 
+ claude[bot] left review comments 
+ WoosukKwon 
+ Awaiting requested review from WoosukKwon 
+ WoosukKwon is a code owner 
+ robertgshaw2-redhat 
+ Awaiting requested review from robertgshaw2-redhat 
+ robertgshaw2-redhat is a code owner 
+ njhill 
+ Awaiting requested review from njhill 
+ ywang96 
+ Awaiting requested review from ywang96 
+ alexm-redhat 
+ Awaiting requested review from alexm-redhat 
+ heheda12345 
+ Awaiting requested review from heheda12345 
+ ApostaC 
+ Awaiting requested review from ApostaC 
+ orozery 
+ Awaiting requested review from orozery 
+ benchislett 
+ Awaiting requested review from benchislett 
+ benchislett is a code owner 
+ luccafong 
+ Awaiting requested review from luccafong 
+ luccafong is a code owner 
+ MatthewBonanni 
+ Awaiting requested review from MatthewBonanni 
+ MatthewBonanni is a code owner 
+ youkaichao 
+ Awaiting requested review from youkaichao 
+ youkaichao is a code owner 
+ mgoin 
+ Awaiting requested review from mgoin 
+ mgoin is a code owner 
+ tlrmchlsmth 
+ Awaiting requested review from tlrmchlsmth 
+ tlrmchlsmth is a code owner 
+ houseroad 
+ Awaiting requested review from houseroad 
+ houseroad is a code owner 
+ hmellor 
+ Awaiting requested review from hmellor 
+ yewentao256 
+ Awaiting requested review from yewentao256 
+ yewentao256 is a code owner 
+ ProExpertProg 
+ Awaiting requested review from ProExpertProg 
+ ProExpertProg is a code owner 
+ +2 more reviewers
+ voipmonitor 
+ voipmonitor left review comments 
+ gemini-code-assist[bot] 
+ gemini-code-assist[bot] left review comments 
+ Reviewers whose approvals may not affect merge requirements 
+ At least 1 approving review is required to merge this pull request.
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ performance 
+ Performance-related issues 
+ speculative-decoding 
+ stale 
+ Over 90 days of inactivity 
+ v1 
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 6 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

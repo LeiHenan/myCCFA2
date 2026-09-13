@@ -1,0 +1,1278 @@
+[V1][Spec Decode] Add Dynamic SD by ekagra-ranjan · Pull Request #32374 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [V1][Spec Decode] Add Dynamic SD - # 32374 
+ # 32374 
+ Merged 
+ vllm-bot merged 66 commits into vllm-project:main vllm-project/vllm:main from ekagra-ranjan:er-dynami-sd ekagra-ranjan/vllm:er-dynami-sd Copy head branch name to clipboard 
+ Jun 14, 2026 
+ Conversation Commits 66  ( 66 ) Checks Files changed 
+ Merged 
+ [V1][Spec Decode] Add Dynamic SD # 32374 vllm-bot merged 66 commits into vllm-project:main vllm-project/vllm:main from ekagra-ranjan:er-dynami-sd ekagra-ranjan/vllm:er-dynami-sd Copy head branch name to clipboard 
+ Conversation
+ ekagra-ranjan 
+ commented
+ Jan 15, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Why is Dynamic SD needed?
+ SD methods need to verify K tokens for each sequence during decoding. As BS increases, the effective BS becomes BS * K which increases the compute requirement during verification. When this BS*K goes beyond a critical BS then SD negatively impacts the TPOT. DSD helps by tuning down the K to an optimal value such that we continue to reap the benefits from SD.
+ Use cases
+ Possibility of High workload using same deployment. Here K would go down as workload increases.
+ During RL rollout where we start off with high BS but then end up with small BS due to very few long tail request which end up generating a lot of tokens stalling the progress of the current rollout. Here K would go up during the end of rollout.
+ What this PR does
+ Addresses #4565 
+V0 had milestone 0. V1 didn't have any form of Dynamic SD.
+ This PR implements something between Milestone 2 and 3 of Dynamic SD (DSD) where we dynamically determine the proposed length for speculative decoding using runtime information such as batch size and position level acceptance rate in conjunction with profiled parameters like token acceptance rate (for cold start) and the comparative costs of running the draft versus the target model. This approach allows us to adjust the proposed length in real-time, optimizing performance based on current system conditions.
+ Before inference happens, the approach uses a representative dataset to profile (similar to how the optimal K is selected for SD w/o Dynamic by iterating on a representative dataset):
+ the position level acceptance rate for solving the cold start problem
+ cost of running draft and target model
+ During inference runtime, the optimal K is found using:
+ the current batch size
+ average of position level acceptance rate that the system has seen so far. It waits for warmup_steps before it starts using the measured AR so far. Till warmup_steps it uses the AR from the offline profiling on a representative dataset.
+ This balances the cold start problem and allows the system to adapt to running request. There are many ways to extend this strategy like resetting AR after some steps but those are left for future work. The purpose of the PR is to have at least something working in vLLM.
+ The PR computes the goodput similar TurboSpec . However, there is some change to the formula to make it simpler and easier to extend to future models. For a given BS and K: goodput = AL / ITL where AL is a function of K and ITL is a function of K and BS.
+ TurboSpec on the other hand profiles draft and target separately and builds a regression model which is a function of Model config, KV cache size and batch size to find goodput . This PR follows a simplified approach where the ITL (inter token latency) of the SD model, i.e., target + draft, is directly noted across batch sizes which encapsulates the model config. This makes the setup easier to adapt when model arch changes like SWA or a new change come into picture in future which would make the equation more complicated. The setup profiles using some given batch sizes (BS) and num of draft (K) and linearly interpolates the values between neighboring values for each BS and K bw min and max values of BS and K. While simple, it works effectively as shown in the results.
+ Results
+ Offline profiled on MTBench and Tested on MTBench
+ <style type="text/css"></style>
+ 1xH100 
+ llama 3.1 8b 
+ MTBench 
+ Vanilla 
+ EAGLE 
+ Dynamic EAGLE 
+ BS 1 
+ 6.3 
+ 3.98 
+ 3.98 
+ BS 4 
+ 6.38 
+ 4.03 
+ 4.05 
+ BS 16 
+ 6.77 
+ 4.45 
+ 4.45 
+ BS 64 
+ 7.94 
+ 6.78 
+ 6.56 
+ BS 128 
+ 10.15 
+ 11.19 
+ 9.88 
+ BS 256 
+ 16.2 
+ 19.96 
+ 17.2 
+Above measures TPOT (ms). Lower is better.
+ As we can see,
+ At lower BS, DSD is equal to SD and both are better than vanilla
+ At higher BS, SD is worse than vanilla and DSD is better than SD and closer to vanilla. However, DSD has some overhead of running the draft model to prefill even though its not used during decode even though DSD would assign K=0. This is fine because the setup can change BS in future so having all tokens prefilled in draft model is needed.
+ Offline profiled on MTBench and Tested on InstructCoder
+ <style type="text/css"></style>
+ Profiled on MTB 
+ InstructCoder 
+ Vanilla 
+ EAGLE 
+ Dynamic EAGLE 
+ Dynamic EAGLE with runtime AL 
+ BS 128 
+ 12.69 
+ 11.55 
+ 11.85 
+ 11.43 
+ BS 256 
+ 21.19 
+ 21.5 
+ 21.07 
+ 21.07 
+ Here, "Dynamic EAGLE" is not using runtime AL at all. As we can see adding runtime AL to goodput calculation after sometime give some minor improvement here so for this dataset MTBench numbers are well transferrable to InstrucrCoder but the runtime AL connection would help in adapting more to current workload.
+ Cmds
+ Generate DSD Config
+ time python3 vllm/v1/spec_decode/dynamic/generate_config.py \
+ --method eagle \
+ --model-dir 'meta-llama/Llama-3.1-8B-Instruct' \
+ --draft-dir 'yuhuili/EAGLE-LLaMA3.1-Instruct-8B' \
+ --tp 1 \
+ --temp 0 \
+ --top-p 1.0 \
+ --top-k -1 \
+ --max-vllm-batch-size 256 \
+ --batch-size-list 1 4 16 64 256 \
+ --num-speculative-tokens-list 1 3 5 \
+ --num-batches 20 \
+ --dataset-name hf \
+ --dataset-path 'philschmid/mt-bench' \
+ --no-oversample \
+ --result-dir './log/dynamic_sd_test'
+ Example of `dynamic_speculative_config.json` generated 
+ {
+ "is_online": false,
+ "batch_stats": {
+ "1": {
+ "0": 6.520589930005372,
+ "1": 7.367628160864115,
+ "3": 8.84066498838365,
+ "5": 10.32649097032845
+ },
+ "4": {
+ "0": 6.601515458896756,
+ "1": 7.472813129425049,
+ "3": 8.981170016340911,
+ "5": 10.400271974503994
+ },
+ "16": {
+ "0": 6.898819003254175,
+ "1": 7.852344075217843,
+ "3": 9.518282022327185,
+ "5": 11.196403065696359
+ },
+ "64": {
+ "0": 7.774091092869639,
+ "1": 9.656429989263415,
+ "3": 13.497876934707165,
+ "5": 16.831180080771446
+ },
+ "256": {
+ "0": 14.491415582597256,
+ "1": 27.138127014040947,
+ "3": 41.848431108519435,
+ "5": 57.40421102382243
+ }
+ },
+ "max_num_speculative_tokens": 5,
+ "acceptance_rate_per_pos": [
+ 0.6811801775995416,
+ 0.3914351188771126,
+ 0.20352334574620454,
+ 0.1014036092810083,
+ 0.051417931824692065
+ ]
+}
+ Benchmark
+ We chose 20*MAX_CONCURRENCY as the num of prompt so that each setting has at least 20 batches. Without this since MTBench only has 80 samples so MAX_CONCURRENCY=1 would have 80 batches and MAX_CONCURRENCY=128 will have only 1 BS.
+ # vanilla
+VLLM_USE_V1=1 vllm serve meta-llama/Llama-3.1-8B-Instruct \
+ --port 9001 \
+ --no-enable-prefix-caching \
+ --max-num-seqs 256
+# Eagle
+VLLM_USE_V1=1 vllm serve meta-llama/Llama-3.1-8B-Instruct \
+ --port 9001 \
+ --speculative_config '{"method": "eagle", "model": "yuhuili/EAGLE-LLaMA3.1-Instruct-8B", "num_speculative_tokens": 3}' \
+ --no-enable-prefix-caching \
+ --max-num-seqs 256
+# Dynamic Eagle
+VLLM_USE_V1=1 vllm serve meta-llama/Llama-3.1-8B-Instruct \
+ --port 9001 \
+ --speculative_config '{"method": "eagle", "model": "yuhuili/EAGLE-LLaMA3.1-Instruct-8B", "num_speculative_tokens": 3, "dynamic_config_path": "log/dynamic_sd_test_2/tp-1_temp-0.0_top_p-1.0_top_k--1/philschmid/mt-bench/dynamic_speculative_config.json"}' \
+ --no-enable-prefix-caching \
+ --max-num-seqs 256
+# change MAX_CONCURRENCY here.
+MAX_CONCURRENCY=1
+NUM_PROMPTS=$((MAX_CONCURRENCY * 20)) 
+time vllm bench serve --port 9001 --save-result --save-detailed \
+ --model meta-llama/Llama-3.1-8B-Instruct \
+ --backend openai-chat \
+ --endpoint /v1/chat/completions \
+ --dataset-name hf \
+ --dataset-path philschmid/mt-bench \
+ --num-prompts ${NUM_PROMPTS} \
+ --max-concurrency ${MAX_CONCURRENCY} \
+ --result-dir "./log/EAGLE-1"
+ File changes:
+ vllm/v1/spec_decode/dynamic/generate_config.py is the master file which schedules different scripts and gets the config which is used by DSD during runtime. It has different stages:
+ Step 1: Uses offline script to get the AL across different positions.
+ vllm/v1/spec_decode/offline.py is used for it. This is offline_inference/spec_decode.py but moved to vllm/ so that it can be imported here. This offline script is also used in test in CI so is an important file.
+ Step 2: Runs profiling to get the ITL across different BS and K using vllm bench sweep 
+ Step 3: Parses the various values generated for each BS and K and collates ITL from them in a config value.
+ Step 4: saves the Dynamic SD config as a config file
+ Adds config class DynamicSpeculativeConfig in vllm/config/speculative.py which holds the config values during DSD profiling. It also has path to the config values.
+ vllm/v1/spec_decode/dynamic/manager.py is the Dynamic SD Manager which reads the ITL from the DynamicSpeculativeConfig generated above and generates optimal K for each BS by interpolating across K and BS during the profiling and then provides it to the SD method during proposal.
+ vllm/v1/worker/gpu_model_runner.py will initalize the DSD Manager and provide the optimal K for the given BS during inference to resp SD method.
+ Introduces spec_decoding_stats_all in scheduler which collects the stats and is used in dynamic/manager.py to compute AR and use the updated values after certain warmup_steps 
+ After Async scheduling and padded drafter compatibility
+ Similar to the synchronous scheduling
+ File changes for async and padded drafter
+ Old approach 
+### `vllm/v1/core/sched/async_scheduler.py`
+**Problem**: With async scheduling, when dynamic SD changes the optimal K (e.g., from 5 to 3), there's a pipeline latency issue: the scheduler has already committed accounting (num_computed_tokens, num_output_placeholders) for the in-flight batch using the old K.
+**Solution**: 
+`_pending_optimal_k`: int | None — stores the optimal K from model output, deferred until the next schedule() call.
+`_in_flight_decode_req_k`: dict[str, int] — maps req_id -> committed spec token count for decode requests in the most recently dispatched batch. Used to know exactly which requests need accounting correction and by how much.
+ New method _apply_pending_dynamic_sd_update() : Called at the start of schedule() . Applies the deferred K update:
+ Updates _spec_token_placeholders to the new K length (controls how many spec positions the scheduler reserves for future batches → reduces KV block waste).
+ Corrects the in-flight batch's over-committed accounting: for each request in _in_flight_decode_req_k , computes diff = committed_k - optimal_k . If diff > 0 (K decreased), subtracts diff from request.num_output_placeholders and request.num_computed_tokens . If diff <= 0 (K increased), just updates request.spec_token_ids for the next scheduling step (can't retroactively add tokens to an in-flight batch).
+ Override schedule() : Calls _apply_pending_dynamic_sd_update() then delegates to super().schedule() .
+Modified _update_after_schedule() : Resets and populates _in_flight_decode_req_k with req_id -> cur_num_spec_tokens for each non-prefill decode request that was just committed with spec tokens > 0.
+ vllm/v1/worker/gpu_model_runner.py 
+ Problem : the model runner still processes (and rejects) zero-padded speculative tokens beyond the optimal K, wasting compute. The SchedulerOutput seen by the model runner still contains the old (larger) K from when the batch was scheduled.
+ Solution :
+New method _trim_spec_tokens_for_dynamic_sd (scheduler_output): Trims scheduled_spec_decode_tokens in-place to match self._optimal_num_speculative_tokens . For each request where scheduled_k > optimal_k 
+ Modified _update_states() : Inserted a call to _trim_spec_tokens_for_dynamic_sd(scheduler_output) before the ngram_gpu handling block. Conditioned on _optimal_num_speculative_tokens is not None and use_async_scheduling and scheduled_spec_tokens . This ordering ensures original_num_spec_per_req (saved for ngram_gpu's prev_num_draft_len restoration) is based on the dynamically-trimmed K rather than the over-allocated K.
+ Modified take_draft_token_ids() : When dynamic SD reduced K below num_spec_tokens , truncates each request's draft token list to k entries (the GPU tensor is zero-padded to num_spec_tokens for scatter indexing, but the scheduler should only see real draft tokens).
+ New Approach
+ padded drafter
+ no padding is done.
+ Model runner at step N saves the K in prev_num_spec_tokens during _copy_draft_token_ids_to_cpu() so that the model runner at Step N+1 can correctly index the draft_token_ids where prev_num_spec_tokens (changes) is used for stride instead of num_spec_tokens (fixed)
+ async scheduling
+ scheduler.py at step N sets the num_spec_tokens_to_schedule to send to model runner at Step N
+ async_scheduler.py updates the spec token placeholder in _update_after_schedule() at step N so that the scheduler at step at N+1 can account for new K spec tokens to send for verification to the engine. The _spec_token_placeholders gets saved in request.spec_token_ids in _update_after_schedule() of async sched at step N which then gets used to create scheduled_spec_decode_tokens which gets consumed as draft_len in _prepare_input_ids() 
+ So prev_num_spec_tokens decides how many draft token ids were drafted at step N and draft_len decides how many of them will be verified at Step N+1. draft_len <=prev_num_spec_tokens since draft_len comes from the token budget we have available in this fwd pass.
+ PENDING (some of them can be done in future PRs):
+ use online AL to refine the goodput after warmup
+ While this PR only tested EAGLE-1, it can be extended to other methods like EAGLE-3 etc
+ Probably vllm sweep can be used instead of the newly added profiling_client.py and profiling_server.py 
+ padded drafter
+ async scheduling
+ add some tests
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ 👍 
+ 2 
+ depthfirst-app[bot] and qianlihuang reacted with thumbs up emoji 
+ 🚀 
+ 7 
+ ZewenShen-Cohere, walterbm-cohere, kkt-cohere, junuxyz, bewestphal, NavarrePratt, and qianlihuang reacted with rocket emoji 
+ All reactions 
+ 👍 
+ 2 reactions 
+ 🚀 
+ 7 reactions 
+ ekagra-ranjan 
+ added 9 commits
+ October 10, 2025 14:43 
+ save work 
+ …
+ 8e7bcc9 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ move to dynamic folder and scripts are in working condition 
+ …
+ bee764b 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ sync main 
+ …
+ e61145f 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ pre 
+ …
+ 06916e5 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ start stiching 
+ …
+ 5e63d51 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ pipeline works and offline script moved 
+ …
+ b683f26 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ load dynamic sd config 
+ …
+ 618b5fd 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ remove offline bkp 
+ …
+ c540a75 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ remove 
+ …
+ dfb2b31 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ ekagra-ranjan 
+ requested review from
+ ProExpertProg , 
+ WoosukKwon , 
+ benchislett , 
+ hmellor , 
+ houseroad , 
+ luccafong , 
+ mgoin , 
+ robertgshaw2-redhat , 
+ tlrmchlsmth , 
+ yewentao256 and 
+ youkaichao 
+ as code owners 
+ January 15, 2026 03:17 
+ mergify 
+ Bot 
+ commented
+ Jan 15, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Documentation preview: https://vllm--32374.org.readthedocs.build/en/32374/ 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ mergify 
+ Bot 
+ added
+ documentation
+ Improvements or additions to documentation 
+ speculative-decoding
+ labels
+ Jan 15, 2026 
+ mergify 
+ Bot 
+ commented
+ Jan 15, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ This pull request has merge conflicts that must be resolved before it can be
+merged. Please rebase the PR, @ekagra-ranjan .
+ https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ mergify 
+ Bot 
+ added
+ v1
+ needs-rebase
+ labels
+ Jan 15, 2026 
+ gemini-code-assist 
+ Bot 
+ reviewed
+ Jan 15, 2026 
+ View reviewed changes 
+ gemini-code-assist 
+ Bot 
+ left a comment
+ Copy link
+ Copy Markdown
+ Contributor 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Code Review
+ This pull request introduces Dynamic Speculative Decoding (DSD), a significant performance enhancement for vLLM. The implementation involves profiling to gather runtime statistics and then using those to dynamically adjust the number of speculative tokens. The changes are extensive, adding new scripts for configuration generation, profiling, and a manager for DSD logic. While the overall approach is sound, I've identified several critical issues, including potential server crashes due to division by zero, command injection vulnerabilities in the profiling scripts, and other high-severity bugs that could lead to incorrect behavior or system instability. These issues should be addressed to ensure the feature is robust and secure.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ Comment thread 
+ vllm/v1/spec_decode/dynamic/manager.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/v1/spec_decode/dynamic/process_benchmark_results.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/v1/spec_decode/dynamic/profiling_client.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/v1/spec_decode/dynamic/profiling_client.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/v1/spec_decode/dynamic/profiling_server.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/v1/spec_decode/ngram_proposer.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/config/speculative.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/v1/spec_decode/dynamic/generate_config.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/v1/spec_decode/dynamic/profiling_server.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/v1/spec_decode/eagle.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ekagra-ranjan 
+ mentioned this pull request
+ Jan 15, 2026 
+ [RFC]: Automate Speculative Decoding
+ #4565 
+ Closed
+ cursor 
+ Bot 
+ reviewed
+ Jan 15, 2026 
+ View reviewed changes 
+ cursor 
+ Bot 
+ left a comment
+ Copy link
+ Copy Markdown
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Comment @cursor review or bugbot run to trigger another review on this PR 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ Comment thread 
+ vllm/v1/spec_decode/ngram_proposer.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/v1/spec_decode/ngram_proposer.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/v1/spec_decode/dynamic/profiling_client.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/v1/spec_decode/dynamic/manager.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/v1/spec_decode/dynamic/process_benchmark_results.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/v1/spec_decode/dynamic/manager.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/v1/spec_decode/offline.py 
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/v1/spec_decode/eagle.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/v1/spec_decode/dynamic/manager.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ add runtime AL to goodput after warmup 
+ …
+ bb65365 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ --> 
+ 173 hidden items
+ Load more…
+ iboiko-habana 
+ pushed a commit
+ to vllm-project/vllm-gaudi
+ that referenced
+ this pull request
+ Jun 22, 2026 
+ [FIX_FOR_VLLM_CUSTOM=ecf9d83520eb217401b47d8a5451a27c5231b8c2] Adapt … 
+ … 
+ c5c7a55 
+ …HPU scheduler, ngram proposer and offloading connector tests to upstream API drift ( #1556 )
+## Bug 1: Forward throttle_prefills in HPUAsyncScheduler.schedule
+- **State machine id**: hpu_async_scheduler_schedule_positional_arg
+- **Commit**: 957ba4d 
+### Root cause
+vLLM PR #44558 added a throttle_prefills positional arg to
+Scheduler.schedule(); EngineCore calls it positionally but the HPU
+override only accepted self.
+### Upstream PR
+ vllm-project/vllm#44558 
+### Fix
+Accept throttle_prefills (default False) on the
+HPUAsyncScheduler.schedule override and forward it to
+super().schedule().
+## Bug 2: Pass num_speculative_tokens to NgramProposer.propose
+- **State machine id**: ngram_proposer_propose_missing_positional_arg
+- **Commit**: 82155ea 
+### Root cause
+vLLM PR #32374 (Dynamic SD) added a leading num_speculative_tokens
+positional arg to NgramProposer.propose().
+### Upstream PR
+ vllm-project/vllm#32374 
+### Fix
+Prepend self.speculative_config.num_speculative_tokens in
+propose_ngram_draft_token_ids to match the new upstream signature.
+## Bug 3: Align OffloadingConnector stats tests with upstream
+flat-metrics API
+- **State machine id**: offloading_connector_cpu_to_gpu_metrics_missing
+- **Commit**: c1eb9e3 
+### Root cause
+vLLM PR #35669 rewrote OffloadingConnectorStats to a self-describing
+{types, data} flat-metric payload, dropping the per-direction
+CPU_to_GPU/GPU_to_CPU list shape the tests still asserted.
+### Upstream PR
+ vllm-project/vllm#35669 
+### Fix
+Rewrite test_metrics.py to exercise
+increase_counter/observe_histogram/aggregate/reduce/reset against the
+new self-describing stats contract.
+## Bug 4: Align OffloadingConnector scheduler flush assertions with
+upstream defer-on-finish
+- **State machine id**: offloading_connector_flush_on_finish_deferred
+- **Commit**: 575a178 
+### Root cause
+vLLM commit f428718ffe (PR #45823, "Defer on_request_finished until
+in-flight
+transfers drain") changed OffloadingConnectorScheduler: a finishing
+request with
+in-flight store jobs no longer flushes those stores immediately —
+finalization
+is deferred until transfers drain, and flush now fires only on
+preemption or
+block reuse. test_concurrent_lookups_of_the_same_prefix and
+test_abort_loading_requests still asserted flush-on-finish, so they
+failed once
+the target vLLM SHA picked up #45823.
+### Upstream PR
+ vllm-project/vllm#45823 
+### Fix
+Drop the stale expected_flushed_gpu_block_indexes assertions in the two
+affected
+tests (matching upstream's own equivalents, which assert no flush in
+these
+scenarios). test_request_preemption keeps its flush-on-preemption
+assertion,
+which upstream still honors.
+---------
+Signed-off-by: Paweł Olejniczak <pawelx.olejniczak@intel.com> 
+ Sunt-ing 
+ mentioned this pull request
+ Jun 22, 2026 
+ [Bugfix][Spec Decode] Disable dynamic speculative decoding for fixed-K proposers instead of crashing
+ #46399 
+ Open
+ 2 tasks 
+ RhizoNymph 
+ added a commit
+ to RhizoNymph/vllm
+ that referenced
+ this pull request
+ Jun 22, 2026 
+ Integrate upstream/main into feat/integration ( #186 ) 
+ … 
+ e0ca868 
+ * [Kernel][Helion][1/N] Add Helion kernel for per_token_group_fp8_quant (#36902)
+Signed-off-by: Sean Chen <seachen@redhat.com>
+Co-authored-by: Yanan Cao <gmagogsfm@gmail.com>
+Co-authored-by: mergify[bot] <37929162+mergify[bot]@users.noreply.github.com>
+* [Bugfix] Restrict FlashInfer cuDNN FP8 ViT attention gate to Blackwell (SM 100) (#45251)
+Signed-off-by: Wentian Byte <3400259131@qq.com>
+* [Rust Frontend] Support continuous_usage_stats stream option (#43965)
+Co-authored-by: Bugen Zhao <i@bugenzhao.com>
+Signed-off-by: RickyChen / 陳昭儒 <ricky.chen@infinirc.com>
+Signed-off-by: Bugen Zhao <i@bugenzhao.com>
+* [Bugfix] Fix Anthropic tool_use content handling dropping args (#45287)
+Signed-off-by: Ben Browning <bbrownin@redhat.com>
+* [Model] Remove InternLMForCausalLM registry alias (#45128)
+Signed-off-by: Xianbao QIAN <xianbao.qian@gmail.com>
+Co-authored-by: Claude <noreply@anthropic.com>
+* [Bug] Fix test flashmla for DSv4 (#45052)
+Signed-off-by: yewentao256 <zhyanwentao@126.com>
+* [Refactor] Chat Completions Harmony Refactor, non-streaming path. (#45171)
+Signed-off-by: Yifan Zong <yzong@redhat.com>
+* [Bugfix][KVConnector][Mooncake] Close MooncakeDistributedStore on connector teardown (#45206)
+Signed-off-by: Dao Le <Dao007forever@gmail.com>
+Co-authored-by: Claude <noreply@anthropic.com>
+* Make mistral_common optional by deferring MistralToolCall import (#45305)
+Signed-off-by: Neil Schemenauer <nas@arctrix.com>
+* [Bugfix] Initialize missing attributes in mistral eagle (#45217)
+Signed-off-by: jpwang <jpwang@smail.nju.edu.cn>
+Co-authored-by: mergify[bot] <37929162+mergify[bot]@users.noreply.github.com>
+* [Refactor] Chat Completions Streaming Harmony Refactor and Bugfixes (#45104)
+Signed-off-by: Yifan Zong <yzong@redhat.com>
+* [Bugfix] OffloadingConnector: respect skip_reading_prefix_cache flag (#44592)
+Signed-off-by: Hsiao-Yuan Chen <hy.c@Hsiao-YuandeMacBook-Pro.local>
+Signed-off-by: littlecircle0730 <littlecircle0730@gmail.com>
+Signed-off-by: littlecircle0730 <43994952+littlecircle0730@users.noreply.github.com>
+Co-authored-by: Hsiao-Yuan Chen <hy.c@Hsiao-YuandeMacBook-Pro.local>
+Co-authored-by: Or Ozeri <or@ozery.com>
+* [ROCm][DSv4][Perf] Flash-decode split-K decode attention kernel (#44899)
+Co-authored-by: vLLM Contributor <contributor@vllm.ai>
+* [Bugfix][Model] Pass revision by name in Run:ai and bitsandbytes index downloads (#45308)
+Signed-off-by: Ting Sun <suntcrick@gmail.com>
+* [CI][BugFix] Fix broken `test_mamba_prefix_cache.py` due to stale mock (#45345)
+Signed-off-by: Nick Hill <nickhill123@gmail.com>
+* [Bugfix] Fix --enable-prompt-tokens-details omitting zero cached tokens (#44383)
+Signed-off-by: Sasindharan Sankar <sasindharansankar@email.com>
+Co-authored-by: Sasindharan Sankar <sasindharansankar@email.com>
+Co-authored-by: Chauncey <chaunceyjiang@gmail.com>
+* [ASR] Optimize CPU preproc to get 2.5x RTFx via multi-threading (#44612)
+Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com>
+Co-authored-by: mergify[bot] <37929162+mergify[bot]@users.noreply.github.com>
+* [Bugfix] Mamba CPU Offloading (#44599)
+Signed-off-by: varun sundar rabindranath <vsundarr@redhat.com>
+Co-authored-by: varun sundar rabindranath <vsundarr@redhat.com>
+* [ASR] Add Long Audio benchmark and correctness test (#44587)
+Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com>
+* [11a/n] Migrate Marlin kernels to torch stable ABI (#45176)
+Signed-off-by: Chris Leonard <chleonar@redhat.com>
+* [NIXL] Per-region KV transfer classification for mixed full-attn + MLA groups (#44583)
+* [ROCm][CI] fix fp8 support for test_deepep_moe (#45302)
+Signed-off-by: Divakar Verma <divakar.verma@amd.com>
+* [Model] Add DiffusionGemma Support (#45163)
+Signed-off-by: Lucas Wilkinson <lwilkins@redhat.com>
+Signed-off-by: Matthew Bonanni <mbonanni@redhat.com>
+Co-authored-by: Martin Kukla <martin.kukla@cantab.net>
+Co-authored-by: Matthew Bonanni <mbonanni@redhat.com>
+Co-authored-by: Dipika Sikka <dsikka@redhat.com>
+Co-authored-by: NickLucche <nlucches@redhat.com>
+Co-authored-by: jiahanc <173873397+jiahanc@users.noreply.github.com>
+Co-authored-by: Alec Kohlhoff <134344302+aleckohlhoff@users.noreply.github.com>
+Co-authored-by: Porras Huang <20535584+porrashuang@users.noreply.github.com>
+Co-authored-by: Claude <noreply@anthropic.com>
+Co-authored-by: scoootscooob <167050519+scoootscooob@users.noreply.github.com>
+* [MM][Perf][CG] Support ViT full cudagraphs for mllama4 (#40660)
+Signed-off-by: allgather <all2allops@gmail.com>
+Co-authored-by: Isotr0py <mozf@mail2.sysu.edu.cn>
+* [ROCm][gpt-oss] Pass GateMode.INTERLEAVE for MXFP4 W4A16 fused MoE (#44893)
+Signed-off-by: Rohan Potdar <rohan.potdar@amd.com>
+Signed-off-by: Rohan138 <rohanpotdar138@gmail.com>
+Signed-off-by: Rohan Potdar <66227218+Rohan138@users.noreply.github.com>
+* [Bugfix] Fix Dockerfile dependency graph pre-commit error (#45374)
+Signed-off-by: Isotr0py <mozf@mail2.sysu.edu.cn>
+* [CPU] Support CPU W4A16 INT4 MoE (#43409)
+Signed-off-by: yuwenzho <yuwen.zhou@intel.com>
+* [Rust Frontend][Bugfix] Forward --shutdown-timeout and --disable-log-stats to the managed Python engine (#45300)
+Signed-off-by: Will Eaton <weaton@redhat.com>
+* [XPU][DeepSeek-V4] Fix MTP: sync with upstream fixes #44821 and #43746 (#45240)
+Signed-off-by: Ma Jian <jian1.ma@intel.com>
+Co-authored-by: mergify[bot] <37929162+mergify[bot]@users.noreply.github.com>
+* [CI] ci-fetch-log.sh: fetch all failed jobs from a build URL or PR number (#45274)
+Signed-off-by: mgoin <mgoin64@gmail.com>
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+* [Frontend] Support strict mode for tool calling (#45003)
+Signed-off-by: chaunceyjiang <chaunceyjiang@gmail.com>
+Co-authored-by: cjackal <44624812+cjackal@users.noreply.github.com>
+Co-authored-by: mergify[bot] <37929162+mergify[bot]@users.noreply.github.com>
+* [Bugfix][Rust Frontend] Return 400 for prompt-validation submit errors (#45286)
+Signed-off-by: xiaguan <751080330@qq.com>
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+* Update hidden states extraction integration test triggers (#45294)
+Signed-off-by: Fynn Schmitt-Ulms <fschmitt@redhat.com>
+* Fix misleading error for audio duration limit rejection (#45113)
+Signed-off-by: jperezde <jperezde@redhat.com>
+* [Doc] AGENTS.md: add section about coding style (#45301)
+Signed-off-by: Thomas Parnell <tpa@zurich.ibm.com>
+* [11b/n] Migrate Machete kernels to torch stable ABI (#45304)
+Signed-off-by: Chris Leonard <chleonar@redhat.com>
+Signed-off-by: Shengqi Chen <harry-chen@outlook.com>
+Co-authored-by: Shengqi Chen <harry-chen@outlook.com>
+* [KV Connector]: Support KV push from Prefill to Decode node using Nixl KV Connector (#35264)
+Signed-off-by: Sunita Nadampalli <nadampal@amazon.com>
+Signed-off-by: NickLucche <nlucches@redhat.com>
+Co-authored-by: Nicolò Lucchesi <nlucches@redhat.com>
+* [Model] Remove Mono-InternVL (InternLM2VEForCausalLM) (#45129)
+Signed-off-by: Xianbao QIAN <xianbao.qian@gmail.com>
+Signed-off-by: Isotr0py <mozf@mail2.sysu.edu.cn>
+Co-authored-by: Claude <noreply@anthropic.com>
+Co-authored-by: Isotr0py <mozf@mail2.sysu.edu.cn>
+* [BUGFIX][XPU] Update fa interface for compatibility (#45394)
+Signed-off-by: zhenwei-intel <zhenwei.liu@intel.com>
+Signed-off-by: Kunshang Ji <kunshang.ji@intel.com>
+Co-authored-by: Kunshang Ji <kunshang.ji@intel.com>
+* [Metrics] Add group-aware KV cache capacity to vllm:cache_config_info (#42206)
+The startup log already reports the correct group-aware KV cache capacity for
+hybrid models, but Prometheus did not expose matching info in 'vllm:cache_config_info`.
+This PR adds kv_cache_size_tokens and kv_cache_max_concurrency.
+Signed-off-by: Ethan Feng <ethan.fengch@gmail.com>
+* [V1][Metrics] Add MLA attention metrics for DeepSeek MFU estimation (#39457)
+Signed-off-by: Thillai Chithambaram <thillaichithambaram.a@gmail.com>
+Co-authored-by: Mark McLoughlin <markmc@redhat.com>
+* [Bug] Migrate Reset cache for both v2 and v1 model runner (#42759)
+Signed-off-by: yewentao256 <zhyanwentao@126.com>
+Co-authored-by: mergify[bot] <37929162+mergify[bot]@users.noreply.github.com>
+* [Core] Support structured outputs for beam search (#35022)
+Signed-off-by: Guan-Ming (Wesley) Chiu <guanmingchiu@gmail.com>
+Signed-off-by: Guan-Ming (Wesley) Chiu <105915352+guan404ming@users.noreply.github.com>
+* [Core][KV Connector] fix scheduler KV connector stats aggregation (#43877)
+Fixes scheduler-side KV connector stats collection so that:
+1. update_connector_output() runs before scheduler-side stats are collected.
+2. worker-side and scheduler-side KV connector stats are aggregated when both are present.
+3. scheduler-only KV connector stats are still emitted when no worker-side stats exist.
+Signed-off-by: srinivas_oo7 <sklinkedin0120@gmail.com>
+Co-authored-by: srinivas_oo7 <sklinkedin0120@gmail.com>
+* [Frontend] Support strict mode for tool calling with ResponsesAPI (#45396)
+Signed-off-by: chaunceyjiang <chaunceyjiang@gmail.com>
+* [Docs][KV Connector][NIXL] document KV Transfer stat logging and Prometheus metrics (#44055)
+Signed-off-by: Sai Sridhar <tarrasridhar1154@gmail.com>
+* [Rust Frontend] Add standalone `granite4` tool parser (#45216)
+Signed-off-by: Tahsin Tunan <tahsintunan@gmail.com>
+Co-authored-by: Bugen Zhao <i@bugenzhao.com>
+Co-authored-by: mergify[bot] <37929162+mergify[bot]@users.noreply.github.com>
+* [Model] Add encoder CUDA graph support to Lfm2VL (#44930)
+Signed-off-by: vincentzed <207368749+vincentzed@users.noreply.github.com>
+* [Kernel][Helion][1/N] Add Helion kernel for dynamic_per_token_scaled_fp8_quant (#33790)
+Signed-off-by: Sean Chen <seachen@redhat.com>
+Co-authored-by: Yanan Cao <gmagogsfm@gmail.com>
+* [Model][Dflash] Enable Dflash support for Qwen3NextForCausalLM targets (#45319)
+Signed-off-by: Jonas I. Liechti <j-i-l@t4d.ch>
+* [Migration] Migrate GGUF quantization support to plugin (#39612)
+Signed-off-by: Isotr0py <mozf@mail2.sysu.edu.cn>
+* [Perf] Use native DSA indexer decode path for next_n > 2 on SM100 (#45322)
+Signed-off-by: zixi-qi <zixi@inferact.ai>
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+Co-authored-by: Yongye Zhu <zyy1102000@gmail.com>
+* [Core][AMD] Propagate shutdown timeout to MultiprocExecutor (#43154)
+Signed-off-by: Ryan Rock <ryan.rock@amd.com>
+Co-authored-by: gemini-code-assist[bot] <176961590+gemini-code-assist[bot]@users.noreply.github.com>
+* [Refactor] Deprecate ResponsesParser wrapper, inline parsing into ParsableContext (#45431)
+Signed-off-by: sfeng33 <4florafeng@gmail.com>
+* [ROCm] Bump Torch to 2.11 (#45362)
+Signed-off-by: Micah Williamson <micah.williamson@amd.com>
+* [Attention] Improve attention benchmarks: configs and profiling (#39336)
+Signed-off-by: Matthew Bonanni <mbonanni@redhat.com>
+* [Model Runner v2] Migration from v1 to v2, with Qwen and DSv2 MOE models [3/N] (#42667)
+Signed-off-by: yewentao256 <zhyanwentao@126.com>
+Co-authored-by: mergify[bot] <37929162+mergify[bot]@users.noreply.github.com>
+* [Kernel] Consolidate Marlin thread-tile padding across all dense Marlin paths (#45295)
+Signed-off-by: mgoin <mgoin64@gmail.com>
+* Add the QuantizedActivation linear-kernel contract (#44260)
+Signed-off-by: mgoin <mgoin64@gmail.com>
+Co-authored-by: Claude <noreply@anthropic.com>
+* [ROCm][DSV4][Perf] Fuse inverse-RoPE and cache bf16 wo_a in o-projection (#45103)
+Signed-off-by: Fangzhou Ai <fangzhouai@gmail.com>
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+* [Bugfix][CPU] Don't build triton-cpu on arm64 release image (#45401)
+Signed-off-by: khluu <khluu000@gmail.com>
+* [BugFix] Avoid prematurely freeing cached mm encoder outputs (#45347)
+Signed-off-by: Roger Wang <hey@rogerw.io>
+Signed-off-by: Nick Hill <nickhill123@gmail.com>
+* [Bugfix] Set type/role explicitly in streaming message_start event (#45376)
+Signed-off-by: Wayne Chiu <waynehacking8@gmail.com>
+* [Bugfix] Replace deprecated Qwen2VLImageProcessorFast with Qwen2VLImageProcessor (#42700)
+Signed-off-by: abinggo <107740309+abinggo@users.noreply.github.com>
+Co-authored-by: Claude <noreply@anthropic.com>
+Co-authored-by: Roger Wang <hey@rogerw.io>
+* [CI] Wait for SSL cert refresher events in the test (#45489)
+Signed-off-by: Andreas Karatzas <akaratza@amd.com>
+* [Render] Add `/derender` endpoints for disaggregated postprocessing (#43606)
+Signed-off-by: Martin Hickey <martin.hickey@ie.ibm.com>
+Signed-off-by: Isotr0py <mozf@mail2.sysu.edu.cn>
+Co-authored-by: Isotr0py <mozf@mail2.sysu.edu.cn>
+* [Bugfix] Return the tokenizer from maybe_make_thread_pool so it survives pickling (#45460)
+Signed-off-by: Wayne Chiu <waynehacking8@gmail.com>
+* [Doc] Fix uv dependency resolution failure for setuptools during CPU source builds (x86 & ARM) (#45412)
+Signed-off-by: midas <the.anon.github@gmail.com>
+* [Model Runner V2] Fix `openai.InternalServerError: Error code: 500 - 'list index out of range'` (#45467)
+Signed-off-by: yewentao256 <zhyanwentao@126.com>
+* Treat null completion max_tokens like the default (#45491)
+Signed-off-by: Andreas Karatzas <akaratza@amd.com>
+* [CI Bug] Fix `ValueError: There is no module or parameter named 'model.vision_tower.vision_model'` (#45478)
+Signed-off-by: yewentao256 <zhyanwentao@126.com>
+* [Security] Add timeout guard for regex compilation in structured outp… (#45118)
+Signed-off-by: jperezde <jperezde@redhat.com>
+Signed-off-by: Harry Mellor <19981378+hmellor@users.noreply.github.com>
+Co-authored-by: Harry Mellor <19981378+hmellor@users.noreply.github.com>
+* [Security] Fix DoS via prompt_embeds on M-RoPE models (#45252)
+Signed-off-by: jperezde <jperezde@redhat.com>
+* Fix docs build on `main` (#45536)
+Signed-off-by: Harry Mellor <19981378+hmellor@users.noreply.github.com>
+* [Bugfix] Reject structured outputs for diffusion decoders with a clear error (#45468)
+Signed-off-by: Wayne Chiu <waynehacking8@gmail.com>
+Co-authored-by: Claude <noreply@anthropic.com>
+* [Perf] SM90 cutlass fp8 mm supports odd M by swap_ab, 180~290% kernel performance improvement (#44572)
+Signed-off-by: yewentao256 <zhyanwentao@126.com>
+Co-authored-by: mergify[bot] <37929162+mergify[bot]@users.noreply.github.com>
+* [Core] Simplify MRV2 async output handling (#45442)
+* [Bugfix] nightly Docker images crash with ImportError: AnthropicOutputConfig since May 28 (#44795)
+Signed-off-by: achyuthan.s <113010327+Achyuthan-S@users.noreply.github.com>
+Signed-off-by: Achyuthan S <achyuthan.sivasankar@gmail.com>
+Signed-off-by: Achyuthan Sivasankar <achyuthan.sivasankar@gmail.com>
+Co-authored-by: Shengqi Chen <harry-chen@outlook.com>
+* [Build] Fix CUDA arch build coverage gaps (#45277)
+Signed-off-by: Shengqi Chen <harry-chen@outlook.com>
+Co-authored-by: Xin Li <xinli-sw@users.noreply.github.com>
+Co-authored-by: ShawRong <ShawRong@users.noreply.github.com>
+Co-authored-by: Change72 <Change72@users.noreply.github.com>
+* [V1][Spec Decode] Add Dynamic SD (#32374)
+Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com>
+Signed-off-by: Benjamin Chislett <chislett.ben@gmail.com>
+Co-authored-by: gemini-code-assist[bot] <176961590+gemini-code-assist[bot]@users.noreply.github.com>
+Co-authored-by: Harry Mellor <19981378+hmellor@users.noreply.github.com>
+Co-authored-by: Benjamin Chislett <chislett.ben@gmail.com>
+* [Bugfix][DCP] Fix illegal memory access in DCP a2a decode under full CUDA graphs (#45487)
+* [XPU] Support int4 group_size=32 W4A16 MoE (#45136)
+Signed-off-by: Marceli Fylcek <marceli.fylcek@intel.com>
+Co-authored-by: Kunshang Ji <kunshang.ji@intel.com>
+* [ROCm][Perf] Enable W4A16 FlyDSL MoE (#44400)
+Signed-off-by: amd-asalykov <asalykov@amd.com>
+Signed-off-by: Amanzhol Salykov <asalykov@amd.com>
+* [Perf] Use bisect for mm feature lookup in model runner v2 (#45566)
+Signed-off-by: Roger Wang <hey@rogerw.io>
+* [BugFix] Fix prompt_embeds for multimodal models (#45383)
+Signed-off-by: ruinan ma <r7ma3088@gmail.com>
+* Added real /v1/embeddings support for messages + chat_template_kw (#45173)
+Signed-off-by: Taneem Ibrahim <taneem.ibrahim@gmail.com>
+* [Bugfix][Model] Validate runai_streamer model_loader_extra_config (#45291)
+Signed-off-by: Ting Sun <suntcrick@gmail.com>
+* [Bugfix] Stream Llama4 weight loading to avoid host-OOM with copy-returning loaders (#44645)
+Signed-off-by: Noa Neria <nneria@nvidia.com>
+* [XPU] Enable sequence parallel support for XPU (#38608)
+Signed-off-by: chaojun-zhang <chaojun.zhang@intel.com>
+Signed-off-by: Chaojun Zhang <chaojun.zhang@intel.com>
+Signed-off-by: Chaojun,Zhang <chaojun.zhang@intel.com>
+* [Bugfix][CPU] Honor cgroup memory limit when computing KV cache size (#45086)
+Signed-off-by: baoloongmao <baoloongmao@tencent.com>
+Co-authored-by: Li, Jiang <jiang1.li@intel.com>
+* [CPU] Refine CPU attention frontend (#45391)
+Signed-off-by: jiang1.li <jiang1.li@intel.com>
+* [Bugfix][CI] Update Dockerfile dependency graph PNG (#45602)
+Signed-off-by: sfeng33 <4florafeng@gmail.com>
+* [Frontend] Add Streaming Parser Engine and new Qwen3 Parser (#45413)
+Signed-off-by: Ben Browning <bbrownin@redhat.com>
+Co-authored-by: Flora Feng <4florafeng@gmail.com>
+* Fix included router missing path for `FastAPI >=0.137` (#45629)
+Signed-off-by: Roger Wang <hey@rogerw.io>
+Co-authored-by: Claude Opus 4.8 <noreply@anthropic.com>
+* [Bugfix][V1] Split V2 model-runner attention groups on num_heads_q (#45564)
+Signed-off-by: Roger Wang <hey@rogerw.io>
+Signed-off-by: Nick Hill <nickhill123@gmail.com>
+Co-authored-by: Claude Opus 4.8 <noreply@anthropic.com>
+Co-authored-by: Nick Hill <nickhill123@gmail.com>
+* [Model] Remove XverseForCausalLM (#45638)
+Signed-off-by: Xianbao QIAN <xianbao.qian@gmail.com>
+Co-authored-by: Claude <noreply@anthropic.com>
+* [Feature][Frontend] Report multimodal token counts in usage.prompt_tokens_details (#45458)
+Signed-off-by: Ting Sun <suntcrick@gmail.com>
+* [Bugfix] Reject out-of-range temperature values in SamplingParams (#44965)
+Signed-off-by: Peter Pan <Peter.Pan@daocloud.io>
+* [Bugfix][Rust] Sync EngineCoreReadyResponse with the Python dataclass (#45557)
+Co-authored-by: Bugen Zhao <i@bugenzhao.com>
+Signed-off-by: Will Eaton <weaton@redhat.com>
+Signed-off-by: Bugen Zhao <i@bugenzhao.com>
+* [Rust Frontend] Add external→internal request-id map for abort() (#45137)
+Signed-off-by: Sahil Singh <sahiilsiingh37@gmail.com>
+* [Models] Fix MiMo v2.x QKV TP sharding + FP4 support (#45200)
+Signed-off-by: Giancarlo Delfin <gdelfin@inferact.ai>
+Co-authored-by: mergify[bot] <37929162+mergify[bot]@users.noreply.github.com>
+* [Rust Frontend] Support `parallel_tool_calls = false` (#44760)
+Signed-off-by: zhoujinyu <2319109590@qq.com>
+* [Bugfix][Rust Frontend] Make metrics respect --served-model-name (#45465)
+Signed-off-by: reidliu41 <reid201711@gmail.com>
+* [XPU] skip UT test_with_ngram_gpu_spec_decoding (#44423)
+Signed-off-by: Lai, Yejing <yejing.lai@intel.com>
+* [ROCm][Doc] Add installation notes about python version requirement (#45671)
+Signed-off-by: vllmellm <vllm.ellm@embeddedllm.com>
+* [Docs] Update the online serving docs. (#45676)
+Signed-off-by: wang.yuqi <yuqi.wang@daocloud.io>
+* [Bugfix] Unset HF's default max_new_tokens for DiffusionGemma (#45417)
+Signed-off-by: Martin Kukla <martin.kukla@cantab.net>
+* (security) Enforce audio upload size limit before full file materialization (#45510)
+Signed-off-by: jperezde <jperezde@redhat.com>
+* Fix the E8M0 scale computation in the MXFP4 (W4A4) MOE CUTLASS kernel (#43557)
+Signed-off-by: Xin He <xin3.he@intel.com>
+Co-authored-by: mergify[bot] <37929162+mergify[bot]@users.noreply.github.com>
+Co-authored-by: Kunshang Ji <kunshang.ji@intel.com>
+* Remove redundant Triton KV cache dtype asserts and enforce architectural support (fp8 >= sm89) (#43914)
+Signed-off-by: Mike G <180722391+mikekg@users.noreply.github.com>
+Co-authored-by: Michael Gschwind <mgschwind@nvidia.com>
+* [Bugfix] Two-phase KV allocation for cross-group prefix cache hits (supersedes #33775) (#44409)
+Signed-off-by: Saddss <2872669061@qq.com>
+* [Chore] Consolidate reasoning/tool parser attributes into unified Parser in chat serving (#45548)
+Signed-off-by: sfeng33 <4florafeng@gmail.com>
+* [AMD][Bugfix][Quantization] Honor fused-name match in is_layer_skipped (#43981)
+* [Model] Add MiniMax M3 support (#45381)
+Signed-off-by: youkaichao <youkaichao@gmail.com>
+Signed-off-by: Isotr0py <mozf@mail2.sysu.edu.cn>
+Signed-off-by: Bugen Zhao <i@bugenzhao.com>
+Signed-off-by: Jee Jee Li <pandaleefree@gmail.com>
+Signed-off-by: functionstackx <47992694+functionstackx@users.noreply.github.com>
+Signed-off-by: Yongye Zhu <zyy1102000@gmail.com>
+Signed-off-by: Jee Jee Li <jeejeelee@inferact.ai>
+Co-authored-by: OpenAI Codex <codex@openai.com>
+Co-authored-by: Isotr0py <mozf@mail2.sysu.edu.cn>
+Co-authored-by: Thien Tran <gau.nernst@yahoo.com.sg>
+Co-authored-by: Bugen Zhao <i@bugenzhao.com>
+Co-authored-by: Jee Jee Li <pandaleefree@gmail.com>
+Co-authored-by: Roger Wang <hey@rogerw.io>
+Co-authored-by: functionstackx <47992694+functionstackx@users.noreply.github.com>
+Co-authored-by: Yongye Zhu <zyy1102000@gmail.com>
+Co-authored-by: Jee Jee Li <jeejeelee@inferact.ai>
+* [KV Offloading] Implement `reset_cache` for `TieringOffloadingManager` (#44541)
+Signed-off-by: Ronen Schaffer <ronen.schaffer@ibm.com>
+Co-authored-by: mergify[bot] <37929162+mergify[bot]@users.noreply.github.com>
+* [Bugfix] Chat Completions Harmony Refactor Clean up (#45464)
+Signed-off-by: Yifan Zong <yzong@redhat.com>
+Co-authored-by: Ben Browning <bbrownin@redhat.com>
+* [Perf] Optimize DSv4 prefill chunk planning, 4.0% E2E Throughput Improvement (#45061)
+Signed-off-by: yewentao256 <zhyanwentao@126.com>
+* [Frontend] Skip structural tags for auto tool_choice without strict mode (#45600)
+Signed-off-by: sfeng33 <4florafeng@gmail.com>
+* [Model Runner V2][Bugfix] Fix MRV2 LoRA warmup (#35536)
+Signed-off-by: Jee Jee Li <pandaleefree@gmail.com>
+Signed-off-by: Jee Jee Li <jeejeelee@inferact.ai>
+Signed-off-by: Woosuk Kwon <woosuk@inferact.ai>
+Co-authored-by: Nick Hill <nickhill123@gmail.com>
+Co-authored-by: Woosuk Kwon <woosuk@inferact.ai>
+* Fix parallel_tool_calls: null treated as false instead of default true (#44955)
+Signed-off-by: factnn <166481866+factnn@users.noreply.github.com>
+* [Frontend] Replace legacy Gemma4 parsers with engine-based implementation (#45588)
+Signed-off-by: Ben Browning <bbrownin@redhat.com>
+Co-authored-by: Flora Feng <4florafeng@gmail.com>
+* [Bugfix] Defer block freeing until in-flight steps finish under async scheduling + PD KV consumer (#45357)
+Signed-off-by: llx-08 <2596671364@qq.com>
+Signed-off-by: Nick Hill <nickhill123@gmail.com>
+Co-authored-by: Nick Hill <nickhill123@gmail.com>
+Co-authored-by: Jiangyun Zhu <riverclouds.zhu@qq.com>
+* nixl_ep: Skip post-receive quantization for NVFP4 (#45606)
+Signed-off-by: Itay Alroy <ialroy@nvidia.com>
+* [EP] Query NIXL EP top-k index dtype (#45298)
+Signed-off-by: Itay Alroy <ialroy@nvidia.com>
+* [EP] Enable DBO with NIXL EP (#45275)
+Signed-off-by: Itay Alroy <ialroy@nvidia.com>
+* [DSV4][Minor] Fix supported KV cache dtypes (#44892)
+Signed-off-by: Woosuk Kwon <woosuk@inferact.ai>
+* [Misc][Model] add io processor for query/document embeddings from ColBERT (jinaai/jina-colbert-v2) (#45210)
+Signed-off-by: thomas <thomas.varghese@columbia.edu>
+* [Rust Frontend] Support `max_logprobs` validation (#45674)
+Signed-off-by: Bugen Zhao <i@bugenzhao.com>
+* [Rust Frontend] Lower out-of-vocab validation to `text` layer (#45685)
+Signed-off-by: Bugen Zhao <i@bugenzhao.com>
+* [Multimodal] Add Qwen3-VL video loader (#44412)
+Signed-off-by: Isotr0py <mozf@mail2.sysu.edu.cn>
+* [BugFix] Support async scheduling with prompt embeds for multimodal models (#45673)
+Signed-off-by: Ruinan Ma <r7ma3088@gmail.com>
+* [XPU] Fix Triton attn fp8/bf16 check failing (#45758)
+Signed-off-by: zhenwei-intel <zhenwei.liu@intel.com>
+* [Bugfix][Gemma4] Fix offline parser truncation, adjust_request token leak, and chat template sync (#45553)
+Signed-off-by: Luciano Martins <lucianommartins@users.noreply.github.com>
+Co-authored-by: Luciano Martins <lucianommartins@users.noreply.github.com>
+* [Rust Frontend] Require `ModelConfig.vocab_size` to be present (#45696)
+Signed-off-by: Bugen Zhao <i@bugenzhao.com>
+* [Frontend] [Parser] Migrate Nemotron V3 to streaming parser engine (#45755)
+Signed-off-by: Ben Browning <bbrownin@redhat.com>
+* [Core] Use fastsafetensors ParallelLoader for weight loading (#40183)
+Signed-off-by: Git Bisector <gitbisector@gmail.com>
+Signed-off-by: gitbisector <gitbisector@gmail.com>
+Signed-off-by: git bisector <gitbisector@gmail.com>
+Co-authored-by: Claude <noreply@anthropic.com>
+Co-authored-by: Cyrus Leung <tlleungac@connect.ust.hk>
+* Register parsed config classes before tokenizer init (#40299)
+Signed-off-by: Bortlesboat <bortstheboat@gmail.com>
+Co-authored-by: OpenAI Codex <codex@openai.com>
+* [Misc] Added validation for Cohere /v2/embed input field exclusivity (#45640)
+Signed-off-by: Taneem Ibrahim <taneem.ibrahim@gmail.com>
+* [Cleanup] Remove dead env (#45777)
+Signed-off-by: DarkLight1337 <tlleungac@connect.ust.hk>
+* [Bug Fix] Allow pinned memory for WSL2 (#41496)
+Signed-off-by: Jimmy Lee <hirejimmylee@gmail.com>
+* [CPU] Support Gemma Diffusion (#45690)
+Signed-off-by: jiang1.li <jiang1.li@intel.com>
+* [Bugfix] Prevent cuMemcpyBatchAsync segfault with MTP and KV offloading (#44784)
+Signed-off-by: joshua <joshua.abraham@multicorewareinc.com>
+Co-authored-by: joshua <joshua.abraham@multicorewareinc.com>
+Co-authored-by: Or Ozeri <oro@il.ibm.com>
+* [Frontend] Remove AsyncMicrobatchTokenizer. (#45759)
+Signed-off-by: wang.yuqi <yuqi.wang@daocloud.io>
+* [Bugfix] Fix trtllm fused allreduce+rms_norm for transformers backend (#45307)
+Signed-off-by: Thomas Parnell <tpa@zurich.ibm.com>
+* [XPU][CI] add intel xpu cases for nightly CI (#44372)
+Signed-off-by: wenjun.liu <wenjun.liu@intel.com>
+Signed-off-by: zengxian <xiangdong.zeng@intel.com>
+Co-authored-by: zengxian <xiangdong.zeng@intel.com>
+Co-authored-by: Kunshang Ji <kunshang.ji@intel.com>
+* [Misc]Clean up useless test (#45792)
+Signed-off-by: wangxiyuan <wangxiyuan1007@gmail.com>
+* Add Triton recompile detection (#45631)
+Signed-off-by: Thien Tran <gau.nernst@yahoo.com.sg>
+* [MM][Perf][CG] Support dual-path ViT full CUDA graph for DeepSeek-OCR (#43586)
+Signed-off-by: shen-shanshan <467638484@qq.com>
+Signed-off-by: Isotr0py <mozf@mail2.sysu.edu.cn>
+Co-authored-by: Roger Wang <hey@rogerw.io>
+Co-authored-by: Isotr0py <mozf@mail2.sysu.edu.cn>
+* [KV Connector][Mooncake] Pipeline-parallel support for PD-disaggregated serving with Mooncake connector (#44528)
+Signed-off-by: hanhan.hank <hanhan.hank@bytedance.com>
+Signed-off-by: Hank Han <hanhan7630@outlook.com>
+* [Refactor] Remove `Fp8OnlineLinearMethod` as scheduled (#45463)
+Signed-off-by: yewentao256 <zhyanwentao@126.com>
+Co-authored-by: mergify[bot] <37929162+mergify[bot]@users.noreply.github.com>
+* [ZenCPU] Add zencpu Platform Runtime Logging and Docs (#42726)
+Signed-off-by: Lalithnarayan C <Lalithnarayan.C@amd.com>
+Signed-off-by: Tyler Michael Smith <tlrmchlsmth@gmail.com>
+Co-authored-by: Tyler Michael Smith <tlrmchlsmth@gmail.com>
+Co-authored-by: Claude <noreply@anthropic.com>
+Co-authored-by: Tyler Michael Smith <tyler@neuralmagic.com>
+* [ROCm][CI] Gate incompatible HF references on Transformers v5 (#41532)
+Signed-off-by: Andreas Karatzas <akaratza@amd.com>
+* [Quant] Support modelopt_mixed on Ampere (SM80/SM86) (#45306)
+Signed-off-by: Mike G <180722391+mikekg@users.noreply.github.com>
+* [Bugfix][MoE] Restore routed output unpadding before shared expert add (#45707)
+Signed-off-by: Netanel Haber <58652339+netanel-haber@users.noreply.github.com>
+Co-authored-by: mergify[bot] <37929162+mergify[bot]@users.noreply.github.com>
+* [Perf] Add VLLM_TRITON_FORCE_FIRST_CONFIG to skip Triton autotuning (#42425)
+Signed-off-by: Francesco Fusco <ffu@zurich.ibm.com>
+Co-authored-by: Claude <noreply@anthropic.com>
+* [CI] Fix attention benchmark smoke test (#45728)
+Signed-off-by: Matthew Bonanni <mbonanni@redhat.com>
+Co-authored-by: Claude <noreply@anthropic.com>
+* [Rust Frontend] Add CORS support (#45753)
+Signed-off-by: Tahsin Tunan <tahsintunan@gmail.com>
+* [Bugfix] Fix FlashMLA sparse accuracy with topk_length and zero-init padding (#36616)
+Signed-off-by: AjAnubolu <anuboluajay@gmail.com>
+Signed-off-by: Matthew Bonanni <mbonanni@redhat.com>
+Co-authored-by: Matthew Bonanni <mbonanni@redhat.com>
+* [Kernel][Helion][1/N] Add Helion kernel for rms_norm_per_block_quant (#36895)
+Signed-off-by: Sean Chen <seachen@redhat.com>
+Co-authored-by: Yanan Cao <gmagogsfm@gmail.com>
+* feat: MLA prefill enable FA4 fp8 output (#43050)
+Signed-off-by: Carl You <4531192+carlyou@users.noreply.github.com>
+* [ROCm][Cleanup] Remove stale AITER FA hybrid KV-cache TODO (#44178)
+Signed-off-by: Tuukka Sarvi <tuukka.sarvi@amd.com>
+Co-authored-by: Cyrus Leung <tlleungac@connect.ust.hk>
+* [Model] Add HrmTextForCausalLM (Hierarchical Reasoning Model — Text) (#43098)
+Signed-off-by: Wuyifei <wuyifei@me.com>
+Signed-off-by: Harry Mellor <19981378+hmellor@users.noreply.github.com>
+Co-authored-by: Harry Mellor <19981378+hmellor@users.noreply.github.com>
+* Upgrade tpu-inference to v0.22.1 (#45793)
+* [ROCm][CI] Patch conftest to resolve occasional OOMs (#45722)
+Signed-off-by: Micah Williamson <micah.williamson@amd.com>
+* [Model Runner V2] Enable GraniteMOE for MRv2 by default (#45461)
+Signed-off-by: yewentao256 <zhyanwentao@126.com>
+* [Model] Remove Dots1ForCausalLM (#45637)
+Signed-off-by: Xianbao QIAN <xianbao.qian@gmail.com>
+Co-authored-by: Claude <noreply@anthropic.com>
+* [Bugfix][Core] Fall back when numactl --membind is blocked in constrained containers (#45438)
+Signed-off-by: Ting Sun <suntcrick@gmail.com>
+Co-authored-by: Shengqi Chen <harry-chen@outlook.com>
+* [KVConnector][MoRIIO] Allow overriding the advertised host IP (#45488)
+Signed-off-by: Kourosh Hakhamaneshi <kourosh@anyscale.com>
+Co-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+* [KV Connector][Mooncake] Add cache_prefix to namespace store keys (#45767)
+Signed-off-by: Dao Le <Dao007forever@gmail.com>
+Co-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+* [Frontend] Add Streaming Parser Engine and new MinimaxM2 Parser (#45701)
+Signed-off-by: chaunceyjiang <chaunceyjiang@gmail.com>
+* [Bugfix] Fix Qwen3 prompt tool-call reasoning false positive (#45763)
+Signed-off-by: Alex Bilichenko <alexbi29@users.noreply.github.com>
+Co-authored-by: Alex Bilichenko <alexbi29@users.noreply.github.com>
+* [PERF] Fuse multi-group block table staged writes (#44944)
+Signed-off-by: jesse <szxfml@gmail.com>
+Signed-off-by: Nick Hill <nickhill123@gmail.com>
+Co-authored-by: Nick Hill <nickhill123@gmail.com>
+* [ROCm][Quant] mxfp8 moe/linear gfx950 tuning for MiniMax-M3 (#45725)
+Signed-off-by: Hongxia Yang <hongxia.yang@amd.com>
+* [Misc] Update Mergify tool-calling label (#45853)
+Signed-off-by: sfeng33 <4florafeng@gmail.com>
+* [Core] Add prefill step cadence for better non-PD DP balancing (#44558)
+Signed-off-by: Nick Hill <nickhill123@gmail.com>
+* [ROCm][CI] fix multimodel run cmds (#45858)
+Signed-off-by: Divakar Verma <divakar.verma@amd.com>
+* [Bugfix] Gemma4: skip forced JSON for required/named tool choice (#45795)
+Signed-off-by: Federico Iezzi <fiezzi@google.com>
+* [Kernel] Support GLM-5 dimensions for TRT-LLM ragged MLA prefill (#43525)
+Signed-off-by: Mohammad Miadh Angkad <176301910+mmangkad@users.noreply.github.com>
+Signed-off-by: Matthew Bonanni <mbonanni@redhat.com>
+Co-authored-by: Matthew Bonanni <mbonanni@redhat.com>
+* Apply LRU policy only to proper cache entries (#42656)
+Signed-off-by: Stanislaw Wozniak <stw@zurich.ibm.com>
+* [Kernel] Support DS Mamba tail copy for MTP align mode (#45473)
+Signed-off-by: Sungsoo Ha <sungsooh@nvidia.com>
+Co-authored-by: Thomas Parnell <tom.parnell@gmail.com>
+* [XPU][CI] fix server test file path (#45870)
+Signed-off-by: Kunshang Ji <kunshang.ji@intel.com>
+* [Bugfix] Fix MoE model load OOM in FlashInfer_TRTLLM backend with sleep mode (#45589)
+Signed-off-by: Dakai An <dakaian108@gmail.com>
+Co-authored-by: mergify[bot] <37929162+mergify[bot]@users.noreply.github.com>
+* [Bugfix][Gemma4] F

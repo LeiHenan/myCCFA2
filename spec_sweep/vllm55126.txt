@@ -1,0 +1,511 @@
+
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [Bugfix][PD] Pad resumed speculative decode requests - # 55126 
+ # 55126 
+ Merged 
+ jeejeelee merged 1 commit into vllm-project:main vllm-project/vllm:main from ZeldaHuang:fix/pd-resumed-spec-padding ZeldaHuang/vllm:fix/pd-resumed-spec-padding Copy head branch name to clipboard 
+ Sep 4, 2026 
+ Conversation Commits 1 ( 1 ) Checks Files changed 
+ Merged 
+ [Bugfix][PD] Pad resumed speculative decode requests # 55126 jeejeelee merged 1 commit into vllm-project:main vllm-project/vllm:main from ZeldaHuang:fix/pd-resumed-spec-padding ZeldaHuang/vllm:fix/pd-resumed-spec-padding Copy head branch name to clipboard 
+ Conversation
+ ZeldaHuang 
+ commented
+ Sep 3, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Purpose
+ Keep resumed speculative-decode requests on the uniform verifier shape when a data-parallel rank has no already-running requests.
+ In P/D serving, a synchronous KV connector can resolve a waiting consumer to all but the final prompt token. During that scheduling pass, the matched prefix exists in the local num_computed_tokens variable, while request.num_computed_tokens is updated only after admission. The current padding condition also requires local scheduled_running_reqs , so this rank schedules one token even when peer ranks run the 1 + num_spec_tokens verifier shape. A single qlen=1 rank then prevents the DP group from using the full decode CUDA graph.
+ This change treats a request with resolved computed tokens as resumed and applies the existing reject-only -1 padding, provided no prefill was scheduled. Ordinary prefills and diffusion speculative decoding retain their current behavior.
+ The regression test uses a synchronous mock KV connector with 32 matched tokens and does not manually mutate request state.
+ Why this is not duplicate work
+ I searched open PRs for speculative-decode padding, resumed KV-connector requests, P/D CUDA graphs, and the relevant scheduler condition. No open PR changes admission for a synchronously resumed request on a rank without running work.
+ [SpecDecode] Preserve reject-only residual verifier padding #54102 addresses Mamba alignment, rejection sentinels, adaptive verification, and verifier graph topology; it retains the scheduled_running_reqs requirement.
+ [Bugfix][Spec Decode] Don't pad a resumed decode request past max_model_len #53812 prevents resumed padding from exceeding max_model_len .
+ [Bugfix][Core] Skip spec padding below prefill threshold #54028 prevents padding from conflicting with the long-prefill threshold.
+ [Bugfix][Core][Spec Decode] Exclude scheduler padding from draft metrics #50518 separates reject-only padding from acceptance metrics.
+ Tests
+ Full scheduler test file, using an offline model redirect and a local pytest shim selecting CpuPlatform on the CPU-only test host:
+ uv run --python .venv/bin/python --no-project python -m pytest -q \
+ -p cpu_platform_plugin tests/v1/core/test_scheduler.py
+ 158 passed, 175 warnings in 43.74s
+ Changed-file repository hooks:
+ .venv/bin/pre-commit run --files \
+ vllm/v1/core/sched/scheduler.py \
+ tests/v1/core/test_scheduler.py
+ All applicable hooks passed, including Ruff check/format, mypy, SPDX, forbidden imports, and configuration validation. git diff --check origin/main...HEAD also passed.
+ Serving validation
+ The equivalent scheduler-only change was validated on four 4xGB300 nodes (DEP16/EP16). Set the model paths and host names for the target cluster before running the commands below.
+ Run the same server command on all four nodes, with a shared MASTER_ADDR . Each process owns four local DP ranks:
+ export MODEL= < path-to-Kimi-K3-model > 
+ export DRAFT_MODEL= < path-to-K3-EAGLE3-draft-model > 
+ export MASTER_ADDR= < first-node-hostname > 
+ export VLLM_ATTENTION_BACKEND=FLASHINFER_MLA
+ export VLLM_USE_FLASHINFER_MOE_FP4=1
+ export VLLM_FLASHINFER_MOE_BACKEND=latency
+ export VLLM_USE_V2_MODEL_RUNNER=1
+vllm serve " $MODEL " \
+ --port 8000 \
+ --distributed-executor-backend mp \
+ --served-model-name moonshotai/Kimi-K3 \
+ --trust-remote-code \
+ --load-format fastsafetensors \
+ --safetensors-load-strategy lazy \
+ --gpu-memory-utilization 0.95 \
+ --kv-cache-dtype fp8 \
+ --quantization kimi_k3_dual \
+ --attention-config ' {"use_prefill_query_quantization":true,"mla_prefill_backend":"FLASHINFER"} ' \
+ --tensor-parallel-size 1 \
+ --data-parallel-size 16 \
+ --data-parallel-size-local 4 \
+ --data-parallel-address " $MASTER_ADDR " \
+ --data-parallel-rpc-port 13345 \
+ --data-parallel-hybrid-lb \
+ --enable-expert-parallel \
+ --enable-ep-weight-filter \
+ --all2all-backend flashinfer_nvlink_one_sided \
+ --language-model-only \
+ --mm-processor-cache-gb 0 \
+ --moe-backend deep_gemm_mega_moe \
+ --no-enable-prefix-caching \
+ --max-num-seqs 12 \
+ --max-model-len auto \
+ --max-num-batched-tokens 48 \
+ --reasoning-config ' {"reasoning_parser":"kimi_k3","strict_thinking":false} ' \
+ --compilation-config ' {"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[1,2,3,4,5,6,7,8,9,10,11,12,16,20,24,28,32,36,40,44,48]} ' \
+ --speculative-config " { \" method \" : \" eagle3 \" , \" model \" : \" $DRAFT_MODEL \" , \" num_speculative_tokens \" :3, \" disable_eagle_block_drop \" :true, \" rejection_sample_method \" : \" synthetic \" , \" synthetic_acceptance_rates \" :[0.70,0.49,0.3382]} " \
+ --kv-transfer-config ' {"kv_connector":"DecodeBenchConnector","kv_role":"kv_both","kv_load_failure_policy":"fail","kv_buffer_device":"cuda","kv_connector_extra_config":{"fill_mean":0.015,"fill_std":0.0}} ' 
+ Route traffic across the four node-local API servers:
+ vllm-router \
+ --policy round_robin \
+ --host 0.0.0.0 \
+ --port 18080 \
+ --prometheus-port 18081 \
+ --intra-node-data-parallel-size 4 \
+ --request-timeout-secs 900 \
+ --worker-urls \
+ http:// < node- 0> :8000 \
+ http:// < node- 1> :8000 \
+ http:// < node- 2> :8000 \
+ http:// < node- 3> :8000
+ The unconditional per-position acceptance rates sum to 1.5282 , giving a target mean acceptance rate of 50.94% and acceptance length of 2.5282 for K=3 . Run the QPS sweep once on each revision:
+ for QPS in 2 3 4 5 6 ; do 
+ vllm bench serve \
+ --backend openai \
+ --base-url http://localhost:18080 \
+ --model moonshotai/Kimi-K3 \
+ --tokenizer " $MODEL " \
+ --trust-remote-code \
+ --dataset-name random \
+ --random-input-len 120000 \
+ --random-range-ratio 0.5 \
+ --random-output-len 400 \
+ --prompt-token-ids \
+ --ignore-eos \
+ --request-rate " $QPS " \
+ --max-concurrency 192 \
+ --num-prompts 480 \
+ --num-warmups 24 \
+ --seed " $(( 300 + QPS )) " \
+ --percentile-metrics ttft,tpot,itl,e2el \
+ --metric-percentiles 50,90,95,99,99.5,99.9 \
+ --result-dir " results/qps $QPS " \
+ --save-detailed \
+ --save-result \
+ --result-filename result.json
+ done 
+ Apply the base scheduler for the before sweep and this PR's scheduler for the after sweep. Every point completed 480 / 480 requests with zero failures. Observed acceptance rates were 49.74%–52.80% , with acceptance lengths of 2.483–2.574 .
+ QPS 
+ P50 ITL, before → after 
+ P50 change 
+ P99 ITL, before → after 
+ P99 change 
+ 2 
+ 32.17 → 29.97 ms 
+ -6.9% 
+ 250.68 → 41.52 ms 
+ -83.4% 
+ 3 
+ 33.03 → 32.33 ms 
+ -2.1% 
+ 240.85 → 49.97 ms 
+ -79.3% 
+ 4 
+ 35.50 → 34.33 ms 
+ -3.3% 
+ 232.84 → 56.42 ms 
+ -75.8% 
+ 5 
+ 36.51 → 36.27 ms 
+ -0.7% 
+ 68.40 → 57.87 ms 
+ -15.4% 
+ 6 
+ 38.07 → 38.11 ms 
+ +0.1% 
+ 60.31 → 65.34 ms 
+ +8.3% 
+ The P99 benefit is large through QPS 4, narrows at QPS 5, and is no longer visible at QPS 6. This matches the scheduler mechanism: once each rank stays busy, the original scheduled_running_reqs branch already applies the padding. P50 remains nearly unchanged throughout the sweep.
+ No accuracy evaluation was needed because this reuses existing reject-only placeholder semantics and does not change model outputs, draft acceptance, kernels, or graph dispatch.
+ AI assistance
+ OpenAI Codex assisted with root-cause analysis, implementation, tests, runtime experiment analysis, and PR preparation. I reviewed and understand every changed line and am responsible for the contribution.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ [Bugfix][PD] Pad resumed speculative decode requests 
+ …
+ f4b27e0 
+ Co-authored-by: OpenAI Codex <codex@openai.com>
+Signed-off-by: Ziming Huang <48115868+ZeldaHuang@users.noreply.github.com>
+ ZeldaHuang 
+ requested review from
+ ApostaC , 
+ WoosukKwon , 
+ alexm-redhat , 
+ heheda12345 , 
+ ivanium , 
+ njhill , 
+ orozery , 
+ robertgshaw2-redhat and 
+ ywang96 
+ as code owners 
+ September 3, 2026 10:47 
+ claude 
+ Bot 
+ reviewed
+ Sep 3, 2026 
+ View reviewed changes 
+ claude 
+ Bot 
+ left a comment
+ Copy link
+ Copy Markdown
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Claude Code Review
+ This pull request is from a fork — automated review is disabled. A repository maintainer can comment @claude review to run a one-time review.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ mergify 
+ Bot 
+ added
+ bug
+ Something isn't working 
+ kv-connector
+ scheduler
+ labels
+ Sep 3, 2026 
+ This was referenced Sep 3, 2026 
+ [Bugfix] Preserve Mamba state for padded prompt tails
+ natsala13/vllm#1 
+ Open
+ [Bugfix] Preserve Mamba state for padded prompt tails
+ #55178 
+ Merged
+ njhill 
+ approved these changes
+ Sep 3, 2026 
+ View reviewed changes 
+ njhill 
+ left a comment
+ Copy link
+ Copy Markdown
+ Member 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Thanks @ZeldaHuang 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ njhill 
+ added
+ the 
+ ready
+ ONLY add when PR is ready to merge/full CI is needed 
+ label
+ Sep 3, 2026 
+ njhill 
+ commented
+ Sep 3, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ /ci run
+ --> 
+ 🚀 
+ 1 
+ github-actions[bot] reacted with rocket emoji 
+ 👀 
+ 1 
+ github-actions[bot] reacted with eyes emoji 
+ All reactions 
+ 🚀 
+ 1 reaction 
+ 👀 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ github-actions 
+ Bot 
+ commented
+ Sep 3, 2026 
+ Copy link
+ Copy Markdown
+ ✅ Triggered Buildkite CI #87121 for commit f4b27e0b2048 .
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Hide details 
+ View details 
+ jeejeelee 
+ merged commit a26b71d 
+ into
+ vllm-project : main 
+ Sep 4, 2026 
+ 112 checks passed
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ItsRoy69 
+ pushed a commit
+ to ItsRoy69/vllm
+ that referenced
+ this pull request
+ Sep 10, 2026 
+ [Bugfix][PD] Pad resumed speculative decode requests ( vllm-project#55126 
+ … 
+ 4834a4b 
+ )
+Signed-off-by: Ziming Huang <48115868+ZeldaHuang@users.noreply.github.com>
+Co-authored-by: OpenAI Codex <codex@openai.com>
+Signed-off-by: Jyotirmoy Roy <jyotirmoyroy649@gmail.com>
+ twu3202 
+ mentioned this pull request
+ Sep 11, 2026 
+ [Performance]: A performance optimization in the Scheduler regarding pad_spec_decode
+ #55798 
+ Open
+ 1 task 
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ claude[bot] 
+ claude[bot] left review comments 
+ njhill 
+ njhill approved these changes 
+ WoosukKwon 
+ Awaiting requested review from WoosukKwon 
+ WoosukKwon is a code owner 
+ robertgshaw2-redhat 
+ Awaiting requested review from robertgshaw2-redhat 
+ robertgshaw2-redhat is a code owner 
+ ywang96 
+ Awaiting requested review from ywang96 
+ ywang96 is a code owner 
+ alexm-redhat 
+ Awaiting requested review from alexm-redhat 
+ alexm-redhat is a code owner 
+ heheda12345 
+ Awaiting requested review from heheda12345 
+ heheda12345 is a code owner 
+ ApostaC 
+ Awaiting requested review from ApostaC 
+ ApostaC is a code owner 
+ orozery 
+ Awaiting requested review from orozery 
+ orozery is a code owner 
+ ivanium 
+ Awaiting requested review from ivanium 
+ ivanium is a code owner 
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ bug 
+ Something isn't working 
+ kv-connector 
+ ready 
+ ONLY add when PR is ready to merge/full CI is needed 
+ scheduler 
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 3 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

@@ -1,0 +1,141 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/26133  (is_pr=False, 338458 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 26133
+  title = [RFC]: Support Context Parallelism with Fully Sharded KV Cache and Ring Attention
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2025-10-02T20:15:54Z
+  updatedAt = 2026-02-02T02:17:05Z
+  closedAt = None
+  author = qiruiyangmeta
+  labels = ['RFC', 'stale']
+
+[GRAPHQL COMMENT by LucasWilkinson assoc=COLLABORATOR at 2025-10-02T22:51:49Z]
+Thanks for the RFC! The nice write up is appreciated! Given that we have multiple RFCs: https://github.com/vllm-project/vllm/issues/25749 https://github.com/vllm-project/vllm/issues/22693
+
+And given that we already have Decode Context Parallelism in vLLM (DCP, https://github.com/vllm-project/vllm/pull/23734) with multiple follow-ups in the works: https://github.com/vllm-project/vllm/pull/24864, https://github.com/vllm-project/vllm/pull/25049
+
+I think it would be helpful to know how this different than the existing RFCs and how it would interact with DCP. I think we should try to avoid having too many competing forms of context parallelism inside vLLM.
+
+My impression is that this similar to the proposal in https://github.com/vllm-project/vllm/issues/25749 with the main difference being how tokens are assigned to PCP ranks (i.e. takes into account the causal mask). If this is the case I would purpose that we move the discussion over to https://github.com/vllm-project/vllm/issues/25749 and discuss there any improvements that could be made to that proposal (My motivation for suggesting that that is that I feel https://github.com/vllm-project/vllm/issues/25749 does a good job of describing how PCP would interact with DCP and would provide a more concrete starting point).
+
+[GRAPHQL COMMENT by luccafong assoc=COLLABORATOR at 2025-10-03T00:03:58Z]
+@LucasWilkinson this is ring-algorithm based which is different with the allgather-based solution https://github.com/vllm-project/vllm/issues/25749 and should have advantages on communication cost. we can further combine the RFCs if needed
+
+
+
+[GRAPHQL COMMENT by qiruiyangmeta assoc=NONE at 2025-10-03T00:12:17Z]
+Thanks @LucasWilkinson for the comments!
+Yes as @luccafong mentioned, it uses a ring-based approach for the more general case, and is not limited to MLA specifically.
+
+
+[GRAPHQL COMMENT by LucasWilkinson assoc=COLLABORATOR at 2025-10-03T04:32:49Z]
+> Thanks [@LucasWilkinson](https://github.com/LucasWilkinson) for the comments! Yes as [@luccafong](https://github.com/luccafong) mentioned, it uses a ring-based approach for the more general case, and is not limited to MLA specifically.
+
+Thanks for the quick reply; got it!, I believe https://github.com/vllm-project/vllm/issues/25749 is not limited to MLA (see the MHA/GQA portion of the below diagram, which would play nicely with the GQA extension of DCP https://github.com/vllm-project/vllm/pull/24864):
+
+<img width="1661" height="592" alt="Image" src="https://github.com/user-attachments/assets/98c2847e-c493-452b-bae6-4c3357bab0e6" />
+
+I guess what Im trying to get at is if I wanted to reformulate this RFC as extension of https://github.com/vllm-project/vllm/issues/25749 (in-order to merge these so we don't end up with many context parallel subsystems in vLLM) it would be:
+
+1) support a pass-KV ring based approach in-addition/instead-of the all-gather based approach (and maybe pass-Q but that seems to already be covered to a degree by https://github.com/vllm-project/vllm/pull/25049 albeit not in a ring based fashion) 
+2) sharding to account for the causal mask
+
+I think 1 would be a pretty natural extension that would create a fairly small an localized changes to the code-paths (or alternate code paths if we want to support both). 2 feels like it might require a larger set of changes. Does this sound about right?
+
+[GRAPHQL COMMENT by pisceskkk assoc=CONTRIBUTOR at 2025-10-03T13:50:21Z]
+Thanks for this excellent RFC! I'm very pleased to see that we share many similarities in our implementation approaches.
+
+1. Firstly, regarding the partitioning scheme for Q or the handling of the causal mask, we use the [same approach](https://github.com/vllm-project/vllm/blob/3f73536f163857ee478f9be32a6a93d361086e51/vllm/v1/worker/gpu_model_runner.py#L800): splitting each request into 2*cp_size segments, then distributing them in head-tail style to form cp_size segments to ensure load balancing. There's also a less obvious [example for causal mask](https://github.com/vllm-project/vllm/blob/3f73536f163857ee478f9be32a6a93d361086e51/vllm/v1/attention/backends/flashinfer.py#L611) of this in our PR that you can refer to.
+2. Regarding the ring-attn for the prefill phase, we discussed it during the initial design phase of our RFC. Without a doubt, the ring-attn approach offers better performance. However, considering the changes DCP makes to slot_mapping/KV Cache (interleave style), we need to perform an allgather on the local KV values to store the KV cache. Therefore, we currently opted for the easier-to-implement allgather scheme. But for the chunked prefill, where the context KV values in the KV cache are inherently distributed across different GPUs, using ring-attn is a more natural approach. I believe a more clever design is needed here to ensure both compatibility and performance.
+3. For the decoding stage, we hope to maintain compatibility with DCP and minimize changes.
+
+And it's great to see that we are both pushing the vLLM community forward in the same direction :)
+
+[GRAPHQL COMMENT by LucasWilkinson assoc=COLLABORATOR at 2025-10-04T00:09:06Z]
+> Regarding the ring-attn for the prefill phase, we discussed it during the initial design phase of our RFC. Without a doubt, the ring-attn approach offers better performance. However, considering the changes DCP makes to slot_mapping/KV Cache (interleave style), we need to perform an allgather on the local KV values to store the KV cache.
+
+With a pass-KV ring approach wouldn't each rank see each kv-token atleast once; so we could insert into the cache on each iteration maybe?
+
+I think there's probably lots of discussion to be had so I created a `sig-context-parallel` in vLLM slack and would appreciate if people would join that; I think it might be easier to have discussion there and then summarize the results of those discussions RFC.
+
+
+
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-01-03T02:12:09Z]
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-02-02T02:17:05Z]
+This issue has been automatically closed due to inactivity. Please feel free to reopen if you feel it is still relevant. Thank you!
+
+[GRAPHQL CLOSED by github-actions at 2026-02-02T02:17:05Z reason=NOT_PLANNED]
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=qiruiyangmeta date=Oct 2, 2025]
+Motivation.
+
+Context parallelism introduces an additional degree of parallelism to LLM inference. While tensor parallelism and pipeline parallelism focus on distributing model weights and layers across devices, context parallelism specifically targets the parallel processing of multiple input contexts or sequences. By combining context parallelism with parallelisms, systems can achieve more scalable and efficient inference, leveraging all forms of parallelism to maximize hardware utilization and reduce latency.
+
+Context parallelism improves performance as the context length grows by distributing both computation and the KV cache across multiple GPUs. This approach effectively lowers processing latency and can also decrease the memory required per GPU potentially, especially when dealing with extremely large KV caches (such as sequence lengths on the order of 1 million tokens).
+
+Proposed Change.
+
+Within the model, attention is the only component that has dependency on the sequence dimension, since each token must attend to all previous tokens in the same sequence. In contrast, FFN and element-wise operations are performed independently for each token. For a more in-depth understanding of context parallelism in LLM inference, including partial attention, read the MLSys paper available at https://arxiv.org/pdf/2411.01783.
+
+To implement context parallelism in vLLM, the design needs to:
+
+- Be aware of these dependencies to minimize synchronization overhead,
+
+- Remain flexible to support various backends, and
+
+- Avoid major changes to core components to ensure system stability.
+
+Partition Sequence Dimension
+
+Causal attention imposes a varying computational load for each token, as shown in the following figure. To ensure an even workload distribution, tokens should be partitioned across different context parallelism (CP) ranks. Specifically, the sequence is divided into 2 × cp_world_size chunks. Each CP rank i is assigned both the i-th chunk and the (2 × cp_world_size - i - 1)-th chunk. This approach helps balance the compute load among all CP ranks.
+
+Prefill
+
+During the prefill phase, both the query (Q) and key-value (KV) tensors are sharded across GPUs. To ensure that each Q token can attend to all preceding KV tokens, it is necessary to exchange the relevant Q or KV shards among GPUs. To reduce synchronization overhead, data transfers are overlapped with partial attention computations, with the goal of fully hiding data transfer latency. The following figure shows an example of prefill with cp2.
+
+The choice between passing KV or Q shards depends on the relative sizes of the Q and KV tensors. For full prefill, passing KV shards is generally preferred, as the number of queries per KV head typically exceeds two in most models. Conversely, for chunked prefill, passing Q shards may be more efficient if the KV cache length is significantly greater than the number of Q tokens.
+
+Decode
+
+During decoding, new Key-Value (KV) pairs are distributed across CP ranks in a round-robin fashion. This prevents overlap and enables correct computation of partial attention, which is then merged. Once each CP rank completes its local partial attention, these partial results are all-gathered and merged to achieve the same attention across all CP ranks. The provided figure demonstrates the decoding process with cp=2.
+
+Block Table
+
+When tokens are distributed across context parallel (CP) ranks, gaps may appear in the block table. After compaction, tokens that are stored physically next to each other may not be logically consecutive. This is correct for CP because we only need to maintain the correct relative order of tokens for mapping purposes, rather than tracking their absolute positions in the block table. The figure below shows how KVs are stored in the CP case.
+
+PRs
+
+#26057
+
+#26058
+
+#26059
+
+Feedback Period.
+
+No response
+
+CC List.
+
+@luccafong @houseroad @minosfuture
+
+Any Other Things.
+
+Related RFCs
+
+#25749
+
+#22693
+
+Before submitting a new issue...
+
+- Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page, which can answer lots of frequently asked questions.

@@ -1,0 +1,129 @@
+FETCHED: https://github.com/sgl-project/sglang/issues/29930  (is_pr=True, 397233 bytes)
+LAYOUT NODE (PR):
+  number = 29930
+  title = Feat(CP LayerSplit): layer-split prefill KV cache across CP ranks (L2/L3 HiCache, PD prefill)
+  state = CLOSED
+  closedTime = 2026-07-24T10:19:38Z
+  createdTime = 2026-07-02T10:00:53Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 2
+  baseBranch = main
+  headBranch = feat/cp-layersplit
+  author = Outsiderwu145
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOR4yEoNoAKDUxN2I2NGEwZDZlYTcxOGE5NTRlNWNhOGFjM2VlMjQ5N2FlMjhiM2U"> | Feat(CP LayerSplit): Add CP LayerSplit prefill with HiCache L2/L3 sup… | … | 517b64a | …port | Add --enable-dsa-prefill-cp-layersplit: each attention CP rank stores KV | only for its owned layer block plus one transient slot. A routing wrapper | (CpLayerSplitKVPool) keeps the full layer view for the model; non-owned | layers gather prefix KV from the owner via CP broadcast. | Integrate L2 HiCache (per-rank owned-layer offload), L3 storage (file/ | mooncake with CP-rank n
+EV: js-timeline-progressive-focus-container" data-gid="RRE_lADOLCAjRs8AAAABHbRW3s8AAAAGZX23uA"> | Outsiderwu145 | requested review from | 1am9trash, | BBuf, | ByronHsu, | Edwardf0t1, | Fridge003, | HaiShaw, | Qiaolin-Yu, | ShangmingCai, | YAMY1234, | Ying1123, | alphabetc1, | ch-wan, | hanming-lu, | hebiao064, | hnyls2002, | huangtingwei9988, | hubertlu-tw, | hzh0425, | ispobock, | kkHuang-amd, | merrymercy, | rainj-me, | sogalin, | xiezhq-hermann and | yizhang2077 | as code owners | July 2, 2026 10:00 | <path d="M1 7.775V2.75C1 1.784 1.784 1 2.75 1h5.025c.464 0 .91.184 1.238.513l6.25 6.25a1.75 1.
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOR4yEoNoAKDY5ZTRmN2EwMGU1ZGQxMWQ2MWZiOWU5NTJkNDI2YjIyY2Y2MGU0MDU"> | Merge branch 'main' into feat/cp-layersplit | 69e4f7a | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOLCAjRs8AAAABIfLIlw"> | gemini-code-assist | Bot | commented | Jul 2, 2026 | Copy link | Copy Markdown | Contributor | Warning | Gemini encountered an error creating the review. You can try again by commenting /gemini review. | --> | All reactions | --> | Sorry, something went wrong. | Uh oh! | There was an error while loading. <a class="Link--inTextBlock
+EV: js-timeline-progressive-focus-container" data-gid="CRE_kwDOMNwitc8AAAAB2ky4_Q"> | stmatengss | mentioned this pull request | Jul 3, 2026 | [RoadMap] External Known Issues and PRs related to Mooncake | kvcache-ai/Mooncake#2647 | Open | amd-bot | mentioned this pull request | Jul 10, 2026 | [CI Monitor] Daily Report - 2026-07-10 | bingxche/sglang-ci-bot#131 | Open | Outsiderwu145 | closed this | Jul 24, 2026 | --> | <path d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=? date=?]
+Motivation
+
+GLM-5.2 supports 1M-token context, so production prefill must hold very large prefix KV caches — especially in multi-turn workloads. On a PD-disaggregated prefill node with DSA prefill context parallelism, every attention-CP rank stores the same full KV cache (all layers). That duplicates identical KV across ranks and wastes most of the GPU/host memory budget; the per-rank token capacity stays small, long inputs get rejected, and multi-turn prefix reuse thrashes.
+
+Inspired by Zhipu's LayerSplit idea, this PR splits the KV cache along the layer dimension across the attention-CP group: each CP rank stores KV only for its owned block of layers (plus one transient slot), instead of replicating all layers on every rank. At attn_cp_size = N this raises the effective token capacity of both the L1 (GPU) and L2 (host HiCache) tiers by close to N×, at the same --mem-fraction-static and --hicache-ratio. This is targeted specifically at the prefill node of PD (prefill/decode) disaggregation.
+
+Modifications
+
+New flag --enable-dsa-prefill-cp-layersplit (prefill node only; requires --enable-prefill-cp with attn_cp_size > 1 and --disaggregation-mode prefill). Core pieces:
+
+- CpLayerSplitKVPool routing wrapper — presents the full [layer_offset, layer_offset + num_layers) layer view to the model, but stores KV only for the rank's contiguous owned layer block in owned_pool; non-owned layers route through a single-slot transient_pool. When a rank needs a non-owned layer, its prefix KV is gathered from the owner via a CP broadcast into the transient slot before attention runs.
+
+- Layer-split partition math (cp_utils) — owned range / owner rank / local layer count, with a layer_offset so each PP stage splits its own local layers. SGLANG_ENABLE_DSA_PREFILL_CP_LAYERSPLIT_UNEVEN=1 allows non-divisible splits (early ranks own one extra layer).
+
+- Pool construction & memory sizing — routed through build_kv_pool_maybe_layersplit; pool_configurator computes per-token cell size from the owned+transient layer count so the reported capacity reflects the split.
+
+- L2 HiCache (per-rank owned-layer offload) — unwrap CpLayerSplitKVPool to owned_pool at HiCache init (cache_controller, hybrid_pool_assembler) so each rank offloads/loads back only its layers; the owner waits for its owned-layer host→device load-back before broadcasting prefix KV. Requires SGLANG_ENABLE_UNIFIED_RADIX_TREE=1.
+
+- L3 storage (file / mooncake) — storage keys are namespaced by CP rank (_cp{attn_cp_rank}_{attn_cp_size}) so owned-layer pages from different ranks don't collide on the same content hash. The guardrail permits host-tier L2 plus file/mooncake L3 and rejects other backends.
+
+- Prefill pipeline parallelism — layer_offset carries the PP stage start; pools are built from num_effective_layers, and token capacity is MIN-synced across ranks so uneven owned-layer counts don't diverge admission/eviction.
+
+- Disaggregation KV transfer — under layer-split every CP rank owns distinct layers and sends its own pages unfiltered; KV-transfer buffer infos are taken from the unwrapped owned pool.
+
+The flag-off path is a strict no-op: all layer-split logic is gated on is_cp_layersplit_active(...), the unwrap helper returns the pool unchanged for non-wrapper pools
+
+Limitations
+
+- Prefill PD node only (--disaggregation-mode prefill).
+
+- MLA / DSA pool architectures only (build_kv_pool_maybe_layersplit rejects other pool classes).
+
+- Incompatible with speculative decoding.
+
+- With --enable-hierarchical-cache, requires SGLANG_ENABLE_UNIFIED_RADIX_TREE=1, ratio-based host sizing (--hicache-ratio), and L3 limited to file / mooncake.
+
+Reproduction
+
+Prefill node — env + launch:
+
+export SGLANG_DISAGGREGATION_ALL_CP_RANKS_TRANSFER=1
+export SGLANG_ENABLE_DSA_PREFILL_CP_LAYERSPLIT_UNEVEN=1 # 78 layers / 8 CP ranks
+
+# L2 HiCache only (Section B):
+export SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
+
+# ... launch prefill server with:
+ --disaggregation-mode prefill \
+ --enable-prefill-cp \
+ --cp-strategy interleave \
+ --enable-dsa-prefill-cp-layersplit
+
+# L2 HiCache benchmark (Section B), add:
+ --enable-hierarchical-cache \
+ --hicache-size 0 \
+ --hicache-ratio 8 \
+ --mem-fraction-static 0.76
+
+Legacy aliases still work: --enable-dsa-prefill-context-parallel → --enable-prefill-cp; --dsa-prefill-cp-mode round-robin-split → --cp-strategy interleave.
+
+Decode node also needs export SGLANG_DISAGGREGATION_ALL_CP_RANKS_TRANSFER=1 so it receives the per-rank layer blocks.
+
+Accuracy Tests
+
+This is a KV placement / caching change, not a compute change: the KV values a layer sees are identical — only where they live (owned_pool vs. broadcast into a transient slot) differs across CP ranks. Model outputs are unaffected; no accuracy regression is expected. (No numerical kernel change.) MMLU-Pro scores are unchanged with LayerSplit enabled vs. disabled.
+
+Speed Tests and Profiling
+
+Environment: 1P1D PD-disaggregation (1 prefill + 1 decode node), each node 8 × H20 (141 GB). Model GLM-5-FP8, 78 layers, attn_cp_size = 8, DSA prefill CP (--cp-strategy interleave). With UNEVEN=1 the split is [0,10) [10,20) [20,30) [30,40) [40,50) [50,60) [60,69) [69,78) (6 ranks × 10 layers + 2 ranks × 9). Multi-turn cache benchmark: benchmark/hicache/bench_multiturn.py (8 clients, 5 rounds, 32k input, round barrier).
+
+A. L1 only (GPU KV, no HiCache)
+
+max_total_num_tokens
+Multi-turn Cache Hit (by round)
+worst-round TTFT
+
+no LayerSplit
+
+457,920
+
+0.00 → 0.20 → 0.15 (degrading)
+
+r2 = 57.5s
+
+LayerSplit
+
+3,247,296 (~7.1×)
+
+0.00 → 0.50 → 0.67 (rising)
+
+r2 = 32.5s
+
+Startup — no LayerSplit (each rank holds all 78 layers):
+
+KV Cache is allocated. dtype: torch.float8_e4m3fn, #tokens: 457920, KV size: 26.22 GB
+max_total_num_tokens=457920, max_running_requests=2048, context_len=202752, available_gpu_mem=6.65 GB
+
+Startup — LayerSplit (each rank stores only its owned block + 1 transient slot):
+
+[ATTN_CP0] KV Cache is allocated. #tokens: 3247296, KV size: 23.83 GB # owned block
+[ATTN_CP0] KV Cache is allocated. #tokens: 32472
+
+[RENDERED BLOCK author=Outsiderwu145 date=2026-07-02T10:04:39Z]
+Warning
+Gemini encountered an error creating the review. You can try again by commenting /gemini review.

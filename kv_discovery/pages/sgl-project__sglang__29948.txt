@@ -1,0 +1,73 @@
+FETCHED: https://github.com/sgl-project/sglang/issues/29948  (is_pr=True, 330744 bytes)
+LAYOUT NODE (PR):
+  number = 29948
+  title = [HiCache] Emit KV cache events for completed L3 storage backups
+  state = CLOSED
+  closedTime = 2026-08-11T03:39:29Z
+  createdTime = 2026-07-02T13:43:21Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 1
+  baseBranch = main
+  headBranch = idhanani/hicache-l3-kv-events
+  author = ishandhanani
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOLCAjRs8AAAABIg9o9Q"> | gemini-code-assist | Bot | commented | Jul 2, 2026 | Copy link | Copy Markdown | Contributor | Warning | You have reached your daily quota limit. Please wait up to 24 hours and I will start processing your requests again! | --> | All reactions | --> | Sorry, something went wrong. | Uh oh! | There was an error while loading. <a class="Link--inText
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOSaxGONoAKDRkYWRjNTkzZTZmMDI5OTU5ZmZmZjYzZDAzZGQ0MGZiMDQ2ZDE1OTc"> | Emit BlockStored KV events for completed HiCache L3 backups | … | 4dadc59 | When a storage-backend backup ack drains and the whole node reached L3, | publish a BlockStored(EXTERNAL) via the existing event path so cache-aware | routers can index blocks persisted to the shared pool (e.g. Mooncake). | Gated on full completion (completed pages == enqueued pages) so partial | failures and MLA backup-skip ranks emit nothing (sgl-project#29709). | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="HRFPE_lADOLCAjRs8AAAABHc2xo88AAAAGZlEtKg"> | ishandhanani | force-pushed | the | idhanani/hicache-l3-kv-events | branch | from | a8e786e to | 4dadc59 | Compare | July 2, 2026 15:15 | stmatengss | mentioned this pull request | Jul 3, 2026 | [RoadMap] External Known Issues and PRs related to Mooncake | kvcache-ai/Mooncake#2647 | Open | ishandhanani | mentioned this pull request | Jul 6, 2026 | feat(kv-router): index Mooncake KV events | ai-dynamo/dynamo#11239 | <div class="flex-shrink-0 my-1 tmp-my-m
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=? date=2026-07-02T13:43:21Z]
+SGLang publishes BlockStored KV events for L1 (GPU) and L2 (CPU_PINNED) but never for L3 storage backends, so cache-aware routers cannot see blocks persisted to HiCache storage such as Mooncake. This implements the minimal Phase 1 of #29709: when a backup ack drains and the whole node reached storage, publish a BlockStored(EXTERNAL) through the existing event path.
+
+How This Was Implemented
+
+- In HiRadixCache._drain_backup and UnifiedRadixCache._drain_backup, after the host protection is released, call the existing _record_store_event(node, medium=StorageMedium.EXTERNAL).
+
+- Gate on full completion (completed_tokens // page_size == len(hash_value)): partial batch failures and MLA backup_skip ranks (which ack with completed_tokens == 0) publish nothing, so events are a safe lower bound — never an over-report of blocks that are not actually in storage.
+
+- Reuses the existing per-page emission, so parent-hash chaining and bigram payloads come for free and L3 events share the medium-invariant block hash with the GPU/CPU chain (consumers can join tiers on it).
+
+- No new fields, helpers, or wire-format changes; EXTERNAL covers the shared-pool backends this targets (Mooncake).
+
+Walkthrough
+
+- python/sglang/srt/mem_cache/hiradix_cache.py — emit BlockStored(EXTERNAL) on full backup ack in _drain_backup.
+
+- python/sglang/srt/mem_cache/unified_radix_cache.py — same emission in the unified cache's _drain_backup.
+
+- test/registered/unit/mem_cache/test_hiradix_cache_unit.py — assert EXTERNAL events with intact token payload and parent chaining after a real file-backend backup ack.
+
+Scoped out of this PR (tracked in #29709): BlockRemoved(EXTERNAL) on storage eviction, per-tier medium mapping for local-disk backends, storage-side/multi-writer publishing, and router tier-awareness. These events are a per-worker, best-effort store log; the prefetch path re-verifies L3 presence via batch_exists, so a missed or stale event degrades routing, never correctness.
+
+Validation
+
+- pytest test/registered/unit/mem_cache/test_hiradix_cache_unit.py — 2 passed (existing L2 split test + new L3 EXTERNAL test).
+
+- Full test/registered/unit/mem_cache/ suite: 1527 passed, no regressions.
+
+- Live e2e on 2x L40S (Qwen2.5-1.5B, --enable-hierarchical-cache --hicache-storage-backend file --hicache-write-policy write_through --kv-events-config zmq, ZMQ subscriber): TP=1 yields 18 GPU / 18 CPU_PINNED / 18 EXTERNAL events with 18 unique hashes matching 18 files on disk; TP=2 yields the identical single event stream (no cross-rank duplication) while both ranks wrote their 18 per-rank shard files.
+
+Checklist
+
+- Format your code according to the Format code with pre-commit.
+
+- Add unit tests according to the Run and add unit tests.
+
+- Update documentation according to Write documentations.
+
+- Provide accuracy and speed benchmark results according to Test the accuracy and Benchmark the speed.
+
+- Follow the SGLang code style guidance.
+
+CI States
+
+Latest PR Test (Base): ❌ Run #28601012337
+
+Latest PR Test (Extra): ❌ Run #28601011992
+
+[RENDERED BLOCK author=? date=2026-07-02T13:43:26Z]
+Warning
+You have reached your daily quota limit. Please wait up to 24 hours and I will start processing your requests again!

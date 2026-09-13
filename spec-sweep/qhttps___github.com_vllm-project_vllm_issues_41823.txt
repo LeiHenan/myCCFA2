@@ -1,0 +1,210 @@
+[Feature]: Support Dynamic Pruning for Speculative Decoding Draft Trees in EAGLE-3 · Issue #41823 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [Feature]: Support Dynamic Pruning for Speculative Decoding Draft Trees in EAGLE-3   #41823 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Closed as not planned 
+ Closed as not planned 
+ [Feature]: Support Dynamic Pruning for Speculative Decoding Draft Trees in EAGLE-3 #41823 
+ Copy link 
+ Labels
+ feature request New feature or request New feature or request stale Over 90 days of inactivity Over 90 days of inactivity 
+ Description
+ supertanziang 
+ opened on May 6, 2026 
+ Issue body actions 
+ 🚀 The feature, motivation and pitch
+ I would like to request support for dynamic pruning in vLLM's speculative decoding draft tree ( --speculative-token-tree ) in EAGLE-3. Today, the tree topology is static at model load time, which makes the number of draft branches fixed during inference. A pruning mechanism would allow vLLM to trim low-value branches at runtime based on token probabilities, improving efficiency without requiring users to hand-tune multiple static tree shapes.
+ Alternatives
+ Motivation 
+ Current behavior 
+ The draft tree topology is configured via speculative_token_tree (for example, "[(0,), (1,), (0,0), (0,1), (1,0), (1,1)]" ) and is resolved to fixed per-level child counts stored in child_drafts_per_level (see vllm/v1/spec_decode/llm_base_proposer.py:282–302 ). 
+ During the propose_tree loop, each level expands every parent node by a fixed number of children: 
+ # llm_base_proposer.py ~L1006num_children = self.child_drafts_per_level[level]if num_children == 1:    draft_token_ids = logits.argmax(dim=-1).view(batch_size, -1)else:    draft_token_ids = torch.topk(logits, num_children, dim=-1).indices.view(        batch_size, -1   ) 
+ This means: 
+ A high-confidence branch can still spend compute expanding siblings that are unlikely to be accepted. 
+ A low-confidence branch cannot request more budget dynamically. 
+ The number of draft tokens remains constant per step, regardless of input difficulty. 
+ Why this feature is useful 
+Scenario | Static tree | With dynamic pruning
+-- | -- | --
+Easy prefix (repetitive or formulaic text) | Expands all branches; many are unnecessary | Prunes low-value branches early and reduces compute
+Hard / ambiguous text | Fixed branching budget | Can avoid wasting work on low-probability paths
+Latency-sensitive serving | Constant overhead per step | Fewer draft tokens and lower average latency
+Mixed-difficulty batch | Same tree shape for all requests | Branching can adapt per request
+ Dynamic pruning has been explored in speculative decoding literature such as SpecInfer and EAGLE-2 , where adaptive branch selection helps reduce wasted draft-token computation while preserving acceptance quality. 
+ Requested Feature 
+ Add an optional dynamic pruning pass during speculative draft-tree construction so that a node is not expanded when its probability is below a configurable threshold. 
+ Two possible pruning criteria: 
+ 1. Per-node probability threshold 
+ Prune node v at level L if max_prob(logits[v]) < p_min If the most likely next token from a node is already too unlikely, the branch can be stopped early. 
+ 2. Cumulative path probability threshold 
+ path_prob[v] = product of accepted top-1 probabilities along root → v 
+ Prune node v if path_prob[v] < p_budget This keeps only branches whose joint probability justifies the compute cost. 
+ Additional context
+ API Proposal
+ Add optional parameters to SpeculativeConfig :
+ @ dataclass 
+ class SpeculativeConfig :
+ # existing fields ... 
+ speculative_tree_prune_min_prob : float = 0.0 
+ """Per-node pruning threshold. A node is not expanded if its 
+ argmax token probability is below this value. 0.0 disables pruning.""" 
+ speculative_tree_prune_path_prob : float = 0.0 
+ """Path-probability pruning threshold. A node is not expanded if 
+ the product of top-1 probabilities along its root-to-node path 
+ falls below this value. 0.0 disables pruning.""" 
+ Suggested CLI flags:
+ --speculative-tree-prune-min-prob 0.1
+--speculative-tree-prune-path-prob 0.05
+ A unified --speculative-tree-prune-threshold flag could also be considered if maintainers prefer a simpler interface.
+ Requested Next Steps
+ If this feature is acceptable, I would appreciate guidance on:
+ preferred API shape ( p_min / p_budget vs. a single pruning threshold)
+ the right place to integrate pruning in the tree proposer
+ how to represent variable-length tree attention metadata
+ whether the verifier interface should be updated in the same change set
+ I am also willing to contribute a prototype for the pruning logic and tree-metadata changes.
+ Before submitting a new issue...
+ Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page , which can answer lots of frequently asked questions.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ feature request New feature or request New feature or request stale Over 90 days of inactivity Over 90 days of inactivity 
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

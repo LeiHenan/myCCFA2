@@ -1,0 +1,228 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/37263  (is_pr=False, 283938 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 37263
+  title = [RFC]: Hotness-aware multi-level KV cache management to accelerate dynamic sparse attention
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2026-03-17T07:32:11Z
+  updatedAt = 2026-07-21T02:19:52Z
+  closedAt = None
+  author = zengchuang-hw
+  labels = ['RFC', 'stale']
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-06-19T02:23:38Z]
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-07-21T02:19:52Z]
+This issue has been automatically closed due to inactivity. Please feel free to reopen if you feel it is still relevant. Thank you!
+
+[GRAPHQL CLOSED by github-actions at 2026-07-21T02:19:52Z reason=NOT_PLANNED]
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=zengchuang-hw date=Mar 17, 2026]
+Motivation.
+
+Background: Long-context reasoning scenarios face a dual surge in computational overhead and memory consumption, resulting in low inference efficiency and high inference costs. Dynamic sparse attention mitigates the computational surge in long sequences, but the memory bottleneck remains.
+
+Under sparse attention, accesses to the KV cache exhibit a hot-cold distribution, presenting an opportunity for heterogeneous KV cache management.
+
+- 
+Heterogeneous KV cache leverages cheap, scalable main memory to replace expensive, limited device memory, promising significant reductions in inference costs.
+
+- 
+By retaining frequently accessed KV cache in device memory and swapping out infrequently accessed KV cache to main memory, the memory footprint of long sequences can be reduced.
+
+Goals:
+
+- 
+To accelerate the long sequence decoding and guarantee the accuracy, we plan implementing a hotness-ware multi-level kv cache management mechanism while keeping the sparse attention arithmetic computation unchanged.
+
+- 
+To achieve good precision, different from KV compression and KV dropping methods (issue5751, issue 12254, and pr 11938), this implementation chooses keeping the whole kv cache and selects important parts to load into HBM.
+
+Proposed Change.
+
+In V1, the KV_offload mechanism will be extended with sparse optimization capabilities.
+
+Architecture Overview
+
+Scheduler Side:
+
+- 
+SparseOffloadingManager extends the standard OffloadingManager to integrate sparse selection logic
+
+- 
+Maintains block representations for intelligent block scoring
+
+- 
+Implements query-aware sparse selection to identify hot blocks
+
+- 
+Reuses the original OffloadingManager logic for block lifecycle management
+
+Worker Side:
+
+- 
+SparseOffloadingHandler extends the standard OffloadingHandler with optimized transfer mechanisms
+
+- 
+Implements contiguous block merging to reduce transfer overhead
+
+- 
+Supports batch transfer operations for improved efficiency
+
+- 
+BlockReprManager maintains and updates block representations
+
+Integration Flow
+
+The sparse-optimized KV_offload process works as follows:
+
+- Scheduler Side: Sparse Selection
+
+selected_blocks, scores = sparse_manager.lookup_with_sparse(
+ block_hashes, query, layer_idx
+)
+
+- Prepare Load (only selected blocks)
+
+load_spec = sparse_manager.prepare_sparse_load(selected_blocks)
+
+- Worker Side: Layer-wise Execution
+
+for layer_idx in range(num_layers):
+ # Sparse selection and allocation
+ new_attn_metadata, swap_in_spec, swap_out_spec = \
+ sparse_worker.handle_layer(attn_metadata, layer_idx, query)
+ 
+ # Swap in (only selected hot blocks)
+ optimized_handler.transfer_async(job_id, swap_in_spec)
+ 
+ # Wait for swap-in completion
+ optimized_handler.wait({job_id})
+ 
+ # Attention Kernel with sparse blocks
+ self.impl.forward(
+ self, query, key, value, kv_cache,
+ new_attn_metadata, output=output
+ )
+ 
+ # Swap out new complete blocks
+ optimized_handler.transfer_async(job_id, swap_out_spec)
+ 
+ # Update block representations
+ block_repr_manager.update(layer_idx, new_blocks)
+ 
+ # Complete load/store operations
+ sparse_manager.complete_load(selected_blocks)
+ sparse_manager.complete_store(new_blocks, success=True)
+
+Key Improvements
+
+- Sparse Selection: Only loads the most relevant KV blocks based on query-aware scoring
+
+- Block Representation: Maintains compact representations for efficient similarity computation
+
+- Optimized Transfer: Merges contiguous blocks and supports batch operations
+
+- Standard Interface: Compliance with KV_offload standard interfaces for compatibility
+
+- Adaptive Strategy: Dynamically adjusts selection based on access patterns
+
+Integration Points
+
+- Scheduler: SparseOffloadingManager replaces/enhances standard OffloadingManager
+
+- Worker: OptimizedSwapHandler replaces/enhances standard OffloadingHandler
+
+- BlockReprManager is integrated into the worker pipeline
+
+- Configuration through SparseConfig with parameters like sparse_topk, copy_method, cache_policy
+
+This approach maintains full compatibility with the KV_offload framework while introducing significant performance optimizations through intelligent sparse block selection and optimized data transfer mechanisms.
+
+Implementation Steps
+
+Phase 1: Basic Adaptation
+
+├─ Step 1.1: Create SparseOffloadingManager
+
+├─ Step 1.2: Create OptimizedSwapHandler
+
+├─ Step 1.3: Implement basic sparse selection
+
+└─ Step 1.4: Integrate to scheduler and worker
+
+│
+
+▼
+
+Phase 2: Performance Optimization
+
+├─ Step 2.1: Implement block representation
+
+├─ Step 2.2: Optimize swap transfer
+
+├─ Step 2.3: Implement batch transfer
+
+└─ Step 2.4: Optimize synchronization
+
+│
+
+▼
+
+Phase 3: Advanced Features
+
+├─ Step 3.1: Implement query-aware selection
+
+├─ Step 3.2: Implement adaptive top-k
+
+├─ Step 3.3: Implement multi-strategy fusion
+
+└─ Step 3.4: Performance monitoring
+
+│
+
+▼
+
+Phase 4: Testing and Validation
+
+├─ Step 4.1: Unit tests
+
+├─ Step 4.2: Integration tests
+
+├─ Step 4.3: Performance benchmarks
+
+└─ Step 4.4: Correctness validation
+
+Test Case
+
+- 
+Super long context verification
+
+model: Qwen2.5-14b-1m
+
+at A100-96G*1, support 1M length input
+
+- 
+TTFT and TPOT when 1M length input
+
+Feedback Period.
+
+No response
+
+CC List.
+
+No response
+
+Any Other Things.
+
+Co-Author: @CheYulin @amy-why-3459
+
+Before submitting a new issue...
+
+- Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page, which can answer lots of frequently asked questions.

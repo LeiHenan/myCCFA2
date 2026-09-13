@@ -1,0 +1,340 @@
+
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ huggingface
+ / 
+ transformers 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 34.5k 
+ Star
+ 165k 
+ Code 
+ Issues 
+ 821 
+ Pull requests 
+ 1.6k 
+ Actions 
+ Projects 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Actions
+ Projects
+ Security and quality
+ Insights
+ Assisted/speculative decoding ignores stop_strings completed mid-block, and raises with assistant_model #48039 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Closed 
+ Closed 
+ Assisted/speculative decoding ignores stop_strings completed mid-block, and raises with assistant_model #48039 
+ Copy link 
+ Description
+ pjordanandrsn 
+ opened on Aug 17, 2026 
+ Issue body actions 
+ Assisted/speculative decoding ignores stop_strings completed mid-block, and raises with assistant_model 
+ System info
+ transformers main @ 2e97985 ; same lines on the v5.15.0 tag, (A) also confirmed running on 5.13.1 
+ torch 2.13.0—CPU-only, tiny random models, no drafter checkpoints
+ The stop_strings half of Assisted/speculative decoding generates past an EOS that is accepted mid-block #47912 . Fix EOS for candidate generators #47931 does not cover it.
+ Who can help?
+ @Cyrilvallez —the template routes non-VLM generate here, and this is the stack you own ( #46229 MTP,
+ #47867 DFlash, most of the recent candidate_generator.py ).
+ @zucchini-nlp —tagging you too since you've carried the EOS half end to end ( #47912 , #47931 , #48002 ).
+Same loop, so keeping them together may be simpler. Your call which of you takes it.
+ Description
+ (A) stop_strings + assistant_model= or assistant_early_exit= raises, always. 
+ AssistedCandidateGenerator deep-copies the target's generation config—which carries
+ stop_strings —and hands it to the assistant's own generate() , which never gets a tokenizer.
+Speculative decoding with a draft model and stop strings is currently unusable.
+ (B) Underneath (A), a stop string is honored only if it completes on the last token of a committed
+block. The block is appended and streamed first; the criteria run after, and only look at the end of
+the sequence. Anywhere else in the block is missed—and since a stop string is only visible while it
+ is the suffix, a missed one usually never reappears and the run goes to max_new_tokens .
+ #47931 crops drafts at the first EOS, which generators can do because they hold _eos_token_tensor .
+None has a tokenizer, so that pattern does not extend to stop strings.
+ (A) raises
+ import copy , torch 
+ from transformers import AutoModelForCausalLM , AutoTokenizer 
+ NAME = "hf-internal-testing/tiny-random-LlamaForCausalLM" 
+ tok = AutoTokenizer . from_pretrained ( NAME )
+ model = AutoModelForCausalLM . from_pretrained ( NAME , dtype = torch . float32 ). eval ()
+ inputs = tok ( "Hello world, this is a test of" , return_tensors = "pt" )
+ model . generate ( ** inputs , do_sample = False , max_new_tokens = 32 , tokenizer = tok ,
+ stop_strings = [ "helpful" ]) # ok 
+ model . generate ( ** inputs , do_sample = False , max_new_tokens = 32 , tokenizer = tok ,
+ stop_strings = [ "helpful" ], assistant_model = copy . deepcopy ( model ))
+ # ValueError: There are one or more stop strings ... but we could not locate a tokenizer. 
+ assistant_early_exit=1 fails identically. Plain greedy and prompt_lookup_num_tokens are fine.
+ Cause. candidate_generator.py:172 copies the target's config wholesale and :318 passes it to
+the assistant; the assistant's generate() then hits utils.py:1375-1381 with stop_strings set and
+ tokenizer=None .
+ The block right after that copy already scrubs every other field that must not carry over— min_length ,
+ min_new_tokens , max_length at :183-186 , and assistant_early_exit at :1217-1218 
+("otherwise the assistant will also call generate with early exit"). stop_strings belongs there
+for the same reason: the assistant drafts, the target validates. One line beside the existing scrubs:
+ self . generation_config . stop_strings = None 
+ Side note, independent of the rest. EarlyExitCandidateGenerator.get_candidates sets
+ num_hidden_layers at :1224 and restores at :1226 , not in a finally . Catching the ValueError 
+leaves the model at num_hidden_layers=1 instead of 2 , and plain greedy on it no longer reproduces
+its own pre-call output. Recoverable error turns into a silently broken model.
+ (B) silently runs past the stop string
+ Apply the one-line fix and the call runs, but stops disagreeing with greedy. Real
+ AssistedCandidateGenerator , repo default num_assistant_tokens=20 :
+ import copy , torch 
+ from transformers import AutoModelForCausalLM , AutoTokenizer 
+ from transformers . generation import candidate_generator as cg 
+ NAME = "hf-internal-testing/tiny-random-LlamaForCausalLM" 
+ tok = AutoTokenizer . from_pretrained ( NAME )
+ model = AutoModelForCausalLM . from_pretrained ( NAME , dtype = torch . float32 ). eval ()
+ inputs = tok ( "Hello world, this is a test of" , return_tensors = "pt" )
+ plen = inputs [ "input_ids" ]. shape [ 1 ]
+ _init = cg . AssistedCandidateGenerator . __init__ # the (A) fix, else this raises first 
+ def _patched ( self , * a , ** kw ):
+ _init ( self , * a , ** kw )
+ self . generation_config . stop_strings = None 
+ cg . AssistedCandidateGenerator . __init__ = _patched 
+ assistant = copy . deepcopy ( model )
+ assistant . generation_config . num_assistant_tokens = 20 # the repo default 
+ assistant . generation_config . num_assistant_tokens_schedule = "constant" 
+ assistant . generation_config . assistant_confidence_threshold = 0 # see note below 
+ cont = model . generate ( ** inputs , do_sample = False , max_new_tokens = 96 )[ 0 , plen :]
+ STOP = tok . decode ( cont [ 27 : 28 ]) # a string the model really emits, completing at offset 28 
+ kw = dict ( do_sample = False , max_new_tokens = 96 , tokenizer = tok , stop_strings = [ STOP ])
+ base = model . generate ( ** inputs , ** kw )
+ spec = model . generate ( ** inputs , ** kw , assistant_model = assistant )
+ print ( repr ( STOP ), base . shape [ 1 ] - plen , spec . shape [ 1 ] - plen ) # 'Arist' 28 96 
+ Criteria only ever run at new_len in [21, 42, 63, 84, 96] . The stop string completes at 28, which
+is never the suffix when anyone looks, so the run hits the cap—68 tokens past greedy.
+ The assistant_confidence_threshold = 0 line is load-bearing and worth flagging on its own. At the
+default 0.4 , ConfidenceCriteria ( utils.py:1385-1392 ) aborts a random drafter after one
+low-probability token, so blocks are 2 tokens and nothing is missed—a naive toy repro shows this bug
+as absent. A real drafter clears 0.4 and drafts its full block. Setting the threshold to None does
+not disable it either: update(..., defaults_only=True) at :124 refills None with the 0.4 default.
+ Swept, real generators only
+ Stop strings are 1/2/3-token windows over each model's own greedy output, keeping those greedy
+actually stops on. Every arm reproduces greedy token-for-token with no stop string set, so a
+divergence with one set is the stop string being missed, not the arm drafting differently.
+ AssistedCandidateGenerator , blocks of 21:
+ n 
+ honored 
+ missed 
+ never stopped 
+ max past 
+ default gate 0.4 → 1-token drafts 
+ 86 
+ 86 
+ 0 
+ 0 
+ 0 
+ gate off → real 20-token drafts 
+ 86 
+ 6 
+ 80 
+ 68 
+ 94 
+ MTPCandidateGenerator , driven end to end through generate() with a crafted MtpModel drafter
+(only MtpModel.from_pretrained patched, as test_generate_with_mtp does):
+ num_mtp_layers 
+ block sizes 
+ n 
+ honored 
+ missed 
+ never stopped 
+ max past 
+ 1 
+ 1, 2 
+ 26 
+ 26 
+ 0 
+ 0 
+ 0 
+ 2 
+ 1, 3 
+ 26 
+ 23 
+ 3 
+ 3 
+ 48 
+ 3 
+ 1, 2, 3 
+ 26 
+ 23 
+ 3 
+ 3 
+ 48 
+ 5 
+ 1, 2, 3 
+ 26 
+ 23 
+ 3 
+ 3 
+ 48 
+ Splitting by whether greedy's stop point lands on a block boundary—boundaries recorded during that
+same run—the mechanism is exact across all four MTP arms: on a boundary → 95/95 honored, off a
+boundary → 9/9 missed .
+ num_mtp_layers=1 is clean, the same scope exception #47912 had for EOS: with a 1-token draft, a stop
+string completing at the draft's end is caught by is_done_candidate and the commit is trimmed.
+ DFlashTokenCandidateGenerator isn't measured, but by inspection its geometry is the worst of the
+three: block_size defaults to 16 ( configuration_muse_glimmer_assistant.py:71 ), drafted
+unconditionally every iteration ( candidate_generator.py:1623 ), no confidence gate to shorten it.
+ PromptLookupCandidateGenerator misses 1 of 86 here only because on this output it doesn't start
+committing multi-token blocks until new_len ≈ 37 —that one case is still 62 tokens past.
+ Cause
+ valid_tokens = selected_tokens [:, : n_matches + 1 ] # utils.py:3779 
+ input_ids = torch . cat (( input_ids , valid_tokens ), dim = - 1 ) # utils.py:3794 
+ if streamer is not None :
+ streamer . put ( valid_tokens . cpu ()) # utils.py:3796 
+...
+ unfinished_sequences = unfinished_sequences & ~ stopping_criteria ( input_ids , scores ) # utils.py:3859 
+ StopStringCriteria looks at the end of the sequence and nowhere else ( stopping_criteria.py:480 ,
+"we're only matching strings at the end of the generated sequence"). So the criteria are only ever
+asked about block boundaries. The draft pre-check at utils.py:3696 shares the blind spot—it sees
+the end of the draft and nothing else, which is why num_mtp_layers=1 escapes.
+ The new_token_length one-liner from #47912 doesn't apply here: StopStringCriteria.__call__ takes no
+such parameter and always matches the suffix only.
+ Why CI is green on this
+ test_assisted_decoding_matches_greedy_search exists for exactly this invariant—"ensures that the
+assisted generation does not introduce output changes over greedy search"—but sets eos_token_id: -1 
+("no EOS is generated, to ensure generation doesn't break early") and max_new_tokens: 4 , and never
+sets stop_strings . It excludes the stopping path by construction, so it can't catch either defect.
+ test_prompt_lookup_decoding_matches_greedy_search is a copy with the same gap.
+ The EOS side does have a dedicated test— test_prompt_lookup_decoding_stops_at_eos from #31301 ,
+whose comment describes this exact failure mode. There's no stop_strings analogue anywhere in
+ tests/ ; the only end-to-end stop_strings generate test is test_per_row_stopping_criteria , @slow 
+and greedy-only.
+ Fix: options, not a proposal
+ Truncate the committed block in the loop. Walk valid_tokens ' prefixes, cut at the first one
+where the criteria fire, recompute n_matches the way the length-budget clamp at
+ utils.py:3783-3786 already does. Up to n_matches + 1 criteria evaluations per round, and it
+fixes every criterion at once—stop strings, and any user-supplied StoppingCriteria , which has
+the same problem today and no workaround. Can be gated on the list holding something other than
+ MaxLengthCriteria / EosTokenCriteria , which both already have their own handling.
+ A first-match-position mode on StopStringCriteria , so the loop truncates in one call instead
+of scanning prefixes. Cheaper per round; changes the criteria's shape and only solves stop strings.
+Worth @Rocketknight1 's read if you prefer this—he wrote the class in Terminator strings for generate() #28932 .
+ Reject stop_strings for assisted decoding and document it , rather than silently diverging from
+greedy. Least work, gives up a feature (1) would restore.
+ _assisted_decoding has accumulated one bespoke guard per criterion—a length clamp for
+ max_length , a draft crop for EOS—and (1) is roughly "stop adding those". Bigger call than this
+issue, so: an option, not a recommendation.
+ Not my call to route. Happy to send a PR for whichever shape you want, including just (A) if you'd
+rather split them—it's one line and independent of (B).
+ Still draft on the fix shape—the measurements are settled.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

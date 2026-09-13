@@ -1,0 +1,161 @@
+FETCHED: https://github.com/NVIDIA/TensorRT-LLM/issues/12542  (is_pr=False, 329671 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 12542
+  title = [Bug]: KV cache block evicted from reuse tree before async CacheSender completes transfer, causing silent deadlock in disaggregated serving
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2026-03-25T13:04:33Z
+  updatedAt = 2026-06-05T04:30:47Z
+  closedAt = None
+  author = godlark
+  labels = ['bug', 'Disaggregated serving', 'KV-Cache Management', 'stale', 'waiting for feedback']
+
+[GRAPHQL COMMENT by godlark assoc=NONE at 2026-03-31T06:51:38Z]
+Please also check https://github.com/NVIDIA/TensorRT-LLM/issues/12560 with the simplest repro.
+
+[GRAPHQL COMMENT by Tabrizian assoc=MEMBER at 2026-03-31T21:59:54Z]
+Hi @godlark, is this the same issue as what #12560 is tracking or this is a separate issue? If this is a separate issue, could you please share the reproducing instructions for this?
+
+[GRAPHQL COMMENT by godlark assoc=NONE at 2026-04-02T09:56:36Z]
+@Tabrizian The bug was non-deterministic and occurred within a dataset of 4,096 requests. The issue was observed while running two sequential sets of 1,024 identical requests, followed by a full set of 4,096 requests in a different order. While the application usually hung during these tests, it occasionally triggered this specific exception instead.
+
+[GRAPHQL COMMENT by karljang assoc=COLLABORATOR at 2026-05-07T21:40:11Z]
+Hi @godlark, the original race you reported was fixed by PR #12667 (merged 2026-04-02) and shipped first in v1.3.0rc11. Several additional KV-cache / disagg fixes have landed since, so the recommendation now is to retest on v1.3.0rc14 (current latest) rather than rc11 — it includes:
+
+- #12667 (rc11) — block evicted from reuse tree before async send (your report)
+- #12673 (rc11) — KV cache corruption fix (NVBug 6025177)
+- #12803 (rc12) — disagg lifecycle race condition coverage (NVBug 6018647)
+- #12913 (rc12) — PP + disagg + block_reuse + chunked_prefill hang E2E test
+- #12472 (rc13) — multimodal KV cache block reuse for disagg
+- #12834 (rc14) — free-block counter corruption in getFreeBlock offload path
+- #12448 (rc14) — WindowBlockManager destructor statistics
+- #13620 (rc14) — disaggregated cached token usage accounting
+
+Could you re-run on v1.3.0rc14 and let us know whether you still see either the hang or any KV-cache assertion? If clean, we'll close this.
+
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-05-22T04:27:40Z]
+Issue has not received an update in over 14 days. Adding stale label.
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-06-05T04:30:47Z]
+This issue was closed because it has been 14 days without activity since it has been marked as stale.
+
+[GRAPHQL CLOSED by github-actions at 2026-06-05T04:30:47Z reason=NOT_PLANNED]
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=godlark date=Mar 25, 2026]
+System Info
+
+Hardware: AWS P5en, 8xH200
+
+Software:
+
+- TRT-LLM v1.2.0.rc6.post2
+
+- dynamo: v 1.01
+
+Runtime configuration:
+
+- P/D disaggregation, 4P1D
+
+Who can help?
+
+No response
+
+Information
+
+- The official example scripts
+
+- My own modified scripts
+
+Tasks
+
+- An officially supported task in the examples folder (such as GLUE/SQuAD, ...)
+
+- My own task or dataset (give details below)
+
+Reproduction
+
+Problem description
+
+In disaggregated serving with enable_block_reuse, the async CacheSender thread transfers KV cache blocks to the decode via UCX in the background after prefill completes. However, between the request completion and the async send, the
+
+executor loop can evict the KV cache block from the reuse tree for a new request. When CacheSender::sendSync calls BlockRange::fromReuseTree, the block is gone, triggering
+
+TLLM_CHECK_WITH_INFO(lastBlock, "Couldn't find the requested block in the reuse tree") at kvCacheUtils.h:84. The exception is caught and logged, but the UCX send never happens. The decode blocks forever in checkGenTransferStatus →
+
+std::future::get waiting for data that will never arrive, deadlocking the entire pipeline.
+
+Prefill-side stack trace (assertion failure in async CacheSender thread):
+
+[TensorRT-LLM][ERROR] Exception in sendAndRemoveResponse: [TensorRT-LLM][ERROR] Assertion failed: Couldn't find the requested block in the reuse tree (/src/tensorrt_llm/cpp/include/tensorrt_llm/batch_manager/kvCacheUtils.h:84)
+1 tensorrt_llm::_v1::common::throwRuntimeError(char const*, int, char const*) + 97
+2 tensorrt_llm::batch_manager::kv_cache_manager::BlockRange::fromReuseTree(BaseKVCacheManager&, BlockKey const&, int) + 1554
+3 tensorrt_llm::batch_manager::kv_cache_manager::getBlockRangeForSending(BaseKVCacheManager*, LlmRequest const&, BlockKey const&, int, bool) + 274
+4 tensorrt_llm::batch_manager::kv_cache_manager::CacheFormatter::format(TransferSession&) + 351
+5 tensorrt_llm::batch_manager::CacheSender::Impl::sendSync(LlmRequest const&) + 231
+6 tensorrt_llm::batch_manager::CacheSender::Impl::sendAndRemoveResponse(unsigned long, Response) + 180
+7 tensorrt_llm::batch_manager::CacheSender::Impl::handleAsyncSend(AsyncSendResource&) + 594
+8 std::_Function_handler<...>::_M_invoke(std::_Any_data const&) + 66
+9 std::__future_base::_State_baseV2::_M_do_set(...) + 45
+10 libc.so.6
+11 std::__future_base::_Async_state_impl<...>::_M_run() + 248
+12 libstdc++.so.6
+13 libc.so.6 (pthread_create)
+14 libc.so.6 (clone)
+
+Decode-side hang (py-spy trace showing blocked executor thread):
+
+_executor_loop_overlap (py_executor.py:1594)
+ → _prepare_and_schedule_batch (py_executor.py:1273)
+ → _check_disagg_gen_transfer_status (py_executor.py:2165)
+ → _check_disagg_gen_cache_transfer_status (py_executor.py:2359)
+ → check_gen_transfer_status (kv_cache_transceiver.py:135)
+ → CacheTransceiver::checkGenTransferStatus (cacheTransceiver.cpp:643)
+ → std::future<void>::get (future:913)
+ → _State_baseV2::wait → atomic_futex::_M_load_when_equal
+ [BLOCKED FOREVER — waiting for KV cache data that will never arrive]
+
+113,027 py-spy samples (93% of executor thread time) stuck in this call chain.
+
+Reproduction:
+
+Run a load test with several steps, changing the concurrency. For example, with LLMPerf run concurrency:4, then 8 and then again 4. ISL:1k, OSL:200. Esp. Step 3 run for longer data set like 4k requests. Set the engine backend to pytorch, "enable_block_reuse": true, and "cache_transceiver_config.backend": "UCX". Send requests which will have the same prefix to simulate that the same KV cache blocks are reused.
+
+'cache_transceiver_config': {
+ 'backend': 'UCX',
+ 'kv_transfer_timeout_ms': 180000,
+ 'max_tokens_in_buffer': 16384
+}
+
+Expected behavior
+
+- KV cache blocks referenced by pending async CacheSender transfers should not be evicted from the reuse tree. The CacheSender should hold a reference (or pin) on the blocks until the UCX transfer completes, preventing the
+
+"Couldn't find the requested block in the reuse tree" assertion at kvCacheUtils.h:84. The source code acknowledges this case with // TODO: handle the case where the last block is not found but does not handle it.
+
+- If a KV cache transfer fails for any reason, the decode should not block indefinitely. checkGenTransferStatus calls std::future::get() without a timeout, ignoring the configured kv_transfer_timeout_ms=180000 (180s). It should use
+
+std::future::wait_for() with the configured timeout and fail the affected request gracefully instead of deadlocking the entire pipeline.
+
+actual behavior
+
+- The prefill completes the request and returns success to the processor. The async CacheSender thread then attempts to send the KV cache blocks via UCX, but the executor loop has already evicted the block from the reuse tree.
+
+BlockRange::fromReuseTree fails with an assertion, the exception is caught and logged by sendAndRemoveResponse, but the UCX send never happens. The prefill process continues running normally — the Python executor loop is unaware of the failure.
+
+- The decode calls checkGenTransferStatus → std::future::get() which blocks forever waiting for KV cache data that will never arrive. The configured kv_transfer_timeout_ms=180000 is not applied to this wait. The decode executor loop is
+
+permanently frozen, no further requests are processed, and all processors hang waiting for decode responses. The entire serving pipeline is silently deadlocked with no health check failure or error propagation to the application level.
+
+additional notes
+
+I caught this exception while running py-spy on processes, but I've seen the same symptoms with runs when py-spy wasn't attached
+
+Before submitting a new issue...
+
+- Make sure you already searched for relevant issues, and checked the documentation and examples for answers to frequently asked questions.

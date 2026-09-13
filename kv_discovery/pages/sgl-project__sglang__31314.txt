@@ -1,0 +1,157 @@
+FETCHED: https://github.com/sgl-project/sglang/issues/31314  (is_pr=True, 339570 bytes)
+LAYOUT NODE (PR):
+  number = 31314
+  title = [BugFix] Avoid redundant KV index cloning in Mamba radix cache
+  state = CLOSED
+  closedTime = 2026-07-15T10:47:50Z
+  createdTime = 2026-07-15T09:38:56Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 1
+  baseBranch = release/v0.5.12
+  headBranch = 0.5.12-bugfix
+  author = gjsheu
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOREC8otoAKDczNzhjZjgxMjdkZDU5YjJiNTkwNDY1MzhjMmE5M2JlYzhlZDk5OTg"> | fix mamba cache | 7378cf8 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="RRE_lADOLCAjRs8AAAABI4pkxs8AAAAGhW2YwQ"> | gjsheu | requested review from | Ying1123, | hanming-lu, | hnyls2002, | hzh0425, | ispobock, | merrymercy, | xiezhq-hermann and | yizhang2077 | as code owners | July 15, 2026 09:38 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="PRR_kwDOLCAjRs8AAAABGE_Mzw"> | gemini-code-assist | Bot | reviewed | Jul 15, 2026 | View reviewed changes | gemini-code-assist | Bot | left a comment | Copy link | Copy Markdown | Contributor | There was a problem hiding this comment. | <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.32
+EV: js-timeline-progressive-focus-container" data-gid="CE_lADOLCAjRs8AAAABI4pkxs8AAAAGhZh4nA"> | gjsheu | closed this | Jul 15, 2026 | --> | Sign up for free | to join this conversation on GitHub. | Already have an account? | Sign in to comment | --><input type="hidden" data-csrf="true" name="authenticity_t
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=gjsheu date=2026-07-15T09:38:56Z]
+Motivation
+
+This PR avoids a redundant KV index tensor copy when inserting finished or unfinished requests into the Mamba radix cache.
+
+The change reduces unnecessary device-memory allocations and helps prevent gradual HBM growth under sustained Mamba workloads.
+
+Modifications
+
+Accuracy Tests
+
+Speed Tests and Profiling
+
+Checklist
+
+- Format your code according to the Format code with pre-commit.
+
+- Add unit tests according to the Run and add unit tests.
+
+- Update documentation according to Write documentations.
+
+- Provide accuracy and speed benchmark results according to Test the accuracy and Benchmark the speed.
+
+- Follow the SGLang code style guidance.
+
+Review and Merge Process
+
+- Ping Merge Oncalls to start the process. See the PR Merge Process.
+
+- Get approvals from CODEOWNERS and other reviewers.
+
+- Trigger CI tests with comments or contact authorized users to do so.
+
+- Common commands include /tag-and-rerun-ci, /tag-run-ci-label, /rerun-failed-ci
+
+- After green CI and required approvals, ask Merge Oncalls or people with Write permission to merge the PR.
+
+CI States
+
+Latest PR Test (Base): ❌ Missing run-ci label -- add it to run CI tests.
+
+Latest PR Test (Extra): ❌ Blocked -- run-ci is required first.
+
+[RENDERED BLOCK author=? date=2026-07-15T09:40:05Z]
+Code Review
+
+This pull request introduces a take_value_ownership parameter to the insert and _insert_helper methods in MambaRadixCache to avoid cloning the value tensor when ownership is transferred from the caller, and adds a corresponding unit test. The reviewer suggests further optimizing this by completely bypassing the clone() operation when take_value_ownership is True, regardless of whether total_prefix_length is zero, because the memory footprint of the 1D tensor is small and the overhead of a CUDA clone is relatively high.
+
+ Important
+The consumer version of Gemini Code Assist on GitHub is being sunset. Starting June 18, 2026, new organization installations will be blocked, and all code review activity will officially cease on July 17, 2026.
+
+For more details on the timeline and next steps, please review the Help Documentation.
+
+[RENDERED BLOCK author=? date=2026-07-15T09:40:06Z]
+Since value is a 1D tensor of int64 indices, its memory footprint is extremely small (typically less than 64 KB even for very long sequences). The overhead of a CUDA clone() operation (which involves a new allocation from PyTorch's caching allocator and launching a copy kernel) is significantly higher than the negligible memory saved by freeing the matched prefix indices.
+
+Therefore, we can avoid cloning entirely when take_value_ownership is True, even if total_prefix_length > 0. This further reduces CUDA allocation overhead and improves performance.
+
+ 
+ 
+ 
+ Suggested change
+ 
+
+ 
+
+ 
+ 
+ 
+ 
+
+ new_node.value = (
+
+ 
+
+ 
+ 
+
+ value
+
+ 
+
+ 
+ 
+
+ if take_value_ownership and total_prefix_length == 0
+
+ 
+
+ 
+ 
+
+ else value.clone()
+
+ 
+
+ 
+ 
+
+ )
+
+ 
+
+ 
+ 
+
+ new_node.value = (
+
+ 
+
+ 
+ 
+
+ value
+
+ 
+
+ 
+ 
+
+ if take_value_ownership
+
+ 
+
+ 
+ 
+
+ else value.clone()
+
+ 
+
+ 
+ 
+
+ )

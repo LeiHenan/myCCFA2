@@ -1,0 +1,917 @@
+[SPEC][1/N] feat: add adaptive speculative_num_steps for EAGLE topk=1 by alphabetc1 · Pull Request #21599 · sgl-project/sglang · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ sgl-project
+ / 
+ sglang 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 8.8k 
+ Star
+ 35.9k 
+ Code 
+ Issues 
+ 890 
+ Pull requests 
+ 4.4k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ [SPEC][1/N] feat: add adaptive speculative_num_steps for EAGLE topk=1 - # 21599 
+ # 21599 
+ Merged 
+ hnyls2002 merged 35 commits into sgl-project:main sgl-project/sglang:main from alphabetc1:feat/adaptive_spec_params alphabetc1/sglang:feat/adaptive_spec_params Copy head branch name to clipboard 
+ Apr 20, 2026 
+ Conversation Commits 35  ( 35 ) Checks Files changed 
+ Merged 
+ [SPEC][1/N] feat: add adaptive speculative_num_steps for EAGLE topk=1 # 21599 hnyls2002 merged 35 commits into sgl-project:main sgl-project/sglang:main from alphabetc1:feat/adaptive_spec_params alphabetc1/sglang:feat/adaptive_spec_params Copy head branch name to clipboard 
+ Conversation
+ alphabetc1 
+ commented
+ Mar 28, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Motivation
+ One of the core parameters of speculative decoding is speculative_num_steps , which controls how many autoregressive draft-model steps are executed in each round. It directly determines the amount of computation in the draft stage, and also affects speculative_num_draft_tokens (the number of tokens verified by the target model), which in turn determines the shape used in the verify stage.
+ In real workloads, accept length often changes over time, so a static num_steps cannot consistently deliver optimal throughput:
+ If num_steps is too small : the draft model could have produced more accepted tokens, but the limited number of steps caps each round to only a small number of accepted tokens, leaving draft-model capacity underutilized.
+ Mode 
+ Throughput 
+ Avg latency 
+ Avg accept len 
+ baseline 
+ 460.7 tok/s 
+ 4.442 s 
+ nan 
+ static1 
+ 620.6 tok/s 
+ 3.299 s 
+ 2.00 
+ static3 
+ 954.8 tok/s 
+ 2.117 s 
+ 3.88 
+ static7 
+ 999.0 tok/s 
+ 1.914 s 
+ 6.25 
+ If num_steps is too large : the draft model generates many candidate tokens, but the target model only accepts the first few; the rest are wasted, and throughput drops instead.
+ Mode 
+ Throughput 
+ Avg latency 
+ Avg accept len 
+ baseline 
+ 453.1 tok/s 
+ 4.515 s 
+ nan 
+ static1 
+ 473.5 tok/s 
+ 4.130 s 
+ 1.74 
+ static3 
+ 505.1 tok/s 
+ 3.797 s 
+ 2.28 
+ static7 
+ 425.8 tok/s 
+ 4.292 s 
+ 2.42 
+ The goal of this feature is to build a low-level adaptive speculative decoding mechanism:
+ Pre-build multiple runtime states (attention backends and CUDA graphs) for different speculative_num_steps / speculative_num_draft_tokens pairs.
+ During draft decoding:
+ Track the accept length of recent batches with an EMA-based policy.
+ Dynamically switch speculative_num_steps and the corresponding runtime state.
+ Runtime switching does not require online graph recapture or backend reconstruction.
+ Modifications
+ Architecture
+ The overall design centers on AdaptiveController , with three lower-level components: AdaptiveSpeculativeParams (policy), SpecRuntimeState (runtime state), and AdaptiveSpecWorker (worker).
+ AdaptiveController 
+ At startup, it drives the worker to pre-build a SpecRuntimeState for each candidate tier and stores them in a state pool. After each verify step at runtime, it receives the accept length and delegates the EMA decision to the policy. If the tier changes, it fetches the corresponding state from the pool and asks the worker to perform an atomic switch.
+ Policy - AdaptiveSpeculativeParams 
+ It maintains an EMA of accept length and decides when to move up or down across discrete candidate tiers (default: [1, 3, 7] ). It supports warmup (skip the first N batches), update interval (evaluate every K batches), and hysteresis (asymmetric rise/drop thresholds to suppress oscillation). Decision formula: target_steps = clamp(round(ema) + 1, min, max) , which probes one extra step beyond the observed accept length.
+ Runtime State - SpecRuntimeState 
+ This is a @dataclass that encapsulates all execution resources required by the three stages for a given num_steps tier. CudaGraphRunner is tightly bound to (num_steps, num_draft_tokens) because its static shape depends on them, so each tier must own an independent graph instance.
+ ┌──────────────────────────────────────────────────────────┐
+│ SpecRuntimeState │
+│ │
+│ speculative_num_steps / speculative_num_draft_tokens │
+│ │
+│ ┌────────────────┐ ┌────────────────┐ ┌──────────────┐ │
+│ │ Draft stage │ │ Verify stage │ │ Extend stage │ │
+│ │ │ │ │ │ │ │
+│ │ attn_backend │ │ attn_backend │ │ attn_backend │ │
+│ │ cuda_graph │ │ cuda_graph │ │ cuda_graph │ │
+│ └────────────────┘ └────────────────┘ └──────────────┘ │
+└──────────────────────────────────────────────────────────┘
+ Worker - AdaptiveSpecWorker Protocol 
+ This protocol defines the two interfaces a worker must implement:
+ build_adaptive_runtime_state() captures the CUDA graph and attention backend under a temporary server-args override.
+ apply_runtime_state() assigns the resources stored in the state back onto the worker one by one, completing a zero-overhead reference swap.
+ This is currently implemented by EAGLEWorker ; support for EAGLEWorkerV2 is left as a follow-up TODO.
+ Runtime Flow
+ Execution order per decode round and the point where adaptive updates occur:
+ ┌─────────────────────────────────────────────────────────────────────┐
+│ EAGLEWorker.forward_batch_generation() — decode path │
+│ │
+│ ① draft(batch) │
+│ │ Draft model multi-step autoregressive generation using │
+│ │ current tier's draft attn_backend + cuda_graph_runner │
+│ v │
+│ ② verify(batch, spec_info) │
+│ │ Target model single-pass tree verification using │
+│ │ current tier's target attn_backend + target_graph_runner │
+│ │ → produces accept_length_per_req │
+│ v │
+│ ③ forward_draft_extend_after_decode(batch) │
+│ │ Draft model KV cache catch-up using current tier's │
+│ │ draft_extend attn_backend + extend cuda_graph │
+│ v │
+│ ④ adaptive_controller.on_verify_complete(accept_lengths) │
+│ │ │
+│ │ ┌────────────────────────────────────────────────────┐ │
+│ │ │ AdaptiveSpeculativeParams.update() │ │
+│ │ │ │ │
+│ │ │ EMA ← 0.8 × EMA + 0.2 × batch_avg │ │
+│ │ │ │ │
+│ │ │ warmup / interval gating │ │
+│ │ │ │ │
+│ │ │ EMA > rise_threshold → steps ↑ (e.g. 3 → 7) │ │
+│ │ │ EMA < drop_threshold → steps ↓ (e.g. 7 → 3) │ │
+│ │ └──────────────────────────┬─────────────────────────┘ │
+│ │ │ changed? │
+│ v v │
+│ ┌─────────────────────────────────────────────────────────┐ │
+│ │ _activate(new_steps) │ │
+│ │ │ │
+│ │ Pre-built State Pool: │ │
+│ │ ┌──────────┐ ┌──────────┐ ┌──────────┐ │ │
+│ │ │ steps=1 │ │ steps=3 │ │ steps=7 │ │ │
+│ │ │ 3×backend│ │ 3×backend│ │ 3×backend│ │ │
+│ │ │ 3×graph │ │ 3×graph │ │ 3×graph │ │ │
+│ │ └──────────┘ └──────────┘ └──────────┘ │ │
+│ │ ↑ ↑ ↑ │ │
+│ │ select by new_steps │ │
+│ └──────────────────────┬──────────────────────────────────┘ │
+│ │ │
+│ v │
+│ worker.apply_runtime_state(state) ← reference swap, zero cost │
+│ │
+│ ⚠ Tier switch happens after the current round completes; │
+│ backend/graph are never swapped mid-round. The current round's │
+│ teardown (extend) and next round's state switch are explicit. │
+└─────────────────────────────────────────────────────────────────────┘
+ Accuracy Tests
+ Model: GLM-4.7-FP8 , EAGLE, topk=1, TP=8, --mem-fraction-static 0.55 , --hicache-size 60 .
+ The benchmark defines three workloads to cover different accept-length distributions:
+ low - Stable low acceptance. Prompts such as creative writing or long-list generation make draft prediction difficult, so accept length remains low. In this scenario, a large num_steps wastes computation.
+ high - Stable high acceptance. Highly repetitive outputs (for example, printing the same content line by line) let the draft model predict almost perfectly, so accept length stays high. In this scenario, a large num_steps brings clear benefits.
+ transition - Alternating phases. Requests are sent in four phases, low_1 -> high_1 -> low_2 -> high_2 , to simulate real workloads whose characteristics change over time. This is the core evaluation scenario for the adaptive mechanism.
+ The results below use the transition workload, with 16 requests per phase, concurrency 8, and max-tokens 256 .
+ Mode 
+ Extra args 
+ baseline 
+ (none) 
+ static1 
+ --speculative-num-steps 1 --speculative-num-draft-tokens 2 
+ static3 
+ --speculative-num-steps 3 --speculative-num-draft-tokens 4 
+ static7 
+ --speculative-num-steps 7 --speculative-num-draft-tokens 8 
+ adaptive 
+ static3 args + --speculative-adaptive 
+ Overall throughput: 
+ Mode 
+ Throughput 
+ Avg latency 
+ Avg Accept Len 
+ baseline 
+ 439.1 tok/s 
+ 4.661 s 
+ — 
+ static1 
+ 510.2 tok/s 
+ 3.908 s 
+ 1.87 
+ static3 
+ 636.5 tok/s 
+ 3.065 s 
+ 3.08 
+ static7 
+ 565.9 tok/s 
+ 3.316 s 
+ 4.32 
+ adaptive 
+ 669.8 tok/s 
+ 2.850 s 
+ 4.16 
+ Per-phase throughput (tok/s): 
+ Mode 
+ low_1 
+ high_1 
+ low_2 
+ high_2 
+ baseline 
+ 453.7 
+ 472.8 
+ 402.8 
+ 433.5 
+ static1 
+ 473.1 
+ 615.5 
+ 428.6 
+ 566.1 
+ static3 
+ 515.9 
+ 976.3 
+ 459.2 
+ 874.7 
+ static7 
+ 422.1 
+ 1021.0 
+ 372.3 
+ 966.1 
+ adaptive 
+ 507.5 
+ 1140.1 
+ 465.5 
+ 1024.4 
+ Checklist
+ Format your code according to the Format code with pre-commit .
+ Add unit tests according to the Run and add unit tests .
+ Update documentation according to Write documentations .
+ Provide accuracy and speed benchmark results according to Test the accuracy and Benchmark the speed .
+ Follow the SGLang code style guidance .
+ Review and Merge Process
+ Ping Merge Oncalls to start the process. See the PR Merge Process .
+ Get approvals from CODEOWNERS and other reviewers.
+ Trigger CI tests with comments or contact authorized users to do so.
+ Common commands include /tag-and-rerun-ci , /tag-run-ci-label , /rerun-failed-ci 
+ After green CI and required approvals, ask Merge Oncalls or people with Write permission to merge the PR.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ 👀 
+ 1 
+ gemini-code-assist[bot] reacted with eyes emoji 
+ All reactions 
+ 👀 
+ 1 reaction 
+ alphabetc1 
+ and others 
+ added 7 commits
+ March 27, 2026 01:00 
+ feat: add adaptive speculative decoding for EAGLE topk=1 
+ 06488d3 
+ fix 
+ 5f9b955 
+ fix 
+ 0fc903c 
+ fix 
+ 6e8f2ab 
+ fix 
+ e486262 
+ refactor spec_runtime_state 
+ 3200fa2 
+ fix 
+ 3bd9c1e 
+ alphabetc1 
+ requested review from
+ Fridge003 , 
+ Ying1123 , 
+ hnyls2002 , 
+ ispobock and 
+ merrymercy 
+ as code owners 
+ March 28, 2026 10:04 
+ gemini-code-assist 
+ Bot 
+ reviewed
+ Mar 28, 2026 
+ View reviewed changes 
+ gemini-code-assist 
+ Bot 
+ left a comment
+ Copy link
+ Copy Markdown
+ Contributor 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Code Review
+ This pull request introduces adaptive speculative decoding, allowing the system to dynamically adjust the number of speculative steps based on observed acceptance rates. It adds new configuration parameters, a parameter tracking class, and a runtime state manager to handle the switching of model backends and CUDA graph runners. My feedback suggests simplifying the initialization logic for current steps in the adaptive parameters class and updating a comment in the runtime state manager to more accurately describe the synchronization of draft attention backends.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ Comment thread 
+ python/sglang/srt/speculative/adaptive_spec_params.py 
+ Outdated
+ Comment on lines
+ +65
+ to 
+ +69
+ self.current_steps = min(max(initial_steps, self.min_steps), self.max_steps) 
+ self.current_steps = min( 
+ self.candidate_steps, 
+ key=lambda step: (abs(step - self.current_steps), -step), 
+ ) 
+ gemini-code-assist 
+ Bot 
+ Mar 28, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ The initialization of self.current_steps can be simplified. The first line clamps initial_steps to the range of candidate steps, and the following lines snap it to the nearest candidate. The snapping logic alone is sufficient, as it will correctly find the nearest candidate even for out-of-range initial values, which implicitly handles clamping. This can be simplified to a single statement for better readability and maintainability.
+ self . current_steps = min (
+ self . candidate_steps ,
+ key = lambda step : ( abs ( step - initial_steps ), - step ),
+ ) 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ Comment thread 
+ python/sglang/srt/speculative/spec_runtime_state.py 
+ Outdated
+ Comment on lines
+ +136
+ to 
+ +137
+ # draft_attn_backend lives on both worker and draft_model_runner; 
+ # set via worker property so both stay in sync. 
+ gemini-code-assist 
+ Bot 
+ Mar 28, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ This comment is slightly misleading. draft_attn_backend is not a property on EAGLEWorker that automatically syncs with draft_model_runner . The code correctly updates the attribute on both worker and worker.draft_model_runner explicitly. The comment should be updated to accurately reflect this implementation detail for better code clarity.
+ Suggested change
+ # draft_attn_backend lives on both worker and draft_model_runner ; 
+ # set via worker property so both stay in sync. 
+ # draft_attn_backend lives on both worker and draft_model_runner , 
+ # so we need to update both to stay in sync. 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ chatgpt-codex-connector 
+ Bot 
+ reviewed
+ Mar 28, 2026 
+ View reviewed changes 
+ chatgpt-codex-connector 
+ Bot 
+ left a comment
+ Copy link
+ Copy Markdown
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ 💡 Codex Review
+ Here are some automated review suggestions for this pull request.
+ Reviewed commit: 3bd9c1e154 
+ ℹ️ About Codex in GitHub 
+ Your team has set up Codex to review pull requests in this repo . Reviews are triggered when you
+ Open a pull request for review
+ Mark a draft as ready
+ Comment " @codex review".
+ If Codex has suggestions, it will comment; otherwise it will react with 👍.
+ Codex can also answer questions or update the PR. Try commenting " @codex address that feedback".
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ Comment thread 
+ python/sglang/srt/model_executor/cuda_graph_runner.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ python/sglang/srt/speculative/eagle_draft_extend_cuda_graph_runner.py 
+ Outdated
+ Comment on lines
+ +257
+ to 
+ +259
+ is_num_tokens_supported = ( 
+ forward_batch.input_ids.numel() == cuda_graph_bs * self.num_tokens_per_bs 
+ ) 
+ chatgpt-codex-connector 
+ Bot 
+ Mar 28, 2026 
+ Copy link
+ Copy Markdown
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Permit draft-extend graphs for partial accept batches 
+ DRAFT_EXTEND commonly has variable token counts ( sum(accept_length+1) ), and this runner already supports that by padding in replay when bs * num_tokens_per_bs != num_tokens . The new equality check in can_run rejects those partial-accept batches, so draft-extend CUDA graphs are skipped unless every request accepts all speculative steps, causing a major throughput regression in typical workloads.
+ Useful? React with 👍 / 👎.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ Comment thread 
+ python/sglang/srt/speculative/eagle_worker.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ alphabetc1 
+ mentioned this pull request
+ Mar 29, 2026 
+ Feature: Support dynamic num_speculative_step adjustment for speculative decoding
+ #21459 
+ Closed
+ alphabetc1 
+ added 2 commits
+ March 30, 2026 01:05 
+ fix 
+ 686febc 
+ benchmark 
+ 79301c9 
+ github-actions 
+ Bot 
+ added
+ the 
+ speculative-decoding
+ label
+ Mar 29, 2026 
+ alphabetc1 
+ added 3 commits
+ April 1, 2026 06:48 
+ fix dp 
+ a634d57 
+ fix 
+ c7a9058 
+ fix 
+ 85bf28a 
+ alphabetc1 
+ added 5 commits
+ April 2, 2026 14:22 
+ refactor 
+ 05bfda1 
+ fix 
+ ec5a15c 
+ move build logic to each worker 
+ 1bb58ae 
+ refactor 
+ d44a5b5 
+ fix 
+ 96cd1c0 
+ alphabetc1 
+ changed the title
+ feat(speculative): add adaptive speculative decoding for EAGLE topk=1 
+ feat(speculative): add adaptive speculative_num_steps for EAGLE topk=1 
+ Apr 3, 2026 
+ alphabetc1 
+ changed the title
+ feat(speculative): add adaptive speculative_num_steps for EAGLE topk=1 
+ [SPEC][[1/N]] feat: add adaptive speculative_num_steps for EAGLE topk=1 
+ Apr 3, 2026 
+ alphabetc1 
+ changed the title
+ [SPEC][[1/N]] feat: add adaptive speculative_num_steps for EAGLE topk=1 
+ [SPEC][[1/N] feat: add adaptive speculative_num_steps for EAGLE topk=1 
+ Apr 3, 2026 
+ --> 
+ 27 hidden items
+ Load more…
+ liquanfeng 
+ commented
+ Apr 16, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ @alphabetc1 Is there any possibility or plan to apply this to EAGLE3 as well?
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ alphabetc1 
+ added 3 commits
+ April 16, 2026 16:32 
+ fix standalone 
+ be54224 
+ support eagle3 
+ 1299295 
+ fix 
+ 96823cc 
+ alphabetc1 
+ commented
+ Apr 16, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ @alphabetc1 Is there any possibility or plan to apply this to EAGLE3 as well?
+ Done. Just added support for EAGLE3.
+ --> 
+ 👍 
+ 1 
+ liquanfeng reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Qiaolin-Yu 
+ mentioned this pull request
+ Apr 16, 2026 
+ Speculative Decoding Development Roadmap (2026 Q2)
+ #23005 
+ Closed
+ 11 tasks 
+ alphabetc1 
+ added 3 commits
+ April 17, 2026 10:49 
+ Merge branch 'main' into feat/adaptive_spec_params 
+ 4899733 
+ Merge branch 'main' into feat/adaptive_spec_params 
+ 932b279 
+ Merge branch 'main' into feat/adaptive_spec_params 
+ 3529506 
+ alphabetc1 
+ commented
+ Apr 18, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /rerun-failed-ci 11
+ --> 
+ 👍 
+ 1 
+ github-actions[bot] reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ hnyls2002 
+ added
+ the 
+ high priority
+ label
+ Apr 20, 2026 
+ Merge branch 'main' into feat/adaptive_spec_params 
+ e5d79de 
+ Hide details 
+ View details 
+ hnyls2002 
+ merged commit b65799c 
+ into
+ sgl-project : main 
+ Apr 20, 2026 
+ 70 of 95 checks passed
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ hnyls2002 
+ mentioned this pull request
+ Apr 20, 2026 
+ guard adaptive speculative against unsupported configs
+ #23289 
+ Merged
+ alphabetc1 
+ deleted the
+ feat/adaptive_spec_params
+ branch
+ April 21, 2026 01:13 
+ EanWang211123 
+ mentioned this pull request
+ Apr 21, 2026 
+ [Bug] adaptive speculative decoding (MTP) break on hybrid GDN (Qwen3.5) models
+ #23330 
+ Closed
+ 5 tasks 
+ amd-bot 
+ mentioned this pull request
+ Apr 22, 2026 
+ [CI Monitor] Daily Report - 2026-04-22
+ bingxche/sglang-ci-bot#43 
+ Open
+ EanWang211123 
+ mentioned this pull request
+ Apr 22, 2026 
+ [BugFix] Resolve adaptive speculative decoding conflicts for Qwen3.5 (hybrid GDN)
+ #23331 
+ Merged
+ 5 tasks 
+ alphabetc1 
+ mentioned this pull request
+ Apr 25, 2026 
+ [Roadmap] Adaptive Speculative Decoding Roadmap
+ #23705 
+ Open
+ 19 tasks 
+ amd-bot 
+ mentioned this pull request
+ Apr 28, 2026 
+ [CI Monitor] Daily Report - 2026-04-28
+ bingxche/sglang-ci-bot#53 
+ Open
+ maodoudou168 
+ mentioned this pull request
+ Apr 29, 2026 
+ [SPEC][5/N] feat: batchsize-aware support for adaptive speculative_num_steps
+ #24055 
+ Merged
+ 5 tasks 
+ EanWang211123 
+ mentioned this pull request
+ May 7, 2026 
+ [feat] adaptive spec support for DFlash
+ #24596 
+ Open
+ 5 tasks 
+ elwhyjay 
+ mentioned this pull request
+ May 7, 2026 
+ [Speculative] Support topk>1 in adaptive speculative decoding
+ #24054 
+ Open
+ 5 tasks 
+ EanWang211123 
+ mentioned this pull request
+ May 18, 2026 
+ [Speculative] [NPU] Adaptive-SD NPU support
+ #25644 
+ Merged
+ 5 tasks 
+ caitengwei 
+ pushed a commit
+ to caitengwei/sglang
+ that referenced
+ this pull request
+ Jun 1, 2026 
+ [SPEC][1/N] feat: add adaptive speculative_num_steps for EAGLE topk=1 ( … 
+ … 
+ 849c885 
+ …sgl-project#21599 )
+Co-authored-by: Qiaolin-Yu <liin1211@outlook.com> 
+ EanWang211123 
+ mentioned this pull request
+ Jun 12, 2026 
+ [SPEC] feat: add throughput-aware policy for cost-guided adaptive speculative steps
+ #28045 
+ Open
+ 5 tasks 
+ J-LiNDBERG 
+ mentioned this pull request
+ Jul 8, 2026 
+ [Bug] --speculative-adaptive crashes at startup: shared logits buffer sized for active draft_tokens, not max adaptive candidate
+ #30549 
+ Closed
+ Chronostasys 
+ pushed a commit
+ to MindLab-Research/sglang
+ that referenced
+ this pull request
+ Aug 24, 2026 
+ [SPEC][1/N] feat: add adaptive speculative_num_steps for EAGLE topk=1 ( … 
+ … 
+ 82db9f5 
+ …sgl-project#21599 )
+Co-authored-by: Qiaolin-Yu <liin1211@outlook.com> 
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ chatgpt-codex-connector[bot] 
+ chatgpt-codex-connector[bot] left review comments 
+ Qiaolin-Yu 
+ Qiaolin-Yu approved these changes 
+ Ying1123 
+ Awaiting requested review from Ying1123 
+ Ying1123 is a code owner 
+ merrymercy 
+ Awaiting requested review from merrymercy 
+ merrymercy is a code owner 
+ hnyls2002 
+ Awaiting requested review from hnyls2002 
+ hnyls2002 is a code owner 
+ Fridge003 
+ Awaiting requested review from Fridge003 
+ Fridge003 is a code owner 
+ ispobock 
+ Awaiting requested review from ispobock 
+ ispobock is a code owner 
+ +1 more reviewer
+ gemini-code-assist[bot] 
+ gemini-code-assist[bot] left review comments 
+ Reviewers whose approvals may not affect merge requirements 
+ --> 
+ Assignees
+ Qiaolin-Yu 
+ kpham-sgl 
+ Labels
+ documentation 
+ Improvements or additions to documentation 
+ high priority 
+ run-ci 
+ speculative-decoding 
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 6 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

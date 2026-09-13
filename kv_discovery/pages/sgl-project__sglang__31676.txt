@@ -1,0 +1,652 @@
+FETCHED: https://github.com/sgl-project/sglang/issues/31676  (is_pr=True, 600749 bytes)
+LAYOUT NODE (PR):
+  number = 31676
+  title = feat: KVarN KV-cache compression for long-context inference
+  state = CLOSED
+  closedTime = 2026-07-18T18:33:10Z
+  createdTime = 2026-07-18T18:31:15Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 1
+  baseBranch = main
+  headBranch = feature/kvarn-pr-squash
+  author = jtabet
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOTAYnXdoAKGI2ZTBhMmU4MjNlMjFlYzg3NDAyYTI4NTA4YjM5ZGEyMTdhODIwYzQ"> | feat: KVarN KV-cache compression for long-context inference | … | b6e0a2e | KVarN (KV-cache Adaptive Rotation and Normalization) compresses the KV | cache ~4x using Hadamard rotation + Sinkhorn variance normalization + | asymmetric RTN int4 quantization. This enables serving long-context | models on memory-constrained GPUs. | ## Architecture | Dual-pool design: | - **Tail pool** (fp16): stores rotated K/V for in-progress and sink | blocks (first page preserved to prevent
+EV: js-timeline-progressive-focus-container" data-gid="RRE_lADOLCAjRs8AAAABJTokus8AAAAGjrqq-A"> | jtabet | requested review from | AniZpZ, | BBuf, | Edwardf0t1, | FlamingoPg, | Fridge003, | HaiShaw, | Qiaolin-Yu, | Ying1123, | alphabetc1, | b8zhong, | ch-wan, | hanming-lu, | hebiao064, | hnyls2002, | hzh0425, | ishandhanani, | ispobock, | merrymercy, | sogalin, | xiezhq-hermann, | yctseng0211 and | yizhang2077 | as code owners | July 18, 2026 18:31 | github-actions | Bot | added | the <a id="label-2c0daa" href="/sgl-project/sglang/issues?q=state%3Aopen%20label%3Aquant"
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOLCAjRs8AAAABKsO9ww"> | jtabet | commented | Jul 18, 2026 | Copy link | Copy Markdown | Author | Closing — opened prematurely. Will re-open after addressing CI and review feedback. | --> | All reactions | --> | Sorry, something went wrong. | Uh oh! | There was an error while loading. Please reload this page. | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="CE_lADOLCAjRs8AAAABJTokus8AAAAGjrseZw"> | jtabet | closed this | Jul 18, 2026 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="PRR_kwDOLCAjRs8AAAABGd_LNg"> | gemini-code-assist | Bot | reviewed | Jul 18, 2026 | View reviewed changes | gemini-code-assist | Bot | left a comment | Copy link | Copy Markdown | Contributor | There was a problem hiding this comment. | <button class="
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=? date=?]
+Motivation
+
+Long-context inference is memory-bound: the KV cache grows linearly with sequence length, limiting the number of concurrent requests and the maximum context length on memory-constrained GPUs. KVarN (KV-cache Adaptive Rotation and Normalization) compresses the KV cache ~4x, enabling long-context serving on GPUs that would otherwise be unable to handle it.
+
+Modifications
+
+KVarN applies three transformations to the KV cache:
+
+- Hadamard rotation of Q, K, V before attention and storage (energy compaction — concentrates signal into fewer components)
+
+- Sinkhorn variance normalization before quantization (balances variance across groups for better int4 packing)
+
+- Asymmetric RTN int4 quantization with per-group scales and zero-points (K and V can have different bit widths)
+
+Dual-pool architecture
+
+- Tail pool (fp16, small): stores rotated K/V for in-progress blocks and sink blocks (first page preserved to prevent tool schema loss)
+
+- Compressed cache (int4): stores flushed full blocks as packed uint8 tiles
+
+When a block fills, it is flushed from the tail pool to the compressed cache. Decode uses a fused Triton kernel that dequantizes on-the-fly. Prefill uses a build_packed_kv Triton kernel + flash_attn_varlen (memory-efficient, no O(context²) allocation).
+
+New files
+
+- layers/quantization/kvarn/: config, store, dequant, sinkhorn, hadamard, flush_manager (pure PyTorch, unit-testable on CPU)
+
+- layers/attention/kvarn_backend.py: KVarNAttnBackend — attention backend with dual-pool management
+
+- layers/attention/kvarn_ops/: Triton decode + sinkhorn kernels (split-K flash-decoding, auto-enabled at ≥16 blocks when B*Hk ≤ SM_count)
+
+- tests/kvarn/: 8 test files — CPU unit tests (Hadamard, Sinkhorn, store/dequant roundtrip, pipeline, flush) + GPU tests (Triton kernels, E2E, pool)
+
+Modified files
+
+- server_args.py: KVarN prefill CUDA graph disable rules, kv_cache_dtype choices
+
+- arg_groups/overrides.py: KVarN attention backend + page_size auto-selection
+
+- mem_cache/memory_pool.py: NoOpMHATokenToKVPool with _kvarn_backend hook for hybrid GDN models
+
+- mem_cache/pool_host/mha.py: KVarNHostKVCache for HiCache (stores raw uint8 int4 tiles)
+
+- mem_cache/kv_cache_configurator.py: _build_kvarn_kv_pool method
+
+- mem_cache/hybrid_cache/hybrid_pool_assembler.py: _KVarNNopaStrategy
+
+- model_executor/pool_configurator.py: KVarN cell_size calculation
+
+- configs/mamba_utils.py: conv_dtype matches model dtype fix
+
+- models/utils.py: exclude NoOp pool from fused set_kv_buffer
+
+- layers/attention/attention_registry.py: register_attention_backend("kvarn")
+
+- mem_cache/kv_cache_dtype.py: KVarN dtype entries
+
+Supported presets
+
+Preset
+K bits
+V bits
+Group
+
+kvarn_k4v2_g128
+
+4
+
+2
+
+128
+
+kvarn_k4v4_g128
+
+4
+
+4
+
+128
+
+kvarn_k4v2_g64
+
+4
+
+2
+
+64
+
+kvarn_k4v4_g64
+
+4
+
+4
+
+64
+
+Integration
+
+Works with:
+
+- Hybrid GDN models (e.g. Qwen3.6-27B: 16 full-attention + 48 mamba/GDN layers)
+
+- Hierarchical cache (HiCache) with write-back policy
+
+- CUDA graph for decode path
+
+- Mixed-chunk scheduling
+
+- Tool calling (block-0 sink preservation)
+
+- Speculative decoding verify path
+
+Accuracy Tests
+
+Needle-in-haystack retrieval:
+
+- T3 (4k context): ✅ PASS — correctly found "magic number 42" and "secret code BANANA"
+
+- T6 (22k context): ✅ PASS — correctly found coordinates "37.7749 N, 122.4194 W" at 75% depth
+
+Tool calling:
+
+- ✅ PASS — model correctly called get_weather("San Francisco") with proper arguments
+
+- Block-0 sink preservation verified (system prompt + tool schemas survive compression)
+
+Eviction stress test:
+
+- ✅ PASS — 8 sequential 48k-token requests (384k total, exceeding 374k capacity)
+
+- Server remained stable, no crashes, health check OK
+
+Concurrent agentic stress test:
+
+- ✅ PASS — 4 concurrent multi-turn sessions (math+tools, code generation, multi-step reasoning, retrieval)
+
+- 6 parallel dispatch agents all produced correct, coherent responses
+
+Speed Tests and Profiling
+
+Test setup: Qwen3.6-27B-FP8, TP=2 on 2× RTX 3090 (24GB each)
+
+Metric
+Without KVarN
+With KVarN
+
+Token capacity
+
+85,504 (12 req)
+
+374,528 (4 req)
+
+Decode tok/s @ 22k ctx
+
+—
+
+41.1
+
+TTFT @ 22k context
+
+—
+
+14s
+
+Compressed cache size
+
+—
+
+3.07 GB
+
+Tail pool size
+
+—
+
+0.30 GB
+
+Split-K flash-decoding auto-enables at ≥16 blocks when B*Hk ≤ SM_count, providing 3.8× throughput improvement at long context (10.7 → 41 tok/s).
+
+Checklist
+
+- Format your code according to the Format code with pre-commit.
+
+- Add unit tests according to the Run and add unit tests.
+
+- Update documentation according to Write documentations.
+
+- Provide accuracy and speed benchmark results according to Test the accuracy and Benchmark the speed.
+
+- Follow the SGLang code style guidance.
+
+CI States
+
+Latest PR Test (Base): ❌ Run #29656025403
+
+Latest PR Test (Extra): ❌ Run #29656025323
+
+[RENDERED BLOCK author=jtabet date=2026-07-18T18:33:09Z]
+Closing — opened prematurely. Will re-open after addressing CI and review feedback.
+
+[RENDERED BLOCK author=? date=2026-07-18T18:33:54Z]
+Code Review
+
+This pull request introduces KVarN, a compressed KV-cache attention backend for SGLang that implements a dual-pool architecture (a small fp16 tail pool and an int4/uint8 compressed cache) using Hadamard rotation, iterative variance-normalization, and asymmetric RTN quantization. It includes custom Triton kernels for fused decoding, scatter-store, and Sinkhorn balancing, alongside host-side caching (HiCache) support for offloading raw int4 tiles. The review feedback focuses on critical performance optimizations and defensive programming, highlighting opportunities to eliminate GPU-CPU synchronization bottlenecks (such as calling .item() inside loops or converting large token-level tensors to lists), optimize Triton load efficiency by casting pointers directly to tl.pointer_type(tl.float16), prevent potential alignment crashes during tensor views, and add defensive checks to avoid AttributeError when kv_cache_dtype is None.
+
+ Important
+The consumer version of Gemini Code Assist on GitHub is being sunset. Starting June 18, 2026, new organization installations will be blocked, and all code review activity will officially cease on July 17, 2026.
+
+For more details on the timeline and next steps, please review the Help Documentation.
+
+[RENDERED BLOCK author=? date=2026-07-18T18:33:54Z]
+Similarly, in load_to_device_per_layer, we can downsample the token-level tensors by self.page_size on the GPU first to avoid large CPU transfers and slow Python loops.
+
+ 
+ 
+ 
+ Suggested change
+ 
+
+ 
+
+ 
+ 
+ 
+ 
+
+ # Build block_id -> host_page_id mapping
+
+ 
+
+ 
+ 
+
+ device_blocks = device_indices // self.page_size
+
+ 
+
+ 
+ 
+
+ host_pages = host_indices // self.page_size
+
+ 
+
+ 
+ 
+
+ block_to_host_page = {}
+
+ 
+
+ 
+ 
+
+ for db, hp in zip(device_blocks.tolist(), host_pages.tolist()):
+
+ 
+
+ 
+ 
+
+ block_to_host_page[db] = hp
+
+ 
+
+ 
+ 
+
+ # Build block_id -> host_page_id mapping
+
+ 
+
+ 
+ 
+
+ # Since indices are page-aligned, we can downsample them by page_size to avoid large CPU transfers
+
+ 
+
+ 
+ 
+
+ device_blocks = (device_indices[::self.page_size] // self.page_size).cpu()
+
+ 
+
+ 
+ 
+
+ host_pages = (host_indices[::self.page_size] // self.page_size).cpu()
+
+ 
+
+ 
+ 
+
+ block_to_host_page = {}
+
+ 
+
+ 
+ 
+
+ for db, hp in zip(device_blocks.tolist(), host_pages.tolist()):
+
+ 
+
+ 
+ 
+
+ block_to_host_page[db] = hp
+
+[RENDERED BLOCK author=? date=2026-07-18T18:33:54Z]
+Similarly, in _kvarn_fused_decode_stage1, we can replace the byte-shoveling loads with direct pointer casting to tl.pointer_type(tl.float16) to improve load efficiency and instruction count inside the split-K decode loop.
+
+ s_col_K = tl.load(
+ (KV_cache_ptr + tile_base + K_S_COL_OFFSET).to(tl.pointer_type(tl.float16))
+ + d_offs
+ ).to(tl.float32)
+ zp_K = tl.load(
+ (KV_cache_ptr + tile_base + K_ZP_OFFSET).to(tl.pointer_type(tl.float16))
+ + d_offs
+ ).to(tl.float32)
+ s_col_V = tl.load(
+ (KV_cache_ptr + tile_base + V_S_COL_OFFSET).to(tl.pointer_type(tl.float16))
+ + d_offs
+ ).to(tl.float32)
+
+[RENDERED BLOCK author=? date=2026-07-18T18:33:54Z]
+In _ensure_slots_for_tokens, block_ids_cpu = block_ids_t.cpu() copies the entire token-level tensor to the CPU and loops over it to find unique block IDs. During prefill, this tensor can be very large (e.g., 16k elements), leading to slow CPU loops. We can deduplicate the block IDs on the GPU using torch.unique first, and then copy only the unique block IDs to the CPU, which is significantly faster.
+
+ 
+ 
+ 
+ Suggested change
+ 
+
+ 
+
+ 
+ 
+ 
+ 
+
+ block_ids_cpu = block_ids_t.cpu()
+
+ 
+
+ 
+ 
+
+ unique_new = set()
+
+ 
+
+ 
+ 
+
+ for bid in block_ids_cpu.tolist():
+
+ 
+
+ 
+ 
+
+ if bid >= 0 and bid not in self._block_to_slot:
+
+ 
+
+ 
+ 
+
+ unique_new.add(bid)
+
+ 
+
+ 
+ 
+
+ # Find unique block_ids that need slots (CPU)
+
+ 
+
+ 
+ 
+
+ unique_block_ids = torch.unique(block_ids_t).cpu().tolist()
+
+ 
+
+ 
+ 
+
+ unique_new = set()
+
+ 
+
+ 
+ 
+
+ for bid in unique_block_ids:
+
+ 
+
+ 
+ 
+
+ if bid >= 0 and bid not in self._block_to_slot:
+
+ 
+
+ 
+ 
+
+ unique_new.add(bid)
+
+[RENDERED BLOCK author=? date=2026-07-18T18:33:54Z]
+In _kvarn_fused_decode_kernel, loading s_col_K, zp_K, and s_col_V is implemented using byte-shoveling (loading low and high bytes separately and bit-shifting them). This is highly inefficient as it doubles the number of loads and adds bitwise instructions inside the main decode loop. Since the offsets are guaranteed to be 2-byte aligned, we can cast the pointer to tl.pointer_type(tl.float16) and load the values directly in a single instruction, exactly as implemented in _kvarn_fused_verify_stage1.
+
+ s_col_K = tl.load(
+ (KV_cache_ptr + tile_base + K_S_COL_OFFSET).to(tl.pointer_type(tl.float16))
+ + d_offs
+ ).to(tl.float32)
+ zp_K = tl.load(
+ (KV_cache_ptr + tile_base + K_ZP_OFFSET).to(tl.pointer_type(tl.float16))
+ + d_offs
+ ).to(tl.float32)
+ s_col_V = tl.load(
+ (KV_cache_ptr + tile_base + V_S_COL_OFFSET).to(tl.pointer_type(tl.float16))
+ + d_offs
+ ).to(tl.float32)
+
+[RENDERED BLOCK author=? date=2026-07-18T18:33:54Z]
+In _store_to_tail_pool, calling .item() on elements of a GPU tensor inside a loop causes synchronous GPU-to-CPU transfers for every single element. This can completely stall the pipeline for large inputs. We should copy the entire tensor to the CPU and convert it to a list first to avoid any GPU-CPU synchronization bottlenecks.
+
+ 
+ 
+ 
+ Suggested change
+ 
+
+ 
+
+ 
+ 
+ 
+ 
+
+ bid = int(block_ids[i].item())
+
+ 
+
+ 
+ 
+
+ tail_slots[i] = self._block_to_slot[bid]
+
+ 
+
+ 
+ 
+
+ 
+
+ 
+
+ 
+ 
+
+ # Scatter to tail pool via linear index: slot * group + pos_in_block
+
+ 
+
+ 
+ 
+
+ linear_idx = tail_slots * self.group + pos_in_block
+
+ 
+
+ 
+ 
+
+ # Build tail pool slot indices for each token using the CPU dict
+
+ 
+
+ 
+ 
+
+ block_ids_cpu = block_ids.cpu().tolist()
+
+ 
+
+ 
+ 
+
+ tail_slots_cpu = [self._block_to_slot[bid] for bid in block_ids_cpu]
+
+ 
+
+ 
+ 
+
+ tail_slots = torch.tensor(tail_slots_cpu, dtype=torch.long, device=self.device)
+
+[RENDERED BLOCK author=? date=2026-07-18T18:33:55Z]
+When opening files, it is a best practice to specify an explicit encoding (e.g., encoding="utf-8") to prevent platform-dependent decoding errors.
+
+ 
+ 
+ 
+ Suggested change
+ 
+
+ 
+
+ 
+ 
+ 
+ 
+
+ with open(indexes[0]) as fh:
+
+ 
+
+ 
+ 
+
+ with open(indexes[0], encoding="utf-8") as fh:
+
+[RENDERED BLOCK author=? date=2026-07-18T18:33:55Z]
+Enforce defensive programming: if view.kv_cache_dtype is None, calling .startswith() will raise an AttributeError. We should add a check to ensure it is not None before calling .startswith().
+
+ 
+ 
+ 
+ Suggested change
+ 
+
+ 
+
+ 
+ 
+ 
+ 
+
+ if view.kv_cache_dtype.startswith("kvarn_"):
+
+ 
+
+ 
+ 
+
+ if view.kv_cache_dtype and view.kv_cache_dtype.startswith("kvarn_"):
+
+[RENDERED BLOCK author=? date=2026-07-18T18:33:55Z]
+Similarly, add a check to ensure view.kv_cache_dtype is not None before calling .startswith().
+
+ 
+ 
+ 
+ Suggested change
+ 
+
+ 
+
+ 
+ 
+ 
+ 
+
+ if view.kv_cache_dtype.startswith("kvarn_"):
+
+ 
+
+ 
+ 
+
+ if view.kv_cache_dtype and view.kv_cache_dtype.startswith("kvarn_"):
+
+[RENDERED BLOCK author=? date=2026-07-18T18:33:55Z]
+Enforce defensive programming: add a check to ensure self._resolved().kv_cache_dtype is not None before calling .startswith().
+
+ 
+ 
+ 
+ Suggested change
+ 
+
+ 
+
+ 
+ 
+ 
+ 
+
+ lambda: self._resolved().kv_cache_dtype.startswith("kvarn_"),
+
+ 
+
+ 
+ 
+
+ lambda: self._resolved().kv_cache_dtype and self._resolved().kv_cache_dtype.startswith("kvarn_"),
+
+[RENDERED BLOCK author=? date=2026-07-18T18:33:55Z]
+Similarly, add a check to ensure self._resolved().kv_cache_dtype is not None before calling .startswith().
+
+ 
+ 
+ 
+ Suggested change
+ 
+
+ 
+
+ 
+ 
+ 
+ 
+
+ lambda: self._resolved().kv_cache_dtype.startswith("kvarn_"),
+
+ 
+
+ 
+ 
+
+ lambda: self._resolved().kv_cache_dtype and self._resolved().kv_cache_dtype.startswith("kvarn_"),

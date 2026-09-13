@@ -1,0 +1,119 @@
+FETCHED: https://github.com/sgl-project/sglang/issues/38595  (is_pr=True, 304922 bytes)
+LAYOUT NODE (PR):
+  number = 38595
+  title = [KV Cache] Add first-class versioned KV-hint transport
+  state = CLOSED
+  closedTime = 2026-09-11T09:26:53Z
+  createdTime = 2026-09-09T01:55:47Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 1
+  baseBranch = main
+  headBranch = feat/versioned-kv-hint-transport-f8f0391
+  author = chengcuiping
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOR4hL4NoAKDkyZjcyMjliN2ZlNjQ3YTcyMzkxZWJmNzQxNjk5ZGM3MmNiYjU5NjA"> | [KV Cache] Add first-class versioned KV-hint transport | … | 92f7229 | Signed-off-by: Cuiping Cheng <chengcuipingswu@163.com> | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="RRE_lADOLCAjRs8AAAABQYE9Fc8AAAAHK5-GVg"> | chengcuiping | requested review from | CatherineSue, | JustinTong0323, | Ying1123, | hnyls2002, | ispobock, | merrymercy, | slin1237 and | xiezhq-hermann | as code owners | September 9, 2026 01:55 | Fridge003 | closed this | Sep 11, 2026 | --> | <span aria-label="This line has hidden Unicode ch
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=? date=?]
+Summary
+
+Add a cache-neutral, typed, versioned KvHints metadata channel from native HTTP, Python Engine, and native gRPC through request normalization, tokenization, msgpack IPC, Session reconstruction, and scheduler Req.
+
+Motivation
+
+The KV-hint RFC needs a stable transport contract before any cache implementation consumes actions. This PR provides only the cache-neutral typed/versioned transport. It does not contain or replace the KVCR backend in #36409; that follow-up can consume this canonical envelope.
+
+Canonical wire contract
+
+Python owns cache-neutral msgspec structs:
+
+class KvHintAction(msgspec.Struct, kw_only=True):
+ action_id: str
+ action_type: str
+ action_version: str
+ payload: dict[str, Any]
+
+class KvHints(msgspec.Struct, kw_only=True):
+ protocol_version: str
+ message_id: str
+ actions: list[KvHintAction]
+
+The only supported envelope version is 0.1; action versions remain independent open strings. Unknown action types/versions and valid JSON-object payloads are transported without action-specific interpretation. Missing/wrong fields, non-object payloads, and unsupported envelope versions are rejected. Ingress conversion creates independent nested containers so caller-owned mappings and parallel samples do not alias.
+
+Native gRPC adds typed KvHints / KvHintAction messages. Both text and tokenized requests use the same Rust lowering helper. payload_json is explicitly named bytes containing a JSON object, avoiding a new dependency and protobuf Struct integer precision loss. Existing field numbers are untouched; the new request fields are appended as 18 and 17 respectively. Lowering errors follow the existing INVALID_ARGUMENT mapping.
+
+Propagation
+
+- Native /generate text and input-ID payloads parse through GenerateReqInput and canonicalize before fan-out.
+
+- Engine.generate and Engine.async_generate accept the same keyword-only contract and forward it through the same normalizer.
+
+- Tokenizer construction and actual msgpack IPC carry only canonical KvHints or None.
+
+- Session reconstruction and normal scheduler construction preserve the value.
+
+- Req rejects a plain dict at the scheduler boundary.
+
+- Hints never enter sampling parameters and remain inert.
+
+Batch and parallel-sampling semantics
+
+- A single request accepts one mapping/canonical envelope or None.
+
+- A true multi-request batch requires a per-item list with exact original batch length when hints are present; scalar envelope broadcast is rejected.
+
+- None remains the allocation-free no-hint path.
+
+- A single logical request with n > 1 preserves IDs but gives every derived request independent mutable containers.
+
+- Batch plus n > 1 follows current-main block order (item0,item1,item0,item1).
+
+No-hint compatibility
+
+No-hint public and sampling behavior remains unchanged. A confirmatory benchmark used 31 alternating-start ABBA blocks with 1.022–1.147 seconds of timed work per cell. No-hint cold-miss fan-out measured +1.538% median overhead with a one-sided 95% upper bound of +1.669%; warm-cache access measured +1.503% with an upper bound of +1.983%. End-to-end normalization plus fan-out remained below +0.61% for batch sizes 1, 8, 32, and 128. The tokenized msgpack envelope adds one trailing nil byte when hints are absent.
+
+Tests
+
+- New transport suite: 32 passed on candidate; identical test-only baseline failed 32 as expected in two independent runs.
+
+- Related existing normalization/schema/session suite: 38 passed.
+
+- protoc descriptor build: passed with libprotoc 25.3.
+
+- ruff lint/selected format, isort, and git diff --check: passed.
+
+- New registered-test taxonomy validation: passed.
+
+- Rust 1.92 cargo test -p sglang-grpc --locked: 16 passed.
+
+- Rust 1.92 cargo clippy -p sglang-grpc --all-targets --locked -- -D warnings: passed.
+
+- Rust 1.92 cargo test --workspace --locked: 312 passed.
+
+- Rust 1.92 workspace clippy with -D warnings and cargo fmt --all -- --check: passed.
+
+An earlier approximately 10 ms-per-sample exploratory microbenchmark was excluded from the threshold decision because it was too short to resolve a 3% boundary reliably.
+
+Explicit non-goals
+
+No action manager/dispatcher/execution, cache or storage integration, cache controller, remote transfer, capability discovery, lifecycle/recovery, telemetry, policy, authentication, provider cache-control API, or OpenAI-compatible schema is added.
+
+Risk and rollback
+
+Risks are the deliberate strict true-batch contract, the trailing optional IPC field, and JSON-object validation in the native gRPC bridge. Tests pin batch order/deep-copy behavior, Python/Rust protocol-version equality, proto field numbers, no-hint behavior, and Rust lowering semantics. Rollback is a single revert because no data migration or action execution is introduced.
+
+Refs #36224
+
+Related to #36409
+
+CI States
+
+Latest PR Test (Base): ❌ Run #34301156504
+
+Latest PR Test (Extra): ❌ Run #34301156321
+
+Latest PR Test (AMD ROCm 7.2): ❌ Run #34301156615

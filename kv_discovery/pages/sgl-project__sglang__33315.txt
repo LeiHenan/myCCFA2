@@ -1,0 +1,97 @@
+FETCHED: https://github.com/sgl-project/sglang/issues/33315  (is_pr=True, 347233 bytes)
+LAYOUT NODE (PR):
+  number = 33315
+  title = [srt] Batchable context forwards over cached prefix KV
+  state = CLOSED
+  closedTime = 2026-08-26T19:33:15Z
+  createdTime = 2026-08-03T02:32:38Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 6
+  baseBranch = main
+  headBranch = srt-session-context-forward
+  author = rwang5203
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOSuhqNtoAKGQwYjRhNmQ2YjA2MTQ4OGFmNGI2NjFjOTAyNTg2YmQ5MWI0ODA4OTk"> | rwang5203 | and others | added 4 commits | August 3, 2026 01:08 | [srt] session context forward: batchable guest forwards over pinned p… | … | d0b4a6d | …refix KV | Co-authored-by: Cursor <cursoragent@cursor.com> | [srt] fix context-forward FA bidirectional on extend; drop U1 eager-m… | <button aria-expanded="false" aria-label="Commit messag
+EV: js-timeline-progressive-focus-container" data-gid="RRE_lADOLCAjRs8AAAABLMATOc8AAAAGuHk1pw"> | rwang5203 | requested review from | Fridge003, | HaiShaw, | Qiaolin-Yu, | Ying1123, | alphabetc1, | hanming-lu, | hebiao064, | hnyls2002, | hzh0425, | ispobock, | merrymercy, | xiezhq-hermann and | yizhang2077 | as code owners | August 3, 2026 02:32 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOLCAjRs8AAAABM6l_GA"> | gemini-code-assist | Bot | commented | Aug 3, 2026 | Copy link | Copy Markdown | Contributor | Caution | The consumer version of Gemini Code Assist on GitHub has been sunset. All code review activity has officially ceased. | --> | All reactions | --> | Sorry, something went wrong. | Uh oh! | <p class="color-
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOSuhqNtoAKDUwYTE5MThiMTAyYTI0NDUzOGM4NTA5YzhkODVhNjRmYTFhZmY5ODQ"> | [srt] harden context forwards and caller-owned shm output | … | 50a1918 | Validate context-forward envelopes, tensor references, topology, and prefix coverage before model execution. Keep guest spans sessionless and out of radix cache, and abort evicted prefixes without leaving waiting-queue or allocator state behind. | Make hidden-state shared-memory output caller-owned: validate exact layout and capacity, attach/write/close without create or unlink, and surface late wr
+EV: js-timeline-progressive-focus-container" data-gid="RTE_lADOLCAjRs8AAAABLMATOc8AAAAGyVjdSg"> | rwang5203 | changed the title | [srt] Session context forward: batchable guest forwards over pinned prefix KV | [srt] Batchable context forwards over cached prefix KV | Aug 8, 2026 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOSuhqNtoAKDk4M2M2NzI5M2Y1NzZmZWM3YzMzNzkwMmFlNTc3ZGE0MjcyNmVmZDY"> | [srt] harden context-forward validation | 983c672 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="CE_lADOLCAjRs8AAAABLMATOc8AAAAG__h9Rw"> | rwang5203 | closed this | Aug 26, 2026 | --> | Sign up for free | to join this conversation on GitHub. | Already have an account? | Sign in to comment | --><form id="pull-request-reviewers-form-4190881361" class="js-issue-sidebar-form" aria-label="Select reviewers" data-reviewers-team-size-check-url="/sgl-project/sglang/pull/33315/review-requests/team-size-check" data-turbo="false" action="/sgl-project/sglang/pull/33315/review-requests" accept-charset="UTF-8" method="
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=? date=?]
+Motivation
+
+Interleaved generation and MoT denoise need many short guest forwards that attend to an already cached text prefix. Exporting KV for every forward is impractical.
+
+This PR makes each guest forward an ordinary prefill-only /generate request. It radix-matches the cached prefix by token IDs and batches through the existing SRT scheduler without model-specific scheduler code. The request is sessionless. A higher-level client owns logical sessions and recovery.
+
+Request contract
+
+- input_ids carries the cached prefix and guest-span placeholder IDs.
+
+- input_embeds carries the guest rows inline or in caller-owned shared memory.
+
+- query_attention: "bidirectional" lets every guest row attend the full prefix and every row in its guest span.
+
+- token_positions supplies explicit [rows] or [dims][rows] non-negative signed 64-bit positions strictly below the active model context length.
+
+- sampling_params.max_new_tokens: 0 and return_hidden_states: true request a prefill-only forward with last-layer hidden states.
+
+- Optional hidden_states_buffer metadata describes an exact float32 [rows, model_hidden_size] caller-owned shared-memory segment.
+
+When hidden_states_buffer is present, SRT validates the segment, attaches to it, writes the guest rows, closes its attachment, and echoes the same reference in meta_info.hidden_states. SRT never creates or unlinks the segment. Without a buffer, hidden states use the existing inline response.
+
+A late attach or write failure returns HTTP 400. It does not fall back to a large inline response or crash the scheduler. The obsolete hidden_states_transport field is rejected with migration guidance.
+
+Inline and shared-memory inputs are validated before model execution for shape, width, dtype, finite values, float32 range, and position bounds.
+
+Scheduler behavior
+
+- Requests use the ordinary waiting queue and batch only with the same attention mode and position dimensionality.
+
+- Internal requests without optional query_attention metadata retain causal attention. Explicit mixed modes still reject.
+
+- Prefix matching stops before the guest embeddings, so guest rows never enter radix cache.
+
+- If the full required prefix is no longer cached, the request releases staged resources and returns HTTP 400 with guidance to re-prefill and resubmit.
+
+- A bidirectional guest span is never chunk-split. Oversized spans reject at the API. A batch-boundary split waits until the whole span fits.
+
+- Batched hidden states are sliced by each request's actual extend width.
+
+Validation
+
+PYTHONPATH=python python -m pytest \
+ test/registered/unit/managers/test_context_forward_helpers.py \
+ test/registered/unit/utils/test_shm_transport_utils.py -q
+
+- Focused unit matrix: 39 passed and 40 subtests passed.
+
+- Adjacent schema, IPC, hidden-state, output, and scheduling matrix: 46 passed and 23 subtests passed.
+
+- The complete registered manager unit directory exited successfully.
+
+- Black, isort, Ruff, AST, and diff checks passed on all 13 changed files.
+
+- The registered FA3 GPU matrix on Qwen3-0.6B passed all 6 tests on the submitted head in 46.00 seconds. The validation-only follow-up did not rerun the GPU matrix.
+
+- Inline and shared-memory outputs had maximum difference 0. Embedding injection reached cosine similarity 1.0. The future-neighbor counterfactual produced a first-row delta of 5.5, proving within-span bidirectionality.
+
+- All 12 prefix tokens were cached, guest rows were not inserted, eviction and reseed recovery passed, and 25 shared-memory lifecycle cycles left no residual caller segments.
+
+- For the audited 256 x 1024 payload, paired shared memory measured 23.267 ms compared with 371.296 ms inline, a 15.958x ratio. Concurrency 1, 2, 4, and 8 reached 57.178, 62.829, 105.371, and 153.255 requests per second with no failures.
+
+CI States
+
+Latest PR Test (Base): ❌ Run #31760064016
+
+Latest PR Test (Extra): ❌ Run #31760063855
+
+[RENDERED BLOCK author=yizhang2077 date=2026-08-03T02:32:41Z]
+Caution
+The consumer version of Gemini Code Assist on GitHub has been sunset. All code review activity has officially ceased.

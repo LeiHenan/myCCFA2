@@ -1,0 +1,174 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/41821  (is_pr=False, 343183 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 41821
+  title = [RFC]: Adaptive throughput/latency profile for RL rollout long-tail
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2026-05-06T13:21:35Z
+  updatedAt = 2026-09-07T01:49:42Z
+  closedAt = None
+  author = aoshen02
+  labels = ['stale']
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-08-06T02:15:25Z]
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-09-07T01:49:42Z]
+This issue has been automatically closed due to inactivity. Please feel free to reopen if you feel it is still relevant. Thank you!
+
+[GRAPHQL CLOSED by github-actions at 2026-09-07T01:49:42Z reason=NOT_PLANNED]
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=aoshen02 date=May 6, 2026]
+[RFC]: Adaptive throughput/latency profile for RL rollout long-tail
+
+Motivation.
+
+RL rollouts have two clearly distinguishable phases on the same engine:
+
+- Front phase (throughput-bound): trainer submits 256–1024 requests at once; batch is large, compute is saturated. MTP / spec decode is negative-ROI here — extra propose() + verify() FLOPs cost wall time without paying back.
+
+- Tail phase (latency-bound): 1–10 long-tail decodes remain; batch is tiny, memory bandwidth is idle. This is exactly when spec decode pays off — but today's vLLM forces a single static profile for the whole rollout.
+
+The closest existing work:
+
+- [V1][Spec Decode] Add Dynamic SD #32374 [V1][Spec Decode] Add Dynamic SD — varies K (number of draft tokens) per batch based on offline-profiled goodput. Fits Full-CG and async scheduling. Already directionally endorsed by maintainers.
+
+- [RFC]: Dynamic Speculation Length (DSL) with Confidence-Threshold Early Exit for vLLM Speculative Decoding #36657 [RFC]: Dynamic Speculation Length with Confidence-Threshold Early Exit — adapts length per-step via drafter confidence; complementary technique.
+
+- [Feat] Synthetic Acceptance Rate for Benchmarking #39359 / [Feat] Unified Synthetic Acceptance Rate for V1 and V2 #40662 Synthetic Acceptance Rate — measurement infrastructure that lets dynamic-SD policies be evaluated without retraining drafters.
+
+- [Bug]: [Spec Decode] Spec decoding is not disabled at/after configured batch size #25112 [Bug]: Spec decoding is not disabled at/after configured batch size — same problem statement; reports the deleted disable_by_batch_size (commit aa08a30fc, PR [CLEANING] Remove unused disable_by_batch_size from SpeculativeConfig #35060).
+
+This RFC proposes the boundary case of #32374: when a batch-level signal indicates compute saturation, set K = 0 (skip speculator.propose() entirely) instead of just shrinking K. Same mechanism, same constraints, cleaner semantics for the K=0 edge.
+
+Proposed Change.
+
+Scope (intentionally narrow)
+
+- Batch-level only, not per-request. (Per-request dynamism is explicitly out of scope; the complexity-vs-value tradeoff doesn't justify it before the proposer interface matures post-MRV2.)
+
+- Async-scheduling-preserving, no exceptions. No GPU→CPU sync added in the decision path. The detector reads CPU-side scheduler stats already available on every step.
+
+- Reuse [V1][Spec Decode] Add Dynamic SD #32374's dispatch path when it lands. The toggle proposed here is the K=0 end of that spectrum; both should converge on the same BatchDescriptor-keyed Full-CG dispatch infrastructure that [V1][Spec Decode] Add Dynamic SD #32374 builds.
+
+Profile semantics
+
+Profile
+speculator.propose()
+When
+
+THROUGHPUT
+
+skipped
+
+Large batch, prefill-heavy
+
+LATENCY
+
+called
+
+Long-tail decode, small batch
+
+Three-level control
+
+Level
+Mechanism
+Trigger
+Use
+
+L0
+
+RolloutPhaseDetector.observe() in EngineCore.step()
+
+vLLM internal
+
+Default path
+
+L1
+
+collective_rpc("set_rollout_phase_override", profile)
+
+Trainer (e.g. verl)
+
+Pin during weight sync, debugging
+
+L2
+
+compilation.adaptive_profile_enabled: bool = False
+
+Startup config
+
+Off ⇒ today's static behavior
+
+L1 takes precedence over L0; while overridden, the detector keeps observing but does not flip.
+
+Detector
+
+Hook point: vllm/v1/engine/core.py:391, after scheduler.schedule() and before execute_model. Inputs are CPU-side fields already populated for the step: len(scheduler.running), len(scheduler.waiting), scheduler_output.total_num_scheduled_tokens. No GPU reads.
+
+Default state machine (tunable):
+
+THROUGHPUT (initial)
+ │ for 5 consecutive steps:
+ │ num_running / max_num_seqs < 0.20 AND
+ │ median(scheduled_tokens / num_running over last 5) < 5.0
+ ▼
+ LATENCY
+ │ for 3 consecutive steps: num_running / max_num_seqs > 0.40
+ │ OR num_waiting > 0 (incoming work ⇒ throughput immediately)
+ ▼
+THROUGHPUT
+
+wake_up() resets the detector to THROUGHPUT (post-weight-update phases start fresh).
+
+Why this preserves async scheduling
+
+- KV cache and token budgets are demand-driven: request.num_tokens_with_spec collapses to num_tokens when spec_token_ids is empty.
+
+- In async mode, draft tokens flow via _copy_draft_token_ids_to_cpu() → update_async_spec_token_ids() directly into sampling_metadata.spec_token_ids for the rejection sampler — not through request.spec_token_ids.
+
+- AsyncScheduler._update_after_schedule() uses [-1] placeholders, not budget commitments.
+
+- The only coupling is num_output_placeholders += 1 + cur_num_spec_tokens. After a LATENCY → THROUGHPUT flip, the next step still increments by 1 + K (using already-scheduled stale spec tokens). This is one step of placeholder over-count, self-correcting on the following step — behavioral overshoot, not a correctness bug.
+
+- PRs fafe76b4a ("Zero-bubble async scheduling + spec decoding") and 711edaf0d already established the contract this RFC operates within.
+
+No scheduler changes. No GPU sync. No per-request branching.
+
+Implementation footprint (Stage 1)
+
+File
+Change
+
+vllm/config/compilation.py
+
+Add adaptive_profile_enabled: bool = False
+
+vllm/config/speculative.py
+
+In __post_init__, set runtime_skip_supported per method (mtp/eagle/eagle3/ngram = True; suffix = False conservatively)
+
+vllm/v1/engine/rollout_phase_detector.py
+
+New file: RolloutPhaseDetector
+
+vllm/v1/engine/core.py
+
+Construct detector; observe in step(); reset in wake_up(); expose set_rollout_phase_override RPC
+
+vllm/v1/worker/gpu_model_runner.py
+
+Add _spec_decode_runtime_enabled; new RPC set_optimization_profile; guard at :4209
+
+DSV3.2 + MTP gets the full benefit immediately because its enforce_eager=True means no cudagraph dimension to handle. For non-V3.2 MTP models that want cudagraph adaptation, we defer to #32374's Full-CG infrastructure rather than building a parallel one.
+
+Deployment topology (context, not a vLLM change)
+
+For users on whom Stage 1 doesn't yet land or who want stronger isolation, two purely-deployment patterns work today with zero vLLM changes:
+
+- Multi-instance + router — sepa

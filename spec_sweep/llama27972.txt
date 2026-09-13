@@ -1,0 +1,270 @@
+
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ggml-org
+ / 
+ llama.cpp 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 23.1k 
+ Star
+ 128k 
+ Code 
+ Issues 
+ 901 
+ Pull requests 
+ 1.6k 
+ Discussions 
+ Actions 
+ Projects 
+ Wiki 
+ Security and quality 
+ 13 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Wiki
+ Security and quality
+ Insights
+ Eval bug: llama-server returns logprob 0.0 (p=1.0) for every token when speculative decoding is enabled #27972 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Open 
+ Open 
+ Eval bug: llama-server returns logprob 0.0 (p=1.0) for every token when speculative decoding is enabled #27972 
+ Copy link 
+ Description
+ jvdneste 
+ opened on Aug 29, 2026 
+ Issue body actions 
+ Name and Version
+ $ llama-server --version
+version: 0.2.0-dev (build 10566, commit bb4caa7540)
+built with GNU 16.2.1 for Linux x86_64
+ master is 120 commits ahead of bb4caa7540 as I write this. No commit in that range
+touches tools/server/ , and the common/speculative.cpp changes in it are DFlash2 /
+DSpark / draft-mtp-with-embeddings / benchmark-only options — none touch probability
+output. The two code paths quoted below are byte-identical on master
+( 3173a56471c1753650cd806694145ffd6dcace67 ), so this should still reproduce, but I have
+not rebuilt to confirm and am not claiming otherwise.
+ Operating systems
+ Linux
+ GGML backends
+ Vulkan
+ Hardware
+ Vulkan0: Intel(R) Arc(tm) B390 (PTL) (47829 MiB) — integrated, unified memory.
+ Models
+ Target: google/gemma-4-26B-A4B-it-qat-q4_0-gguf — Google's own QAT q4_0 GGUF,
+unmodified. Verified byte-identical to the published file
+( sha256 3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d ).
+ Drafter: unsloth/gemma-4-26B-A4B-it-GGUF/MTP/mtp-gemma-4-26B-A4B-it-Q8_0.gguf ,
+ --spec-type draft-mtp . Google publishes the drafter only as safetensors
+( google/gemma-4-26B-A4B-it-assistant , plus a QAT-matched
+ google/gemma-4-26B-A4B-it-qat-q4_0-unquantized-assistant ); neither of their GGUF repos
+ships a drafter, so any GGUF drafter is necessarily a third-party conversion. Acceptance
+was healthy in the repro below ( draft_n_accepted=14 of draft_n=24 ), i.e. the drafter
+is working normally.
+ The model pairing is incidental. The affected code is the generic speculative accept
+path in tools/server/server-context.cpp ; it runs after verification and never inspects
+weights, tensor layout, or spec type, so every --spec-type and every target/drafter
+pair should be affected. The A/B below is the same binary and the same request with only
+the two drafter flags removed.
+ Problem description & steps to reproduce
+ With speculative decoding enabled, llama-server returns logprob: 0.0 (i.e. p = 1.0)
+for every generated token, and an empty top_logprobs array. The values are
+ silently wrong rather than absent — the fields are present and well-formed.
+ Start the server with a drafter:
+ llama-server -m gemma-4-26B_q4_0-it-QAT.gguf \
+ --spec-draft-model mtp-gemma-4-26B-A4B-it-Q8_0.gguf --spec-type draft-mtp \
+ -ngl 999 --ctx-size 8192 -np 1 --cont-batching --jinja
+ then ask for logprobs:
+ curl -s http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{
+ "model":"local",
+ "messages":[{"role":"user","content":"Explain how a CPU branch predictor works."}],
+ "max_tokens":24, "temperature":1.0, "logprobs":true, "top_logprobs":3}'
+ With --spec-draft-model / --spec-type draft-mtp (23 of 24 tokens are exactly 0.0): 
+ '<|channel>' logprob=-1.4305124977909145e-06 top_logprobs=[('<|channel>', -1.43e-06), ('thought', -14.67), ('s', -15.75)]
+'thought' logprob=0.0 top_logprobs=[]
+'\n\n' logprob=0.0 top_logprobs=[]
+'*' logprob=0.0 top_logprobs=[]
+' ' logprob=0.0 top_logprobs=[]
+'*' logprob=0.0 top_logprobs=[]
+'Target' logprob=0.0 top_logprobs=[]
+':*' logprob=0.0 top_logprobs=[]
+timings: predicted_n=24 draft_n=24 draft_n_accepted=14
+ Same server, same request, drafter flags removed (0 of 24 are 0.0): 
+ '<|channel>' logprob=-1.4305124977909145e-06 3 top_logprobs
+'thought' logprob=-7.271793037944008e-06 3 top_logprobs
+'\n' logprob=-0.7207118272781372 3 top_logprobs
+'CPU' logprob=-0.0010869447141885757 3 top_logprobs
+' Branch' logprob=-0.001078710425645113 3 top_logprobs
+' Predict' logprob=-0.000901389925274998 3 top_logprobs
+'or' logprob=-0.003622648539021611 3 top_logprobs
+'.' logprob=-0.06013880670070648 3 top_logprobs
+ Only the very first token is correct in the drafted arm, and only because it is sampled
+before any draft exists, so it goes through the ordinary path.
+ Cause
+ populate_token_probs() is the only writer of a real result.prob . The
+non-speculative path sets a placeholder and then overwrites it
+( server-context.cpp#L3849-L3856 ):
+ result.prob = 1 . 0f ; // TODO: set it here instead of doing inside populate_token_probs 
+ if (slot.task->params.sampling.n_probs > 0 ) {
+ populate_token_probs (slot, result, slot. task -> params . post_sampling_probs , params_base. special , tok_idx);
+}
+ The speculative "main model sample and accept" path sets the same placeholder and never
+calls it
+( server-context.cpp#L3974-L3980 ):
+ result.prob = 1 . 0f ; // set later 
+ // TODO: set result.probs 
+ So the placeholder is what gets serialised: logprob = log(1.0) = 0 , and
+ result.probs stays empty, hence top_logprobs: [] . This affects every token in the
+accepted run, including the final target-sampled one — not only accepted draft tokens.
+ git blame puts // TODO: set result.probs at or before ab49f09 (the Nov 2025 move of
+server-context into its own file), so it predates that refactor.
+ Why this seems worth fixing rather than documenting
+ Absent logprobs are detectable by a caller; wrong ones are not. Anything that scores,
+gates, or compares on logprobs — KLD/perplexity harnesses, confidence thresholds,
+self-consistency ranking, quantisation comparisons — reads p = 1.0 and concludes the
+model is maximally confident.
+ For a concrete case: I was testing whether draft-mtp biases the sampled distribution.
+Mean logprob over 200 samples x 128 tokens came back -0.00107 with MTP against
+ -0.38244 without , with 189/200 samples averaging above -0.01. That is precisely the
+signature of the bias I was testing for, at an overwhelming apparent effect size, and it
+was produced entirely by the instrument. It did not become a false positive only because
+-0.001 at temperature 1.0 is physically impossible rather than merely surprising — a
+bug that returned -0.15 would have been plausible and would have gone through.
+ The token stream itself is fine, which is the part that makes it hard to notice. Over
+those same 200 samples per arm the unigram statistics are indistinguishable: top-10 mass
+0.369 (MTP) vs 0.371 (no MTP), top-50 0.659 vs 0.661, top-100 0.793 vs 0.795, 1000 vs
+1034 distinct tokens, total-variation distance 0.064 over the top 400. Only the reported
+probabilities are wrong.
+ Relation to #24271 
+ #24271 ("logprobs working for gemma
+MTP", closed as stale) reports the empty top_logprobs array — same root cause. It was
+filed as a feature request, and raised the concern that returning probabilities would
+require extra de-embedding work. Worth noting that for verified positions the target
+model has already computed the logits, since that is what verification consumes, so the
+accepted-token probabilities look like they should be available at the batch indices in
+ slot.spec_i_batch without additional compute. I have not written or tested a patch and
+may well be missing something there.
+ Either way, the half of this that seems most worth separating out from a feature request
+is that the per-token logprob field is present and wrong , rather than missing.
+ First Bad Commit
+ Not bisected — this looks like it was never implemented for the speculative path rather
+than regressed.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

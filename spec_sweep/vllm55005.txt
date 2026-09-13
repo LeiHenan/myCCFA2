@@ -1,0 +1,246 @@
+
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [Bug][CPU][Spec Decode]: CPU expand_kernel shim discards its output — non-greedy spec decode consumes uninitialized memory as temperature/top_k/top_p #55005 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Open 
+ #55006 
+ Open 
+ [Bug][CPU][Spec Decode]: CPU expand_kernel shim discards its output — non-greedy spec decode consumes uninitialized memory as temperature/top_k/top_p #55005 
+ #55006 
+ Copy link 
+ Description
+ mosafariuk 
+ opened on Sep 2, 2026 
+ Issue body actions 
+ Summary
+ The CPU monkey-patch for expand_kernel ( vllm/utils/cpu_triton_utils.py:408-421 ) passes _ensure_int64(output) to the int64-only C++ kernel ( csrc/cpu/spec_decode_utils.cpp:405-428 ). When the caller's buffer is not int64, _ensure_int64 returns a new tensor ( cpu_triton_utils.py:55-56 ); the kernel fills that temporary and the caller's buffer is never written. Every sibling wrapper in the file tracks orig_dtype and copies back — this one is the only one that doesn't.
+ Every production call hits it: expand_batch_to_tokens allocates x.new_empty(num_tokens) in x's dtype ( vllm/v1/sample/rejection_sampler.py:596 ) and the three production inputs are float32 temperature, int32 top_k, float32 top_p ( vllm/v1/worker/gpu_input_batch.py:199-216 , call sites rejection_sampler.py:537-560 ). So on any CPU spec-decode run with a non-greedy request, logits.div_(temperature) ( :545 ) and apply_top_k_top_p ( :565 ) consume uninitialized new_empty memory — fresh zero pages give div_(0) → inf logits; arbitrary garbage gives the out-of-bounds crash previously observed downstream. A second layer: even with copy-back, _ensure_int64(input_val) truncates floats — temperature 0.7 → 0 → rewritten to 1 by the replace_from=0 logic.
+ This path is live whenever Triton is absent ( cpu_model_runner.py:65-73 skips the patches only when HAS_TRITON ; :115 installs this one) — i.e., pip installs without triton-cpu, macOS/aarch64.
+ This was reported before, and the fix everyone believed in is the buggy code
+ PR #42638 reported exactly this corruption (uninitialized expand_batch_to_tokens output; third-party-confirmed on Xeon — OOB crash on Qwen's 151k vocab, silently in-bounds on Llama's 128k ) via a different mechanism: the raw Triton kernel no-oping with no driver. A maintainer redirected the fix to the CPU expand_kernel_impl monkey-patch, and the PR was closed after #44991 (merged) fixed the Triton-CPU path, on the stated premise that the "existing C++ monkey-patch fallbacks" cover non-Triton environments. That premise was false: the expand fallback has never produced correct output for any of the three production dtypes.
+ Reproduction (seconds; no model, no server, no GPU)
+ The script below, on a from-source CPU build at 605c3ddc ( vllm 0.28.1rc1.dev315+g605c3ddcb.cpu , torch 2.13.0, macOS arm64):
+ (a) int64 control -> [10, 10, 20, 20, 20, 30] expected [10, 10, 20, 20, 20, 30] OK
+(b) float32 out buffer -> [-777.0, -777.0, -777.0, -777.0, -777.0, -777.0] UNTOUCHED (output discarded)
+(c) fp32 temperature -> [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+ expected [0.699999988079071, 0.699999988079071, 0.5, 0.5, 0.5, 0.8999999761581421] DIVERGES (uninitialized new_empty)
+(d) fp32 in, i64 out -> [1, 1, 1, 1, 1, 1] (0.7/0.5/0.9 all truncated to 0, then 'replaced' with 1)
+(e) int32 top_k -> [0, 0, 0, 0, 0, 0]
+ expected [5, 5, 40, 40, 40, 1] DIVERGES
+ Arm (b) is deterministic proof: a sentinel-filled output buffer comes back untouched. Arm (d) isolates the truncation layer.
+ repro_expand_kernel_cpu.py 
+ # Repro: the CPU monkey-patch for `expand_kernel` discards its output and 
+ # truncates float inputs — CPU spec decode with any non-greedy request 
+ # consumes uninitialized memory as temperature / top_k / top_p. 
+ # 
+ # `vllm/utils/cpu_triton_utils.py::_expand_kernel_impl` passes 
+ # `_ensure_int64(output)` to the C++ kernel. When the caller's buffer is not 
+ # int64 (production passes float32 temperature/top_p and int32 top_k), 
+ # `_ensure_int64` allocates a NEW tensor; the C++ kernel fills that temporary 
+ # and the caller's `new_empty` buffer is returned uninitialized. Every sibling 
+ # wrapper in the file copies back; this one doesn't. A second layer: float 
+ # inputs are truncated to int64 (temperature 0.7 -> 0 -> replaced with 1). 
+ # 
+ # No model, no server, no GPU; seconds. Run on a CPU build of vLLM 
+ # (path is live when Triton is absent, i.e. the C++ monkey-patch path). 
+ import torch 
+ import vllm # noqa: F401 
+ import vllm . _C # noqa: F401 (registers the torch.ops._C CPU kernels) 
+ import vllm . utils . cpu_triton_utils as cpu_tl 
+ import vllm . v1 . sample . rejection_sampler as rs 
+ # Monkey-patch exactly as vllm/v1/worker/cpu_model_runner.py:115 does when 
+ # Triton is unavailable. 
+ rs . expand_kernel = cpu_tl . expand_kernel 
+ print ( f"torch { torch . __version__ } " )
+ from importlib . metadata import version # noqa: E402 
+ print ( f"vllm { version ( 'vllm' ) } " )
+ print ()
+ cu = torch . tensor ([ 2 , 5 , 6 ], dtype = torch . int64 ) # 3 requests -> 6 tokens 
+ # --- Arm (a): int64 end-to-end (control: the C++ kernel itself is fine) --- 
+ x = torch . tensor ([ 10 , 20 , 30 ], dtype = torch . int64 )
+ out = rs . expand_batch_to_tokens ( x , cu , num_tokens = 6 )
+ print ( f"(a) int64 control -> { out . tolist () } expected [10, 10, 20, 20, 20, 30]" 
+ f" { 'OK' if out . tolist () == [ 10 , 10 , 20 , 20 , 20 , 30 ] else 'FAIL' } " )
+ # --- Arm (b): output buffer is provably never written (deterministic) --- 
+ # Call the shim directly with a float32 output buffer pre-filled with a 
+ # sentinel. If the kernel wrote through, the sentinel would be gone. 
+ out_f32 = torch . full (( 6 ,), - 777.0 , dtype = torch . float32 )
+ cpu_tl . _expand_kernel_impl ( out_f32 , torch . tensor ([ 0.7 , 0.5 , 0.9 ]), cu , 0 , 1 )
+ untouched = bool (( out_f32 == - 777.0 ). all ())
+ print ( f"(b) float32 out buffer -> { out_f32 . tolist () } " 
+ f" { 'UNTOUCHED (output discarded)' if untouched else 'written' } " )
+ # --- Arm (c): the production temperature path (float32, new_empty) --- 
+ # expand_batch_to_tokens allocates `x.new_empty(num_tokens)` in x's dtype; 
+ # with the output discarded, callers receive uninitialized memory. This is 
+ # exactly rejection_sampler.py:537-545: the result divides the logits. 
+ temp = torch . tensor ([ 0.7 , 0.5 , 0.9 ], dtype = torch . float32 )
+ got = rs . expand_batch_to_tokens ( temp , cu , num_tokens = 6 , replace_from = 0 , replace_to = 1 )
+ expected = torch . repeat_interleave ( temp , torch . tensor ([ 2 , 3 , 1 ]))
+ print ( f"(c) fp32 temperature -> { got . tolist () } " )
+ print ( f" expected { expected . tolist () } " 
+ f" { 'DIVERGES (uninitialized new_empty)' if not torch . equal ( got , expected ) else 'ok' } " )
+ # --- Arm (d): float truncation, isolated from the discard bug --- 
+ # With an int64 output buffer `_ensure_int64(output)` is the identity, so the 
+ # kernel's writes ARE visible — and show the input-side truncation: 
+ # temperature 0.7 -> int64 0 == replace_from -> replaced with 1. 
+ out_i64 = torch . full (( 6 ,), - 777 , dtype = torch . int64 )
+ cpu_tl . _expand_kernel_impl ( out_i64 , temp , cu , 0 , 1 )
+ print ( f"(d) fp32 in, i64 out -> { out_i64 . tolist () } " 
+ f"(0.7/0.5/0.9 all truncated to 0, then 'replaced' with 1)" )
+ # --- Arm (e): int32 top_k path (production dtype, gpu_input_batch.py:216) --- 
+ topk = torch . tensor ([ 5 , 40 , 1 ], dtype = torch . int32 )
+ got_k = rs . expand_batch_to_tokens ( topk , cu , num_tokens = 6 )
+ exp_k = torch . repeat_interleave ( topk , torch . tensor ([ 2 , 3 , 1 ]))
+ print ( f"(e) int32 top_k -> { got_k . tolist () } " )
+ print ( f" expected { exp_k . tolist () } " 
+ f" { 'DIVERGES' if not torch . equal ( got_k , exp_k ) else 'ok' } " )
+ What I cannot determine
+ When the shim was introduced: git log -S '_expand_kernel_impl' bottoms out at my clone's graft boundary (depth 3,263), so introduction predates visible history.
+ Whether the int64-only C++ kernel was a deliberate scope decision — the wrapper's discard + truncation is a bug either way.
+ Fix
+ PR attached (posted alongside this issue): expand natively at the caller's dtype in the shim — the same torch.repeat_interleave semantics #42638 proposed, relocated to the monkey-patch layer where the maintainer asked for it. Regression test fails 3/4 arms before the fix, passes 4/4 after.
+ Disclosure
+ This report was prepared with AI assistance (Claude Code); the analysis, measurements, and fix were reviewed and run by the submitter.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

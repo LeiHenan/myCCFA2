@@ -1,0 +1,1995 @@
+
+
+[feat] Implement Elastic Speculation: Adaptive Draft Length + Confidence-Based Early Exit by yuz207 · Pull Request #28693 · vllm-project/vllm · GitHub 
+
+Skip to content 
+
+Navigation Menu
+
+Sign in Appearance settings
+
+Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+GitHub Copilot app Direct agents from issue to merge 
+MCP Registry Integrate external tools 
+
+DEVELOPER WORKFLOWS Actions Automate any workflow 
+Codespaces Instant dev environments 
+Issues Plan and track work 
+Code Review Manage code changes 
+Code Quality Enforce quality at merge 
+
+APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+Code security Secure your code as you build 
+Secret protection Stop leaks before they start 
+
+EXPLORE Why GitHub 
+Documentation 
+Blog 
+Changelog 
+Marketplace 
+
+View all features 
+
+Solutions BY COMPANY SIZE Enterprises 
+Small and medium teams 
+Startups 
+Nonprofits 
+
+BY USE CASE App Modernization 
+DevSecOps 
+DevOps 
+CI/CD 
+View all use cases 
+
+BY INDUSTRY Healthcare 
+Financial services 
+Manufacturing 
+Government 
+View all industries 
+
+View all solutions 
+
+Resources EXPLORE BY TOPIC AI 
+Software Development 
+DevOps 
+Security 
+View all topics 
+
+EXPLORE BY TYPE Customer stories 
+Events & webinars 
+Ebooks & reports 
+Business insights 
+GitHub Skills 
+
+SUPPORT & SERVICES Documentation 
+Customer support 
+Community forum 
+Trust center 
+Partners 
+
+View all resources 
+
+Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+PROGRAMS Security Lab 
+Maintainer Community 
+GitHub Stars 
+Archive Program 
+
+REPOSITORIES Topics 
+Trending 
+Collections 
+
+Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+Copilot for Business Enterprise-grade AI features 
+Premium Support Enterprise-grade 24/7 support 
+
+Pricing 
+Search / 
+
+Sign in 
+Sign up Appearance settings
+
+You signed in with another tab or window. Reload to refresh your session. 
+You signed out in another tab or window. Reload to refresh your session. 
+You switched accounts on another tab or window. Reload to refresh your session. 
+
+Dismiss alert 
+
+{{ message }}
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+vllm-project
+
+/ 
+
+vllm 
+
+Public 
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+Notifications
+You must be signed in to change notification settings 
+
+Fork
+22.1k 
+
+Star
+91.6k 
+
+Code 
+
+Issues 
+2.4k 
+
+Pull requests 
+5k+ 
+
+Discussions 
+
+Actions 
+
+Projects 
+
+Security and quality 
+76 
+
+Insights 
+
+Additional navigation options 
+
+Code
+
+Issues
+
+Pull requests
+
+Discussions
+
+Actions
+
+Projects
+
+Security and quality
+
+Insights
+
+[feat] Implement Elastic Speculation: Adaptive Draft Length + Confidence-Based Early Exit - # 28693 
+# 28693 
+
+Closed 
+yuz207 wants to merge 30 commits into vllm-project:main vllm-project/vllm:main from IluvatarLabs:elastic-speculation-PR IluvatarLabs/vllm:elastic-speculation-PR Copy head branch name to clipboard 
+
+Conversation Commits 30 ( 30 ) Checks Files changed 
+
+Closed 
+[feat] Implement Elastic Speculation: Adaptive Draft Length + Confidence-Based Early Exit # 28693 yuz207 wants to merge 30 commits into vllm-project:main vllm-project/vllm:main from IluvatarLabs:elastic-speculation-PR IluvatarLabs/vllm:elastic-speculation-PR Copy head branch name to clipboard 
+
+Conversation
+
+yuz207 
+
+commented
+
+Nov 14, 2025 
+
+• 
+
+edited by github-actions
+Bot 
+
+Loading 
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+Copy link
+
+Copy Markdown
+
+Purpose
+
+We implemented Elastic Speculation, an adaptive control layer for EAGLE speculative decoding that delivers double-digit latency improvements over fixed-length speculation while reducing KV-cache DRAM traffic .
+
+Two independent features:
+
+Adaptive Draft Length: Dynamically adjusts speculation depth based on acceptance rates
+
+Confidence-Based Early Exit: Gates KV writes for low-confidence draft tokens
+
+Summary
+
+Adaptive Draft Length
+
+Captures multiple draft lengths as CUDA graphs (default: [5, 10, 15]), tracks
+
+acceptance rate via EWMA, selects based on thresholds:
+
+70% acceptance → d = high (maximize benefit)
+
+50-70% → d = med (balanced)
+
+30-50% → d = low (conservative)
+
+<30% → d = very low (minimize waste)
+
+Confidence-Based Early Exit
+
+When draft token confidence drops below threshold, set slot_mapping = -1. CUDA
+
+kernel early-returns, skipping KV write:
+
+In reshape_and_cache kernel:
+
+if (slot_idx < 0) return; // No DRAM write
+
+Implementation
+
+Core implemntation:
+
+vllm/config/speculative.py - Config options
+
+vllm/v1/cudagraph_dispatcher.py - Multi-draft-length graph support
+
+vllm/v1/spec_decode/eagle.py - Adaptive + early exit logic
+
+vllm/v1/spec_decode/metrics.py - EWMA tracking, draft selection
+
+Environment variables:
+
+VLLM_SPEC_ADAPTIVE_DRAFT_LENGTH = 0,1
+VLLM_SPEC_CONFIDENCE_THRESHOLD = [0,1]
+
+Config options:
+
+SpeculativeConfig(
+draft_length_options = [d_1 ... d_n], # None = auto-compute
+draft_confidence_threshold = c, # 0.0 = disabled
+)
+
+Testing and Results
+
+Implementation was tested across draft lengths (5, 10, 15), early exit thresholds (0.3, 0.5, 0.7), and two Llama target + draft model pairs and evaluated on four benchmark datasets to simulate diverse inference workloads (Alpaca, SQuAD, BigCodeBench, and CNN DailyMail).
+
+We observe a ~20-50% reduction in latency depending on the task and configuration and confirm a threshold-proportional reduction in KV writes (~50% at 0.5 at 1-3% latency cost). In production, where as much as 70% of memory can be KV cache and as up as 50% of attention cycles stall on bandwidth constraints, this could potentially translate to latency savings as well.
+
+Our blog post with background, methodology, and full results can be found here: https://iluvatarlabs.com/blog/2025/11/elastic-speculation/ 
+
+We're excited to PR this to vLLM and happy to address any feedback!
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+--> 
+
+All reactions 
+
+yuz207 
+
+requested review from
+ProExpertProg , 
+WoosukKwon , 
+benchislett , 
+hmellor , 
+houseroad , 
+luccafong , 
+mgoin , 
+robertgshaw2-redhat , 
+tlrmchlsmth , 
+yewentao256 and 
+youkaichao 
+as code owners 
+
+November 14, 2025 00:12 
+
+mergify 
+Bot 
+
+added
+
+llama
+
+Related to Llama models 
+
+nvidia
+
+speculative-decoding
+
+labels
+
+Nov 14, 2025 
+
+mergify 
+Bot 
+
+commented
+
+Nov 14, 2025 
+
+Copy link
+
+Copy Markdown
+
+Contributor 
+
+This pull request has merge conflicts that must be resolved before it can be
+
+merged. Please rebase the PR, @yuz207 .
+
+https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork 
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+mergify 
+Bot 
+
+added
+the 
+v1
+
+label
+
+Nov 14, 2025 
+
+github-project-automation 
+Bot 
+
+added this to NVIDIA 
+
+Nov 14, 2025 
+
+mergify 
+Bot 
+
+added
+the 
+needs-rebase
+
+label
+
+Nov 14, 2025 
+
+chatgpt-codex-connector 
+Bot 
+
+reviewed
+
+Nov 14, 2025 
+
+View reviewed changes 
+
+chatgpt-codex-connector 
+Bot 
+
+left a comment
+
+Copy link
+
+Copy Markdown
+
+There was a problem hiding this comment.
+
+Choose a reason for hiding this comment
+
+The reason will be displayed to describe this comment to others. Learn more .
+
+--> 
+
+Choose a reason
+
+Spam 
+Abuse 
+Off Topic 
+Outdated 
+Duplicate 
+Resolved 
+Low Quality 
+
+Hide comment 
+
+💡 Codex Review
+
+https://github.com/vllm-project/vllm/blob/09919cf1634968b218609663e887d232a16c45a9/vllm/v1/worker/gpu_model_runner.py#L2509-L2518 
+
+Include draft length in CUDAGraph batch descriptor 
+
+Adaptive draft lengths are added to the set of CUDA graph keys, but the BatchDescriptor used for dispatch is still created without a draft_length value. This means every decode step uses the same key regardless of the current draft length and will replay the first captured graph. Once the adaptive controller switches from the initial draft length to another option, the dispatcher will attempt to reuse a graph recorded with different tensor shapes, causing CUDA graph replay failures or corrupted outputs. The descriptor passed to dispatch() needs to reflect the selected draft length so that each length is captured and replayed with the correct shapes.
+
+ℹ️ About Codex in GitHub 
+
+Codex has been enabled to automatically review pull requests in this repo. Reviews are triggered when you
+
+Open a pull request for review
+
+Mark a draft as ready
+
+Comment " @codex review".
+
+If Codex has suggestions, it will comment; otherwise it will react with 👍.
+
+When you sign up for Codex through ChatGPT , Codex can also answer questions or update the PR, like " @codex address that feedback".
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+--> 
+
+All reactions 
+
+Comment thread 
+
+vllm/v1/spec_decode/eagle.py 
+
+Show resolved 
+
+Hide resolved 
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+yuz207 
+
+force-pushed 
+the
+
+elastic-speculation-PR 
+
+branch
+2 times, most recently
+from
+01da4a9 to
+7e3f8be 
+Compare 
+
+November 14, 2025 00:20 
+
+mergify 
+Bot 
+
+removed
+the 
+needs-rebase
+
+label
+
+Nov 14, 2025 
+
+gemini-code-assist 
+Bot 
+
+reviewed
+
+Nov 14, 2025 
+
+View reviewed changes 
+
+gemini-code-assist 
+Bot 
+
+left a comment
+
+Copy link
+
+Copy Markdown
+
+Contributor 
+
+There was a problem hiding this comment.
+
+Choose a reason for hiding this comment
+
+The reason will be displayed to describe this comment to others. Learn more .
+
+--> 
+
+Choose a reason
+
+Spam 
+Abuse 
+Off Topic 
+Outdated 
+Duplicate 
+Resolved 
+Low Quality 
+
+Hide comment 
+
+Code Review
+
+This pull request introduces Elastic Speculation, a set of adaptive control mechanisms for speculative decoding in vLLM, specifically for the EAGLE method. The two main features, Adaptive Draft Length and Confidence-Based Early Exit, are well-implemented and aim to improve latency and reduce memory bandwidth usage. The changes are spread across configuration, core decoding logic, metrics, and CUDA graph dispatching, and are accompanied by a new microbenchmark script for profiling.
+
+My review focuses on the correctness of the implementation. I've found a critical issue in the new microbenchmark script that would prevent it from correctly testing the new features, and a high-severity bug in the environment variable handling for the confidence threshold. Addressing these will ensure the new features work as expected and can be reliably benchmarked.
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+--> 
+
+All reactions 
+
+Comment thread 
+
+tools/profiling/run_nwor_microbench.py 
+
+Outdated
+
+Show resolved 
+
+Hide resolved 
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+Comment thread 
+
+vllm/config/speculative.py 
+
+Outdated
+
+Show resolved 
+
+Hide resolved 
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+yuz207 
+
+force-pushed 
+the
+
+elastic-speculation-PR 
+
+branch
+4 times, most recently
+from
+88d851f to
+33af2e7 
+Compare 
+
+November 14, 2025 23:19 
+
+heheda12345 
+
+commented
+
+Nov 16, 2025 
+
+Copy link
+
+Copy Markdown
+
+Collaborator 
+
+CC @benchislett @luccafong 
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+mergify 
+Bot 
+
+commented
+
+Nov 20, 2025 
+
+Copy link
+
+Copy Markdown
+
+Contributor 
+
+This pull request has merge conflicts that must be resolved before it can be
+
+merged. Please rebase the PR, @yuz207 .
+
+https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork 
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+mergify 
+Bot 
+
+added
+the 
+needs-rebase
+
+label
+
+Nov 20, 2025 
+
+--> 
+
+28 hidden items
+
+Load more…
+
+[LINT] Fix pre-commit linting errors 
+
+…
+
+d40aba6 
+
+Fixes 10 linting/type errors identified by GitHub Actions pre-commit checks:
+
+1. vllm/config/speculative.py:
+- Add missing 'import vllm.envs as envs' (fixes undefined name errors)
+- Combine nested if statements (SIM102 simplification)
+
+2. vllm/v1/spec_decode/eagle.py:
+- Add assertion after draft_length normalization to satisfy type checker
+- Ensures draft_length is not None before arithmetic operations
+
+3. vllm/envs.py:
+- Split long lines for VLLM_SPEC_ADAPTIVE_DRAFT_LENGTH (109 → 88 chars)
+- Split long lines for VLLM_SPEC_CONFIDENCE_THRESHOLD (105 → 88 chars)
+
+4. vllm/v1/worker/gpu_model_runner.py:
+- Split batch_acceptance_rate calculation to multiple lines (90 → 88 chars)
+
+All changes maintain functionality while satisfying Black formatter and mypy type checker.
+
+Signed-off-by: yuz207 <ben@iluvatarlabs.com>
+Signed-off-by: yuz207 <4967605+yuz207@users.noreply.github.com>
+
+yuz207 
+
+force-pushed 
+the
+
+elastic-speculation-PR 
+
+branch
+from
+fe0e2a1 to
+d40aba6 
+Compare 
+
+November 21, 2025 19:23 
+
+robertgshaw2-redhat 
+
+commented
+
+Nov 24, 2025 
+
+Copy link
+
+Copy Markdown
+
+Collaborator 
+
+This looks very interesting!
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+robertgshaw2-redhat 
+
+commented
+
+Nov 24, 2025 
+
+Copy link
+
+Copy Markdown
+
+Collaborator 
+
+@MatthewBonanni @LucasWilkinson 
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+mergify 
+Bot 
+
+commented
+
+Nov 28, 2025 
+
+Copy link
+
+Copy Markdown
+
+Contributor 
+
+This pull request has merge conflicts that must be resolved before it can be
+
+merged. Please rebase the PR, @yuz207 .
+
+https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork 
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+mergify 
+Bot 
+
+added
+the 
+needs-rebase
+
+label
+
+Nov 28, 2025 
+
+yuz207 
+
+commented
+
+Dec 12, 2025 
+
+Copy link
+
+Copy Markdown
+
+Author 
+
+@MatthewBonanni @LucasWilkinson @heheda12345 @benchislett @luccafong @robertgshaw2-redhat Hi everyone, I know this is a pretty massive ask to review this for a "PR" given the amount of code here, so let me know if you have any questions or thoughts on this. Happy to chat about any of the implementation or results, or assist with incorporating it in other ways if there's interest in doing so outside of this particular monolithic PR. Thanks!
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+MatthewBonanni 
+
+reviewed
+
+Dec 16, 2025 
+
+View reviewed changes 
+
+MatthewBonanni 
+
+left a comment
+
+Copy link
+
+Copy Markdown
+
+Member 
+
+There was a problem hiding this comment.
+
+Choose a reason for hiding this comment
+
+The reason will be displayed to describe this comment to others. Learn more .
+
+--> 
+
+Choose a reason
+
+Spam 
+Abuse 
+Off Topic 
+Outdated 
+Duplicate 
+Resolved 
+Low Quality 
+
+Hide comment 
+
+Thanks for this contribution! This is a cool technique; sorry to make you wait so long for a review
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+--> 
+
+All reactions 
+
+Comment thread 
+
+vllm/config/speculative.py 
+
+Outdated
+
+# Override confidence threshold from environment if set 
+
+# This allows independent control of early exit 
+
+env_confidence = envs.VLLM_SPEC_CONFIDENCE_THRESHOLD 
+
+MatthewBonanni 
+
+Dec 16, 2025 
+
+Copy link
+
+Copy Markdown
+
+Member 
+
+There was a problem hiding this comment.
+
+Choose a reason for hiding this comment
+
+The reason will be displayed to describe this comment to others. Learn more .
+
+--> 
+
+Choose a reason
+
+Spam 
+Abuse 
+Off Topic 
+Outdated 
+Duplicate 
+Resolved 
+Low Quality 
+
+Hide comment 
+
+Same as above, would prefer CLI argument. That would also simplify managing the default
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+--> 
+
+All reactions 
+
+Comment thread 
+
+vllm/model_executor/models/llama4_eagle.py 
+
+continue 
+
+# Skip loading extra bias for GPTQ models. 
+
+if name.endswith(".bias") and name not in params_dict: 
+
+MatthewBonanni 
+
+Dec 16, 2025 
+
+Copy link
+
+Copy Markdown
+
+Member 
+
+There was a problem hiding this comment.
+
+Choose a reason for hiding this comment
+
+The reason will be displayed to describe this comment to others. Learn more .
+
+--> 
+
+Choose a reason
+
+Spam 
+Abuse 
+Off Topic 
+Outdated 
+Duplicate 
+Resolved 
+Low Quality 
+
+Hide comment 
+
+Why is this necessary?
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+--> 
+
+All reactions 
+
+Comment thread 
+
+vllm/model_executor/models/llama_eagle.py 
+
+continue 
+
+# Skip loading extra bias for GPTQ models. 
+
+if name.endswith(".bias") and name not in params_dict: 
+
+MatthewBonanni 
+
+Dec 16, 2025 
+
+Copy link
+
+Copy Markdown
+
+Member 
+
+There was a problem hiding this comment.
+
+Choose a reason for hiding this comment
+
+The reason will be displayed to describe this comment to others. Learn more .
+
+--> 
+
+Choose a reason
+
+Spam 
+Abuse 
+Off Topic 
+Outdated 
+Duplicate 
+Resolved 
+Low Quality 
+
+Hide comment 
+
+ditto
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+--> 
+
+All reactions 
+
+Comment thread 
+
+vllm/model_executor/models/llama_eagle3.py 
+
+break 
+
+else: 
+
+# Skip loading extra bias for GPTQ models. 
+
+if name.endswith(".bias") and name not in params_dict: 
+
+MatthewBonanni 
+
+Dec 16, 2025 
+
+Copy link
+
+Copy Markdown
+
+Member 
+
+There was a problem hiding this comment.
+
+Choose a reason for hiding this comment
+
+The reason will be displayed to describe this comment to others. Learn more .
+
+--> 
+
+Choose a reason
+
+Spam 
+Abuse 
+Off Topic 
+Outdated 
+Duplicate 
+Resolved 
+Low Quality 
+
+Hide comment 
+
+ditto
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+--> 
+
+All reactions 
+
+Comment thread 
+
+vllm/v1/spec_decode/metrics.py 
+
+Outdated
+
+sorted_options = sorted(draft_length_options) 
+
+# Threshold-based selection 
+
+if self.acceptance_rate_ewma > 0.7: 
+
+MatthewBonanni 
+
+Dec 16, 2025 
+
+Copy link
+
+Copy Markdown
+
+Member 
+
+There was a problem hiding this comment.
+
+Choose a reason for hiding this comment
+
+The reason will be displayed to describe this comment to others. Learn more .
+
+--> 
+
+Choose a reason
+
+Spam 
+Abuse 
+Off Topic 
+Outdated 
+Duplicate 
+Resolved 
+Low Quality 
+
+Hide comment 
+
+Is this something we would want to be tunable by the user? How universal is this default choice?
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+--> 
+
+All reactions 
+
+Comment thread 
+
+vllm/config/speculative.py 
+
+Outdated
+
+if ( 
+
+self.draft_length_options is None 
+
+and self.num_speculative_tokens is not None 
+
+and envs.VLLM_SPEC_ADAPTIVE_DRAFT_LENGTH 
+
+MatthewBonanni 
+
+Dec 16, 2025 
+
+Copy link
+
+Copy Markdown
+
+Member 
+
+There was a problem hiding this comment.
+
+Choose a reason for hiding this comment
+
+The reason will be displayed to describe this comment to others. Learn more .
+
+--> 
+
+Choose a reason
+
+Spam 
+Abuse 
+Off Topic 
+Outdated 
+Duplicate 
+Resolved 
+Low Quality 
+
+Hide comment 
+
+Could we add this to SpeculativeConfig instead of using an env variable?
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+--> 
+
+All reactions 
+
+Comment thread 
+
+vllm/v1/spec_decode/eagle.py 
+
+Outdated
+
+common_attn_metadata.seq_lens_cpu = common_attn_metadata.seq_lens_cpu + 1 
+
+common_attn_metadata.seq_lens_cpu = ( 
+
+common_attn_metadata.seq_lens_cpu 
+
++ active_mask.cpu().to(common_attn_metadata.seq_lens_cpu.dtype) 
+
+MatthewBonanni 
+
+Dec 16, 2025 
+
+Copy link
+
+Copy Markdown
+
+Member 
+
+There was a problem hiding this comment.
+
+Choose a reason for hiding this comment
+
+The reason will be displayed to describe this comment to others. Learn more .
+
+--> 
+
+Choose a reason
+
+Spam 
+Abuse 
+Off Topic 
+Outdated 
+Duplicate 
+Resolved 
+Low Quality 
+
+Hide comment 
+
+This introduces a GPU-CPU sync point (which we've been trying to eliminate for --async-scheduling ). Would it be possible to avoid this?
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+--> 
+
+All reactions 
+
+Comment thread 
+
+vllm/v1/spec_decode/eagle.py 
+
+Outdated
+
+input_ids = draft_token_ids_list[-1].int() 
+
+# Mask stopped sequences to PAD token for early stopping 
+
+if token_index > 0: 
+
+input_ids = torch.where( 
+
+MatthewBonanni 
+
+Dec 16, 2025 
+
+Copy link
+
+Copy Markdown
+
+Member 
+
+There was a problem hiding this comment.
+
+Choose a reason for hiding this comment
+
+The reason will be displayed to describe this comment to others. Learn more .
+
+--> 
+
+Choose a reason
+
+Spam 
+Abuse 
+Off Topic 
+Outdated 
+Duplicate 
+Resolved 
+Low Quality 
+
+Hide comment 
+
+Could we use masked_fill_ instead to avoid an extra allocation?
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+--> 
+
+All reactions 
+
+MatthewBonanni 
+
+commented
+
+Jan 5, 2026 
+
+Copy link
+
+Copy Markdown
+
+Member 
+
+Hi @yuz207 , just wanted to check in! Do you think you'll have a chance to update the PR?
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+fluctlux 
+
+commented
+
+Jan 8, 2026 
+
+Copy link
+
+Copy Markdown
+
+Hi @yuz207 , just wanted to check in! Do you think you'll have a chance to update the PR?
+
+Hi, I'm very interested in dynamic speculative decoding. I think this could help improve vLLM's performance when concurrency is high or the acceptance rate is low. However, I noticed that multiple PRs have already been proposed, like:
+
+#26504 
+
+#17984 
+
+Do you think these ideas regarding adjusting draft length based on acceptance rate are worth integrating into vLLM? What do you see as the biggest obstacle?
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+Fsanic 
+
+commented
+
+Jan 8, 2026 
+
+• 
+
+edited
+
+Loading 
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+Copy link
+
+Copy Markdown
+
+Hi @yuz207 , excellent contribution! I was wondering what the CUDA graph overhead looks like for adaptive draft length. Since this would significantly increase the number of CUDA graphs needed (you would need cartesian product of CUDA graphs by batch_size x draft_length), will it lead to longer CUDA graph capture time and increased memory overhead by a lot？
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+yuz207 
+
+commented
+
+Jan 11, 2026 
+
+Copy link
+
+Copy Markdown
+
+Author 
+
+First off, happy new year and thanks everyone for the thoughtful review and comments! Apologies for the very belated response, I was offline for most of the holidays and finally catching up on everything.
+
+@MatthewBonanni Really appreciate the detailed comments in your review, Matthew. We're preparing an update we'll push shortly.
+
+Regarding the envs, we've switched over using the standard args in --speculative-config.
+
+For the model_executor scripts, it was something was mirrored from llama.py (it's already in deepseek_eagle.py and minicpm_eagle.py) because vLLM doesn't like the mismatch that occurs when quantized models are loaded from HF if they have bias params.
+
+Great call on using masked_fill_, now modifies tensor in place.
+
+On the extra CPU-GPU sync, It's a great call out since the whole point of this is for efficiency while minimizing unnecessary overhead. I'll have to think a little more about how we can avoid this and switch everything downstream to GPU tensors. In terms of low hanging fruit, we can reduce the # of syncs to just 1 for early exit if we move it outside the loop (and skip it entirely if not using early exit and just do seq_lens_cpu += draft_length).
+
+Finally, for the tunable threshold, we should absolutely make it configurable. We zeroed in on 0.7 as a default based on our tests but users should be able to select a threshold that meets their speed vs quality calculus.
+
+@fluctlux Thanks for sharing those links! I wasn't aware of them previously so I'll take some time this week to compare those proposed methods with how we implemented this approach. At a quick glance, these appear more similar to the adaptive draft length component rather than the confidence-based early exit.
+
+Terrific questions. I do believe these are valuable features to integrate as the savings to both latency and memory bandwidth can be quite substantial depending on the workload. Though I don't have hard evidence of this, it is plausible that frontier labs are already using similar techniques in their proprietary stacks given their current emphasis on latency tricks for serving.
+
+IMO the biggest obstacle is determining when to use elastic speculation in practice. While confidence-based early exit is pretty much universally beneficial in bandwidth-constrained settings, adaptive draft length has a small amount overhead so the cost-benefit depends on the target-draft model pair and accept rate. It's worth noting that in our benchmarking, we found that adaptive draft length even WITHOUT graph capture was faster than fixed draft length WITH it. Speaking of graph capture...
+
+@Fsanic This is another terrific question. We actually only need to capture a single graph per batch size as multiple draft lengths produce duplicate graphs. The num_tokens dimension already differentiates CUDA graphs based on actual tensor shapes. So in practice, no additional memory overhead.
+
+Your question actually reminded me of some dead code that snuck into this PR that we're going to clean up. We did try a couple approaches to optimize multiple draft length graph capture (behind enable_draft_length_cudagraph_specialization), which is how we found doing so to be redundant and just wastes memory.
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+MatthewBonanni 
+
+commented
+
+Jan 22, 2026 
+
+Copy link
+
+Copy Markdown
+
+Member 
+
+Hi @yuz207 , thanks for your thoughtful response! Just checking in again - let me know if there's anything else you need to help you get these changes implemented
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+yuz207 
+
+commented
+
+Feb 18, 2026 
+
+Copy link
+
+Copy Markdown
+
+Author 
+
+Hi @MatthewBonanni ,
+
+Hope you've had a great start to your year! We just pushed the fixes discussed above, plus one more to address a minor async scheduling issue. We're running an additional set of confirmatory benchmarks now as well.
+
+Thanks for your patience on this PR (our whole team has been knocked out this month due to flu/RSV/whatever else is going around). 🙏
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+yuz207 
+
+added 7 commits
+February 18, 2026 10:08 
+
+[CLEANUP] Remove redundant draft_length CUDA graph specialization 
+
+…
+
+9ae68ff 
+
+The enable_draft_length_cudagraph_specialization feature was removed because
+draft_length in BatchDescriptor was only used as a Python dictionary key for
+CUDA graph lookup, not as an input to GPU computation. CUDA graphs with the
+same num_tokens but different draft_length captured identical GPU operations,
+wasting 3-4x memory for no benefit.
+
+Removed:
+- enable_draft_length_cudagraph_specialization field from SpeculativeConfig
+- draft_length field from BatchDescriptor
+- _resolve_draft_length_for_cudagraph method
+- draft_length handling in CUDA graph capture/dispatch
+
+Preserved (runtime adaptive draft length still works):
+- draft_length_options in SpeculativeConfig
+- compute_optimal_draft_length() in SpecDecodingStats
+- draft_length parameter in propose()
+
+Signed-off-by: yuz207 <ben@iluvatarlabs.com>
+
+[REFACTOR] Replace env vars with config fields for adaptive speculation 
+
+…
+
+2f416dc 
+
+Replace VLLM_SPEC_ADAPTIVE_DRAFT_LENGTH and VLLM_SPEC_CONFIDENCE_THRESHOLD
+environment variables with proper config fields in SpeculativeConfig.
+
+Changes:
+- Add enable_adaptive_draft_length field to SpeculativeConfig
+- Remove env var override logic for draft_confidence_threshold
+- Remove env var definitions from envs.py
+- Remove envs import from speculative.py
+
+This aligns with vLLM's config-first design. Users should now configure
+these features via SpeculativeConfig fields instead of environment variables.
+
+Breaking change: Users who were setting VLLM_SPEC_ADAPTIVE_DRAFT_LENGTH=1
+or VLLM_SPEC_CONFIDENCE_THRESHOLD=X must migrate to config fields.
+
+Signed-off-by: yuz207 <ben@iluvatarlabs.com>
+
+[PERF] Use in-place masked_fill_ instead of torch.where for early sto… 
+
+…
+
+15bafb8 
+
+…pping
+
+Replace out-of-place torch.where with in-place masked_fill_ when masking
+stopped sequences to PAD token. This is safe because .int() on line 425
+always creates a new tensor (int64 -> int32 conversion), so the in-place
+modification cannot corrupt draft_token_ids_list.
+
+Signed-off-by: yuz207 <ben@iluvatarlabs.com>
+
+[PERF] Reduce GPU-CPU sync points in early-exit drafting loop 
+
+…
+
+95bc755 
+
+The early-exit feature introduced a per-iteration GPU-CPU sync
+(active_mask.cpu()) to keep seq_lens_cpu updated. However, FlashAttention
+does not read seq_lens_cpu during build_for_drafting — it uses the GPU
+seq_lens tensor directly. This commit defers the CPU sync to after the
+loop for FlashAttention, reducing N GPU-CPU synchronizations to 1.
+
+Other backends (FlashInfer, ROCm AITER FA, FlexAttention, etc.) read
+seq_lens_cpu inside build(), so they retain the per-iteration sync via
+a runtime isinstance check on the attention metadata type.
+
+Signed-off-by: yuz207 <ben@iluvatarlabs.com>
+
+[CONFIG] Add configurable EWMA alpha and acceptance thresholds 
+
+…
+
+e3d3b0d 
+
+Make the adaptive draft length EWMA smoothing factor and acceptance
+rate thresholds configurable via SpeculativeConfig fields instead of
+being hardcoded.
+
+- adaptive_ewma_alpha: smoothing factor (default 0.1)
+- adaptive_acceptance_thresholds: [low, medium, high] boundaries
+for draft length selection (default [0.3, 0.5, 0.7])
+
+Signed-off-by: yuz207 <ben@iluvatarlabs.com>
+
+[BUGFIX] Update acceptance EWMA in async scheduling path 
+
+…
+
+ee7c557 
+
+The spec decode stats (observe_draft + update_acceptance_ewma) were only
+called inside the `if not self.use_async_scheduling:` branch. With async
+scheduling enabled, the EWMA stayed permanently at the 0.5 bootstrap
+value, causing compute_optimal_draft_length to always select the shortest
+draft length.
+
+Hook into the existing per-request acceptance counting in _update_states,
+which already computes num_accepted from valid_sampled_token_count for the
+async path. Accumulate batch-level stats and update EWMA immediately after
+the loop, before the unrelated reqs_to_add processing.
+
+Signed-off-by: yuz207 <ben@iluvatarlabs.com>
+
+[BUGFIX] Fix auto-computed draft_length_options exceeding proposer cap 
+
+…
+
+f8c5a03 
+
+The old formula [max(2,n//2), n, min(8,n*2)] produced a third option
+greater than num_speculative_tokens for any n<8. Since propose() caps
+draft_length at num_speculative_tokens, the third option was silently
+clamped to n at runtime — identical to the second option. This collapsed
+the three-tier adaptive system to two tiers (or one for n=2).
+
+Use thirds of n instead: [n//3, 2*n//3, n]. All values are <= n so none
+are capped by propose(). For n=15 this produces [5,10,15], matching the
+benchmarked configuration.
+
+Signed-off-by: yuz207 <ben@iluvatarlabs.com>
+
+yuz207 
+
+force-pushed 
+the
+
+elastic-speculation-PR 
+
+branch
+from
+fa8345e to
+f8c5a03 
+Compare 
+
+February 18, 2026 18:09 
+
+WoosukKwon 
+
+requested changes
+
+Feb 18, 2026 
+
+View reviewed changes 
+
+WoosukKwon 
+
+left a comment
+
+Copy link
+
+Copy Markdown
+
+Collaborator 
+
+There was a problem hiding this comment.
+
+Choose a reason for hiding this comment
+
+The reason will be displayed to describe this comment to others. Learn more .
+
+--> 
+
+Choose a reason
+
+Spam 
+Abuse 
+Off Topic 
+Outdated 
+Duplicate 
+Resolved 
+Low Quality 
+
+Hide comment 
+
+Thanks for the PR. I think we need more discussion before merging this PR, as dynamism is typically the biggest obstacle in achieving high gpu utilization.
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+--> 
+
+👍 
+1 
+yuz207 reacted with thumbs up emoji 
+
+All reactions 
+
+👍 
+1 reaction 
+
+github-project-automation 
+Bot 
+
+moved this to In review 
+in NVIDIA 
+
+Feb 18, 2026 
+
+github-actions 
+Bot 
+
+commented
+
+May 20, 2026 
+
+Copy link
+
+Copy Markdown
+
+This pull request has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this pull request should remain open. Thank you!
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+github-actions 
+Bot 
+
+added
+the 
+stale
+
+Over 90 days of inactivity 
+label
+
+May 20, 2026 
+
+benchislett 
+
+closed this
+
+May 25, 2026 
+
+github-project-automation 
+Bot 
+
+moved this from In review 
+to Done 
+in NVIDIA 
+
+May 25, 2026 
+
+LJX-xixi 
+
+mentioned this pull request
+
+Jul 10, 2026 
+
+[RFC]: Per-request effective proposal lengths for adaptive speculative decoding
+#48202 
+
+Closed
+
+1 task 
+
+notoken 
+
+mentioned this pull request
+
+Sep 3, 2026 
+
+feat(dspark): add a floor for dynamic draft depth
+local-inference-lab/vllm#613 
+
+Open
+
+--> 
+
+This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+Learn more about bidirectional Unicode characters 
+
+Show hidden characters
+
+Sign up for free 
+to join this conversation on GitHub .
+Already have an account?
+Sign in to comment 
+
+--> 
+
+Reviewers
+
+MatthewBonanni 
+
+MatthewBonanni left review comments 
+
+chatgpt-codex-connector[bot] 
+
+chatgpt-codex-connector[bot] left review comments 
+
+WoosukKwon 
+
+WoosukKwon requested changes 
+
+benchislett 
+
+Awaiting requested review from benchislett 
+
+benchislett is a code owner 
+
+luccafong 
+
+Awaiting requested review from luccafong 
+
+luccafong is a code owner 
+
+youkaichao 
+
+Awaiting requested review from youkaichao 
+
+youkaichao is a code owner 
+
+robertgshaw2-redhat 
+
+Awaiting requested review from robertgshaw2-redhat 
+
+robertgshaw2-redhat is a code owner 
+
+mgoin 
+
+Awaiting requested review from mgoin 
+
+mgoin is a code owner 
+
+tlrmchlsmth 
+
+Awaiting requested review from tlrmchlsmth 
+
+tlrmchlsmth is a code owner 
+
+houseroad 
+
+Awaiting requested review from houseroad 
+
+houseroad is a code owner 
+
+hmellor 
+
+Awaiting requested review from hmellor 
+
+yewentao256 
+
+Awaiting requested review from yewentao256 
+
+yewentao256 is a code owner 
+
+ProExpertProg 
+
+Awaiting requested review from ProExpertProg 
+
+ProExpertProg is a code owner 
+
++1 more reviewer
+
+gemini-code-assist[bot] 
+
+gemini-code-assist[bot] left review comments 
+
+Reviewers whose approvals may not affect merge requirements 
+
+--> 
+
+Assignees
+
+No one assigned
+
+Labels
+
+llama 
+
+Related to Llama models 
+
+needs-rebase 
+
+nvidia 
+
+speculative-decoding 
+
+stale 
+
+Over 90 days of inactivity 
+
+v1 
+
+--> 
+
+Projects
+
+NVIDIA 
+
+Status: Done
+
++6 more
+
+--> 
+
+Milestone
+
+No milestone
+
+--> 
+
+Development
+
+Successfully merging this pull request may close these issues.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+8 participants
+
+Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+
+Footer
+
+© 2026 GitHub, Inc.
+
+Footer navigation
+
+Terms 
+
+Privacy 
+
+Security 
+
+Status 
+
+Community 
+
+Docs 
+
+Contact 
+
+Manage cookies
+
+Do not share my personal information
+
+You can’t perform that action at this time.
+
+

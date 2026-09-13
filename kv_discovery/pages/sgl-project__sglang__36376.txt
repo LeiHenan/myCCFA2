@@ -1,0 +1,93 @@
+FETCHED: https://github.com/sgl-project/sglang/issues/36376  (is_pr=True, 340797 bytes)
+LAYOUT NODE (PR):
+  number = 36376
+  title = [Bug] Fix HiCache storage keys to include kv_cache_dtype — prevent silent cross-run cache collisions
+  state = CLOSED
+  closedTime = 2026-08-26T02:42:01Z
+  createdTime = 2026-08-25T19:57:27Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 1
+  baseBranch = main
+  headBranch = fix/hicache-dtype-key-33268
+  author = wuhangxian
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOTZJ56doAKGQ1NDkzNWNjMjMxYTQ5NGM2ZWFmMWM5ZjY0NWQ1MGYxNmJiMzMzMDg"> | fix(hicache): add kv_cache_dtype to storage keys to prevent cross-run… | … | d54935c | … collisions | Fixes sgl-project#33268 | The HiCache storage key derivation omitted kv_cache_dtype, so two server runs on the same model with different --kv-cache-dtype (e.g. bf16 then fp8_e4m3) produced identical keys. The second run silently reused cache entries whose bytes were in the wrong format. | This change adds kv_cache_dtype to HiCacheStorageConfig and threads it into every b
+EV: js-timeline-progressive-focus-container" data-gid="RRE_lADOLCAjRs8AAAABOO0ZCM8AAAAG_DjeUg"> | wuhangxian | requested review from | Ying1123, | alphabetc1, | hanming-lu, | hnyls2002, | huangtingwei9988, | hzh0425, | ispobock, | merrymercy, | xiezhq-hermann and | yizhang2077 | as code owners | August 25, 2026 19:57 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOLCAjRs8AAAABQtEkPg"> | wuhangxian | commented | Aug 25, 2026 | Copy link | Copy Markdown | Author | @GaelicThunder The hf3fs backend is now covered as you requested. Two collision points were addressed: | - File path: Added a .{kv_cache_dtype} segment to the file path (both local fallback and config-based), so different dtypes use different physical files. | - Metadata keys: Added a dtype_{kv_cache_dtype}_ prefix to all keys passed to the metadata client (_batch_get, _batch_set, _pool_batch_get, _pool_batch_set, delete, exists, batch_ex
+EV: js-timeline-progressive-focus-container" data-gid="LE_lADOLCAjRs8AAAABOO0ZCM8AAAAG_DkClg"> | github-actions | Bot | added | the | hicache | Hierarchical Caching for SGLang | label | Aug 25, 2026 | alphabetc1 | self-assigned this | Aug 26, 2026 | wuhangxian | mentioned this pull request | Aug 26, 2026 | [Bug] Fix HiCache storage keys to include kv_cache_dtype — prevent silent cross-run cache collisions | #36420 | Open | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOLCAjRs8AAAABQwwMgA"> | wuhangxian | commented | Aug 26, 2026 | Copy link | Copy Markdown | Author | Rebased PR #36376 onto latest main to resolve merge conflicts. The previous PR was non-mergeable (dirty state) due to structural changes in cache_controller.py and hicache_storage.py. New PR: #36420. All changes and tests are preserved; hf3fs coverage requested by @GaelicThunder is included. | --> | 🎉 | 1 | GaelicThunder reacted with hooray emoji | All reactions | - | 🎉 | 1 reaction | --><input type="hidden" name="_metho
+EV: js-timeline-progressive-focus-container" data-gid="CE_lADOLCAjRs8AAAABOO0ZCM8AAAAG_TUiNQ"> | wuhangxian | closed this | Aug 26, 2026 | --> | Sign up for free | to join this conversation on GitHub. | Already have an account? | Sign in to comment | --><form id="pull-request-reviewers-form-4361223786" class="js-issue-sidebar-form" aria-label="Select reviewers" data-reviewers-team-size-check-url="/sgl-project/sglang/pull/36376/review-requests/team-size-check" data-turbo="false" action="/sgl-project/sglang/pull/36376/review-requests"
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=wuhangxian date=2026-08-25T19:57:27Z]
+Summary
+
+Fixes #33268.
+
+As discussed in the issue, the HiCache storage key derivation omitted kv_cache_dtype, so two server runs on the same model with different --kv-cache-dtype (e.g. bf16 then fp8_e4m3) produced identical keys. The second run silently reused cache entries whose bytes were in the wrong format — a silent-corruption bug.
+
+Root cause
+
+HiCacheStorageConfig had no kv_cache_dtype field, so no backend could include it in its key derivation. The config_suffix in HiCacheFile and HiCacheNixl, eic_prefix in eic_storage.py, _tag_keys in mooncake_store.py, and the file-path + metadata keys in storage_hf3fs.py were all dtype-unaware.
+
+Fix (6 files)
+
+- hicache_storage.py — Added kv_cache_dtype: Optional[str] = None to HiCacheStorageConfig. In HiCacheFile.__init__, append _dtype_{kv_cache_dtype} to config_suffix when the field is set.
+
+- cache_controller.py — In _generate_storage_config, pass kv_cache_dtype=str(self.mem_pool_host.dtype) into the HiCacheStorageConfig constructor. HostKVCache.dtype is device_pool.store_dtype, so this is the actual runtime dtype.
+
+- hicache_nixl.py — Append _dtype_{kv_cache_dtype} to config_suffix.
+
+- eic_storage.py — Append _dtype_{kv_cache_dtype} to eic_prefix in _init_eic_prefix. Use hicache_config.kv_cache_dtype (string form from storage config) for key consistency, falling back to str(self.memory_pool_host.dtype).
+
+- mooncake_store.py — Add dtype_{kv_cache_dtype}_ prefix to keys in _tag_keys, alongside the existing extra_backend_tag prefix. Store kv_cache_dtype from storage_config in __init__ (with None default when storage_config is None).
+
+- storage_hf3fs.py — This is the backend @GaelicThunder specifically asked to cover. Two collision points:
+
+- File path: Added a .{kv_cache_dtype} segment to the file path (both local fallback and config-based path), so different dtypes use different physical files.
+
+- Metadata keys: Added a dtype_{kv_cache_dtype}_ prefix to all keys passed to the metadata client (_batch_get, _batch_set, _pool_batch_get, _pool_batch_set, delete, exists, batch_exists), so different dtypes don't collide in the shared metadata namespace.
+
+Backward compatibility
+
+When kv_cache_dtype is None (not passed), no suffix/prefix is added, so existing cache keys are unchanged.
+
+Verification
+
+After the fix, the same two configs produce different suffixes:
+
+bf16: _DeepSeek-V4-Flash_dtype_bf16
+fp8: _DeepSeek-V4-Flash_dtype_fp8_e4m3
+collision: False
+backward_compat(none): True
+
+All modified modules pass py_compile. The aibrix backend was not touched because it already reads mem_pool.device_pool.dtype directly and does not go through config_suffix. The shm backend is a no-op stub.
+
+hf3fs coverage
+
+As requested by @GaelicThunder in this comment, the hf3fs backend is now fully covered. Its keys are derived from both the file-system path and the metadata-server keys, and both now encode the dtype.
+
+cc @GaelicThunder @efschu
+
+CI States
+
+Latest PR Test (Base): ❌ Missing run-ci label -- add it to run CI tests.
+
+Latest PR Test (Extra): ❌ Blocked -- run-ci is required first.
+
+Latest PR Test (AMD ROCm 7.2): ➖ No AMD PR run found for this commit.
+
+[RENDERED BLOCK author=wuhangxian date=2026-08-25T19:57:38Z]
+@GaelicThunder The hf3fs backend is now covered as you requested. Two collision points were addressed:
+
+- File path: Added a .{kv_cache_dtype} segment to the file path (both local fallback and config-based), so different dtypes use different physical files.
+
+- Metadata keys: Added a dtype_{kv_cache_dtype}_ prefix to all keys passed to the metadata client (_batch_get, _batch_set, _pool_batch_get, _pool_batch_set, delete, exists, batch_exists), so different dtypes don't collide in the shared metadata namespace.
+
+When kv_cache_dtype is None, no prefix is added — fully backward compatible. The PR is ready for review.
+
+[RENDERED BLOCK author=wuhangxian date=2026-08-26T02:41:48Z]
+Rebased PR #36376 onto latest main to resolve merge conflicts. The previous PR was non-mergeable (dirty state) due to structural changes in cache_controller.py and hicache_storage.py. New PR: #36420. All changes and tests are preserved; hf3fs coverage requested by @GaelicThunder is included.

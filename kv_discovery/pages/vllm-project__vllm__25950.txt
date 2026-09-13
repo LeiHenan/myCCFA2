@@ -1,0 +1,142 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/25950  (is_pr=False, 354704 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 25950
+  title = [RFC]: Generalized KV cache reuse
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2025-09-30T12:24:42Z
+  updatedAt = 2026-05-16T02:20:20Z
+  closedAt = None
+  author = iddo10
+  labels = ['RFC', 'stale']
+
+[GRAPHQL COMMENT by ApostaC assoc=COLLABORATOR at 2025-10-09T20:30:37Z]
+Thanks for your proposal! Cacheblend has already been implemented in [LMCache/LMCache](https://github.com/LMCache/LMCache). 
+
+Involving Cacheblend's first author @YaoJiayi here if you would like further discussions!
+
+[GRAPHQL COMMENT by iddo10 assoc=NONE at 2025-10-13T20:20:35Z]
+Hi @ApostaC ! thanks for your comment
+As seen in this RFC, cacheblend is actually one of our usecases!
+ASAIK, cacheblend implemented what we called "compositional cache", but written an entire forward pass to handle that.
+What we suggest will be built-in in the vllm code, so to include the cacheblend usecase.
+Does this makes sense to you?
+Would love to hear your thoughts on that (@YaoJiayi too)
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-01-12T02:14:10Z]
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+[GRAPHQL COMMENT by iddo10 assoc=NONE at 2026-01-12T13:52:59Z]
+an important milestone has been reached
+we have found a way to implement a general hole-recompute without change to the glue logic or the kernels. this is a collaborated work with the IBM team
+The proposal - assume we have a prompt of length 30, with kv cache miss in token 10 and 20.
+1. The scheduler, knowing the location of the missing kvcache tokens, break the prompt to 3 prompts:
+    a. tokens 0-9
+    b. tokens 0-19
+    c. tokens 0-29
+2. send all 3 requests in the same batch (mark first 2 as dummy)
+3. upon return, ignore the dummy requests
+
+Note that this solution will *not* generate dummy computes. each missing token will generate the exact amount of compute it needs
+Drawbacks - the KV cache will be copied from HBM to SRAM multiple time (as several kernels use the same kvcache at the same time). However, note that without this solution, we will have to recompute tokens 10-29, where we only compute 10, 20 and the follwing token 30.
+
+a code will be presented soon
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-04-13T02:22:21Z]
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-05-16T02:20:20Z]
+This issue has been automatically closed due to inactivity. Please feel free to reopen if you feel it is still relevant. Thank you!
+
+[GRAPHQL CLOSED by github-actions at 2026-05-16T02:20:20Z reason=NOT_PLANNED]
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=iddo10 date=Sep 30, 2025]
+Motivation.
+
+🚀 The feature, motivation and pitch
+
+Summary
+
+This RFC proposes enabling the reuse of the KV cache for any subset of tokens, rather than restricting reuse to prefix-complete tokens.
+
+With the recently introduced KV cache connector abstraction (#15960) enabling retrieval from external storage, perforated KV caches naturally arise in real workloads. Supporting reuse in these cases avoids unnecessary recomputation and improves runtime efficiency.
+
+Looking ahead, generalized KV cache reuse unlocks richer capabilities: enabling reuse of KV entries for independent token segments across contexts — for example, in retrieval-augmented generation (RAG).
+
+This work should not be confused with sparse KV cache (#5751, #21772), where tokens are excluded from the attention computation. Here, all tokens may still participate in the computation; we simply enable reuse of even partially existing KV entries.
+
+Background
+
+In vLLM, efficient token generation relies heavily on KV cache reuse. The KV cache is generated and stored in the local GPU memory. When KV cache exists in GPU memory, it will always be prefix aligned. However, when external storage is used, with the intoduction of the KV connector, this is no longer a guarantee, and the KV cache can be perforated, meaning some entries may be missing, depending on the granularity and eviction policy of the external storage.
+
+Currently, vLLM handles cache reuse by enforcing strict prefix-complete cache context, which means that even if we have perforated KVcache, we will still use the longest sequential prefix, ignoring later token’s cache. This can be very inefficient, and wastful.
+
+Example:
+
+Current behavior (prefix-complete reuse):
+Example 1: Prefix-complete KV cache
+Prompt: [A][B][C][D][E]
+KV cache (local + external): [A][B][C] 
+=>
+Reuse: [A][B][C]
+Compute: [D][E]
+Example 2: Non-prefix-complete KV cache (e.g., only B, D available):
+Prompt: [A][B][C][D][E]
+KV cache (local + external): [B] [D]
+=>
+Reuse: ✗
+Compute: [A][B][C][D][E]
+Proposed behavior (generalized reuse):
+Prompt: [A][B][C][D][E]
+KV cache (local + external): [B] [D]
+=>
+Reuse: [B] [D]
+
+Motivation
+
+We claim that non-prefix-complete cache can occur not only in edge-cases, but is actually pretty common.
+
+First, lets address the simplest case - a temporal disconnection of a link to the external storage during KV cache loading. This may cause a non-prefix-complete KV cache load. In PR #19330 the solution proposed was to redo the affected requests, reusing only the valid prefixes. Here we suggest reusing ALL successfully loaded KV cache blocks instead of recomputing them.
+
+Arguably, these types of errors are rare, and hence may not justify an effort handling them effectively. However, the following described case shows there is value for our proposed feature -
+
+Consider using external diasggregated storage, where the KV cache is distributed evenly and randomly accross multiple storage nodes without High Availability, see figure below. Then, if one node crashes, we can still utilize the rest of the cache, which is stored in still-alive nodes, but no longer prefix-complete. It releases the storage solution from implementing complex mechanisms for handling high-availability issues.
+
+Broader Impact
+
+Beyond the scenarios mentioned above, supporting generalized KV cache reuse lays the foundation for richer capabilities - reuse of independent cache segments.
+
+We will refer to this phenomena as “compositional context”, where each segment’s KV cache is independent from other contexts, but can still be used in the context of a larger prompt that contains it.
+
+Note that for compositional context, a special token will have to be generated so that the token’s key can be reffered to by its internal context alone, whereas in the general case, a key depends on the entire context. This is a task the KV connector will have to take.
+
+For example, say we have 4 token-segments as a prefix to a given new prompt, where each has an independent computed KV cache (self attention):
+
+Ordinarily, this entire stream (chunks + prompt) will be fully recomputed (aside from chunk1), as follows (below we show attention computation between chunk4 and chunk2, and the same goes for all chunk pairs):
+
+However, if a chunk’s inner-attention holds most of the attention-weight, we can re-use it without quality degredation, hence, breaking the sequentiality demand by VLLM. This can be done per chunk, or ever per token (which is the premise of CacheBlend https://arxiv.org/abs/2405.16444).
+
+By treating tokens independently when a full sequential context cannot be guaranteed we can:
+
+- Reduce recomputation for non-contiguous attention patterns and replace with KV cache loading
+
+- Improve efficiency for retrieval-augmented generation (RAG) where inserted chunks break strict token order but large segments remain reusable.
+
+- Improve resilience to IO errors or packet loss scenarios in real-time inference, where missing tokens no longer force full recomputation.
+
+Insight
+
+Note that when we want to recompute a token within the prefix because its KV vectors are missing, it is actually not in the cache dimension, but in the query dimension.
+
+Meaning, after reconstructing the KV cache (using qkv_proj() - which is a part of the forward flow, or from the cache), we calculate the attention only for queries that couldnt locate their KV vectors from the cache, and require the recalculation of the layer-output. We name the queries that require recalculation as query-hole.
+
+Also, this feature can work either per token (meaning, recompute all layers if needed), or per layer-per token (meaning, we can stop the computation in case KV cache exists in all layers above some layer L).
+
+Proposal
+
+To support the feature, we need to modify the attention kernels, the KV connector and the scheduler. This change can be made opt-in via a runtime config flag (e.g., --enable-perforated-cache-handling), for controlled rollout. Note that FLASH_INFER’s backend doesnt

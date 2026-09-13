@@ -1,0 +1,303 @@
+[RFC]: Adaptive Speculation Depth for MoE Models via Per-Iteration Utility Budgeting · Issue #46295 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [RFC]: Adaptive Speculation Depth for MoE Models via Per-Iteration Utility Budgeting   #46295 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Open 
+ Open 
+ [RFC]: Adaptive Speculation Depth for MoE Models via Per-Iteration Utility Budgeting #46295 
+ Copy link 
+ Labels
+ RFC 
+ Description
+ Mattral 
+ opened on Jun 21, 2026 
+ Issue body actions 
+ Motivation.
+ Speculative decoding with a static num_speculative_tokens causes measurable
+throughput regressions on MoE models (DeepSeek-V3, Qwen3-MoE, Kimi-K2,
+Mixtral, etc.). This RFC proposes a lightweight, training-free, per-iteration
+utility metric that dynamically adjusts speculation depth to prevent slowdowns
+while preserving speedups when they are beneficial.
+ The core problem: draft trees over-activate MoE experts
+ In dense LLMs, speculative decoding is reliably beneficial — the verifier
+processes K draft tokens in a single forward pass at near-zero marginal cost.
+For MoE models, this assumption breaks down.
+ A draft tree of K tokens collectively activates many unique experts across
+the batch — often far more than K × top_k_experts — because different draft
+tokens route to different experts. This causes:
+ Expert weight bandwidth explosion — each unique expert must be fetched from HBM
+ EP all-to-all volume increase — more unique destination ranks per step
+ Verification time scaling with unique experts , not just token count
+ Recent empirical results quantify this regression:
+ Static K 
+ Unique experts vs K=0 
+ Verification overhead 
+ Net throughput 
+ 1 
+ ~1.3× 
+ 1.1× 
+ +10% 
+ 4 
+ ~3.2× 
+ 1.9× 
+ −15% (slowdown) 
+ 8 
+ ~6.1× 
+ 2.4× 
+ −35% (severe slowdown) 
+ The Cascade paper (arXiv:2506.20675) 
+implements an adaptive K controller in vLLM and shows that static K=4 causes
+ up to 1.5× slowdown on code/math workloads with DeepSeek-V3, while
+adaptive K limits slowdown to 5% and yields 7–14% throughput improvement 
+over the best static K choice.
+ This aligns directly with the Q2 2026 roadmap goal of
+ "composable speculation" 
+and the active tracking issue
+ #28947 .
+ Proposed Change.
+ Core idea: per-iteration speculation utility as a dynamic K controller
+ Define speculation utility U at each decoding step as:
+ U = accepted_tokens_this_step / expert_activation_overhead_this_step
+ where:
+ accepted_tokens_this_step — already tracked by the rejection sampler
+ expert_activation_overhead_this_step — ratio of unique expert indices
+activated with speculation vs without; derived cheaply from the existing
+ topk_ids tensor inside FusedMoE.forward() (zero additional compute)
+ Control loop (test-and-set, no bandit, no training): 
+ Test phase (short window, ~20 iterations): measure rolling U at current K
+ Set phase (long, ~100 iterations): lock in K that maximized U
+ If U < 1.0 for N consecutive steps → reduce K (or disable speculation)
+ If U > threshold for M consecutive steps → restore K toward the configured max
+ Codebase changes
+ 1. vllm/model_executor/layers/fused_moe/ — FusedMoE.forward() 
+Expose unique_expert_count as a side-channel output from the existing
+ topk_ids tensor:
+ unique_expert_count = topk_ids . unique (). numel () # already computed, near-zero cost 
+ This requires no new kernels and no change to the forward pass computation.
+ 2. vllm/v1/spec_decode/ — new MoESpecUtilityTracker class 
+ class MoESpecUtilityTracker :
+ def update ( self , accepted : int , unique_experts : int ) -> None : ...
+ def recommended_k ( self , max_k : int ) -> int : ...
+ def reset ( self ) -> None : ... 
+ Stateless across requests; operates on iteration-level aggregates.
+ 3. vllm/v1/spec_decode/ — scheduler integration 
+Wire recommended_k() into the step that sets num_speculative_tokens for
+the next iteration. The adapted K is bounded by the user-configured max.
+ 4. SpeculativeConfig — new optional fields 
+ moe_adaptive_spec : bool = False # opt-in; no-op on dense models 
+ moe_utility_threshold : float = 1.0 # U < threshold → reduce K 
+ moe_utility_window : int = 20 # rolling window size (iterations) 
+ 5. Telemetry ( vllm/v1/spec_decode/metrics.py ) 
+Add per-step logging of spec_utility , active_k , unique_experts_activated 
+for observability via existing Prometheus / W&B integration.
+ What does NOT change
+ Token acceptance logic (rejection sampler) — unchanged
+ Draft model (EAGLE / MTP / n-gram / DFlash) — unchanged
+ Verification pass — unchanged
+ Non-MoE models — the tracker is a no-op when no FusedMoE layer is present
+ Existing speculative_config API — fully backward-compatible; new fields are optional
+ Example API (no breaking change)
+ llm = LLM (
+ model = "deepseek-ai/DeepSeek-V3" ,
+ speculative_config = {
+ "method" : "mtp" ,
+ "num_speculative_tokens" : 4 , # upper bound; adapted downward at runtime 
+ "moe_adaptive_spec" : True ,
+ "moe_utility_threshold" : 1.0 ,
+ "moe_utility_window" : 20 ,
+ },
+) 
+ Open questions for discussion
+ Where to compute unique_expert_count ? Preferred: inside
+ FusedMoE.forward() from the existing topk_ids — zero overhead.
+Alternative: post-hoc from telemetry logs (higher latency, less useful).
+ Discrete vs continuous K adaptation? Cascade uses discrete
+K ∈ {0, 1, 2, 4}. Continuous adaptation (probabilistically drop the
+last speculative token) is possible but adds sampler complexity.
+ Interaction with EPLB? EPLB already rebalances experts across EP ranks.
+Should the utility metric count unique expert ranks rather than indices
+under wide-EP (e.g. 64-way EP for DeepSeek-V3)?
+ Scheduler vs model-runner level? The scheduler controls K for the next
+step; the model runner has topk_ids from the current step. A one-step
+feedback loop is simplest. Is this the right boundary?
+ Interaction with MTP > 1 spec token for DeepSeek V3.2 
+(see #31845 ) —
+should adaptive K take priority over or compose with the MTP-specific
+per-model limits?
+ Implementation plan (if RFC accepted)
+ Add unique_expert_count instrumentation to FusedMoE.forward() (non-breaking)
+ Implement MoESpecUtilityTracker with unit tests
+ Wire recommended_k() into the spec-decode scheduler
+ Add moe_adaptive_spec to SpeculativeConfig with documentation
+ Benchmark on DeepSeek-V3 + MTP and Qwen3-MoE + EAGLE; report
+utility distributions and throughput vs static K baselines
+ Gate behind flag, disabled by default, for safe rollout
+ Feedback Period.
+ 2 weeks
+ CC List.
+ @benchislett @mgoin @fynnsu @WoosukKwon @simon-mo 
+ Any Other Things.
+ Prior art
+ Work 
+ Relevance 
+ Cascade (arXiv:2506.20675) 
+ Adaptive K in vLLM; 7–14% throughput gains on MoE 
+ MoE-Spec (arXiv:2602.16052) 
+ Expert budgeting at verification time; training-free 
+ Tracking Issue #28947 
+ Spec-decode perf improvements (active) 
+ Q2 2026 Roadmap #39749 
+ "Composable speculation" roadmap item 
+ DDTree Feature Request #40809 
+ Related new drafting strategy 
+ RFC #45133 — Triton Kernel Dispatcher 
+ Related multi-platform kernel dispatch RFC 
+ The key distinction from the Cascade paper's external implementation is that
+this RFC proposes integrating the utility controller natively into vLLM's
+scheduler and model runner , rather than as a wrapper, making it composable
+with async scheduling, EPLB, and all existing draft methods (MTP, EAGLE,
+n-gram, DFlash) without modification.
+ Before submitting a new issue...
+ Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page , which can answer lots of frequently asked questions.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ RFC 
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

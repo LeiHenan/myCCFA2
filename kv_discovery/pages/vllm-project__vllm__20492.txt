@@ -1,0 +1,180 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/20492  (is_pr=False, 320788 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 20492
+  title = [RFC]: KV-Cache Interoperability API Standardization
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2025-07-04T16:23:37Z
+  updatedAt = 2026-03-08T02:19:22Z
+  closedAt = None
+  author = vMaroon
+  labels = ['RFC', 'stale']
+
+[GRAPHQL COMMENT by njhill assoc=MEMBER at 2025-07-07T11:09:54Z]
+Thanks @vMaroon this sounds good to me. We just need to keep an eye on any hashing performance overhead.
+
+[GRAPHQL COMMENT by YaoJiayi assoc=CONTRIBUTOR at 2025-07-15T04:42:49Z]
+@vMaroon Sorry for the delay. Looks good to me in general. 
+I only have one concern: are we assuming a uniform page size across different memories and storages?
+If not, how do we handle that?
+
+[GRAPHQL COMMENT by wangxiyu191 assoc=NONE at 2025-07-30T07:49:09Z]
+@vMaroon 
+Maybe using token ids instead of block hash is more friendly for Interoperability? Avoid the complexity of aligning hash algorithms across different systems and programming languages, while allowing each system the flexibility to choose a more suitable hash algorithm.
+
+[GRAPHQL COMMENT by vMaroon assoc=CONTRIBUTOR at 2025-07-30T11:55:12Z]
+@wangxiyu191 that is an option that is already supported in the KVEvents API - `token_ids` are transported along with `block_hashes`. The necessity behind block-hashes is not only compaction, but to be able to intuitively and easily implement the prefix relations. If you drop them, you'll still have to end up with something similar to maintain connection between different blocks.
+
+With reproducible hashing you lose the need for transporting token-ids.
+
+[GRAPHQL COMMENT by wangxiyu191 assoc=NONE at 2025-07-31T04:35:36Z]
+@vMaroon 
+Thank you for your response. Using parent_block_hash combined with reproducible hashing to describe relationships between blocks can indeed reduce network communication overhead and simplify indexing costs. This approach significantly reduces the overhead of representing prefixes.
+I have some concerns regarding the data reliability requirements of systems subscribing to KVCacheEvents (such as global kv-cache manager like llm-d-kv-cache-manager), which prompted this question. 
+This approach requires subscribers like the global KV manager to fully maintain information about all prefix blocks; otherwise, they may not be able to locate the prefix block via parent_block_hash. If all prefix token_ids are transmitted, remote systems could independently reconstruct all prefix blocks (with BlockStored implying that the current host have all prefix blocks), which might benefit recovery after failures of the global KV manager. 
+Alternatively, another way to achieve this is to require the BlockStored Event to carry all prefix block information in order, which can also ensure that parent_block_hash can find the corresponding block.
+This is just my preliminary thinking on the matter, and I'd be grateful for any advice or insights you might have.
+
+[GRAPHQL COMMENT by da-x assoc=NONE at 2025-07-31T22:21:16Z]
+I'd like to share my opinion over block hashes standardization.
+
+- Regarding 'Use bytes for hashes instead of Python-native int' - I agree, as you may know there is a serious problem when using 64 bit as a hash key _without handling collisions_, especially as the hashed data is user input (token prefixes). There is non-neglible chance for non-adversial collisions to happen after a few million queries, and adversial input can easily cause collisions immediately.
+    - On that, I am quite surprised that 64 bit hashing is default - I am hoping vLLM authors change the default, because I am starting to see projects downstream of vLLM align to 64 bit hashing as well, and I am worried that it emerges as a an undesired standard that will take effort to rectify later.
+
+- Regarding on whether to supply all tokens and to avoid having hashes at all in the protocol, it has merit especially in the cases where communication protocols wrap the high level application communication with some dictionary-based compression at the lower level. Repeated prefixes will be mostly reduced from bandwidth without the application knowing.
+
+- On a broader view, consider that the ratio between KV cache data and token data is quite large (1 to ~100,000 depending on model), and that the overhead of handling any LLM request even when prefill is fully loaded instead of recomputed greatly surpasses the time it takes to compute SHA256 over 128K token vector (512KB, less than 1 millisecond).
+
+- My point is that, where internally vLLM or other inference rightfully use hashes for maintaining maps internally and in memory, having this also a part of a standard protocol may be a premature optimization. Why not keep the protocol simple and extend if needed later, or at best keep the hashes only as advisory data?
+
+[GRAPHQL COMMENT by vMaroon assoc=CONTRIBUTOR at 2025-08-01T15:07:48Z]
+> [@vMaroon](https://github.com/vMaroon) Thank you for your response. Using parent_block_hash combined with reproducible hashing to describe relationships between blocks can indeed reduce network communication overhead and simplify indexing costs. This approach significantly reduces the overhead of representing prefixes. I have some concerns regarding the data reliability requirements of systems subscribing to KVCacheEvents (such as global kv-cache manager like llm-d-kv-cache-manager), which prompted this question. This approach requires subscribers like the global KV manager to fully maintain information about all prefix blocks; otherwise, they may not be able to locate the prefix block via parent_block_hash. If all prefix token_ids are transmitted, remote systems could independently reconstruct all prefix blocks (with BlockStored implying that the current host have all prefix blocks), which might benefit recovery after failures of the global KV manager. Alternatively, another way to achieve this is to require the BlockStored Event to carry all prefix block information in order, which can also ensure that parent_block_hash can find the corresponding block. This is just my preliminary thinking on the matter, and I'd be grateful for any advice or insights you might have.
+
+@wangxiyu191 while it's possible to transport full prefixes - whether as tokens or hashes - this can cause significant inefficiencies and redundancy. In practice, the receiving side is primarily interested in digesting these events to maintain an index optimized for low-latency lookups. Since the primary goal here is to enable KV-cache-aware routing for optimized E2E serving, this path must remain efficient. So whether events carry full token-id sequences, cumulative prefix hashes, or just deltas, the index will need to maintain an efficient mapping which (unsurprisingly) happens to also benefit from the prefix-cache structure vLLM adopts.
+
+On failures and HA, the problem can be offloaded to the router if the index is embedded, or to a broker if pub/sub was carried over NATS.io for example, as well as by using a highly-available indexing backend such as Redis.
+The value of persistent, highly-available indexing for ephemeral workloads like chat/one-shots is debatable, given the short lifespan of KV-blocks. See this [Alibaba paper on KVCache characterization](https://arxiv.org/pdf/2506.02634v1) on the latter. However, it may be warranted for RAG or static-data workloads, but for such workloads, relying on indexing for routing may be unnecessary altogether, as shared KV storages (that fit the scale) can provide direct access to blocks without intermediate indexing - again, no conclusions to draw here, but thoughts for prioritization.
+
+[GRAPHQL COMMENT by vMaroon assoc=CONTRIBUTOR at 2025-08-01T15:36:42Z]
+> I'd like to share my opinion over block hashes standardization.
+> 
+> * Regarding 'Use bytes for hashes instead of Python-native int' - I agree, as you may know there is a serious problem when using 64 bit as a hash key _without handling collisions_, especially as the hashed data is user input (token prefixes). There is non-neglible chance for non-adversial collisions to happen after a few million queries, and adversial input can easily cause collisions immediately.
+>   
+>   * On that, I am quite surprised that 64 bit hashing is default - I am hoping vLLM authors change the default, because I am starting to see projects downstream of vLLM align to 64 bit hashing as well, and I am worried that it emerges as a an undesired standard that will take effort to rectify later.
+> * Regarding on whether to supply all tokens and to avoid having hashes at all in the protocol, it has merit especially in the cases where communication protocols wrap the high level application communication with some dictionary-based compression at the lower level. Repeated prefixes will be mostly reduced from bandwidth without the application knowing.
+> * On a broader view, consider that the ratio between KV cache data and token data is quite large (1 to ~100,000 depending on model), and that the overhead of handling any LLM request even when prefill is fully loaded instead of recomputed greatly surpasses the time it takes to compute SHA256 over 128K token vector (512KB, less than 1 millisecond).
+> * My point is that, where internally vLLM or other inference rightfully use hashes for maintaining maps internally and in memory, having this also a part of a standard protocol may be a premature optimization. Why not keep the protocol simple and extend if needed later, or at best keep the hashes only as advisory data?
+
+@da-x thank you for sharing your thoughts. On the first, pls see this math:
+
+> Think of a 1M tokens cache (practically GPU+CPU) -> ~62K blocks (16 token blocks) -> ~1 in 10 billion collision probability using the birthday paradox approximation (62000^2 / 2*2^64).
+
+While the KVCache continuously grows, its size limitations and management at scale (see the point in the previous on ephemeral vs. persistent KV-blocks) do contribute to significantly limiting the probability of collisions. That said, you're absolutely right to flag that a bad-actor can better target collisions. In such cases, additional directions like cryptographic hashing, salting, or even injecting synthetic delays (e.g., based on SLOs) at service boundaries may help. Still, I agree: 64-bit might be too greedy for standardization. 128-bit or 256-bit hashes may be more sensible.
+
+On the last point, I think it is worth exploring. While transport protocols may compress at the networking level and reduce bandwidth costs, it’s unclear how that interacts with downstream processing and storage. Benchmarking KVEvents with full token payloads vs. hashes would clarify the actual trade-offs. 
+
+In all cases, since the KVEvents API is already in use in projects like llm-d and Dynamo, I think a natural step is enhancing its utilization as part of the larger KV-Cache APIs standardization effort.
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2025-10-31T02:13:05Z]
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+[GRAPHQL COMMENT by markmc assoc=MEMBER at 2025-11-07T08:57:02Z]
+
+> vLLM already ships with internal [KVEvents](https://github.com/vllm-project/vllm/issues/16669) contributed by the NVIDIA Dynamo team - that’s a strong foundation. But as external systems aim for cache-aware inference, we need to treat these internal mechanisms as public contracts to support broader adoption and interop.
+> 
+> ### Goals
+> 1. **KVEvents Internal API as a Public Contract**
+>    The KVEvents schema is already well-defined in vLLM and used internally by the `KVCacheManager` for GPU cache events. [ ...]
+>    This RFC proposes formalizing KVEvents as the public contract [..]
+
+This surprises me - surely this is already a public API. We support publishing these events over ZeroMQ, so we should not be making backwards incompatible changes to this interface
+
+Just doing a little research, and aware of llm-d using the interface, I see llm-d/llm-d-kv-cache-manager#138 and #23673, and you can see in https://github.com/vllm-project/vllm/pull/23673#discussion_r2326211144 the need for backwards compatibility was understood, even if a mistake was made
+
+I'd be happy to see efforts to enforce API stability here some more - e.g. a published schema and documentation for the interface, a test which checks for conformance with that contract, etc.
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=vMaroon date=Jul 4, 2025]
+Motivation
+
+This RFC proposes a KV-Cache Interoperability API, covering standardized notification events (via KVEvents) and reproducible prefix-block hashing. These standards aim to support cross-system cache awareness, observability, and future tooling for indexing, routing, and diagnostics.
+
+vLLM already ships with internal KVEvents contributed by the NVIDIA Dynamo team - that’s a strong foundation.
+
+But as external systems aim for cache-aware inference, we need to treat these internal mechanisms as public contracts to support broader adoption and interop.
+
+Goals
+
+- 
+KVEvents Internal API as a Public Contract
+
+The KVEvents schema is already well-defined in vLLM and used internally by the KVCacheManager for GPU cache events. It’s also being extended to CPU offloading via the KVConnector (see #19854).
+
+This RFC proposes formalizing KVEvents as the public contract for any component emitting or consuming KV-Cache lifecycle events - including external indexers, routers, and engines.
+
+- 
+Ensure Reproducible Block Hashing Across Languages
+
+Prefix cache block keys must be computed the same way across runtimes (e.g., Python, Go). This requires:
+
+- Canonical serialization (e.g., CBOR)
+
+- Consistent hashing algorithms (e.g., SHA256, xxHash)
+
+- Defined structure for input objects (e.g., token arrays, extra_keys)
+
+- Explicit rules for special cases like NONE_HASH root
+
+- Alignment on security features such as per-request hash-salting
+
+Disclaimer: in the current KVEvents schema, the token-ids are sent along their block-hashes, which makes external indexing possible through mapping tokens -> different-hashes -> vLLM-hashes. While this avoids introducing reproducible hashing and configuration syncs, it requires complex indexing and lookups, along with the networking overhead of passing the 32bit token-ids in every event.
+
+- 
+Enable Language-Agnostic Interop
+
+Develop shared guidance and reference libraries in Python, Go, and other widely used languages. These utilities do not need to reside within vLLM, but should remain consistent with its specifications.
+
+Proposed Change
+
+This RFC proposes standardizing two core aspects of KV-Cache awareness:
+
+1. KVEvents Schema
+
+- Reuse the existing KVEvents format used internally in vLLM as a versioned public interface for any KV-Cache publisher or consumer
+
+- Consider light refactoring:
+
+- Use bytes for hashes instead of Python-native int
+
+- Reduce required fields where appropriate
+
+2. Prefix Block Hashing
+
+- 
+Use CBOR (canonical mode) for serializing token arrays and metadata
+
+- Other canonical algorithms are welcome. Today serialization is coupled with Python.
+
+- 
+Support multiple standard hash functions (SHA256, xxHash)
+
+- 
+Gradually migrate to defaulting the non-language-coupled options
+
+PR on first two points:
+
+- [Prefix Cache] Add reproducible prefix-cache block hashing using SHA-256 + CBOR (64bit) #20511
+
+These changes will support consistent block identity and event interpretation across runtimes, enabling robust interop between cache indexers, and routing layers.
+
+CC List
+
+@robertgshaw2-redhat @njhill @YaoJiayi @dannyharnik @orozery
+
+Before submitting a new issue...
+
+- Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page, which can answer lots of frequently asked questions.

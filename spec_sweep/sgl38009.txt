@@ -1,0 +1,321 @@
+
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ sgl-project
+ / 
+ sglang 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 8.8k 
+ Star
+ 35.9k 
+ Code 
+ Issues 
+ 890 
+ Pull requests 
+ 4.4k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ [Bug] [DFlash2] Greedy output diverges from target-only Qwen3.8-27B when thinking is enabled #38009 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Open 
+ Open 
+ [Bug] [DFlash2] Greedy output diverges from target-only Qwen3.8-27B when thinking is enabled #38009 
+ Copy link 
+ Description
+ forlayo 
+ opened on Sep 4, 2026 
+ Issue body actions 
+ Checklist
+ I searched related issues but found no solution.
+ The bug persists in the latest version.
+ Issues without environment info and a minimal reproducible demo are hard to resolve and may receive no feedback.
+ If this is not a bug report but a general question, please start a discussion at https://github.com/sgl-project/sglang/discussions . Otherwise, it will be closed.
+ Please use English. Otherwise, it will be closed.
+ Describe the bug
+ Summary
+ Using SGLang's dedicated Qwen3.8/DFlash2 development image, greedy decoding
+with DFlash2 does not produce the same token sequence as the target-only model
+when Qwen3.8 thinking is enabled. The first divergence is deterministic at
+completion token 30 for the reproduction below.
+ The target-only baseline is deterministic across two identical requests, and
+the DFlash2 result is exactly equal to the target-only result with thinking
+disabled. This makes the issue appear specific to the DFlash/hybrid
+state/thinking path rather than prompt formatting, sampling, or general model
+loading.
+ Expected behavior
+ For greedy decoding ( temperature=0 ), DFlash2 speculative decoding should
+produce exactly the same generated token sequence as target-only decoding for
+the same model, prompt, chat-template settings, and seed.
+ Observed behavior
+ With thinking enabled, the sequences diverge at generated token index 30:
+ Profile 
+ Tokens around the first difference 
+ target-only 
+ with canvas, particles, cat-themed pieces (cat 
+ DFlash2 
+ with canvas, particles, Web Audio API sounds, 
+ The corresponding reasoning_content continues differently after that point.
+ The exact comparison summary is:
+ {
+ "baseline_repeat" : { "exact" : true , "first_difference" : null },
+ "thinking" : {
+ "exact" : false ,
+ "first_difference" : 30 ,
+ "baseline_token" : " cat " ,
+ "dflash_token" : " Web " 
+ },
+ "no_thinking" : { "exact" : true , "first_difference" : null }
+}
+ Environment
+ Host: native Linux, 4 × NVIDIA RTX 3090 (24 GiB each), tensor parallelism 4.
+ SGLang image: lmsysorg/sglang:dev-cu13-qwen38-27b-dflash2 
+ Image digest: sha256:616a3e97f45191af975896cfa644279096cb31bd408a071c2e99ca7209c3cafe 
+ SGLang commit from image label: 5f55db35e926d50676f75b812640ea2410b0fe0e 
+ SGLang version: 0.0.0.dev1+g5f55db35e 
+ Container CUDA: 13.0.3; NCCL reported by SGLang: 2.30.7.
+ Target: local copy of Qwen/Qwen3.8-27B , BF16.
+ Draft: local copy of incoai/Qwen3.8-27B-DFlash2 , BF16.
+ Tensor parallel: --tp-size=4 .
+ DFlash block size: 8.
+ KV dtype: SGLang default ( auto , BF16 in this BF16 run); no KV quantization.
+ The validation intentionally used a single request, 32k context and a reduced
+static memory fraction only to fit the target and draft on 24-GiB cards:
+ --context-length=32768
+--mem-fraction-static=0.75
+--max-running-requests=1
+--disable-radix-cache
+--disable-overlap-schedule
+--disable-cuda-graph
+ Those flags are identical in baseline and DFlash profiles. They remove cache,
+scheduling and graph-capture variables; they do not alter sampling or logits.
+ Server commands
+ Baseline profile:
+ python3 -m sglang.launch_server \
+ --model-path /root/.cache/huggingface/models/Qwen3.8-27B \
+ --served-model-name qwen3.8-27b \
+ --tp-size 4 --host 0.0.0.0 --port 30000 \
+ --context-length 32768 --mem-fraction-static 0.75 \
+ --max-running-requests 1 \
+ --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
+ --disable-radix-cache --disable-overlap-schedule --disable-cuda-graph
+ DFlash profile differs only by adding:
+ --speculative-algorithm DFLASH \
+--speculative-draft-model-path /root/.cache/huggingface/models/Qwen3.8-27B-DFlash2 \
+--speculative-dflash-block-size 8
+ Reproduction request
+ Send this request to each profile (target-only twice, then DFlash once):
+ {
+ "model" : " qwen3.8-27b " ,
+ "messages" : [{
+ "role" : " user " ,
+ "content" : " hazme un tetris de gatos en una pagina web, debe de ser muy impactante y visualmente atractivo con efecto gráficos y sonoros " 
+ }],
+ "temperature" : 0 ,
+ "top_p" : 1 ,
+ "top_k" : -1 ,
+ "seed" : 20260902 ,
+ "max_tokens" : 64 ,
+ "logprobs" : true ,
+ "top_logprobs" : 5 ,
+ "chat_template_kwargs" : {
+ "reasoning_effort" : " medium " ,
+ "preserve_thinking" : true 
+ }
+}
+ For the control, replace chat_template_kwargs with:
+ { "enable_thinking" : false }
+ Compare choices[0].logprobs.content[*].token , rather than rendered text.
+The first 30 tokens match in the thinking run; the next token differs exactly
+as shown above. With thinking disabled, all 64 returned tokens match.
+ Attached evidence
+ Attach the six files from
+ resultados/20260904T105622Z-qwen38-sglang-dflash2-ab/ :
+ baseline_thinking_a.json 
+ baseline_thinking_b.json 
+ baseline_no_thinking.json 
+ dflash_thinking.json 
+ dflash_no_thinking.json 
+ summary.json 
+ The requests are local/direct to SGLang; LiteLLM was not in the request path.
+ Question
+ Is this a known limitation or bug in the Qwen3.8 DFlash2 integration when the
+model's reasoning/thinking path is active? If a different DFlash setting,
+draft checkpoint revision, attention backend, or Mamba/GDN cache configuration
+is required for greedy equivalence, please point to the supported configuration.
+ dflash_thinking.json 
+ baseline_thinking_b.json 
+ baseline_thinking_a.json 
+ baseline_no_thinking.json 
+ summary.json 
+ dflash_no_thinking.json 
+ Reproduction
+ Send this request to each profile (target-only twice, then DFlash once):
+ {
+ "model" : " qwen3.8-27b " ,
+ "messages" : [{
+ "role" : " user " ,
+ "content" : " hazme un tetris de gatos en una pagina web, debe de ser muy impactante y visualmente atractivo con efecto gráficos y sonoros " 
+ }],
+ "temperature" : 0 ,
+ "top_p" : 1 ,
+ "top_k" : -1 ,
+ "seed" : 20260902 ,
+ "max_tokens" : 64 ,
+ "logprobs" : true ,
+ "top_logprobs" : 5 ,
+ "chat_template_kwargs" : {
+ "reasoning_effort" : " medium " ,
+ "preserve_thinking" : true 
+ }
+}
+ For the control, replace chat_template_kwargs with:
+ { "enable_thinking" : false }
+ Compare choices[0].logprobs.content[*].token , rather than rendered text.
+The first 30 tokens match in the thinking run; the next token differs exactly
+as shown above. With thinking disabled, all 64 returned tokens match.
+ Environment
+ Host: native Linux, 4 × NVIDIA RTX 3090 (24 GiB each), tensor parallelism 4.
+ SGLang image: lmsysorg/sglang:dev-cu13-qwen38-27b-dflash2 
+ Image digest: sha256:616a3e97f45191af975896cfa644279096cb31bd408a071c2e99ca7209c3cafe 
+ SGLang commit from image label: 5f55db35e926d50676f75b812640ea2410b0fe0e 
+ SGLang version: 0.0.0.dev1+g5f55db35e 
+ Container CUDA: 13.0.3; NCCL reported by SGLang: 2.30.7.
+ Target: local copy of Qwen/Qwen3.8-27B , BF16.
+ Draft: local copy of incoai/Qwen3.8-27B-DFlash2 , BF16.
+ Tensor parallel: --tp-size=4 .
+ DFlash block size: 8.
+ KV dtype: SGLang default ( auto , BF16 in this BF16 run); no KV quantization.
+ The validation intentionally used a single request, 32k context and a reduced
+static memory fraction only to fit the target and draft on 24-GiB cards:
+ --context-length=32768
+--mem-fraction-static=0.75
+--max-running-requests=1
+--disable-radix-cache
+--disable-overlap-schedule
+--disable-cuda-graph
+ Those flags are identical in baseline and DFlash profiles. They remove cache,
+scheduling and graph-capture variables; they do not alter sampling or logits.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

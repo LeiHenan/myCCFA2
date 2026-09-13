@@ -1,0 +1,577 @@
+[Speculative] [NPU] Adaptive-SD NPU support by EanWang211123 · Pull Request #25644 · sgl-project/sglang · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ sgl-project
+ / 
+ sglang 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 8.8k 
+ Star
+ 35.9k 
+ Code 
+ Issues 
+ 890 
+ Pull requests 
+ 4.4k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ [Speculative] [NPU] Adaptive-SD NPU support - # 25644 
+ # 25644 
+ Merged 
+ iforgetmyname merged 8 commits into sgl-project:main sgl-project/sglang:main from EanWang211123:fix/adaptive-sd-npu EanWang211123/sglang:fix/adaptive-sd-npu Copy head branch name to clipboard 
+ Jun 1, 2026 
+ Conversation Commits 8  ( 8 ) Checks Files changed 
+ Merged 
+ [Speculative] [NPU] Adaptive-SD NPU support # 25644 iforgetmyname merged 8 commits into sgl-project:main sgl-project/sglang:main from EanWang211123:fix/adaptive-sd-npu EanWang211123/sglang:fix/adaptive-sd-npu Copy head branch name to clipboard 
+ Conversation
+ EanWang211123 
+ commented
+ May 18, 2026 
+ • 
+ edited by github-actions
+ Bot 
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Motivation
+ Follow up on #21599 to support adaptive speculative decoding on the NPU backend.
+ The adaptive speculative decoding path currently builds the target graph runner with CudaGraphRunner . This works for CUDA but does not correctly enable NPU graph execution. This PR adapts the runtime state construction and graph runner initialization so adaptive speculative decoding can run with NPU graph support.
+ Related issue: #23705 
+ Modifications
+ Extend NPUGraphRunner to support adaptive speculative decoding parameters.
+ Pass attn_backend , speculative_num_steps , and speculative_num_draft_tokens to the underlying graph runner initialization.
+ Use NPUGraphRunner instead of CudaGraphRunner in adaptive runtime state construction when _is_npu is true.
+ Apply the change to both EAGLE worker implementations: eagle_worker.py and eagle_worker_v2.py .
+ Accuracy Tests
+ Environment
+ Item 
+ Value 
+ Hardware 
+ Ascend 910B * 8 
+ Model 
+ /mnt/models/ZhipuAI/GLM-4.5-Air/ 
+ TP Size 
+ 8 
+ dtype 
+ bfloat16 
+ Speculative Algorithm 
+ EAGLE 
+ Draft Tokens 
+ 4 
+ Speculative Steps 
+ 3 
+ Adaptive Speculative 
+ Enabled for dynamic-step test 
+ Launch Command
+ ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+python -m sglang.launch_server \
+ --model-path /mnt/models/ZhipuAI/GLM-4.5-Air/ \
+ --tp-size 8 \
+ --disable-radix-cache \
+ --host 0.0.0.0 \
+ --mem-fraction-static 0.7 \
+ --port 30000 \
+ --dtype bfloat16 \
+ --speculative-num-steps 3 \
+ --speculative-eagle-topk 1 \
+ --speculative-num-draft-tokens 4 \
+ --speculative-algorithm EAGLE \
+ --cuda-graph-max-bs 4 \
+ --speculative-adaptive 
+ Test Command
+ python -m sglang.test.few_shot_gsm8k \
+ --num-questions 20 \
+ --parallel 1 
+ Accuracy Results
+ Mode 
+ Accuracy 
+ Invalid 
+ Latency 
+ Output Throughput 
+ Static steps 
+ 0.900 
+ 0.000 
+ 32.388 s 
+ 68.143 token/s 
+ Adaptive steps 
+ 0.900 
+ 0.000 
+ 31.325 s 
+ 69.147 token/s 
+ Speed Tests and Profiling
+ Benchmark Command
+ python benchmark/bench_adaptive_speculative.py \
+ --host 127.0.0.1 \
+ --port 30000 \
+ --workload transition \
+ --requests 8 \
+ --concurrency 1 
+ Profiling Results
+ Mode 
+ Phase 
+ Throughput 
+ Avg Latency 
+ Accept Len 
+ Static steps = 3 
+ low_1 
+ 53.8/s 
+ 4.762s 
+ 2.24 
+ Static steps = 3 
+ high_1 
+ 84.8/s 
+ 3.019s 
+ 3.66 
+ Static steps = 3 
+ low_2 
+ 55.8/s 
+ 4.374s 
+ 2.30 
+ Static steps = 3 
+ high_2 
+ 90.8/s 
+ 2.818s 
+ 3.81 
+ Static steps = 3 
+ OVERALL 
+ 67.6/s 
+ 3.743s 
+ 3.00 
+ Adaptive steps 
+ low_1 
+ 53.5/s 
+ 4.661s 
+ 2.22 
+ Adaptive steps 
+ high_1 
+ 108.9/s 
+ 2.351s 
+ 5.29 
+ Adaptive steps 
+ low_2 
+ 53.7/s 
+ 4.551s 
+ 2.27 
+ Adaptive steps 
+ high_2 
+ 135.7/s 
+ 1.886s 
+ 7.14 
+ Adaptive steps 
+ OVERALL 
+ 74.8/s 
+ 3.362s 
+ 4.23 
+ Summary
+ Compared with static speculative steps, adaptive speculative decoding shows better overall performance on the transition workload:
+ Metric 
+ Static steps = 3 
+ Adaptive steps 
+ Change 
+ Overall Throughput 
+ 67.6/s 
+ 74.8/s 
+ +10.7% 
+ Overall Avg Latency 
+ 3.743s 
+ 3.362s 
+ -10.2% 
+ Overall Accept Len 
+ 3.00 
+ 4.23 
+ +41.0% 
+ Checklist
+ Format your code according to the Format code with pre-commit .
+ Add unit tests according to the Run and add unit tests .
+ Update documentation according to Write documentations .
+ Provide accuracy and speed benchmark results according to Test the accuracy and Benchmark the speed .
+ Follow the SGLang code style guidance .
+ Review and Merge Process
+ Ping Merge Oncalls to start the process. See the PR Merge Process .
+ Get approvals from CODEOWNERS and other reviewers.
+ Trigger CI tests with comments or contact authorized users to do so.
+ Common commands include /tag-and-rerun-ci , /tag-run-ci-label , /rerun-failed-ci 
+ After green CI and required approvals, ask Merge Oncalls or people with Write permission to merge the PR.
+ CI States
+ Latest PR Test (Base): ⏳ Run #26733331584 
+Latest PR Test (Extra): ❌ Run #26733331471 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ EanWang211123 
+ added 2 commits
+ May 18, 2026 19:57 
+ [fix] pass adaptive-sd-param to npu graph 
+ …
+ 76ca3e2 
+ Signed-off-by: EanWang211123 <wangyiheng@sangfor.com.cn> 
+ [feat] add npu graph for adaptive-speculative 
+ …
+ 82b1157 
+ Signed-off-by: EanWang211123 <wangyiheng@sangfor.com.cn> 
+ EanWang211123 
+ requested review from
+ Qiaolin-Yu , 
+ Ying1123 , 
+ hnyls2002 , 
+ iforgetmyname , 
+ merrymercy and 
+ ping1jing2 
+ as code owners 
+ May 18, 2026 12:00 
+ gemini-code-assist 
+ Bot 
+ commented
+ May 18, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Warning
+ You have reached your daily quota limit. Please wait up to 24 hours and I will start processing your requests again!
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ github-actions 
+ Bot 
+ added
+ the 
+ npu
+ label
+ May 18, 2026 
+ EanWang211123 
+ marked this pull request as draft
+ May 18, 2026 12:00 
+ Merge branch 'main' into fix/adaptive-sd-npu 
+ fad15a1 
+ EanWang211123 
+ marked this pull request as ready for review
+ May 19, 2026 06:36 
+ gemini-code-assist 
+ Bot 
+ commented
+ May 19, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Warning
+ You have reached your daily quota limit. Please wait up to 24 hours and I will start processing your requests again!
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ EanWang211123 
+ changed the title
+ [FEAT] [NPU] Adaptive-SD NPU support 
+ [Speculative] [NPU] Adaptive-SD NPU support 
+ May 19, 2026 
+ EanWang211123 
+ mentioned this pull request
+ May 19, 2026 
+ NPU Development Roadmap (2026 H2)
+ #25598 
+ Open
+ 10 tasks 
+ iforgetmyname 
+ approved these changes
+ May 24, 2026 
+ View reviewed changes 
+ iforgetmyname 
+ commented
+ May 24, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ /tag-run-ci-label
+ --> 
+ 👍 
+ 1 
+ github-actions[bot] reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ github-actions 
+ Bot 
+ added
+ the 
+ run-ci
+ label
+ May 24, 2026 
+ [fix] fix pre-commit 
+ …
+ 715f3a4 
+ Signed-off-by: EanWang211123 <wangyiheng@sangfor.com.cn> 
+ EanWang211123 
+ requested a review
+ from whybeyoung 
+ as a code owner 
+ May 25, 2026 01:08 
+ Merge branch 'main' into fix/adaptive-sd-npu 
+ b73deb5 
+ EanWang211123 
+ commented
+ May 25, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ /rerun-failed-ci 11
+ --> 
+ 👍 
+ 1 
+ github-actions[bot] reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ EanWang211123 
+ added 3 commits
+ May 26, 2026 14:45 
+ Merge branch 'main' into fix/adaptive-sd-npu 
+ 1f4892a 
+ Merge branch 'main' into fix/adaptive-sd-npu 
+ 89b4bd4 
+ Merge branch 'main' into fix/adaptive-sd-npu 
+ 07086e7 
+ EanWang211123 
+ requested a review
+ from iforgetmyname 
+ June 1, 2026 03:34 
+ iforgetmyname 
+ self-assigned this
+ Jun 1, 2026 
+ iforgetmyname 
+ approved these changes
+ Jun 1, 2026 
+ View reviewed changes 
+ Hide details 
+ View details 
+ iforgetmyname 
+ merged commit 1f8d3c7 
+ into
+ sgl-project : main 
+ Jun 1, 2026 
+ 126 of 145 checks passed
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ alphabetc1 
+ mentioned this pull request
+ Jun 2, 2026 
+ [Roadmap] Adaptive Speculative Decoding Roadmap
+ #23705 
+ Open
+ 19 tasks 
+ mqhc2020 
+ pushed a commit
+ to mqhc2020/sglang
+ that referenced
+ this pull request
+ Jun 2, 2026 
+ [Speculative] [NPU] Adaptive-SD NPU support ( sgl-project#25644 ) 
+ … 
+ 0cdd570 
+ Signed-off-by: EanWang211123 <wangyiheng@sangfor.com.cn> 
+ hanming-lu 
+ pushed a commit
+ that referenced
+ this pull request
+ Jun 3, 2026 
+ [Speculative] [NPU] Adaptive-SD NPU support ( #25644 ) 
+ … 
+ 9c8c82c 
+ Signed-off-by: EanWang211123 <wangyiheng@sangfor.com.cn> 
+ EanWang211123 
+ deleted the
+ fix/adaptive-sd-npu
+ branch
+ August 3, 2026 08:43 
+ Chronostasys 
+ pushed a commit
+ to MindLab-Research/sglang
+ that referenced
+ this pull request
+ Aug 24, 2026 
+ [Speculative] [NPU] Adaptive-SD NPU support ( sgl-project#25644 ) 
+ … 
+ 7a37042 
+ Signed-off-by: EanWang211123 <wangyiheng@sangfor.com.cn> 
+ jakki-amd 
+ pushed a commit
+ to jakki-amd/sglang
+ that referenced
+ this pull request
+ Sep 9, 2026 
+ [Speculative] [NPU] Adaptive-SD NPU support ( sgl-project#25644 ) 
+ … 
+ 209bb1d 
+ Signed-off-by: EanWang211123 <wangyiheng@sangfor.com.cn> 
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ iforgetmyname 
+ iforgetmyname approved these changes 
+ Ying1123 
+ Awaiting requested review from Ying1123 
+ Ying1123 is a code owner 
+ merrymercy 
+ Awaiting requested review from merrymercy 
+ merrymercy is a code owner 
+ hnyls2002 
+ Awaiting requested review from hnyls2002 
+ hnyls2002 is a code owner 
+ Qiaolin-Yu 
+ Awaiting requested review from Qiaolin-Yu 
+ Qiaolin-Yu is a code owner 
+ ping1jing2 
+ Awaiting requested review from ping1jing2 
+ ping1jing2 is a code owner 
+ whybeyoung 
+ Awaiting requested review from whybeyoung 
+ whybeyoung is a code owner 
+ --> 
+ Assignees
+ iforgetmyname 
+ Labels
+ npu 
+ run-ci 
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 2 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

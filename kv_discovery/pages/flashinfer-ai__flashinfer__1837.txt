@@ -1,0 +1,56 @@
+FETCHED: https://github.com/flashinfer-ai/flashinfer/issues/1837  (is_pr=False, 258234 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 1837
+  title = MLA Kernel Crash (`trtllm_batch_decode_with_kv_cache_mla`)
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2025-10-01T20:20:53Z
+  updatedAt = 2026-08-03T07:25:50Z
+  closedAt = None
+  author = LucasWilkinson
+  labels = ['bug', 'op: attention', 'trtllm']
+
+[GRAPHQL COMMENT by pavanimajety assoc=CONTRIBUTOR at 2025-10-01T20:25:51Z]
+Additional context: 
+Core dump:
+https://vllm-dev.slack.com/archives/C090QEK1G7N/p1759286443816199?thread_ts=1759285273.359049&cid=C090QEK1G7N
+
+Happens with Flashinfer=0.3.1
+
+[GRAPHQL COMMENT by Liu-congo assoc=NONE at 2025-10-06T17:40:43Z]
+emm, well i guess it caused by the sync between blocks(a similar error shown in [here](https://forums.developer.nvidia.com/t/problem-of-distributed-shared-memory/331150)
+maybe you should modify line 168 in 
+https://github.com/flashinfer-ai/flashinfer/blob/main/include/flashinfer/attention/blackwell/kernel/sm100_fmha_mla_reduction.hpp
+replace "__syncthreads();" as "auto grid = cg::this_grid();
+  grid.sync();"
+
+[GRAPHQL COMMENT by minosfuture assoc=NONE at 2025-10-09T22:15:24Z]
+is it because the workspace is not zero'ed between kernel runs?
+
+[GRAPHQL CLOSED by linear at 2026-08-03T07:25:50Z reason=NOT_PLANNED]
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=LucasWilkinson date=Oct 1, 2025]
+fmhaSm100fKernel_QkvBfloat16OBfloat16HQk576HV512HVPerCta256PagedKvDenseP64VarSeqQ64Kv128Persistent2CtaKeepsAbForGen
+
+Is crashing with:
+
+CUDA Exception: Cluster target block not present
+
+Unfortunately this is very hard to repro since its very sporadic, core dump was shared over slack (too large for GitHub)
+
+We do not have a small scale repo yet unfortunately.
+
+It appears that it might be due a block in cluster early returning since this are the only active blocks
+
+(cuda-gdb) info cuda blocks
+ BlockIdx To BlockIdx Count State 
+Kernel 0
+ (0,0,45) (0,0,45) 1 running 
+ (0,0,52) (0,0,52) 1 running 
+ (0,0,59) (0,0,59) 1 running 
+ (0,0,66) (0,0,66) 1 running

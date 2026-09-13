@@ -1,0 +1,221 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/42185  (is_pr=False, 335800 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 42185
+  title = [RFC]: Cache-affinity-aware request ordering for the V1 scheduler
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2026-05-09T21:43:28Z
+  updatedAt = 2026-08-18T00:44:01Z
+  closedAt = None
+  author = kliukovkin
+  labels = ['stale']
+
+[GRAPHQL COMMENT by kliukovkin assoc=CONTRIBUTOR at 2026-05-16T19:49:45Z]
+# Closing Post-Mortem: CacheAffinityScheduler (Brief 04c)
+
+**RFC:** #42185
+**Decision:** Dropping PR — RAG improvement below threshold, no measurable benefit on correct async baseline.
+
+---
+
+## Summary of Results
+
+All benchmarks: Qwen2.5-7B-Instruct, L40S, vLLM V1 async pipeline.
+
+### v10 (final — async base, window_k=32)
+
+| Workload | Seed | CA throughput | Stock throughput | Delta |
+|---|---|---|---|---|
+| RAG | 42 | 1.4311 req/s | 1.4305 req/s | **+0.04%** |
+| RAG | 137 | 1.4265 req/s | 1.4213 req/s | **+0.36%** |
+| ShareGPT | 42 | mean_lat 2.335s | 2.337s | **−0.09%** |
+| ShareGPT | 137 | mean_lat 2.503s | 2.484s | **+0.75%** |
+
+RAG mean delta: **+0.2%** (noise). Decision threshold: ≥+5%.
+
+---
+
+## Experiment History
+
+| Version | Base class | window_k | RAG delta | ShareGPT delta | Notes |
+|---|---|---|---|---|---|
+| v2 | Scheduler (sync) | — | +7.4% | +78% regression | Initial prototype |
+| v8 | AsyncScheduler | 8 | +0.95% | 0% | Post sync→async fix |
+| v9 | AsyncScheduler | 0 (all) | +1.0% | 0% | Full-queue scoring |
+| **v10** | **AsyncScheduler** | **32** | **+0.2%** | **0%** | **Option B (bounded scoring)** |
+
+---
+
+## Root Cause Analysis
+
+### Why the original +7.4% RAG result was wrong
+
+`CacheAffinityScheduler` initially extended synchronous `Scheduler` instead of `AsyncScheduler`. The stock scheduler in vLLM V1 (`get_scheduler_cls()`) returns `AsyncScheduler` when no `--scheduler-cls` is specified. The async scheduler overlaps scheduling with GPU execution via a batch queue (depth 2), yielding ~10–15% higher throughput than the sync path.
+
+The v2 benchmark compared a sync CA scheduler against a sync stock scheduler (both degraded equally), so the +7.4% RAG number appeared real but was actually measuring something else — likely GPU utilization differences under the sync scheduling path at high queue depth.
+
+After fixing the base class to `AsyncScheduler`, the CA and stock schedulers run on identical async pipelines. The true reordering benefit is +0.2%.
+
+### Why reordering doesn't help RAG
+
+The RAG workload uses a 4096-token shared system prompt (same for all 500 queries). After the very first request, this prefix is cached by vLLM's prefix cache — **regardless of scheduling order**. Any subsequent request in FCFS order gets a 91%+ prefix cache hit rate with zero scheduler intervention.
+
+Cache-affinity reordering only provides uplift when:
+1. Multiple *distinct* long prefixes compete for a finite cache, AND
+2. Scheduling order determines which prefixes stay warm vs. get evicted
+
+Neither condition holds for a single-shared-prefix RAG workload. FCFS already achieves near-optimal cache utilization.
+
+### Why Option B (bounded scoring) didn't recover gain
+
+The hypothesis was that O(N) `get_computed_blocks` calls per iteration (N ≈ 300–400 at peak queue depth) caused ~10ms scoring overhead per scheduling step, stalling the async pipeline. Bounding to K=32 was expected to eliminate this overhead and recover the RAG improvement.
+
+The results show no recovery. Two likely explanations:
+1. `get_computed_blocks` is fast (hash lookup, no GPU) — the overhead was not the bottleneck.
+2. Even if the overhead existed, the reordering signal was so weak (single shared prefix cached after request #1) that removing the overhead only unmasks a ~0% true benefit.
+
+### ShareGPT result
+
+ShareGPT is correctly neutral (±0.75%, within noise band). The +78% regression from v2 was fully explained by the sync-vs-async base class mismatch and is gone. The reordering does not harm multi-turn workloads.
+
+---
+
+## What Was Built
+
+The implementation is complete and correct:
+
+- `CacheAffinityRequestQueue` extends `FCFSRequestQueue` (C-level deque, O(1) add/pop)
+- `CacheAffinityScheduler` extends `AsyncScheduler` (correct async pipeline)
+- Anti-starvation: requests waiting > `max_wait_s` promoted to head
+- Priority-aware: cache affinity is a tiebreaker within priority class, never across
+- Bounded scoring: `window_k=32` limits O(N) scoring to O(K)
+- Bucketed scores: reduces sort thrash across iterations
+- All 16 unit tests pass
+
+The design is sound. The problem is the workloads it was designed for (RAG shared-prefix, ShareGPT multi-turn) don't exhibit the cache contention pattern that would make reordering beneficial.
+
+---
+
+## When This Would Help
+
+Cache-affinity scheduling would show measurable gains under:
+- **Multi-tenant RAG** with N distinct system prompts where N > KV cache capacity / prompt_blocks — forcing eviction competition between tenant prefixes
+- **Code assistants** with long per-repo contexts that don't all fit in cache simultaneously
+- **Document QA** with many distinct large documents, bursty per-document traffic
+
+None of these were in scope for the current benchmark suite.
+
+---
+
+## Recommendation
+
+Do not merge as a general-purpose scheduler improvement. If the above high-contention workloads are prioritized in a future RFC, the implementation can be revived with benchmarks targeting those scenarios.
+
+Close RFC #42185.
+
+Thanks to @sidikbro and @joerunde for the early feedback on the RFC.
+
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-08-15T01:58:34Z]
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+[GRAPHQL COMMENT by kliukovkin assoc=CONTRIBUTOR at 2026-08-18T00:43:57Z]
+Closing this from my side: since filing, the ecosystem has moved in exactly this direction — prefix-cache-aware routing landed as a first-class concern in llm-d and AIBrix, which validates the premise better than further discussion here would. Thanks to everyone who engaged.
+
+[GRAPHQL CLOSED by kliukovkin at 2026-08-18T00:44:01Z reason=NOT_PLANNED]
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=kliukovkin date=May 9, 2026]
+[RFC]: Cache-affinity-aware request ordering for the V1 scheduler
+
+Summary
+
+A CacheAffinityScheduler plugin loadable via --scheduler-cls that reorders the V1 waiting queue by cached-prefix length before each scheduling iteration. In-engine equivalent of sglang's RadixAttention scheduling, on top of vLLM's existing block-hash prefix cache. No token-level radix tree, no KV cache manager surgery, no request-schema changes.
+
+Motivation
+
+vLLM has block-level prefix caching (docs), but the V1 scheduler admits waiting requests in priority + FCFS order. A waiting request with thousands of cached prefix tokens is treated identically to a request with no cached prefix — the prefill savings are left on the table when the cache-warm request waits behind a cache-cold one.
+
+Issue #7883 (open since Aug 2024) identified the budget-calculation half of this problem; the in-flight [1/n] series fixes can_allocate to consider cached blocks. Waiting-queue ordering is the other half and is not addressed by that series — confirmed by reading the merged commits.
+
+External evidence the gap is felt:
+
+- sglang's RadixAttention scheduling reports 10–30% throughput uplift on multi-turn / RAG / agentic workloads by reordering requests so those with longer cached prefixes execute first.
+
+- Multiple comparison articles (Runpod sglang vs vLLM KV cache, Particula sglang vs vLLM) cite this as the reason teams pick sglang over vLLM for those workloads.
+
+- vLLM forums thread "Is FCFS Scheduling Holding Back vLLM's Performance in Production?" repeatedly returns to this.
+
+Proposed approach
+
+Add CacheAffinityScheduler as a plugin loadable via --scheduler-cls vllm.v1.core.sched.cache_affinity_scheduler.CacheAffinityScheduler. The class subclasses the in-tree Scheduler (not the SchedulerInterface ABC, which the engine flags as not-public) and replaces self.waiting with a custom CacheAffinityRequestQueue that owns a composite sort.
+
+At each schedule() call, the policy:
+
+- Iterates the sortable portion of the waiting queue (preempted requests are kept in a sticky-front sub-deque and not re-sorted).
+
+- For each request, calls kv_cache_manager.get_computed_blocks(req) to get num_cached_tokens. The score is num_cached_tokens // block_size. Requests below cache_affinity_min_blocks (default 2) score 0.
+
+- Requests waiting longer than cache_affinity_max_wait_s (default 0.2) get a starvation-override slot at the absolute front.
+
+- Sorts by composite key:
+
+- PRIORITY mode: (priority, -bucketed_score, arrival_time, request_id)
+
+- FCFS mode: (-bucketed_score, arrival_time, request_id)
+
+- Calls super().schedule() against the now-reordered queue. Everything downstream (chunked prefill, allocation, preemption ladder, KV connector) stays unchanged.
+
+Score bucketing (default edges (4, 16, 64, 256)) prevents per-iteration thrash on small score deltas. Sticky-front semantics preserve the V1 invariant that preempted requests are scheduled first in their preemption order.
+
+Design details
+
+Sort-key composition with priority
+
+Cache affinity is a tiebreaker within a priority class, never across. A high-priority cache-cold request always beats a low-priority cache-warm request. Tested in unit test test_priority_overrides_cache.
+
+Sticky-front for preempted requests
+
+CacheAffinityRequestQueue maintains two internal deques: _sticky (for prepend_request calls — preempted requests) and _sortable (for add_request — new arrivals). pop_request drains _sticky first. The reorder pass only sorts _sortable. Preserves the existing invariant that preempted requests retain their preemption order. Composes correctly with the new capacity-triggered preemption path in PR #40087 (verified — the new path uses the same prepend_request mechanism).
+
+Anti-starvation
+
+cache_affinity_max_wait_s deadline. Catches the pathological case where a request with no cached prefix is forever deprioritized under bursty cached traffic.
+
+Min-blocks threshold
+
+cache_affinity_min_blocks (default 2). Requests with fewer cached blocks score 0. Avoids reordering thrash from one-block hits.
+
+What we explicitly do NOT do in v1
+
+- No token-level radix tree. vLLM is committed to block-level prefix hashing; reproducing sglang's radix tree would require KV-manager surgery and clash with the existing design. Operating at block boundaries captures the bulk of the realistic benefit (system prompts, RAG contexts are typically block-aligned).
+
+- No request-schema changes. No new fields on Request. Config lives entirely on SchedulerConfig.
+
+- No thrash-eviction guard. Ship the metric vllm:cache_affinity_thrash_evictions_total to detect thrashing; add a guard in a follow-up PR if benchmarks show it firing. Ship simple, collect evidence, iterate.
+
+Compatibility
+
+- Mutually exclusive at engine-load time with EWSJF (PR #33392) — different --scheduler-cls values, users pick one. Both are reference policies on the pluggable substrate. Future composite is possible (EWSJF's partition tag as outer key, cache-affinity as inner) but out of scope for v1.
+
+- Independent of and composable with the [1/n] series under issue [Performance]: Prefix-caching aware scheduling #7883. That series fixes can_allocate budget calculation; this RFC reorders the queue. Different layers.
+
+- Compatible with priority scheduling (PR #5958, PR #19057) — composes via the sort-key tiebreaker.
+
+- Compatible with chunked prefill (chunk-size selection unchanged at scheduler.py:677-692).
+
+- Compatible with PR #40087 (sts07142, capacity-triggered preemption) — verified via 3-way speculative merge: clean, no overlapping changes.
+
+- No effect when --scheduler-cls points elsewhere (the policy is opt-in plugin-loaded).
+
+Implementation plan
+
+Reference implementation is drafted on a feature branch: 3 commits, ~250 LOC core + 26 LOC config + ~600 LOC tests, all 13 new unit tests + 117 baseline V1 scheduler tests passing.
+
+vllm/v1/core/sched/cache_affinity_scheduler.py # NEW, ~309 lines
+vllm/config/scheduler.py # +26 lines (4 new optional fields)
+tests/v1/co

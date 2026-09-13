@@ -1,0 +1,319 @@
+
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ sgl-project
+ / 
+ sglang 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 8.8k 
+ Star
+ 35.9k 
+ Code 
+ Issues 
+ 890 
+ Pull requests 
+ 4.4k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ [Bug] DeepSeek-V4.1-Flash + Engram: profiled SPS table (compact ragged verify) dies in CUDA-graph capture with "engram target-verify expects one equal block per request" #39173 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Open 
+ Open 
+ [Bug] DeepSeek-V4.1-Flash + Engram: profiled SPS table (compact ragged verify) dies in CUDA-graph capture with "engram target-verify expects one equal block per request" #39173 
+ Copy link 
+ Description
+ hushengkai 
+ opened on Sep 12, 2026 
+ Issue body actions 
+ Checklist
+ I searched related issues but found no solution.
+ The bug persists in the latest version.
+ Issues without environment info and a minimal reproducible demo are hard to resolve and may receive no feedback.
+ If this is not a bug report but a general question, please start a discussion at https://github.com/sgl-project/sglang/discussions . Otherwise, it will be closed.
+ Please use English. Otherwise, it will be closed.
+ Describe the bug
+ On DeepSeek-V4.1-Flash (an Engram model), enabling DSpark compact ragged verify via a profiled SPS cost table makes the engine die deterministically during CUDA-graph capture, on every rank :
+ AssertionError: engram target-verify expects one equal block per request, got 42 tokens for 8 requests of 6
+ Removing the table (so the planner stays on the verify-all / static schedule) boots and serves fine, so weights, TP4/EP4, FP8 KV cache and the RDMA transport are all healthy.
+ Suspected root cause. The capture batch seems to get the wrong slot count. DecodeCudaGraphRunner._ragged_capture_slots() returns min(num_tokens, self.max_bs) ( model_executor/runner/decode_cuda_graph_runner.py:667-670 ), while the per-tier token bucket is bs * captured_req_width ( _build_ragged_verify_token_buckets , same file, line 569). For the tier num_tokens = 42 (bs=7, width=6) with max_bs = 8 this selects 8 slots , so build_capture_verify_lens(num_tokens=42, num_slots=8, num_draft_tokens=6) returns [6,6,5,5,5,5,5,5] — 8 rows of unequal length summing to 42. EngramHasher.forward() 's target-verify branch ( srt/layers/engram.py:291-298 ) requires one equal block per request ( num_tokens == bs * block → 42 != 8*6 ), so the capture batch is rejected. Only the largest tier (bs == max_bs → 48 tokens / 8 slots) survives; every smaller tier aborts. Dense-layout consumers elsewhere handle ragged layouts through RaggedVerifyLayout.padded_to_bucket(padded_bs, cap) , but the Engram hasher reads the raw input_ids.shape[0] / req_pool_indices.shape[0] pair before any padding.
+ The test escape hatch SGLANG_TEST_RAGGED_VERIFY_FORCE_UNIFORM_CAPTURE=1 avoids the capture assertion but then dies on the first request (second traceback below), so compact ragged verify currently appears unusable for this model.
+ Reproduction
+ Model: DeepSeek-V4.1-Flash (native weights: MXFP4 experts / FP8 dense), Engram layer with per-rank shards on local NVMe.
+ Hardware: 4x NVIDIA DGX Spark (GB10, SM 12.1, 128 GB unified memory), TP4 + EP4, 200G RoCE.
+ Image: lmsysorg/sglang:dev-dsv41 , org.opencontainers.image.revision = e087e662ba1ac4ef7747537e2a9141085efd4561 .
+ Step 1 — profile the SPS cost table against a running (table-less) server:
+ python3 -m sglang.benchmark.dspark_sps_profiler all --base-url http://127.0.0.1:8000
+ produced /state/dspark_sps.json (158 B):
+ {"sample_batch_tokens":[6,12,24,48],"sample_steps_per_sec":[16.247257259883817,12.474520791283801,8.601395834516026,5.8263395410067975],"max_batch_tokens":48}
+ manifest: tp_size=4, dp_size=1, verify_num_draft_tokens=6, simulate_acc_len=1.0, batch_size_per_rank_sweep=[1,2,4,8] .
+ Step 2 — start the server with the table present ( SGLANG_RAGGED_VERIFY_MODE=compact ):
+ python3 -m sglang.launch_server \
+ --model-path /models/DeepSeek-V4.1-Flash --served-model-name deepseek-v4.1-flash \
+ --tp-size 4 --ep-size 4 --attention-backend dsv4 --kv-cache-dtype fp8_e4m3 \
+ --context-length 1048576 --mem-fraction-static 0.90 --max-total-tokens 4000000 \
+ --chunked-prefill-size 4096 --max-running-requests 8 --cuda-graph-max-bs-decode 8 \
+ --speculative-algorithm DSPARK --speculative-dspark-block-size 5 \
+ --speculative-dspark-sps-table-path /state/dspark_sps.json \
+ --speculative-dspark-align-verify-tokens-to-graph-tier
+ Observed — the engine dies in init_all_cuda_graphs() (decode graph capture): 
+ Traceback (capture) 
+ [TP0 EP0] Scheduler hit an exception: Traceback (most recent call last):
+ File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 5680, in run_scheduler_process
+ scheduler = Scheduler(
+ File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 562, in __init__
+ self.init_model_worker()
+ File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 1094, in init_model_worker
+ self.init_all_cuda_graphs()
+ File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 1077, in init_all_cuda_graphs
+ self.tp_worker.init_cuda_graphs()
+ File "/sgl-workspace/sglang/python/sglang/srt/managers/tp_worker.py", line 443, in init_cuda_graphs
+ self.model_runner.init_cuda_graphs(
+ File "/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner.py", line 1083, in init_cuda_graphs
+ capture = capture_cuda_graphs(
+ File "/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py", line 246, in capture_cuda_graphs
+ decode = capture_decode_graph(model_runner=model_runner)
+ File "/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py", line 565, in capture_decode_graph
+ runner = graph_runners[model_runner.device](model_runner)
+ File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 519, in __init__
+ self.capture()
+ File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 1122, in capture
+ self._capture_one_stream()
+ File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 1194, in _capture_one_stream
+ self.capture_one_shape(
+ File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 1312, in capture_one_shape
+ self.backend.capture_one(
+ File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner_backend/full_cuda_graph_backend.py", line 113, in capture_one
+ forward_fn()
+ File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 1273, in run_once
+ out = forward(
+ File "/sgl-workspace/sglang/python/sglang/srt/models/deepseek_v4.py", line 4359, in forward
+ hidden_states = self.model.forward(
+ File "/sgl-workspace/sglang/python/sglang/srt/models/deepseek_v4.py", line 4012, in forward
+ hidden_states, last_pre, tail = self._forward_layers_hc_pre_from_prev(
+ File "/sgl-workspace/sglang/python/sglang/srt/models/deepseek_v4.py", line 3617, in _forward_layers_hc_pre_from_prev
+ hash_ids = self.engram_hasher(input_ids, forward_batch)
+ File "/sgl-workspace/sglang/python/sglang/srt/layers/engram.py", line 296, in forward
+ assert num_tokens == bs * block, (
+AssertionError: engram target-verify expects one equal block per request, got 42 tokens for 8 requests of 6
+ Step 3 — with SGLANG_TEST_RAGGED_VERIFY_FORCE_UNIFORM_CAPTURE=1 capture succeeds and the server boots, but the first decode request crashes:
+ Traceback (first request) 
+ [TP0 EP0] Scheduler hit an exception: Traceback (most recent call last):
+ File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 5696, in run_scheduler_process
+ scheduler.run_event_loop()
+ File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 1839, in run_event_loop
+ dispatch_event_loop(self)
+ File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 5542, in dispatch_event_loop
+ scheduler.event_loop_overlap()
+ File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 1937, in event_loop_overlap
+ batch_result = self.run_batch(batch)
+ File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 4181, in run_batch
+ batch_result = self.model_worker.forward_batch_generation(
+ File "/sgl-workspace/sglang/python/sglang/srt/speculative/dspark_components/dspark_worker_v2.py", line 528, in forward_batch_generation
+ return self._forward_decode(batch, on_publish, grammar_barrier)
+ File "/sgl-workspace/sglang/python/sglang/srt/speculative/dspark_components/dspark_worker_v2.py", line 788, in _forward_decode
+ target_verify, hidden_strided = self._verify_executor.run_compact(
+ File "/sgl-workspace/sglang/python/sglang/srt/speculative/dspark_components/dspark_verify.py", line 422, in run_compact
+ target_verify = self._run_ragged(
+ File "/sgl-workspace/sglang/python/sglang/srt/speculative/dspark_components/dspark_verify.py", line 391, in _run_ragged
+ return self._forward_prepared_verify(
+ File "/sgl-workspace/sglang/python/sglang/srt/speculative/dspark_components/dspark_verify.py", line 299, in _forward_prepared_verify
+ verify_forward_batch, _ = verify_input.prepare_for_verify(
+ File "/sgl-workspace/sglang/python/sglang/srt/speculative/dflash_info.py", line 117, in prepare_for_verify
+ target_worker.model_runner.decode_cuda_graph_runner.load_batch(
+ File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 1476, in load_batch
+ attn_backend.init_forward_metadata_out_graph(fb_view)
+ File "/sgl-workspace/sglang/python/sglang/srt/layers/attention/deepseek_v4_backend.py", line 2325, in init_forward_metadata_out_graph
+ self.replay_cuda_graph_metadata_from(
+ File "/sgl-workspace/sglang/python/sglang/srt/layers/attention/deepseek_v4_backend.py", line 2680, in replay_cuda_graph_metadata_from
+ chosen_metadata.copy_(temp_metadata)
+ File "/sgl-workspace/sglang/python/sglang/srt/layers/attention/deepseek_v4_backend.py", line 1023, in copy_
+ self.req_pool_indices.copy_(other.req_pool_indices)
+RuntimeError: unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.
+ Related issues (different root cause — this one is a deterministic assert, not a race): 
+ [Bug] DSpark compact target-verify CUDA Graph transition can hit timing-sensitive illegal memory access on TP8 #31023 DSpark compact target-verify CUDA-graph transition, timing-sensitive illegal memory access on TP8
+ [Bug] CUDA illegal memory access during compact ragged-verify graph capture (c128 plan kernel race) #32470 CUDA illegal memory access during compact ragged-verify graph capture (c128 plan kernel race) / fix PR [BugFix] Fix race in c128 prefill plan kernel on ragged extend #32467 
+ Workaround we run in production: keep the SPS table absent so the planner stays on verify-all (uniform blocks). Cost on our cluster: we recovered most of the aggregate loss by raising --max-running-requests 8 → 16 (C12 aggregate 114 → 177 tok/s); single-stream is unchanged within noise (95.0 tok/s counting).
+ Environment
+ Python: 3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]
+CUDA available: True
+GPU 0: NVIDIA GB10
+GPU 0 Compute Capability: 12.1
+CUDA_HOME: /usr/local/cuda
+NVCC: Cuda compilation tools, release 13.0, V13.0.88
+CUDA Driver Version: 580.173.02
+PyTorch: 2.13.0+cu130
+sglang: 0.0.0.dev1+ge087e662b
+sglang-kernel: 0.4.6.post1
+flashinfer_python: 0.6.18
+flashinfer_cubin: 0.6.18
+flashinfer_jit_cache: 0.6.18+cu130
+triton: 3.7.1
+transformers: 5.12.1
+torchao: Module Not Found
+numpy: 2.3.5
+aiohttp: 3.14.3
+fastapi: 0.141.1
+huggingface_hub: 1.31.0
+interegular: 0.3.3
+modelscope: 1.40.0
+orjson: 3.12.0
+outlines: 0.1.11
+packaging: 26.3
+psutil: 7.2.2
+pydantic: 2.13.5
+python-multipart: 0.0.32
+pyzmq: 27.2.0
+uvicorn: 0.52.4
+uvloop: 0.22.1
+vllm: Module Not Found
+xgrammar: 0.2.1
+openai: 2.6.1
+tiktoken: 0.14.0
+anthropic: 1.5.0
+litellm: Module Not Found
+torchcodec: Module Not Found
+NVIDIA Topology:
+GPU0 NIC0 NIC1 NIC2 NIC3 CPU Affinity NUMA Affinity GPU NUMA ID
+GPU0 X NODE NODE NODE NODE 0-19 0 N/A
+NIC0 NODE X PIX NODE NODE
+NIC1 NODE PIX X NODE NODE
+NIC2 NODE NODE NODE X PIX
+NIC3 NODE NODE NODE PIX X
+ Legend:
+ X = Self
+SYS = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)
+NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node
+PHB = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)
+PXB = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)
+PIX = Connection traversing at most a single PCIe bridge
+NV# = Connection traversing a bonded set of # NVLinks
+ NIC Legend:
+ NIC0: rocep1s0f0
+NIC1: rocep1s0f1
+NIC2: roceP2p1s0f0
+NIC3: roceP2p1s0f1
+ ulimit soft: 1024
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

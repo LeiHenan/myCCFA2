@@ -1,0 +1,145 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/39416  (is_pr=False, 276412 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 39416
+  title = [Feature] Phase-aware KV cache quantization for reasoning models (58% distortion reduction measured)
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2026-04-09T12:57:54Z
+  updatedAt = 2026-08-10T02:17:06Z
+  closedAt = None
+  author = myProjectsRavi
+  labels = ['feature request', 'stale']
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-07-09T02:16:00Z]
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-08-10T02:17:05Z]
+This issue has been automatically closed due to inactivity. Please feel free to reopen if you feel it is still relevant. Thank you!
+
+[GRAPHQL CLOSED by github-actions at 2026-08-10T02:17:06Z reason=NOT_PLANNED]
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=myProjectsRavi date=Apr 9, 2026]
+🚀 The feature, motivation and pitch
+
+Summary
+
+I would like to propose adding per-phase KV cache quantization for reasoning models (DeepSeek-R1, QwQ, o-series). The idea is simple: instead of applying a single kv_cache_dtype to all tokens, allow different bit widths for the think-phase and answer-phase tokens based on measured redundancy.
+
+I have published a paper with a closed-form theorem and empirical validation showing this approach cuts attention KL divergence by 58% compared to uniform 3-bit quantization on DeepSeek-R1-Distill-1.5B, with no additional inference-time compute.
+
+Motivation
+
+vLLM currently supports uniform KV cache quantization via --kv-cache-dtype (fp8, fp8_e4m3, etc.). This works well for standard LLMs. But reasoning models have a structural asymmetry that uniform quantization ignores:
+
+- Think-phase tokens (~75% of generation): internal scratchpad, variable redundancy
+
+- Answer-phase tokens (~25% of generation): final response, different redundancy profile
+
+On distilled reasoning models (1.5B-7B), the answer phase is actually more redundant than the think phase - the opposite of what is reported on the full 671B model. Applying the wrong bit allocation nearly doubles the attention distortion.
+
+Measured Data (DeepSeek-R1-Distill-Qwen-1.5B, n=50, GSM8K)
+
+Metric
+Think Phase
+Answer Phase
+
+Pairwise cosine ρ
+
+0.463 ± 0.040
+
+0.544 ± 0.045
+
+Fraction of tokens
+
+75.5%
+
+24.5%
+
+Quantization Config
+b_think
+b_answer
+KL Divergence
+vs Uniform 3-bit
+
+Uniform 3-bit
+
+3
+
+3
+
+0.00303
+
+baseline
+
+Theory-aligned (4/3)
+
+4
+
+3
+
+0.00126
+
+-58%
+
+Anti-aligned (3/4)
+
+3
+
+4
+
+0.00234
+
+-23%
+
+The theory-aligned allocation follows a simple rule: give fewer bits to the more redundant phase. Which phase that is depends on the model and must be measured, not assumed.
+
+Proposed Implementation
+
+The minimal implementation would add two optional parameters:
+
+# In EngineArgs or SamplingParams
+kv_cache_dtype_think: str = "auto" # e.g., "fp8" or "int4"
+kv_cache_dtype_answer: str = "auto" # e.g., "fp8" or "int3"
+
+The phase boundary can be detected via:
+
+- Template markers (preferred): DeepSeek-R1 emits tags. vLLM already parses stop tokens - this is the same mechanism. Token count heuristic: For models without markers, use a configurable fraction (default 75% think).
+
+- The quantization itself doesn't change - it's still the same per-channel scalar quantization vLLM already uses. The only change is which precision gets applied to which token range in the cache.
+
+Where in the codebase
+
+Based on my reading of the vLLM source:
+
+- vllm/attention/backends/ - The attention backends already handle quantized KV caches. The change would be to support a per-token-range dtype rather than a single dtype for the entire cache.
+
+- vllm/worker/cache_engine.py - Cache allocation could accept a phase boundary and allocate the two regions at different precisions.
+
+I am happy to contribute a PR if there's interest. The core logic is about 50 lines of code, the complexity is in fitting it into vLLM's cache management layer.
+
+References
+
+- Paper: Think Less, Store Smarter: Type-Aware KV Cache Quantization (open access, all code included)
+
+- Diagnostic tool: github.com/myProjectsRavi/taqg-kv-cache-optimization - measures per-phase ρ on any HuggingFace model in ~1 hour on a T4
+
+- TAQG Theorem: b_H ≤ b_L - ⌊log₂((1-ρ_L)/(1-ρ_H) + 1)⌋ - closed-form, direction-agnostic
+
+Alternatives
+
+No response
+
+Additional context
+
+This approach is complementary to existing optimizations (PagedAttention, chunked prefill, speculative decoding). It is a pure precision-allocation improvement - no architectural changes, no retraining, no additional memory overhead. The think/answer split is already semantically meaningful for reasoning models; we are just using it to inform the quantization policy.
+
+I am particularly interested in hearing whether the vLLM team has observed quality differences when quantizing reasoning model KV caches uniformly, since that would directly validate the motivation here.
+
+Before submitting a new issue...
+
+- Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page, which can answer lots of frequently asked questions.

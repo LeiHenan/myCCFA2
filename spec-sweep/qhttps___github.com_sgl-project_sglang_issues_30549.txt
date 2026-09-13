@@ -1,0 +1,180 @@
+[Bug] --speculative-adaptive crashes at startup: shared logits buffer sized for active draft_tokens, not max adaptive candidate · Issue #30549 · sgl-project/sglang · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ sgl-project
+ / 
+ sglang 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 8.8k 
+ Star
+ 35.9k 
+ Code 
+ Issues 
+ 890 
+ Pull requests 
+ 4.4k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ [Bug] --speculative-adaptive crashes at startup: shared logits buffer sized for active draft_tokens, not max adaptive candidate   #30549 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Closed 
+ #30554 
+ Closed 
+ [Bug] --speculative-adaptive crashes at startup: shared logits buffer sized for active draft_tokens, not max adaptive candidate #30549 
+ #30554 
+ Copy link 
+ Labels
+ inactive 
+ Description
+ J-LiNDBERG 
+ opened on Jul 8, 2026 
+ Issue body actions 
+ Describe the bug
+ Enabling --speculative-adaptive (default candidate config) crashes the server during startup on all TP ranks:
+ File ".../sglang/srt/model_executor/graph_shared_output.py", line 56, in get_logits_buffer
+ assert rows <= self.max_rows, (
+AssertionError: shared logits buffer holds 128 rows but caller needs 256 (vocab_size=154880)
+ followed by Received sigquit from a child process and full engine shutdown. Reproduced twice (2/2 boots) on the 2026-07-08 nightly ( nightly-dev-cu13-20260708-b3632494 , base commit b363249 ).
+ Analysis
+ The numbers line up exactly with the adaptive candidate geometry:
+ 128 = cuda_graph_max_bs (32) × initial speculative_num_draft_tokens (4) 
+ 256 = 32 × 8 , where 8 = steps 7 + 1 — the draft-token count of the largest default adaptive candidate ( candidate_steps [1, 3, 7] ).
+ The shared logits buffer introduced in #29779 ("Share one logits output buffer across prefill/decode/draft cuda-graph") appears to be sized from the active speculative_num_draft_tokens , but --speculative-adaptive pre-builds runtime states for every candidate step ( AdaptiveController.init_states ), and capturing the steps=7 state requests bs × 8 rows → assert.
+ ServerArgs.max_speculative_num_draft_tokens already exists and returns max(candidate_steps) + 1 when adaptive is enabled — sizing the shared buffer with it (instead of speculative_num_draft_tokens ) should cover all adaptive states.
+ Timing-wise this is a regression from the interaction of two features: adaptive spec ( #21599 / #24055 , 04-20/06-05) and the shared logits buffer ( #29779 , 07-02) — the combination appears untested.
+ Reproduction
+ python -m sglang.launch_server \
+ --model-path zai-org/GLM-5.2 \ # any EAGLE topk=1 target reproduces
+ --tp 8 --speculative-algorithm EAGLE \
+ --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 \
+ --speculative-adaptive \
+ --cuda-graph-max-bs 32
+ Crash occurs while building/capturing the adaptive runtime states at startup (before Ready). vocab_size=154880 above is GLM-5.2; the assert is model-agnostic.
+ Environment
+ Image: lmsysorg/sglang:nightly-dev-cu13-20260708-b3632494 (main @ b363249 )
+ Model: GLM-5.2 (glm_moe_dsa), w4afp8, 8×H100, TP8 (no dp-attention)
+ Spec: EAGLE (NEXTN), steps 3 / topk 1 / draft 4, --speculative-adaptive with default candidates
+ Happy to submit a PR sizing the buffer via max_speculative_num_draft_tokens if that's the preferred direction.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ inactive 
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

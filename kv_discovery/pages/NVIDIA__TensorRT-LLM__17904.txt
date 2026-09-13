@@ -1,0 +1,144 @@
+FETCHED: https://github.com/NVIDIA/TensorRT-LLM/issues/17904  (is_pr=True, 447014 bytes)
+LAYOUT NODE (PR):
+  number = 17904
+  title = [TRTLLM-12499][feat] Pipelined KV cache transfer for disaggregated serving
+  state = CLOSED
+  closedTime = 2026-08-20T10:41:30Z
+  createdTime = 2026-08-18T14:55:56Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 2
+  baseBranch = main
+  headBranch = dev/xiaoweis/pipelined-v2
+  author = Shixiaowei02
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOOJ-fadoAKDQzM2Y4MWZkNDIwZjEyYzliZDcwNjE5NzllMWE4ZTlmMjk4YmVjNWU"> | [TRTLLM-12499][feat] Pipelined KV cache transfer for disaggregated se… | … | 433f81f | …rving | Transfer each context chunk's KV cache as soon as that chunk's prefill | finishes, instead of waiting for the whole prompt. Transfer then overlaps | prefill compute and only the last chunk stays on the critical path. | Chunking is sender-side only: the receiver still posts one whole-prompt | receive and completes on is_last_slice. main already models multi-slice | transfers (K
+EV: js-timeline-progressive-focus-container" data-gid="AE_lADOKH5No88AAAABNPE8Jc8AAAAG5erNnw"> | github-actions | Bot | assigned | Shixiaowei02 | Aug 18, 2026 | Shixiaowei02 | force-pushed | the | dev/xiaoweis/pipelined-v2 | branch | 3 times, most recently | from | 3c486d8 to | 4bc117e | Compare | August 19, 2026 12:06 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOOJ-fadoAKGE3MTU3OGQwNTNiNjBhNmJjZDZlYTBhMDI2YTU4YWIzM2RmMTNiMTE"> | [TRTLLM-12499][fix] Address review of pipelined KV cache transfer | … | a71578d | Configuration surface: | - The feature is on wherever it is supported, so there is no config field and | no golden-manifest entry. TRTLLM_DISABLE_PIPELINED_KV_TRANSFER=1 is the kill | switch, for rollback and for A/B measurement. Support is decided in one place | once the page table exists, and why it is off is always logged: a silently | inactive feature is indistinguishable from a broken 
+EV: js-timeline-progressive-focus-container" data-gid="HRFPE_lADOKH5No88AAAABNPE8Jc8AAAAG6aXlFw"> | Shixiaowei02 | force-pushed | the | dev/xiaoweis/pipelined-v2 | branch | from | 4bc117e to | a71578d | Compare | August 19, 2026 14:58 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="PRR_kwDOKH5No88AAAABKLOfJQ"> | athena-nv | reviewed | Aug 20, 2026 | View reviewed changes | Comment thread | tensorrt_llm/_torch/disaggregation/native/transfer.py | # _trim_receiver_window_head untouched, which drops leading blocks | # where this would drop trailing ones. | prompt_blocks = ( | (task._prompt_len + tpb - 1) // tpb if task._prompt_len is not None else None | athena-nv | <a href="#discussion
+EV: js-timeline-progressive-focus-container" data-gid="PRR_kwDOKH5No88AAAABKLQ-Yg"> | athena-nv | reviewed | Aug 20, 2026 | View reviewed changes | Comment thread | tensorrt_llm/_torch/disaggregation/transceiver.py | ], | mamba_state_index=base.mamba_state_index, | # Token starts derive from block count, so a chunk narrows the range. | token_range=TokenRange(start=chunk_start * tpb, end=chunk_end * tpb), | athena-nv | <a href="#discussion_r3817672170" id="discuss
+EV: js-timeline-progressive-focus-container" data-gid="PRR_kwDOKH5No88AAAABKLR4Jw"> | athena-nv | reviewed | Aug 20, 2026 | View reviewed changes | Comment thread | tensorrt_llm/_torch/disaggregation/transceiver.py | self._send_reqs = {} | # Chunks are in flight long before _finalize_send registers the request, | # so the timeout sweep would otherwise not see them at all. | self._pipelined_inflight: Dict[int, LlmRequest] = {} | athena-nv | <a href="#discussion_r381768367
+EV: js-timeline-progressive-focus-container" data-gid="CRE_kwDOKH5No88AAAACXSWrLA"> | Shixiaowei02 | mentioned this pull request | Aug 20, 2026 | [TRTLLM-12499][feat] Pipelined KVCache transfer for disaggregated serving in Python Cache Transceiver | #15727 | Merged | Shixiaowei02 | closed this | Aug 20, 2026 | --> | Sign up for free | to join this conversation on GitHub. | Already have an account? | <a rel="nofollow" class="Link--inTextBlock" data-hydro-click="{"event_type":"authentication.click","payload":{&quo
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=? date=2026-08-18T14:55:56Z]
+@coderabbitai summary
+
+Description
+
+This pull request introduces support for pipelined KV cache transfer, allowing each prefill chunk to be transferred as soon as it is computed, rather than waiting for the entire prompt to finish. The changes add chunk-aware block projection utilities, update session and metadata handling for chunked transfers, and include compatibility checks to ensure pipelined transfer is only enabled in supported configurations. Several internal APIs and behaviors are updated to support chunked transfer, error propagation, and session management.
+
+Pipelined KV Cache Transfer Support:
+
+- Added the project_blocks_to_chunk function to efficiently project block IDs to the current chunk, enabling chunked transfer of KV cache blocks. [1] [2]
+
+- Introduced the pipeline_transfer_enabled property and has_inflight_transfer method to indicate and manage pipelined transfer state. [1] [2]
+
+- Implemented the _build_prefill_chunk method to construct KV slices for each prefill chunk and updated respond_and_send_async to use chunked slices when pipelined transfer is enabled.
+
+Session and Metadata Handling:
+
+- Updated the WriteMeta dataclass and related logic to track both sender and receiver slice IDs, ensuring correct addressing for chunked transfers. [1] [2] [3] [4] [5]
+
+- Improved session status handling to immediately mark sessions as failed if any chunk encounters an error, preventing sessions from being stuck in an incomplete state.
+
+Compatibility and Error Handling:
+
+- Added strict compatibility checks to ensure pipelined transfer is only enabled when pipeline parallelism is 1, bounce buffer is disabled, and non-Mamba cache managers are used.
+
+- Enhanced cancellation and session cleanup logic to avoid premature deletion of requests and to handle pipelined session lifetimes correctly. [1] [2] [3]
+
+Block and Slice Management:
+
+- Updated _create_kv_slice to support resident block bounds and ensure only computed blocks are included in chunked transfers, with correct handling of scratch, stale, and reused blocks. [1] [2] [3] [4]
+
+- Modified block trimming and projection logic to work with chunked and partial slices, ensuring correctness for both full and partial prompt transfers.
+
+API and Import Updates:
+
+- Exported project_blocks_to_chunk for use in transceiver logic and updated imports accordingly.
+
+These changes collectively enable and robustly support pipelined KV cache transfer, improving efficiency for large prompt handling while maintaining correctness and error resilience.
+
+Test Coverage
+
+PR Checklist
+
+Please review the following before submitting your PR:
+
+- 
+PR description clearly explains what and why. If using CodeRabbit's summary, please make sure it makes sense.
+
+- 
+PR Follows TRT-LLM CODING GUIDELINES to the best of your knowledge.
+
+- 
+Test cases are provided for new code paths (see test instructions)
+
+- 
+If PR introduces API changes, an appropriate PR label is added - either api-compatible or api-breaking. For api-breaking, include BREAKING in the PR title.
+
+- 
+Any new dependencies have been scanned for license and vulnerabilities
+
+- 
+CODEOWNERS updated if ownership changes
+
+- 
+Documentation updated as needed
+
+- 
+Update tava architecture diagram if there is a significant design change in PR.
+
+- 
+The reviewers assigned automatically/manually are appropriate for the PR.
+
+- 
+ Please check this after reviewing the above items as appropriate for this PR.
+
+GitHub Bot Help
+
+To see a list of available CI bot commands, please comment /bot help.
+
+[RENDERED BLOCK author=athena-nv date=2026-08-20T00:00:02Z]
+Shouldn't we modify the _prompt_len attribute so that it is never None? Otherwise, what happens if prompt_blocks is None?
+
+We should enforce this explicitly right? This was part of my PR
+
+[RENDERED BLOCK author=Shixiaowei02 date=2026-08-20T10:39:54Z]
+You are right. let's make it required.
+
+[RENDERED BLOCK author=athena-nv date=2026-08-20T00:09:27Z]
+This captures the same information as ChunkCoords in the same amount of code, it just has a different name
+
+[RENDERED BLOCK author=Shixiaowei02 date=2026-08-20T10:40:13Z]
+You're right, they're the same thing.
+
+[RENDERED BLOCK author=athena-nv date=2026-08-20T00:11:55Z]
+Is this something I should have in my current PR or can this be in a followup for pipelined request failure/cancellation?
+
+[RENDERED BLOCK author=athena-nv date=2026-08-20T00:15:33Z]
+Same question for pipelined_requests_in_transfer helper
+
+[RENDERED BLOCK author=Shixiaowei02 date=2026-08-20T10:41:04Z]
+Is this something I should have in my current PR or can this be in a followup for pipelined request failure/cancellation?
+
+It looks like you already have this, wired into _is_request_in_transmission, so I think you're covered here.
+
+[RENDERED BLOCK author=Shixiaowei02 date=2026-08-20T10:41:25Z]
+Same question for pipelined_requests_in_transfer helper
+
+This one is less urgent, thanks for the attention.
+
+[RENDERED BLOCK author=athena-nv date=2026-08-20T21:19:48Z]
+It looks like you already have this, wired into _is_request_in_transmission, so I think you're covered here.
+
+Yes I meant to ask whether you think this should stay in the current PR
+
+Could we talk about this when we figure out cancellation/failure/timeout?
+
+[RENDERED BLOCK author=Shixiaowei02 date=2026-08-21T02:06:49Z]
+Sure.

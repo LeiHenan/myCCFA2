@@ -1,0 +1,106 @@
+{
+  "total_count": 1,
+  "incomplete_results": false,
+  "items": [
+    {
+      "url": "https://api.github.com/repos/vllm-project/vllm/issues/55314",
+      "repository_url": "https://api.github.com/repos/vllm-project/vllm",
+      "labels_url": "https://api.github.com/repos/vllm-project/vllm/issues/55314/labels{/name}",
+      "comments_url": "https://api.github.com/repos/vllm-project/vllm/issues/55314/comments",
+      "events_url": "https://api.github.com/repos/vllm-project/vllm/issues/55314/events",
+      "html_url": "https://github.com/vllm-project/vllm/pull/55314",
+      "id": 5346564669,
+      "node_id": "PR_kwDOI7xefs8AAAABCLa1LA",
+      "number": 55314,
+      "title": "[Bugfix][Kernel] Fix top-k selection when the radix threshold bin overflows the smem stash",
+      "user": {
+        "login": "Dovis01",
+        "id": 75300765,
+        "node_id": "MDQ6VXNlcjc1MzAwNzY1",
+        "avatar_url": "https://avatars.githubusercontent.com/u/75300765?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/Dovis01",
+        "html_url": "https://github.com/Dovis01",
+        "followers_url": "https://api.github.com/users/Dovis01/followers",
+        "following_url": "https://api.github.com/users/Dovis01/following{/other_user}",
+        "gists_url": "https://api.github.com/users/Dovis01/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/Dovis01/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/Dovis01/subscriptions",
+        "organizations_url": "https://api.github.com/users/Dovis01/orgs",
+        "repos_url": "https://api.github.com/users/Dovis01/repos",
+        "events_url": "https://api.github.com/users/Dovis01/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/Dovis01/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "labels": [
+        {
+          "id": 5135047172,
+          "node_id": "LA_kwDOI7xefs8AAAABMhKaBA",
+          "url": "https://api.github.com/repos/vllm-project/vllm/labels/bug",
+          "name": "bug",
+          "color": "d73a4a",
+          "default": true,
+          "description": "Something isn't working",
+          "archived_at": null,
+          "archived_by": null
+        },
+        {
+          "id": 7614859318,
+          "node_id": "LA_kwDOI7xefs8AAAABxeGINg",
+          "url": "https://api.github.com/repos/vllm-project/vllm/labels/needs-rebase",
+          "name": "needs-rebase",
+          "color": "d4c5f9",
+          "default": false,
+          "description": "",
+          "archived_at": null,
+          "archived_by": null
+        }
+      ],
+      "state": "open",
+      "locked": false,
+      "assignees": [
+
+      ],
+      "milestone": null,
+      "comments": 4,
+      "created_at": "2026-09-04T09:40:05Z",
+      "updated_at": "2026-09-13T08:46:04Z",
+      "closed_at": null,
+      "assignee": null,
+      "author_association": "NONE",
+      "issue_field_values": [
+
+      ],
+      "type": null,
+      "active_lock_reason": null,
+      "draft": false,
+      "pull_request": {
+        "url": "https://api.github.com/repos/vllm-project/vllm/pulls/55314",
+        "html_url": "https://github.com/vllm-project/vllm/pull/55314",
+        "diff_url": "https://github.com/vllm-project/vllm/pull/55314.diff",
+        "patch_url": "https://github.com/vllm-project/vllm/pull/55314.patch",
+        "merged_at": null
+      },
+      "body": "# Summary\r\n\r\n## Purpose\r\n\r\nThe radix-select top-k paths used by the DSA sparse-attention indexers (`persistent_topk` / `cooperative_topk` / `top_k_per_row`) stash the stage-1 coarse threshold bin in shared memory before refinement. When that bin holds\r\nmore candidates than the stash can take, candidates beyond capacity were silently dropped in atomic arrival order — they never reached refinement, so the selected set could differ from `torch.topk` on rows with tied or tightly clustered scores. Related latent issues on the same paths: selection scalars were only initialized inside the threshold-finder branch (stale shared-memory consumption across rows of the persistent loop), and stash/selection stores were unguarded.\r\n\r\nFixed in all four selection paths:\r\n\r\n| path | stash |\r\n|---|---|\r\n| `histogram_2048_topk` (decode, seq_len <= 8192) | 3708 |\r\n| `histogram_256_topk` (medium, seq_len <= 32768) | 4096 |\r\n| `FilteredTopKUnifiedKernel` (batch > 32) | 16384 |\r\n| `histogram_4096_topk` (short path, tie buffer) | TopK |\r\n\r\n* An oversized threshold bin now descends the remaining FP32 key bytes (24 -> 16 -> 8 -> 0) until the participant set fits the stash; a capacity clip only happens after full-key equality, where the remaining candidates are exact ties and any subset is a valid selection.\r\n* Selection-state scalars are reset unconditionally, before the finder; a no-finder round degenerates to a bounded path instead of consuming stale state.\r\n* Every stash and selection store is guarded by its capacity; an underfilled selection slot emits `-1` instead of a stale index.\r\n* `histogram_2048_topk` published the threshold-bin population by reading `histo[threshold]` — which aliases `bufs[0]` (`histo = decode_smem`, `bufs[0] = decode_smem + 768`) in the same barrier interval as the collection loop's writes. The finder thread now publishes the count from its register into the unused scalar slot `sPOP`.\r\n\r\nTrigger condition (before the fix): coarse-bin population > stash, i.e. strongly tied scores (e.g. relu-weighted fp8 dot products, quantized/pooled logits). Not reached by every deployment — measured on GLM-5.3-Flash indexer\r\nlogits — but any DSV3.2/V4 sparse-MLA, Qwen4-exp QSA, or GLM kpool workload with heavy ties can hit it.\r\n\r\nConcept originates from the SGLang fix for the same class of bug [sglang#37625](https://github.com/sgl-project/sglang/pull/37625); this is an independent port to vLLM's kernels (the Xid 31 shared-memory overrun reported there does not reproduce in vLLM — vLLM's stash stores were already capacity-guarded; the selection divergence was).\r\n\r\n## Test Plan\r\n\r\n```bash\r\n# Regression suite incl. new oversized-bin cases (tight clusters,\r\n# clusters separating at each key byte, all-equal rows, state reuse across\r\n# rows, per-kernel-path coverage), exact value comparison vs torch.topk:\r\npytest tests/kernels/test_top_k_per_row.py -q\r\n\r\n# Differential harness: rows 6/36 x lengths 700..80000 x 6 score\r\n# distributions (gaussian, relu-dot, pooled-relu, quantized, tight cluster,\r\n# all-equal), value-multiset comparison vs torch.topk at tolerance 0:\r\npython <path to harness>/diff_topk.py 512   # 2048  and 4096\r\n```\r\n\r\n## Test Result\r\n\r\n* `pytest tests/kernels/test_top_k_per_row.py -q`: **189 passed, 19 skipped** (H100, B200 CUDA 13.0).\r\n* Differential harness: **78/78 shapes match `torch.topk` exactly** (tolerance 0) on post-fix builds — the fix changes selection only on rows whose threshold bin overflows, which were wrong before; realistic distributions are bit-identical.\r\n* No model-eval delta expected on GLM-5.3-Flash serving; GPQA/AIME scores outputs are unchanged by this patch.",
+      "reactions": {
+        "url": "https://api.github.com/repos/vllm-project/vllm/issues/55314/reactions",
+        "total_count": 0,
+        "+1": 0,
+        "-1": 0,
+        "laugh": 0,
+        "hooray": 0,
+        "confused": 0,
+        "heart": 0,
+        "rocket": 0,
+        "eyes": 0
+      },
+      "timeline_url": "https://api.github.com/repos/vllm-project/vllm/issues/55314/timeline",
+      "performed_via_github_app": null,
+      "state_reason": null,
+      "score": 1.0
+    }
+  ],
+  "search_type": "lexical"
+}

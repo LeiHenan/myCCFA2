@@ -1,0 +1,92 @@
+FETCHED: https://github.com/sgl-project/sglang/issues/29176  (is_pr=True, 397195 bytes)
+LAYOUT NODE (PR):
+  number = 29176
+  title = Fix FP4 KV cache for Qwen3.6 hybrid linear pools
+  state = CLOSED
+  closedTime = 2026-06-25T06:38:40Z
+  createdTime = 2026-06-24T12:43:39Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 1
+  baseBranch = main
+  headBranch = codex/hybrid-linear-fp4-kv-cache
+  author = LingZ315
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="PRR_kwDOLCAjRs8AAAABD-6jMQ"> | gemini-code-assist | Bot | reviewed | Jun 24, 2026 | View reviewed changes | gemini-code-assist | Bot | left a comment | Copy link | Copy Markdown | Contributor | There was a problem hiding this comment. | <h3 cl
+EV: js-timeline-progressive-focus-container" data-gid="HRFPE_lADOLCAjRs8AAAABGjkLZ88AAAAGUf5qiQ"> | LingZ315 | force-pushed | the | codex/hybrid-linear-fp4-kv-cache | branch | from | 25ac558 to | ea8ad7a | Compare | June 24, 2026 12:49 | LingZ315 | marked this pull request as ready for review | June 24, 2026 12:52 | LingZ315 | requested review from | AniZpZ, | BBuf, | <span class="Link--primary te
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOTD6UudoAKGU5N2E3NGY0NjdkZmRiNWM1NmEzNTUwY2Q1Yzg5YzExZTlkMGI0OTg"> | Fix FP4 KV cache for Qwen3.6 hybrid linear pools | e97a74f | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="HRFPE_lADOLCAjRs8AAAABGjkLZ88AAAAGVB2iqw"> | LingZ315 | force-pushed | the | codex/hybrid-linear-fp4-kv-cache | branch | from | 2893d68 to | e97a74f | Compare | June 25, 2026 06:35 | LingZ315 | requested review from | Fridge003, | Qiaolin-Yu and | hebiao064 | as code owners | June 25, 2026 06:35 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="IC_kwDOLCAjRs8AAAABHeV3GQ"> | LingZ315 | commented | Jun 25, 2026 | Copy link | Copy Markdown | Contributor | Author | Replaced by #29273. | --> | All reactions | --> | Sorry, something went wrong. | Uh oh! | There was an error while load
+EV: js-timeline-progressive-focus-container" data-gid="CE_lADOLCAjRs8AAAABGjkLZ88AAAAGVB8BrQ"> | LingZ315 | closed this | Jun 25, 2026 | LingZ315 | deleted the | codex/hybrid-linear-fp4-kv-cache | branch | June 25, 2026 06:38 | --> | Sign up for free | to join this conversation on GitHub. | Already have an account? | Sign in to comment | <div class="prc-PageLayout-PaneWrapper-pHPop Conversations-module_
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=LingZ315 date=2026-06-24T12:43:39Z]
+Summary
+
+This updates FP4 KV cache support for Qwen3.6 hybrid linear-attention models so decode can consume packed FP4 KV buffers directly instead of falling back to full-pool dequantization.
+
+Changes
+
+- Select MHATokenToKVPoolFP4 for non-MLA hybrid full-attention layers when the requested KV dtype is torch.float4_e2m1fn_x2.
+
+- Expose raw packed FP4 K/V buffers and scale buffers from MHATokenToKVPoolFP4, and forward those accessors through HybridLinearKVPool with the full-attention layer-id mapping.
+
+- Add a Triton FP4 decode attention path that unpacks E2M1 FP4 KV values and applies the block scale inside the decode kernel.
+
+- Route Triton decode through the FP4 path when the token-to-KV pool supports it, while keeping the existing decode path for FP8/BF16/MLA.
+
+- Keep the KVFP4QuantizeUtil compatibility name for FP4 KV memory-pool users.
+
+- Avoid deriving v_head_dim through get_value_buffer(0) when the backing pool exposes v_head_dim or kv_lora_rank, which avoids accidental FP4 pool dequantization.
+
+Validation
+
+- python3 -m py_compile python/sglang/srt/layers/attention/triton_ops/decode_attention.py python/sglang/srt/layers/attention/triton_backend.py python/sglang/srt/mem_cache/memory_pool.py python/sglang/srt/layers/quantization/kvfp4_tensor.py
+
+- git diff --check
+
+- FP4 decode attention numerical checks against dequantized FP4 reference:
+
+- batch=2, q_heads=8, kv_heads=2, head_dim=64, seq_lens=(19, 37), max_abs=0.0009765625
+
+- batch=1, q_heads=8, kv_heads=1, head_dim=256, seq_lens=(1000,), max_abs=0.0001220703125
+
+- Served /mnt/waiwai/models/Qwen3.6-35B-A3B-FP8 with --kv-cache-dtype fp4_e2m1, --context-length 256000, --tp-size 2, and --max-running-requests 4; /health returned 200.
+
+- 1000 prompt / 1000 output benchmark after warmup:
+
+- concurrency=1: 126.90 output tok/s, avg latency 7.878s
+
+- concurrency=4: 481.76 output tok/s, avg latency 8.302s
+
+- Multimodal smoke test through /v1/chat/completions with an image URL returned 200 and identified a red image.
+
+CI States
+
+Latest PR Test (Base): ❌ Run #28151684660
+
+Latest PR Test (Extra): ❌ Run #28151684610
+
+[RENDERED BLOCK author=? date=2026-06-24T12:45:14Z]
+Code Review
+
+This pull request introduces backward compatibility for FP4 quantization utilities and adds support for MHATokenToKVPoolFP4 when the data type is float4. It also updates get_v_head_dim in the memory pool to safely return v_head_dim if present. The reviewer suggested further optimizing get_v_head_dim by checking for kv_lora_rank to avoid unnecessary tensor slicing and viewing operations for MLA pools.
+
+ Important
+The consumer version of Gemini Code Assist on GitHub is being sunset. Starting June 18, 2026, new organization installations will be blocked, and all code review activity will officially cease on July 17, 2026.
+
+For more details on the timeline and next steps, please review the Help Documentation.
+
+[RENDERED BLOCK author=? date=2026-06-24T12:45:14Z]
+For MLA pools (which do not have v_head_dim), we can also avoid calling get_value_buffer(0) by checking for kv_lora_rank directly. This prevents unnecessary tensor slicing/viewing operations during initialization.
+
+ if hasattr(self.full_kv_pool, "v_head_dim"):
+ return self.full_kv_pool.v_head_dim
+ if hasattr(self.full_kv_pool, "kv_lora_rank"):
+ return self.full_kv_pool.kv_lora_rank
+ return self.full_kv_pool.get_value_buffer(0).shape[-1]
+
+[RENDERED BLOCK author=LingZ315 date=2026-06-25T06:38:39Z]
+Replaced by #29273.

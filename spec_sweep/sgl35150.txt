@@ -1,0 +1,529 @@
+
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ sgl-project
+ / 
+ sglang 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 8.8k 
+ Star
+ 35.9k 
+ Code 
+ Issues 
+ 890 
+ Pull requests 
+ 4.4k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ [Bug] Qwen3.8 DSpark forced-reject is not lossless: accumulated GDN state drift vs Base decode #35150 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Open 
+ #36014 
+ #35541 
+ Open 
+ [Bug] Qwen3.8 DSpark forced-reject is not lossless: accumulated GDN state drift vs Base decode #35150 
+ #36014 
+ #35541 
+ Copy link 
+ Description
+ b24822530 
+ opened on Aug 17, 2026 
+ Issue body actions 
+ Checklist
+ I searched related issues but found no solution.
+ The bug persists in the latest version.
+ Issues without environment info and a minimal reproducible demo are hard to resolve and may receive no feedback.
+ If this is not a bug report but a general question, please start a discussion at https://github.com/sgl-project/sglang/discussions . Otherwise, it will be closed.
+ Please use English. Otherwise, it will be closed.
+ Describe the bug
+ Summary
+ With RadixArk/Qwen3.8-27B-NVFP4 + RadixArk/Qwen3.8-27B-DSpark, I can reproduce a deterministic correctness divergence between ordinary Base decode and DSpark TARGET_VERIFY even when every speculative draft token is deliberately rejected and only the target model's own argmax token is committed.
+ The failure is cumulative rather than context-local:
+ Base decode is deterministic across independent processes with a fixed seed.
+Under gamma=1 forced rejection, DSpark initially matches Base but later diverges.
+Rebuilding the same prefix through normal prefill restores the correct Base result at the divergence context.
+Using FP32 Mamba/SSM persistent state delays the divergence substantially, but does not eliminate it.
+ This suggests accumulated GDN recurrent-state drift somewhere in the TARGET_VERIFY / intermediate-state / commit path.
+ Possibly related to the state-correctness work tracked in #34899 and #34297 .
+ Environment
+ SGLang:
+ SGLANG_BUILD_COMMIT=c4271c3fe1262fc2adbd162c33b25de5255251c5
+SGLANG_IMAGE_TAG=lmsysorg/sglang:nightly-dev-20260814-c4271c3f
+CUDA 13.0
+TP=1
+attention backend=triton
+linear attention backend=triton
+ Target model:
+ RadixArk/Qwen3.8-27B-NVFP4
+revision:
+52d1adc5f38aa5ebf099c29ed7025ba34cfbb854
+ Draft model:
+ RadixArk/Qwen3.8-27B-DSpark
+revision:
+923ed3a8572615643f0137e424e4ce4edd7f1cda
+ Diagnostic configuration:
+ max_running_requests=1
+gamma=1
+verify_num_draft_tokens=2
+SGLANG_RAGGED_VERIFY_MODE=static
+CUDA graph disabled
+prefill CUDA graph disabled
+seed=123456789
+Triton GDN backend
+ Model weights are not modified.
+ Forced-rejection diagnostic
+ SGLANG_SIMULATE_ACC_LEN=1.0 by itself is not a semantically valid forced-rejection test because it changes correct_len without recomputing the naturally selected target bonus token.
+ For gamma=1 I therefore used this local diagnostic patch in dspark_verify.py:
+ if self._simulate_acc_len > 0:
+ correct_len = self._simulated_correct_len(
+ bs=bs, dtype=correct_len.dtype, device=correct_len.device
+ target_predict = torch.argmax(target_logits, dim=-1).view(
+ bs, self.verify_num_draft_tokens
+ )
+ correct_len = torch.zeros_like(correct_len)
+ bonus = target_predict[:, 0]
+ cap_trim_lens = torch.zeros_like(correct_len)
+ The resulting request reports:
+ spec_accept_rate=0.0
+spec_num_correct_drafts=0
+spec_num_proposed_drafts=95
+spec_verify_ct=95
+spec_accept_histogram=[95]
+ Thus every first draft is rejected and the committed output token is the target model's own argmax.
+ Exact request
+ The same exact 24 input_ids are used for every run:
+ INPUT_IDS = [
+248045, 846, 198, 623, 799, 61446, 13901, 11,
+10033, 3069, 10583, 5802, 4833, 5983, 13, 248046,
+198, 248045, 74455, 198, 248068, 271, 248069, 271,
+]
+ Input verification:
+ count: 24
+SHA256:
+f3d5baaf2ddb361d0d9fbff4add8071e24718908f76ae350ced01927dd87fcd0
+ The SHA256 is computed as:
+ hashlib.sha256(
+",".join(map(str, INPUT_IDS)).encode()
+).hexdigest()
+ Sampling:
+ temperature: 0
+top_p: 1
+top_k: -1
+max_new_tokens: 96
+ignore_eos: true
+ Example request:
+ payload = {
+"input_ids": INPUT_IDS,
+"sampling_params": {
+"temperature": 0.0,
+"top_p": 1.0,
+"top_k": -1,
+"max_new_tokens": 96,
+"ignore_eos": True,
+},
+"stream": False,
+}
+Server configuration
+ Relevant arguments:
+ sglang serve 
+--model-path /path/to/Qwen3.8-27B-NVFP4 
+--served-model-name Qwen3.8-27B 
+--trust-remote-code 
+--attention-backend triton 
+--context-length 16384 
+--max-total-tokens 16384 
+--max-running-requests 1 
+--mamba-radix-cache-strategy extra_buffer_lazy 
+--max-mamba-cache-size 16 
+--chunked-prefill-size 2048 
+--mem-fraction-static 0.90 
+--disable-prefill-cuda-graph 
+--disable-cuda-graph 
+--speculative-algorithm DSPARK 
+--speculative-draft-model-path /path/to/Qwen3.8-27B-DSpark 
+--speculative-dspark-block-size 1 
+--random-seed 123456789 
+--host 0.0.0.0 
+--port 30000
+ Environment:
+ SGLANG_RAGGED_VERIFY_MODE=static
+SGLANG_SIMULATE_ACC_LEN=1.0
+ For the FP32-state diagnostic I additionally use:
+ --mamba-ssm-dtype float32
+Results
+ Base oracle is deterministic
+ Base-only greedy decode is deterministic across independent server processes with seed 123456789.
+ Original BF16 Base oracle SHA256:
+ a935dafc6111c5acf3280bb9fa1d545f39abf5c9ba92285ba29d39949e971848
+2. Original TARGET_VERIFY + forced rejection
+ With gamma=1, static verify, CUDA graph disabled, and the forced-rejection diagnostic:
+ first divergence: output index 13
+Base token: 1070
+DSpark token: 836
+ Indices 0..12 match Base.
+ Concrete beta precision mismatch
+ One concrete numerical difference exists between Base packed decode and TARGET_VERIFY.
+ Base rounds beta through the beta tensor's source dtype, while TARGET_VERIFY originally keeps the sigmoid computation in FP32.
+ Diagnostic patch:
+ b_beta = 1.0 / (1.0 + tl.exp(-b_b))
+ b_beta = tl.sigmoid(b_b).to(b.dtype.element_ty).to(tl.float32)
+ With only this change:
+ first divergence: 13 -> 23
+ Indices 0..22 now match Base.
+ This appears to be a real numerical contributor, but not the complete cause.
+ Fresh-prefix localization
+ Using the beta-aligned path, I rebuilt a fresh request consisting of:
+ original input IDs + exact Base output IDs [0:22]
+ No text was retokenized.
+ The request reported:
+ cached_tokens=0
+ Expected next Base tokens:
+ [2438, 5306]
+ Generated:
+ [2438, 5306]
+ Exact match.
+ Therefore the long-request divergence at index 23 is not a direct TARGET_VERIFY failure at that context when recurrent state is freshly rebuilt through ordinary prefill.
+ It requires accumulated speculative-state evolution.
+ FP32 persistent SSM state
+ Using the same beta alignment but changing both Base and DSpark to:
+ --mamba-ssm-dtype float32
+ results are:
+ FP32 Base SHA256:
+5557ae475bafcb00ff5ea564e14954f5590cf8e77535edec878a7203225561fc
+ FP32 DSpark SHA256:
+a982aa8b26b5e7f51d11669da7b42a730d839d721d0d386944c3a964321a2fcb
+ first divergence: index 38
+Base token: 6338
+DSpark token: 2279
+ So increasing persistent SSM precision changes:
+ BF16 SSM + beta alignment: index 23
+FP32 SSM + beta alignment: index 38
+ but does not eliminate the divergence.
+ This suggests BF16 persistent-state storage is an error amplifier rather than the sole root cause.
+ KV precision control
+ With FP32 SSM and beta alignment, changing target KV cache from FP8 E4M3 to BF16 moved first divergence only:
+ 38 -> 39
+ This suggests full-attention KV precision is not the primary cause of the remaining drift.
+ Other isolation work
+Delta reduction layout
+ Changing only TARGET_VERIFY's delta projection to a literal Base [V,K] / K-axis formulation did not improve correctness:
+ beta + Base-layout delta projection:
+first divergence = 6
+Output reduction layout
+ Changing only TARGET_VERIFY's output projection to a literal Base [V,K] / K-axis formulation also regressed:
+ beta + Base-layout output projection:
+first divergence = 6
+Softplus expression
+ TARGET_VERIFY originally evaluates:
+ beta_x = softplus_beta * x
+ softplus_x = tl.where(
+beta_x <= softplus_threshold,
+(1.0 / softplus_beta) * tl.log(1.0 + tl.exp(beta_x)),
+x,
+)
+ Runtime parameters were confirmed as:
+ softplus_beta=1.0
+softplus_threshold=20.0
+ Changing only this expression to Base's literal form:
+ softplus_x = tl.where(
+x <= 20,
+tl.log(1.0 + tl.exp(x)),
+x,
+)
+ regressed the FP32 test:
+ first divergence: 38 -> 6
+ Because the two forms are algebraically equivalent for the actual runtime parameters, this appears to demonstrate sensitivity to Triton floating-point/codegen behavior rather than identify the root cause.
+ Convolution state
+ A source audit found persistent conv state and TARGET_VERIFY intermediate conv windows use the same default BF16 dtype and the expected post-anchor snapshot/scatter semantics for gamma=1.
+ Attempting the independent diagnostic:
+ SGLANG_MAMBA_CONV_DTYPE=float32
+ cannot currently be used as a clean control because the current implementation hits:
+ RuntimeError:
+Index put requires the source and destination dtypes match,
+got Float for the destination and BFloat16 for the source.
+ReplaySSM
+ The current build exposes:
+ --enable-linear-replayssm-spec
+ but DSPARK/DFLASH explicitly rejects this path for Qwen3.8 GDN:
+ ValueError:
+--enable-linear-replayssm-spec with DSPARK/DFLASH requires
+a KDA (kimi_linear) model; got a non-KDA model.
+ So I could not use ReplaySSM as a GDN DSPARK correctness control.
+ Current hypothesis
+ The strongest evidence is:
+ forced reject + repeated TARGET_VERIFY rounds -> divergence
+ fresh prefill of the exact same prefix -> correct again
+ higher persistent SSM precision -> divergence substantially delayed
+ KV precision change -> almost no effect
+ My current hypothesis is that a small difference enters a committed/intermediate GDN recurrent state during repeated TARGET_VERIFY reject/commit rounds and accumulates until it changes the target argmax.
+ For gamma=1, I also audited the reject/commit indexing:
+ candidate row 0 = anchor/current token
+commit_lens = 1
+last_correct_step_indices = 0
+ and the committed conv window appears to correspond to the post-anchor state as expected.
+ The remaining high-value localization would therefore seem to be the SSM state boundary rather than further source-expression A/B tests.
+ Expected behavior
+ Under this diagnostic every speculative draft token is rejected and only the target model's own greedy token is committed.
+ I would expect DSpark to preserve the same greedy token sequence as ordinary Base decode.
+ If exact Base equivalence is intentionally not guaranteed for GDN TARGET_VERIFY because the recurrent numerical paths differ, clarification on the intended correctness invariant/tolerance would also be useful.
+ Questions
+Is this accumulated GDN recurrent-state drift a known limitation or bug in the current DSpark TARGET_VERIFY path?
+Is there an existing GDN state-commit / TARGET_VERIFY correctness patch that should be tested on this Qwen3.8 path?
+Would the most useful next instrumentation be a per-layer/per-round comparison of:
+Base persistent SSM state before decode
+TARGET_VERIFY input persistent SSM state
+TARGET_VERIFY intermediate step-0 SSM state
+post-commit/scatter persistent SSM state
+Is the beta source-dtype rounding difference described above expected, or should TARGET_VERIFY match Base packed decode here?
+If exact Base equivalence is not expected between packed decode and TARGET_VERIFY, what correctness invariant should speculative decoding enforce for recurrent GDN models?
+ I can provide the exact request script, complete Base/DSpark output token arrays, hashes, and the small diagnostic source patches if useful.
+ Reproduction
+ Models:
+ Target:
+ RadixArk/Qwen3.8-27B-NVFP4 
+revision 52d1adc5f38aa5ebf099c29ed7025ba34cfbb854 
+ Draft:
+ RadixArk/Qwen3.8-27B-DSpark 
+revision 923ed3a8572615643f0137e424e4ce4edd7f1cda 
+ Server configuration:
+ export SGLANG_RAGGED_VERIFY_MODE=static
+ export SGLANG_SIMULATE_ACC_LEN=1.0
+sglang serve \
+ --model-path /path/to/Qwen3.8-27B-NVFP4 \
+ --served-model-name Qwen3.8-27B \
+ --trust-remote-code \
+ --attention-backend triton \
+ --context-length 16384 \
+ --max-total-tokens 16384 \
+ --max-running-requests 1 \
+ --mamba-radix-cache-strategy extra_buffer_lazy \
+ --max-mamba-cache-size 16 \
+ --mamba-ssm-dtype float32 \
+ --chunked-prefill-size 2048 \
+ --mem-fraction-static 0.90 \
+ --mm-feature-transport cpu \
+ --disable-prefill-cuda-graph \
+ --disable-cuda-graph \
+ --speculative-algorithm DSPARK \
+ --speculative-draft-model-path /path/to/Qwen3.8-27B-DSpark \
+ --speculative-dspark-block-size 1 \
+ --random-seed 123456789 \
+ --host 0.0.0.0 \
+ --port 30000
+For the forced-rejection diagnostic, I locally changed the
+SGLANG_SIMULATE_ACC_LEN branch in dspark_verify.py so that gamma=1 always
+rejects the draft but commits the target model ' s own argmax: 
+ target_predict = torch.argmax(target_logits, dim=-1).view( 
+ bs, self.verify_num_draft_tokens 
+ ) 
+ correct_len = torch.zeros_like(correct_len) 
+ bonus = target_predict[:, 0] 
+ cap_trim_lens = torch.zeros_like(correct_len) 
+ I also tested the following beta precision alignment in 
+ fused_sigmoid_gating_recurrent.py: 
+ b_beta = tl.sigmoid(b_b).to(b.dtype.element_ty).to(tl.float32) 
+ Exact request: 
+ INPUT_IDS = [ 
+ 248045, 846, 198, 623, 799, 61446, 13901, 11, 
+ 10033, 3069, 10583, 5802, 4833, 5983, 13, 248046, 
+ 198, 248045, 74455, 198, 248068, 271, 248069, 271, 
+ ] 
+ payload = { 
+ "input_ids": INPUT_IDS, 
+ "sampling_params": { 
+ "temperature": 0.0, 
+ "top_p": 1.0, 
+ "top_k": -1, 
+ "max_new_tokens": 96, 
+ "ignore_eos": True, 
+ }, 
+ "stream": False, 
+ } 
+ Input SHA256: 
+ f3d5baaf2ddb361d0d9fbff4add8071e24718908f76ae350ced01927dd87fcd0 
+ With FP32 SSM + beta alignment + forced rejection, Base and DSpark match 
+ through output index 37 and first diverge at index 38: 
+ Base token: 6338 
+ DSpark token: 2279 
+ Rebuilding the exact same prefix through ordinary prefill restores the 
+ correct Base continuation, indicating accumulated recurrent-state drift. 
+ ### Environment 
+ /sgl-workspace/sglang/python/sglang/srt/environ.py:1402: UserWarning: Environment variable SGLANG_FLASHINFER_PR4266_SOURCE has been deprecated. 
+ warnings.warn(f"Environment variable {old_name} has been deprecated.") 
+ W0817 11:22:26.937000 441 torch/utils/_pytree.py:630] <enum ' KernelPreference ' > is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release. 
+ W0817 11:22:26.951000 441 torch/utils/_pytree.py:630] <enum ' ScaleCalculationMode ' > is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release. 
+ Python: 3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0] 
+ CUDA available: True 
+ GPU 0: NVIDIA GeForce RTX 5090 
+ GPU 0 Compute Capability: 12.0 
+ CUDA_HOME: /usr/local/cuda 
+ NVCC: Cuda compilation tools, release 13.0, V13.0.88 
+ CUDA Driver Version: 610.88 
+ PyTorch: 2.13.0+cu130 
+ sglang: 0.0.0.dev0+qwen38.27b.g561c8f3 
+ sglang-kernel: 0.4.6.post1 
+ flashinfer_python: 0.6.18 
+ flashinfer_cubin: 0.6.18.dev20260807 
+ flashinfer_jit_cache: 0.6.18.dev20260807+cu130 
+ triton: 3.7.1 
+ transformers: 5.12.1 
+ torchao: 0.17.0+cu130 
+ numpy: 2.3.5 
+ aiohttp: 3.14.3 
+ fastapi: 0.141.1 
+ huggingface_hub: 1.27.0 
+ interegular: 0.3.3 
+ modelscope: 1.39.1 
+ orjson: 3.11.9 
+ outlines: 0.1.11 
+ packaging: 26.3 
+ psutil: 7.2.2 
+ pydantic: 2.13.4 
+ python-multipart: 0.0.32 
+ pyzmq: 27.1.0 
+ uvicorn: 0.52.3 
+ uvloop: 0.22.1 
+ vllm: Module Not Found 
+ xgrammar: 0.2.1 
+ openai: 2.6.1 
+ tiktoken: 0.13.0 
+ anthropic: 0.122.0 
+ litellm: Module Not Found 
+ torchcodec: 0.15.0+cu130 
+ NVIDIA Topology: 
+ GPU0 CPU Affinity NUMA Affinity GPU NUMA ID 
+ GPU0 X N/A 
+ Legend: 
+ X = Self 
+ SYS = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI) 
+ NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node 
+ PHB = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU) 
+ PXB = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge) 
+ PIX = Connection traversing at most a single PCIe bridge 
+ NV# = Connection traversing a bonded set of # NVLinks 
+ Hypervisor vendor:: Microsoft 
+ ulimit soft: 1024 
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

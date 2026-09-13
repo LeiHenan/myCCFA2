@@ -1,0 +1,307 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/45377  (is_pr=False, 292057 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 45377
+  title = [Bug]: Out of bounds in cp_gather_and_upconvert_fp8_kv_cache
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2026-06-12T06:59:41Z
+  updatedAt = 2026-07-20T15:35:27Z
+  closedAt = None
+  author = molly-ting
+  labels = ['bug']
+
+[GRAPHQL COMMENT by Tobi-Adesoye assoc=NONE at 2026-06-15T07:31:10Z]
+This Out-of-Bounds memory crash during the `fp8_kv_cache` upconvert is heavily linked to severe numerical scale fluctuations. 
+
+When you scale activation distributions down to extreme low-bit layouts (like FP8 or 2-bit), your variance can drop toward zero (1e{-}12 or lower). If your normalization or gathering step doesn't enforce an explicit mathematical safety floor, the reciprocal calculation explodes, causing calculation offsets to jump completely out of the allocated CUDA memory block.
+
+We isolated this exact low-bit variance flatline explosion. By injecting a strict hardware-level micro-variance clamping anchor (`var_floor = max(variance, eps)`), you prevent calculation offsets from skyrocketing and overshooting your pre-allocated buffer sizes. 
+
+You can check out our underlying mathematical stabilization code here to see how we kept extreme low-bit transformations perfectly bounded across millions of steps: 
+https://github.com/Tobi-Adesoye/renorm-native
+
+[GRAPHQL COMMENT by MatthewBonanni assoc=MEMBER at 2026-07-20T15:30:24Z]
+I don't think it's acually possible to hit this in production, because all callers maintain:
+```
+workspace_starts[0] == 0
+workspace_starts[i] = cumulative preceding lengths
+dst.size(0) == sum(sequence lengths)
+```
+If I'm wrong about this please let me know
+
+[GRAPHQL CLOSED by MatthewBonanni at 2026-07-20T15:30:24Z reason=COMPLETED]
+
+[GRAPHQL CLOSED by MatthewBonanni at 2026-07-20T15:35:28Z reason=NOT_PLANNED]
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=molly-ting date=Jun 12, 2026]
+Your current environment
+
+The output of python collect_env.py
+Your output of `python collect_env.py` here
+
+🐛 Describe the bug
+
+ 
+ 
+ vllm/csrc/libtorch_stable/cache_kernels.cu
+ 
+
+ 
+ Lines 1165 to 1195
+ in
+ fe04238
+ 
+
+ 
+
+ 
+ 
+
+ 
+ 
+
+ __global__ void cp_gather_and_upconvert_fp8_kv_cache( 
+
+ 
+
+ 
+ 
+
+ const uint8_t* __restrict__ src_cache, // [NUM_BLOCKS, BLOCK_SIZE, 656] 
+
+ 
+
+ 
+ 
+
+ __nv_bfloat16* __restrict__ dst, // [total_tokens, 576] 
+
+ 
+
+ 
+ 
+
+ const int32_t* __restrict__ block_table, // [num_reqs, BLOCK_INDICES] 
+
+ 
+
+ 
+ 
+
+ const int32_t* __restrict__ workspace_starts, // [num_reqs] 
+
+ 
+
+ 
+ 
+
+ const int32_t num_reqs, const int32_t block_size, 
+
+ 
+
+ 
+ 
+
+ const int32_t total_tokens, const int64_t block_table_stride, 
+
+ 
+
+ 
+ 
+
+ const int64_t cache_block_stride, const int64_t cache_entry_stride, 
+
+ 
+
+ 
+ 
+
+ const int64_t dst_entry_stride) { 
+
+ 
+
+ 
+ 
+
+ const int flat_warp_id = (blockIdx.x * blockDim.x + threadIdx.x) >> 5; 
+
+ 
+
+ 
+ 
+
+ if (flat_warp_id >= total_tokens) return; 
+
+ 
+
+ 
+ 
+
+ const int lane_id = threadIdx.x & 31; 
+
+ 
+
+ 
+ 
+
+ 
+
+ 
+
+ 
+ 
+
+ // Binary search to find which request owns this output token 
+
+ 
+
+ 
+ 
+
+ int lo = 0, hi = num_reqs - 1; 
+
+ 
+
+ 
+ 
+
+ while (lo < hi) { 
+
+ 
+
+ 
+ 
+
+ int mid = (lo + hi + 1) >> 1; 
+
+ 
+
+ 
+ 
+
+ if (workspace_starts[mid] <= flat_warp_id) 
+
+ 
+
+ 
+ 
+
+ lo = mid; 
+
+ 
+
+ 
+ 
+
+ else 
+
+ 
+
+ 
+ 
+
+ hi = mid - 1; 
+
+ 
+
+ 
+ 
+
+ } 
+
+ 
+
+ 
+ 
+
+ const int req_id = lo; 
+
+ 
+
+ 
+ 
+
+ 
+
+ 
+
+ 
+ 
+
+ // Compute physical token address via block table 
+
+ 
+
+ 
+ 
+
+ const int out_token_id = flat_warp_id; 
+
+ 
+
+ 
+ 
+
+ const int token_offset = out_token_id - workspace_starts[req_id]; 
+
+ 
+
+ 
+ 
+
+ const int cache_block_idx = token_offset / block_size; 
+
+ 
+
+ 
+ 
+
+ const int offset_in_block = token_offset % block_size; 
+
+ 
+
+ 
+ 
+
+ const int physical_block = 
+
+ 
+
+ 
+ 
+
+ block_table[req_id * block_table_stride + cache_block_idx]; 
+
+ 
+
+ 
+ 
+
+cache_block_idx is computed from flat_warp_id and workspace_starts[req_id]. However, there is no validation that workspace_starts[req_id] is consistent with the current flat_warp_id. As a result, cache_block_idx can become negative and subsequently be used to index block_table.
+
+Example
+
+Consider:
+
+when
+
+req_id=0
+blockIdx.x=0
+threadIdx.x=0
+workspace_starts[0]=block_size=16
+
+The kernel computes:
+
+flat_warp_id = (blockIdx.x * blockDim.x + threadIdx.x) >> 5 = 0
+cache_block_idx = (flat_warp_id - workspace_starts[req_id]) / 16 = -1
+
+Then block_table[req_id * block_table_stride + cache_block_idx] accesses block_table[-1], leading to an out-of-bounds read from block_table.
+
+Before submitting a new issue...
+
+- Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page, which can answer lots of frequently asked questions.

@@ -1,0 +1,177 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/42024  (is_pr=False, 299121 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 42024
+  title = [Bug]: NIXL connector silently disables HMA, halving KV cache capacity — flip default to HMA=on even with connectors
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2026-05-08T04:16:06Z
+  updatedAt = 2026-09-12T01:40:06Z
+  closedAt = None
+  author = cemigo114
+  labels = ['bug', 'stale']
+
+[GRAPHQL COMMENT by markmc assoc=MEMBER at 2026-05-08T12:38:22Z]
+Related: #41644 and #42045 
+
+@NickLucche 
+
+[GRAPHQL COMMENT by markmc assoc=MEMBER at 2026-05-08T12:47:06Z]
+Related #41830 and #41847
+
+[GRAPHQL COMMENT by chfeng-cs assoc=CONTRIBUTOR at 2026-05-08T15:11:48Z]
+This duplicates #41847 which addresses the same issue. Note that a class-level supports_hma() check is insufficient for MultiConnector — the wrapper class implements SupportsHMA but effective support depends on all configured children. #41847 handles this via KVConnectorFactory.supports_hma_config() which recurses into child connectors.
+
+[GRAPHQL COMMENT by cemigo114 assoc=CONTRIBUTOR at 2026-05-10T00:56:33Z]
+Also needs to address the discrepancy between Prometheus and the startup log since Prometheus overcounts for hybrid models with HMA enabled.
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-08-08T02:12:17Z]
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-09-12T01:40:05Z]
+This issue has been automatically closed due to inactivity. Please feel free to reopen if you feel it is still relevant. Thank you!
+
+[GRAPHQL CLOSED by github-actions at 2026-09-12T01:40:06Z reason=NOT_PLANNED]
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=cemigo114 date=May 8, 2026]
+Your current environment
+
+- GPU: RTX 6000 Pro (reproduced); expected to affect all GPU types
+
+- Model: openai/gpt-oss-120b (hybrid architecture with sliding window layers)
+
+- vLLM version: 0.18.x (current)
+
+- OS/Container: Standard vLLM container image
+
+🐛 Describe the bug
+
+Summary
+
+Enabling the NIXL connector (NixlConnector) for prefill/decode KV transfer silently disables the Hybrid Memory Allocator (HMA). This causes all transformer layers to be treated as full attention, roughly doubling per-layer KV cache footprint and cutting effective KV cache capacity in half. There is no warning at startup that names the connector as the cause.
+
+Severity: High — affects all P/D disaggregation deployments using NixlConnector.
+
+Component: KV cache / NIXL connector / Hybrid Memory Allocator
+
+Steps to Reproduce
+
+1. Run with NIXL connector (TP=2)
+
+vllm serve \
+ --host 0.0.0.0 --port 8000 \
+ --model openai/gpt-oss-120b \
+ --gpu-memory-utilization 0.95 \
+ --tensor-parallel-size 2 \
+ --no-enable-prefix-caching \
+ --load-format dummy \
+ --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
+
+2. Run without NIXL connector (TP=2, same config otherwise)
+
+vllm serve \
+ --host 0.0.0.0 --port 8000 \
+ --model openai/gpt-oss-120b \
+ --gpu-memory-utilization 0.95 \
+ --tensor-parallel-size 2 \
+ --no-enable-prefix-caching \
+ --load-format dummy
+
+3. Compare KV cache metrics
+
+curl http://localhost:8000/metrics | grep blocks
+
+Observed Behavior
+
+Both configurations report identical available KV cache memory (52.4 GiB) and identical GPU KV cache size (1,526,336 tokens). However, the maximum concurrency diverges dramatically:
+
+Config
+KV Cache Memory
+KV Cache Tokens
+Max Concurrency (131K context)
+
+With NIXL
+
+52.4 GiB
+
+1,526,336
+
+11.65x
+
+Without NIXL
+
+52.4 GiB
+
+1,526,336
+
+21.90x
+
+With NIXL enabled, the startup logs show:
+
+WARNING [kv_cache_utils.py:1175] Hybrid KV cache manager is disabled for this hybrid model,
+This means we do not enable any optimizations for saving KV cache memory (e.g., dropping the
+KV cache outside the sliding window). The compute of layers like sliding window is still saved.
+
+This warning is emitted but does not mention that the NIXL connector is the cause, nor does it suggest a remediation.
+
+Without NIXL, this warning is absent and HMA is enabled by default.
+
+Expected Behavior
+
+- HMA should remain enabled by default when a KV connector is specified, since NIXL+HMA compatibility has been implemented.
+
+- If HMA must be disabled for a connector, the startup log should explicitly state: HMA disabled because KV connector [NixlConnector] is active. To re-enable: --no-disable-hybrid-kv-cache-manager.
+
+- The KV cache token count and max concurrency should be consistent regardless of connector presence (given the same model and GPU memory).
+
+Workaround
+
+Adding --no-disable-hybrid-kv-cache-manager to the launch command re-enables HMA alongside NIXL and restores expected KV cache capacity:
+
+vllm serve \
+ --host 0.0.0.0 --port 8000 \
+ --model openai/gpt-oss-120b \
+ --gpu-memory-utilization 0.95 \
+ --tensor-parallel-size 2 \
+ --no-enable-prefix-caching \
+ --load-format dummy \
+ --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' \
+ --no-disable-hybrid-kv-cache-manager
+
+Confirmed: This restores max concurrency to expected levels.
+
+Root Cause Analysis
+
+In kv_cache_utils.py, the hybrid KV cache manager is disabled when any KV connector is configured. This was originally a safety measure before NIXL+HMA compatibility was implemented. Now that compatibility exists, the default should be flipped.
+
+The relevant code paths:
+
+- kv_cache_utils.py:1175 — HMA disabled warning
+
+- gpu_worker.py:436-470 — KV cache memory profiling (reports identical memory in both cases, masking the problem)
+
+Additional Issue: Prometheus Metrics Discrepancy
+
+When NIXL is not activated, there is a discrepancy between the KV cache size reported by the Prometheus /metrics endpoint (blocks metrics) and the startup log (GPU KV cache size: 1,526,336 tokens). These should always agree.
+
+Proposed Fix
+
+- Flip the default: Set HMA=enabled regardless of connector presence (one-line change + update tests).
+
+- Improve the warning: If HMA is ever disabled, the warning should name the cause and the remediation flag.
+
+- Rename the flag: --no-disable-hybrid-kv-cache-manager is a double-negative; consider --enable-hybrid-kv-cache-manager or --hybrid-kv-cache-manager (on/off).
+
+- Fix Prometheus discrepancy: Ensure /metrics KV cache block counts match the startup log token count.
+
+Impact
+
+This affects every deployment using NixlConnector for P/D disaggregation on hybrid-architecture models (models with sliding window layers). Operators lose 50% of their KV cache capacity with no indication other than a generic warning buried in startup logs. The performance impact is silent and difficult to diagnose — the token count looks correct, only the max concurrency reveals the problem.
+
+Before submitting a new issue...
+
+- Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page, which can answer lots of frequently asked questions.

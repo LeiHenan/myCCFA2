@@ -1,0 +1,231 @@
+
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ huggingface
+ / 
+ transformers 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 34.5k 
+ Star
+ 165k 
+ Code 
+ Issues 
+ 821 
+ Pull requests 
+ 1.6k 
+ Actions 
+ Projects 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [Feature Request] Approximate Speculative Decoding (ASD): training-free, budget-bounded acceptance for greedy assisted decoding #48636 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Open 
+ Open 
+ [Feature Request] Approximate Speculative Decoding (ASD): training-free, budget-bounded acceptance for greedy assisted decoding #48636 
+ Copy link 
+ Description
+ Kissmetothemoon 
+ opened on Sep 9, 2026 
+ Issue body actions 
+ Feature request
+ Is your feature request related to a problem? Please describe. 
+ Greedy assisted decoding in Transformers uses strict argmax verification: the entire draft
+suffix is discarded at the first position where the draft token differs from the target
+argmax. This is lossless, but it rejects near-optimal draft tokens whose logit gap to the
+argmax is negligible, capping the practical speedup of speculative decoding for greedy users.
+ PR #45979 ( assistant_ensemble_weight ) added a lossy verification option for the
+sampling path by mixing the target and draft distributions. Greedy decoding, however, still
+lacks a deterministic, explicitly-bounded relaxation mechanism.
+ Describe the solution you'd like 
+ Add Approximate Speculative Decoding (ASD) 鈥?a training-free, verifier-side acceptance
+policy for greedy assisted decoding. For a draft token x_i and target logits z_i , define
+the local regret r_i = max_v z_i(v) - z_i(x_i) ( r_i = 0 iff x_i is the target argmax).
+A draft prefix is accepted only while ALL of the following hold:
+ Request-level cumulative regret stays within a budget B ;
+ Local regret satisfies r_i / (K - i) <= g , where K is the candidate length
+(suffix-value weighting: later draft positions get less slack);
+ The number of relaxed mismatches in the current block does not exceed m .
+ Verification stops at the first infeasible position and commits the target argmax bonus
+token as usual. The policy is fully deterministic (no RNG) and exactly reduces to strict
+greedy verification when B = 0 or m = 0 (all r_i must be 0, i.e. strict argmax
+prefix matching) 鈥?our gold-standard correctness check.
+ Proposed API (three scalar parameters, mirroring the assistant_ensemble_weight style;
+naming open to maintainer feedback):
+ outputs = model . generate (
+ ** inputs ,
+ assistant_model = assistant_model ,
+ assistant_asd_budget = 2.0 , # float >= 0, request-level cumulative regret budget; None = disabled (lossless) 
+ assistant_asd_local_ratio = 0.25 , # float >= 0, per-token regret / suffix-value cap 
+ assistant_asd_max_mismatches = 2 , # int >= 0, max relaxed mismatches per block 
+)
+ How is this different from assistant_ensemble_weight ( #45979 )? 
+ Aspect 
+ assistant_ensemble_weight 
+ ASD 
+ Mechanism 
+ verifies against a static mixture w*p + (1-w)*q 
+ deterministic per-token regret rule, distributions untouched 
+ Error control 
+ global TV-bias bound w*TV(q,p) 
+ explicit per-request budget + suffix-value weighting + per-block mismatch cap (triple control) 
+ Target path 
+ mainly do_sample=True 
+ greedy decoding (no RNG, reproducible) 
+ Lossless fallback 
+ only None 
+ B=0 or m=0 is strict verification by construction 
+ Draft logits 
+ required 
+ not needed (regret uses target logits only) 
+ The two are orthogonal and could coexist.
+ Empirical results (research evaluator, pure PyTorch, Qwen3-14B + DSpark block-7 draft,
+8xL20 GPUs, greedy):
+ Setting 
+ Throughput 
+ GSM8K 
+ Strict verification 
+ 66.21 tok/s 
+ 79.682% 
+ ASD (B=2.0625) 
+ 75.04 tok/s (+13.34%) 
+ 79.454% (-0.227pp) 
+ ASD (B=0) 
+ token-identical to strict on all 1319 requests 
+ identical 
+ Implementation scope (~150 lines of library code, no external dependency):
+ Three scalar parameters in GenerationConfig + checks in validate() ;
+ A small acceptance helper next to _speculative_sampling in
+ src/transformers/generation/utils.py , called from the greedy branch (Case 2) of
+ GenerationMixin._assisted_decoding() ; a request-level budget accumulator in the decode
+loop; a ValueError guard for prompt lookup decoding (no candidate logits) in
+ _get_candidate_generator ;
+ Unit tests added to the existing tests/generation/test_utils.py and
+ tests/generation/test_configuration_utils.py (no new test files), plus a short section
+in docs/source/en/assisted_decoding.md .
+ References 
+ Paper: ASD: Approximate Speculative Decoding, https://arxiv.org/abs/2608.03447 
+ Reference implementation (Apache-2.0): https://github.com/Kissmetothemoon/ASD 
+ I am one of the paper authors and happy to implement this and submit a PR if there is
+interest from the maintainers.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

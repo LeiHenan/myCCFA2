@@ -1,0 +1,952 @@
+[MRV2][SD] Make Dynamic SD comatible with Full Cuda Graphs by ekagra-ranjan · Pull Request #45953 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [MRV2][SD] Make Dynamic SD comatible with Full Cuda Graphs - # 45953 
+ # 45953 
+ Merged 
+ LucasWilkinson merged 19 commits into vllm-project:main vllm-project/vllm:main from ekagra-ranjan:er-dsd-fcg ekagra-ranjan/vllm:er-dsd-fcg Copy head branch name to clipboard 
+ Jul 4, 2026 
+ Conversation Commits 19  ( 19 ) Checks Files changed 
+ Merged 
+ [MRV2][SD] Make Dynamic SD comatible with Full Cuda Graphs # 45953 LucasWilkinson merged 19 commits into vllm-project:main vllm-project/vllm:main from ekagra-ranjan:er-dsd-fcg ekagra-ranjan/vllm:er-dsd-fcg Copy head branch name to clipboard 
+ Conversation
+ ekagra-ranjan 
+ commented
+ Jun 17, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Followup to DSD: #32374 which ran only with MRv1 and Piecewise graph.
+ This PR mainly enables DSD with MRv2 + FCG. DSD + MRv1 is still on PW.
+ Currently, we capture FCG for decode only for given K say K=3 which meant only multiple of K+1=4 size of graph are captured. However, in DSD the chosen optimal draft k can be <K during scheduling which would lead to missing the graph. This PR captures all possible shapes only when using DSD to leverage FCG.
+ It also decouples the CG size being captured for prefill and decode phase which gives more flexibility in having graphs which are suitable for each of the phases. Previously, we had same CG size being captured for both phases and the decode graph size dictated the size to be captured ( #28207 ) which may not be optimal for prefill phase.
+ This PR also adds tests for ensuring that DSD captures FCG even when optimal draft len k < provided max draft len K :
+ test DSD uses FCG when uniform decode in FULL_AND_PIECEWISE 
+ test DSD uses PW when NOT uniform decode in FULL_AND_PIECEWISE 
+ test basic SD doesn't capture all shapes
+ Tests
+ pytest -sv tests/v1/spec_decode/test_dynamic_sd_cug.py
+pytest -sv tests/test_config.py::test_resolve_cudagraph_mode_adjusts_spec_decode_sizes_only_for_v1
+ Benchmark
+ Eagle3 + llama 3.18b + H100 + BS1
+TPOT (ms)
+ base EAGLE3 - 2.91
+ DSD EAGLE3 PW - 2.97
+ DSD EAGLE3 FCG - 2.91
+ Commands 
+ Basic SD
+ VLLM_USE_V2_MODEL_RUNNER=1 \
+vllm serve meta-llama/Llama-3.1-8B-Instruct \
+ --port 9001 \
+ --no-enable-prefix-caching \
+ --max-num-seqs 256 \
+ --speculative-config '{
+ "method": "eagle3",
+ "model": "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B",
+ "num_speculative_tokens": 3
+ }'
+ DSD PW - baseline
+ VLLM_USE_V2_MODEL_RUNNER=1 vllm serve meta-llama/Llama-3.1-8B-Instruct \
+ --port 9001 \
+ --no-enable-prefix-caching \
+ --max-num-seqs 256 \
+ --compilation-config '{"cudagraph_mode":"PIECEWISE"}' \
+ --speculative-config '{
+ "method": "eagle3",
+ "model": "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B",
+ "num_speculative_tokens": 3,
+ "num_speculative_tokens_per_batch_size": [
+ [1, 64, 3],
+ [65, 101, 2],
+ [102, 165, 1],
+ [166, 256, 0]
+ ]
+ }' 
+ DSD FCG
+ VLLM_USE_V2_MODEL_RUNNER=1 vllm serve meta-llama/Llama-3.1-8B-Instruct \
+ --port 9001 \
+ --no-enable-prefix-caching \
+ --max-num-seqs 256 \
+ --speculative-config '{
+ "method": "eagle3",
+ "model": "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B",
+ "num_speculative_tokens": 3,
+ "num_speculative_tokens_per_batch_size": [
+ [1, 64, 3],
+ [65, 101, 2],
+ [102, 165, 1],
+ [166, 256, 0]
+ ]
+ }'
+ Benchmark
+ time vllm bench serve --port 9001 \
+ --model meta-llama/Llama-3.1-8B-Instruct \
+ --backend openai-chat \
+ --endpoint /v1/chat/completions \
+ --dataset-name hf \
+ --dataset-path philschmid/mt-bench \
+ --max_concurrency 1 \
+ --num_prompts 80 \
+ --save-detailed
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ 👍 
+ 1 
+ depthfirst-app[bot] reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ ekagra-ranjan 
+ added 8 commits
+ June 16, 2026 22:15 
+ conflict 
+ …
+ d33fd9b 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ remove restriction on mrv2 and fcg 
+ …
+ a381f7c 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ ignore 
+ …
+ 2c99434 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ ignore 
+ …
+ 7db954c 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ add main change and cmment log 
+ …
+ 3f7c4b8 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ add tests 
+ …
+ 69072aa 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ remove logging 
+ …
+ e85f470 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ clean 
+ …
+ 0a8519c 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ mergify 
+ Bot 
+ added
+ nvidia
+ speculative-decoding
+ v1
+ labels
+ Jun 17, 2026 
+ github-project-automation 
+ Bot 
+ added this to NVIDIA 
+ Jun 17, 2026 
+ ekagra-ranjan 
+ marked this pull request as ready for review
+ June 17, 2026 19:02 
+ ekagra-ranjan 
+ requested review from
+ ProExpertProg , 
+ WoosukKwon , 
+ houseroad , 
+ mgoin , 
+ njhill , 
+ robertgshaw2-redhat , 
+ tlrmchlsmth , 
+ yewentao256 and 
+ youkaichao 
+ as code owners 
+ June 17, 2026 19:02 
+ ekagra-ranjan 
+ commented
+ Jun 17, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ cc: @LucasWilkinson @benchislett 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ update doc 
+ …
+ b8bb787 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ mergify 
+ Bot 
+ commented
+ Jun 17, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Documentation preview: https://vllm--45953.org.readthedocs.build/en/45953/ 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ mergify 
+ Bot 
+ added
+ the 
+ documentation
+ Improvements or additions to documentation 
+ label
+ Jun 17, 2026 
+ LucasWilkinson 
+ reviewed
+ Jun 17, 2026 
+ View reviewed changes 
+ Comment thread 
+ vllm/v1/worker/gpu/cudagraph_utils.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ vllm/v1/worker/gpu/cudagraph_utils.py 
+ Outdated
+ self.vllm_config.speculative_config 
+ and self.vllm_config.speculative_config.uses_dynamic_speculative_decoding() 
+ ): 
+ decode_query_lens = list(range(1, self.decode_query_len + 1)) 
+ LucasWilkinson 
+ Jun 17, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ nit: do we need all of the lens? should we have a fixed set from num_speculative_tokens_per_batch_size ?
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ ekagra-ranjan 
+ Jun 20, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ I thought about this too. I think we should capture all for decode phase. The practical value of max K is usually 3 for eagle, 4 for eagle-3 and maybe 7 for DFlash for smaller BS so the num of iterations wont be a lot and many of the captured graphs would overlap so the num of unique graphs is not proportional to max K.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ LucasWilkinson 
+ Jun 30, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Im still confused though; why take the startup-time and memory hit for graphs that won't be used (since they dont show up in num_speculative_tokens_per_batch_size ) ?
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ ekagra-ranjan 
+ Jul 3, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ I see what you mean now. Will fix it
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ ekagra-ranjan 
+ Jul 3, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ done!
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ benchislett 
+ reviewed
+ Jun 17, 2026 
+ View reviewed changes 
+ Comment thread 
+ vllm/config/compilation.py 
+ "and make sure compilation mode is VLLM_COMPILE" 
+ ) 
+ # Adjust cudagraph sizes to be a multiple of uniform_decode_query_len 
+ benchislett 
+ Jun 17, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Will this affect MRV1? If so, is this safe?
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ ekagra-ranjan 
+ Jun 20, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ good catch! I have now disabled this logic only for MRv2 and added a test to ensure this
+ pytest -sv tests/test_config.py::test_resolve_cudagraph_mode_adjusts_spec_decode_sizes_only_for_v1
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ benchislett 
+ reviewed
+ Jun 17, 2026 
+ View reviewed changes 
+ Comment thread 
+ vllm/config/vllm.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ benchislett 
+ reviewed
+ Jun 17, 2026 
+ View reviewed changes 
+ Comment thread 
+ vllm/v1/worker/gpu/cudagraph_utils.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ 29 hidden items
+ Load more…
+ WoosukKwon 
+ requested a review
+ from TheEpicDolphin 
+ July 2, 2026 23:38 
+ olka 
+ mentioned this pull request
+ Jul 3, 2026 
+ [Spec Decode] Enable full CUDA graphs on padded DSpark
+ #47513 
+ Closed
+ olka 
+ commented
+ Jul 3, 2026 
+ Copy link
+ Copy Markdown
+ #47513 overlaps in the multi-width FULL capture layer with this PR but happy to coordinate and rebase on top of this one
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ekagra-ranjan 
+ and others 
+ added 3 commits
+ July 3, 2026 11:40 
+ Update vllm/v1/worker/gpu_model_runner.py 
+ …
+ c479f65 
+ Co-authored-by: Nick Hill <nickhill123@gmail.com>
+Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ conflict 
+ …
+ b8b97a4 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ resolve comment 
+ …
+ 34ee4aa 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ mergify 
+ Bot 
+ removed
+ the 
+ needs-rebase
+ label
+ Jul 3, 2026 
+ mypu 
+ …
+ a05fcf8 
+ Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com> 
+ ekagra-ranjan 
+ requested a review
+ from LucasWilkinson 
+ July 3, 2026 18:46 
+ ekagra-ranjan 
+ commented
+ Jul 3, 2026 
+ View reviewed changes 
+ Comment thread 
+ vllm/v1/worker/gpu/cudagraph_utils.py 
+ Comment on lines
+ +217
+ to 
+ +223
+ num_new_sampled_tokens_per_step = ( 
+ self.decode_query_len - self.vllm_config.num_speculative_tokens 
+ ) 
+ # Each entry is (range_start, range_end, num_speculative_tokens). 
+ decode_query_lens = [ 
+ x[2] + num_new_sampled_tokens_per_step for x in num_spec_per_batch_size 
+ ] 
+ ekagra-ranjan 
+ Jul 3, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ @LucasWilkinson - now we only capture what was specified in num_speculative_tokens_per_batch_size 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ benchislett 
+ Jul 3, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Member 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ In which scenarios is num_new_sampled_tokens_per_step not equal to 1? Diffusion? Could you help me understand the meaning of this variable
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ ekagra-ranjan 
+ Jul 4, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Good Ques. I picked up this variable from here . DiffusionGemma sets it to 0 here .
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ ekagra-ranjan 
+ commented
+ Jul 3, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ The CI passes and the comments have been resolved.
+ --> 
+ 🎉 
+ 1 
+ olka reacted with hooray emoji 
+ All reactions 
+ 🎉 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Hide details 
+ View details 
+ LucasWilkinson 
+ merged commit 07516fd 
+ into
+ vllm-project : main 
+ Jul 4, 2026 
+ 104 checks passed
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ github-project-automation 
+ Bot 
+ moved this from Ready 
+ to Done 
+ in NVIDIA 
+ Jul 4, 2026 
+ davidzha712 
+ mentioned this pull request
+ Jul 4, 2026 
+ fix(cudagraph): align spec-decode capture sizes for PIECEWISE mode
+ #46324 
+ Open
+ benchislett 
+ mentioned this pull request
+ Jul 7, 2026 
+ [RFC]: Packed Variable Length Speculative Decoding
+ #47839 
+ Closed
+ 1 task 
+ HF-001 
+ mentioned this pull request
+ Jul 7, 2026 
+ [wip][Feature] Make Dynamic SD comatible with Full Graphs
+ vllm-project/vllm-ascend#11552 
+ Open
+ LJX-xixi 
+ mentioned this pull request
+ Jul 10, 2026 
+ [RFC]: Per-request effective proposal lengths for adaptive speculative decoding
+ #48202 
+ Closed
+ 1 task 
+ zhao-stack 
+ mentioned this pull request
+ Jul 13, 2026 
+ [CI]main2main 0710
+ vllm-project/vllm-ascend#11709 
+ Merged
+ seongyun1104 
+ mentioned this pull request
+ Jul 13, 2026 
+ [Bug][Spec Decode] num_speculative_tokens_per_batch_size + MTP speculator fails full CUDA graph decode capture (InputBatch.make_dummy assert)
+ #48494 
+ Open
+ zhao-stack 
+ mentioned this pull request
+ Jul 14, 2026 
+ [CI] main2mainv0.24
+ vllm-project/vllm-ascend#11875 
+ Closed
+ NickLucche 
+ pushed a commit
+ to NickLucche/vllm
+ that referenced
+ this pull request
+ Jul 15, 2026 
+ [MRV2][SD] Make Dynamic SD comatible with Full Cuda Graphs ( vllm-proj… 
+ … 
+ c24bbe1 
+ …ect#45953 )
+Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com>
+Co-authored-by: Benjamin Chislett <chislett.ben@gmail.com>
+Co-authored-by: Nick Hill <nickhill123@gmail.com> 
+ wangyicong52 
+ pushed a commit
+ to wangyicong52/vllm
+ that referenced
+ this pull request
+ Jul 16, 2026 
+ [MRV2][SD] Make Dynamic SD comatible with Full Cuda Graphs ( vllm-proj… 
+ … 
+ f985e38 
+ …ect#45953 )
+Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com>
+Co-authored-by: Benjamin Chislett <chislett.ben@gmail.com>
+Co-authored-by: Nick Hill <nickhill123@gmail.com>
+(cherry picked from commit 07516fd ) 
+ philippesic 
+ pushed a commit
+ to philippesic/vllm-semantic-cache
+ that referenced
+ this pull request
+ Jul 19, 2026 
+ [MRV2][SD] Make Dynamic SD comatible with Full Cuda Graphs ( vllm-proj… 
+ … 
+ 55af3eb 
+ …ect#45953 )
+Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com>
+Co-authored-by: Benjamin Chislett <chislett.ben@gmail.com>
+Co-authored-by: Nick Hill <nickhill123@gmail.com> 
+ plasticchris 
+ pushed a commit
+ to plasticchris/vllm
+ that referenced
+ this pull request
+ Jul 20, 2026 
+ [MRV2][SD] Make Dynamic SD comatible with Full Cuda Graphs ( vllm-proj… 
+ … 
+ b774911 
+ …ect#45953 )
+Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com>
+Co-authored-by: Benjamin Chislett <chislett.ben@gmail.com>
+Co-authored-by: Nick Hill <nickhill123@gmail.com> 
+ aditi-amd 
+ pushed a commit
+ to aditi-amd/vllm
+ that referenced
+ this pull request
+ Aug 4, 2026 
+ [MRV2][SD] Make Dynamic SD comatible with Full Cuda Graphs ( vllm-proj… 
+ … 
+ 50fc29e 
+ …ect#45953 )
+Signed-off-by: Ekagra Ranjan <3116519+ekagra-ranjan@users.noreply.github.com>
+Co-authored-by: Benjamin Chislett <chislett.ben@gmail.com>
+Co-authored-by: Nick Hill <nickhill123@gmail.com>
+Signed-off-by: root <root@smci355-ccs-aus-m02-09.cs-aus.dcgpu> 
+ HF-001 
+ mentioned this pull request
+ Aug 7, 2026 
+ [Feature] DSD full graph in MRV2
+ vllm-project/vllm-ascend#13788 
+ Closed
+ Suppressor72 
+ mentioned this pull request
+ Aug 8, 2026 
+ [Bug][Spec Decode] MRV2 AutoRegressiveSpeculator ignores dynamic K from scheduler — DSD non-functional on MRV2
+ #51510 
+ Open
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ njhill 
+ njhill left review comments 
+ WoosukKwon 
+ Awaiting requested review from WoosukKwon 
+ WoosukKwon is a code owner 
+ yewentao256 
+ Awaiting requested review from yewentao256 
+ yewentao256 is a code owner 
+ youkaichao 
+ Awaiting requested review from youkaichao 
+ youkaichao is a code owner 
+ robertgshaw2-redhat 
+ Awaiting requested review from robertgshaw2-redhat 
+ robertgshaw2-redhat is a code owner 
+ mgoin 
+ Awaiting requested review from mgoin 
+ mgoin is a code owner 
+ tlrmchlsmth 
+ Awaiting requested review from tlrmchlsmth 
+ tlrmchlsmth is a code owner 
+ houseroad 
+ Awaiting requested review from houseroad 
+ houseroad is a code owner 
+ ProExpertProg 
+ Awaiting requested review from ProExpertProg 
+ ProExpertProg is a code owner 
+ benchislett 
+ Awaiting requested review from benchislett 
+ TheEpicDolphin 
+ Awaiting requested review from TheEpicDolphin 
+ LucasWilkinson 
+ Awaiting requested review from LucasWilkinson 
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ documentation 
+ Improvements or additions to documentation 
+ nvidia 
+ ready 
+ ONLY add when PR is ready to merge/full CI is needed 
+ speculative-decoding 
+ v1 
+ --> 
+ Projects
+ NVIDIA 
+ Status: Done
+ +6 more
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 5 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

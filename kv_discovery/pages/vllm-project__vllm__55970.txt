@@ -1,0 +1,48 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/55970  (is_pr=True, 300697 bytes)
+LAYOUT NODE (PR):
+  number = 55970
+  title = [HiSparse] Expose cache metrics via typed KV connector stats
+  state = CLOSED
+  closedTime = 2026-09-11T17:56:30Z
+  createdTime = 2026-09-08T21:54:16Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 1
+  baseBranch = feat/kv-connector-typed-stats
+  headBranch = feat/hisparse-connector-stats
+  author = LucasWilkinson
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOI7xeftoAKDgwMDI1YmEwNTMwOTllOGI3OTVjMTY5MjUxMTUyYWM0OTk5MTJmYWU"> | [HiSparse] Expose cache metrics via KV connector stats | … | 80025ba | Count hot-buffer hits and misses in the swap-in kernel and report them | from HiSparseConnectorWorker.get_kv_connector_stats() as typed connector | stats sampled every 2000 worker steps, so the model runner, output | aggregator, scheduler and Prometheus logger need no HiSparse-specific | plumbing. HiSparseConnector declares its three counters and builds the | generic stats and Prometheus classes; Mult
+EV: js-timeline-progressive-focus-container" data-gid="LE_lADOI7xefs8AAAABQWf3Tc8AAAAHKxBZhg"> | mergify | Bot | added | the | kv-connector | label | Sep 8, 2026 | LucasWilkinson | mentioned this pull request | Sep 9, 2026 | [HiSparse] Describe KV cache placement with block pools | #56008 | Closed | LucasWilkinson | closed this | Sep 11, 2026 | --> | This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters. | Lea
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=LucasWilkinson date=2026-09-08T21:54:16Z]
+Summary
+
+Reworks #53782 on top of the typed connector stats from #55969 so HiSparse cache metrics flow through the existing KVConnectorStats pipeline with no HiSparse-specific code in the model runner, output aggregator, scheduler, or Prometheus logger:
+
+- The swap-in kernel accumulates hot-buffer hits and misses into a per-index-group uint64[2] device counter (unchanged from [4/N] Expose HiSparse cache metrics #53782).
+
+- HiSparseConnectorWorker.get_kv_connector_stats() snapshots the counters every 2,000 worker steps via a pinned host copy ordered after in-flight swaps, and reports the completed delta as a TypedKVConnectorStats with three counters: vllm:hisparse_cache_hits, vllm:hisparse_cache_misses, vllm:hisparse_host_to_device_bytes.
+
+- HiSparseConnector declares its metrics in hisparse/metrics.py and implements get_kv_connector_stats / build_kv_connector_stats / build_prom_metrics with the generic classes, so no stats subclass is needed and the stats compose with other metric families (e.g. inside MultiConnector).
+
+Compared to #53782 this removes KVConnectorBase_V1.finish_step, ModelRunnerOutput.hisparse_stats, SchedulerStats.hisparse_stats, HiSparseStats, the aggregator branch, and the hard-coded counters in PrometheusStatLogger; it also picks up the no_forward and MultiConnector paths for free since they already call get_kv_connector_stats. The stats assertion in test_hisparse_swap_in_preserves_rows_across_eviction is fixed to use the real swap_in signature.
+
+Known follow-ups (carried over from #53782, not addressed here): dummy runs (profiling, eager warmup, DP idle steps) still increment the device counters; hits/misses are summed across TP ranks; the 2,000-step sampling interval hides short runs.
+
+Stacked on #55969; intended to replace #53782 (which #55398 currently stacks on) once reviewed.
+
+Tests
+
+pytest tests/v1/kv_connector/unit/test_hisparse_connector.py tests/v1/worker/test_utils.py tests/v1/kv_connector/unit/test_typed_metrics.py -q
+
+42 passed.
+
+chg run -g 1 -- pytest tests/v1/attention/test_sparse_mla_backends.py -k "hisparse_swap_in_preserves_rows_across_eviction or hisparse_multi_step" -q
+
+2 passed. Also -k hisparse over the whole file: 30 passed (H100, extensions rebuilt from this branch's csrc). pre-commit run mypy-3.12 --hook-stage manual on the HiSparse files: passed.
+
+AI assistance (Claude Code) was used for the implementation; the original metrics collection is from #53782.

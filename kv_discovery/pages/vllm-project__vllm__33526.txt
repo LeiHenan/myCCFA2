@@ -1,0 +1,215 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/33526  (is_pr=False, 322245 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 33526
+  title = [RFC]: Progressive KV Cache CPU Onloading
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2026-02-01T23:47:33Z
+  updatedAt = 2026-06-13T02:21:05Z
+  closedAt = None
+  author = pougetat
+  labels = ['RFC', 'stale']
+
+[GRAPHQL COMMENT by robertgshaw2-redhat assoc=COLLABORATOR at 2026-02-02T00:41:42Z]
+Im wondering if you have a sample workload that benefits from this to help moitvate the feature and also give us something to track performance against
+
+[GRAPHQL COMMENT by orozery assoc=COLLABORATOR at 2026-02-02T07:46:06Z]
+Thank you for proposing this clear and detailed RFC!
+In theory this could be indeed helpful in the situation you described.
+It does come with a tradeoff of implementation complexity.
+In particular, to pull it off you would need to somehow propagate batch-level completions of onload operations.
+This is currently not cleanly possible with the current connector API, though PR #31964 may enable it.
+Even with #31964 merged, it is still not enough and you would need more changes to the vLLM core.
+Specifically, you would need some new API that will allow the connector to cache the GPU blocks of the completed onloaded batch in the GPU prefix cache.
+
+The reason request B is blocked in the first place is the optimization I've added in #29087, while trying to avoid changes to the vLLM core.
+I'm actually not sure this optimization has any real-life benefits, but it was relatively easy to implement.
+My motivation behind it was actually not saving time, but actually reducing the GPU KV cache usage (by avoiding duplicating KV data across requests with the same prefix).
+The penalty for the use-case you're describing is a delay of request B, up to the time it takes to onload request A.
+In practice, this delay should be upto ~1s, but more commonly (assuming A does not take up the entire KV cache) it will be upto a few 10s of ms.
+I think this is less of an issue, and in particular because it is currently not linked to any real-life use-case.
+
+[GRAPHQL COMMENT by pougetat assoc=CONTRIBUTOR at 2026-02-05T02:58:09Z]
+Sorry for the late reply!
+
+Totally fair comments, the motivation here is mostly just based off of existing discussions I've found in the CPU offloading slack channel ("functional enhancements that we would like such as progressive saving notifications" - @njhill ) and one of the discussion docs for KVConnector API: [KVConnector API Evolution](https://docs.google.com/document/d/1933jLRluUpQRFLK_w7nJQ9JIUqvoHCXQoJdWLLmox6Q/edit?tab=t.0) (see point 8: "Possible downside: short prefill could be held up by long prefill which it’s a prefix of. Could be mitigated by progressive reporting of loaded blocks (see 4., 5.)")
+
+I can come up with a synthetic workload to show the theoretical improvements (I'm away this week) but if someone can shed some additional light in terms of if this is no longer needed or if folks are thinking of something else in terms of "progressive onloading" that would be super useful!
+
+[GRAPHQL COMMENT by pougetat assoc=CONTRIBUTOR at 2026-02-12T09:02:39Z]
+@robertgshaw2-redhat  @orozery 
+
+Just to close the loop here, I came up with the following benchmark for my Nvidia L4.
+This test is essentially just prewarming CPU memory with 10 prompts (6K ISL) and then resetting the prefix cache before sending 10 concurrent requests, 1 for each of the 10 prompts, to measure the delays incurred by the requests.
+
+This doesn't exactly measure the latency experienced by a request sharing a prefix with another whose blocks are being loaded but it does show that the scheduler<->worker path already adds enough latency that progressive onloading itself won't be super beneficial... the cost of CPU->GPU transfers is much smaller in comparison (see metrics below).
+
+That being said, I think there's value in adding a metric that can measure this latency segment a bit more comprehensively, so I created the following PR to add it: #34409 
+
+This latency is going to bubble up into a higher level metric, but this one is at least more scope to the KV connector logic itself.
+
+```
+(base) thomas_pougetabadie_gmail_com@instance-20260112-035650:~/vllm$ ./load_test_cpu_only.sh -p 1 -P 10 -i 6000 -n 10 -o 50
+[*] Reading 10 prompts starting from 1 from prompts_isl_6000.txt...
+    Prompt 1 length: 37924 characters
+    Prompt 2 length: 37877 characters
+    Prompt 3 length: 37735 characters
+    Prompt 4 length: 37816 characters
+    Prompt 5 length: 37553 characters
+    Prompt 6 length: 38054 characters
+    Prompt 7 length: 37847 characters
+    Prompt 8 length: 37881 characters
+    Prompt 9 length: 37962 characters
+    Prompt 10 length: 37659 characters
+[*] Checking server connectivity...
+    Server is reachable
+
+================================================================================
+CPU CACHE WARMING TEST
+================================================================================
+Server: http://localhost:8000
+Model: Qwen/Qwen2.5-7B-Instruct
+Prompts: #1-10 from ISL 6000 (10 prompts)
+Output tokens: 50
+Total requests: 10
+Requests per prompt: 1 (sent in batches of 10)
+
+[1] WARMUP: Sending initial request(s) to populate GPU cache...
+    Prompt 1 warmup completed in 4.543s
+    Prompt 2 warmup completed in 2.976s
+    Prompt 3 warmup completed in 4.555s
+    Prompt 4 warmup completed in 4.568s
+    Prompt 5 warmup completed in 4.424s
+    Prompt 6 warmup completed in 2.980s
+    Prompt 7 warmup completed in 4.610s
+    Prompt 8 warmup completed in 4.610s
+    Prompt 9 warmup completed in 4.630s
+    Prompt 10 warmup completed in 4.623s
+    All warmup requests completed (avg: 4.252s)
+    Waiting 3s for potential CPU offloading...
+
+[2] RESET: Resetting prefix cache to offload blocks to CPU...
+    Cache reset successful
+    Waiting 2s for offloading to complete...
+
+[3] TEST: Sending 1 batches of 10 requests (10 total)...
+
+Batch 1/1:
+  [09:40:44] Batch completed in 22.959s (running avg per request: 18.445s)
+
+================================================================================
+RESULTS
+================================================================================
+Request timing statistics (10 requests):
+  Warmup time:  4.623s
+  Average time: 18.445s
+  Min time:     12.813s
+  Max time:     22.906s
+  Total time:   184.451s
+
+Per-request CPU load metrics:
+  Count:        6.0 requests
+  Total time:   3.0567467169998963s
+  Avg load time: 0.509s/req
+
+Block-level CPU→GPU transfer metrics:
+  Operations:   6.0 ops
+  Total bytes:  1112.12 MB
+  Avg time:     16.485 ms/op
+
+Block-level GPU→CPU transfer metrics:
+  Operations:   114.0 ops
+  Total bytes:  12649.00 MB
+  Avg time:     9.171 ms/op
+```
+
+
+https://github.com/vllm-project/vllm/pull/34409
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-05-14T02:18:03Z]
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-06-13T02:21:04Z]
+This issue has been automatically closed due to inactivity. Please feel free to reopen if you feel it is still relevant. Thank you!
+
+[GRAPHQL CLOSED by github-actions at 2026-06-13T02:21:05Z reason=NOT_PLANNED]
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=pougetat date=Feb 1, 2026]
+Motivation.
+
+KV Cache CPU offloading is a new native vLLM feature introduced with RFC #19854. It enables offloading of KV cache blocks to CPU memory from GPU memory which is especially useful when not enough GPU memory is available for storage.
+
+The current design onloads KV cache blocks for entire requests at once and prevents concurrent onloading operations for the same KV cache blocks.
+
+This can introduce a head of line blocking bottleneck where a larger request sharing the same prefix as a smaller request prevents the smaller request from being scheduled due to the larger request’s blocks being onloaded. The smaller request needs to wait for all of the blocks relevant to the larger request to be onloaded before it can be scheduled, even if it only requires a small portion of the blocks for itself.
+
+Already discussed as a desired feature, this RFC outlines support for more progressive onloading of KV cache blocks such that the head of line blocking issue is reduced.
+
+Proposed Change.
+
+A quick recap of the existing design
+
+The following diagram taken from RFC #19854 illustrates the current design of CPU offloading.
+
+Batched Progressive Loading
+
+Instead of a single block transfer request per inference request, we can split up our transfers into multiple, each covering a subset of the required blocks.
+
+Core changes:
+
+- We introduce a new BatchTransferSpec representing a dictionary of BatchIds to TransferSpecs. The worker process will be able to operate on these batches and build KVConnectorMetadata from it specific to those batches. We no longer operate on individual requests for load operations.
+
+- For the OffloadingConnectorScheduler, we will need to maintain a mapping of BatchIds to BlockHashes similar to how we currently maintain a mapping of ReqIds to BlockHashes.
+
+- The Worker Process currently tracks a map of JobIds to RequestIds, used when building KVConnectorMetadata to signal which requests have had their blocks loaded from CPU memory. This will be updated to map JobIds to BatchTransferSpec since we no longer load all blocks for a request at once.
+
+- The CPU->GPU worker process performs swap_block operations on each list of blocks defined in a BatchTransferSpec.
+
+- When ModelRunnerOutput is relayed back to the scheduler, the list of BatchIds will be relayed instead of ReqIds. Important note: This does not actually require an API change given that KVConnectorMetadata currently accepts a []string as input so BatchIds can be used as a replacement for RequestIds.
+
+Notes:
+
+- We keep the store path completely unchanged for now, with the potential to introduce batching for it as well in the future.
+
+- The OffloadingConnectorScheduler will be responsible for dictating batching parameters. We discuss the actual batching sizes and how they’re chosen in the next section.
+
+Variable Batch Sizing
+
+We propose a “smart batching” strategy meant to:
+
+- Lower processing start time for short requests sharing blocks with a longer request.
+
+- Avoid introducing too much overhead with too aggressive batching, especially when it comes to longer requests.
+
+Our batching strategy tries to solve this problem by:
+
+- Batching more aggressively for the start of a request: The first 100 blockIds are split into batches of 10 blocks.
+
+- Batching less aggressively for the later portions of a request: The blockIds > 100 are split into batches of 100 blocks.
+
+We could take this further and increase batch size dynamically past the first 100 blocks based on request side, this first iteration of the RFC tries to keep things simple.
+
+We also will need to discuss what makes sense for the threshold of the first section of more aggressively batched block requests, currently defined as 100.
+
+Revisiting the head of line blocking problem:
+
+Feedback Period.
+
+One week.
+
+CC List.
+
+@orozery @WoosukKwon @simon-mo @robertgshaw2-redhat @njhill
+
+Any Other Things.
+
+No response
+
+Before submitting a new issue...
+
+- Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page, which can answer lots of frequently asked questions.

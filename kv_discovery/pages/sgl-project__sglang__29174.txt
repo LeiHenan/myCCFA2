@@ -1,0 +1,408 @@
+FETCHED: https://github.com/sgl-project/sglang/issues/29174  (is_pr=True, 451582 bytes)
+LAYOUT NODE (PR):
+  number = 29174
+  title = Add experimental agent-aware KV cache hints
+  state = CLOSED
+  closedTime = 2026-06-24T22:21:29Z
+  createdTime = 2026-06-24T12:32:09Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 1
+  baseBranch = main
+  headBranch = agent-aware-kv-cache-phase1
+  author = githubshaurya
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="RRE_lADOLCAjRs8AAAABGjfI6M8AAAAGUfObTA"> | githubshaurya | requested review from | CatherineSue, | JustinTong0323, | Ying1123, | alphabetc1, | hanming-lu, | hnyls2002, | hzh0425, | ispobock, | merrymercy, | slin1237, | xiezhq-hermann and | yizhang2077 | as code owners | June 24, 2026 12:32 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="PRR_kwDOLCAjRs8AAAABD-1crA"> | gemini-code-assist | Bot | reviewed | Jun 24, 2026 | View reviewed changes | gemini-code-assist | Bot | left a comment | Copy link | Copy Markdown | Contributor | There was a problem hiding this comment. | <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6
+EV: js-timeline-progressive-focus-container" data-gid="HRFPE_lADOLCAjRs8AAAABGjfI6M8AAAAGUfVUUw"> | githubshaurya | force-pushed | the | agent-aware-kv-cache-phase1 | branch | from | f0f6b80 to | 15f82fb | Compare | June 24, 2026 12:34 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOLCAjRtoAKDY4NTFjNzUwOGQ1ZWE4OTA5YzQ0ODgwZTc3Y2E1M2NjYzU4MWY1ODc"> | Add experimental agent-aware KV cache hints | 6851c75 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="HRFPE_lADOLCAjRs8AAAABGjfI6M8AAAAGUiYmiQ"> | githubshaurya | force-pushed | the | agent-aware-kv-cache-phase1 | branch | from | 15f82fb to | 6851c75 | Compare | June 24, 2026 13:48 | githubshaurya | closed this | Jun 24, 2026 | githubshaurya | deleted the | agent-aware-kv-cache-phase1 | branch | June 24, 2026 22:21 | --><form class="d-none js-timeline-marker-form" data-tu
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=githubshaurya date=2026-06-24T12:32:09Z]
+Motivation
+
+This PR adds a narrow Phase 1 implementation for experimental agent-aware KV cache metadata.
+
+Agentic workloads often issue multi-step requests where future reuse is not purely reflected by recent access time. This change allows clients to attach lightweight request metadata such as workflow/agent/step identifiers, TTL hints, and reuse hints, then uses those hints only for local radix-cache metadata annotation and optional experimental eviction ordering.
+
+Modifications
+
+- Added optional OpenAI-compatible request metadata field: agent_hints.
+
+- Added supported hint fields:
+
+- workflow_id
+
+- agent_id
+
+- step_id
+
+- parent_step_id
+
+- expected_tool_duration_ms
+
+- cache_ttl_ms
+
+- reuse_hint
+
+- Propagated agent_hints through:
+
+- OpenAI protocol request models
+
+- chat/completions serving request construction
+
+- GenerateReqInput normalization and slicing
+
+- tokenizer-manager request conversion
+
+- scheduler request construction
+
+- session-controller request construction
+
+- Added TreeNode.agent_meta for radix-cache node metadata.
+
+- Annotated radix-cache nodes with agent metadata when requests are cached.
+
+- Added experimental agent_aware radix-cache eviction policy.
+
+- Registered agent_aware in radix-cache eviction policy choices.
+
+- Added targeted unit tests for:
+
+- OpenAI protocol validation
+
+- GenerateReqInput normalization/batching behavior
+
+- agent-aware eviction ranking
+
+- radix-cache node metadata annotation
+
+Accuracy Tests
+
+Ran targeted unit tests from Windows PowerShell with local package path configured:
+
+$env:PYTHONPATH = (Resolve-Path .\python).Path
+
+python3 -m pytest -q test/registered/unit/entrypoints/openai/test_protocol.py -k agent
+python3 -m pytest -q test/registered/unit/managers/test_io_struct.py -k agent
+python3 -m pytest -q test/registered/unit/mem_cache/test_evict_policy.py -k agent
+python3 -m pytest -q test/registered/unit/mem_cache/test_radix_cache_unit.py -k agent
+
+<!-- pr-states:start -->
+---
+### CI States
+
+Latest PR Test (Base): <!-- slot:pr-test:start -->:x: [Run #28103308013](https://github.com/sgl-project/sglang/actions/runs/28103308013)<!-- slot:pr-test:end -->
+Latest PR Test (Extra): <!-- slot:pr-test-extra:start -->:x: [Run #28103307981](https://github.com/sgl-project/sglang/actions/runs/28103307981)<!-- slot:pr-test-extra:end -->
+<!-- pr-states:end -->
+
+[RENDERED BLOCK author=? date=2026-06-24T12:34:20Z]
+Code Review
+
+This pull request introduces agent-aware KV cache hints (agent_hints) to the OpenAI protocol and internal request structures, enabling a new AgentAwareStrategy eviction policy that utilizes TTL and reuse hints for cache management. While the implementation is well-tested, several issues were identified in the review: a missing time import in radix_cache.py will cause a runtime NameError, duplicate definitions of _normalize_agent_hints and the agent_hints field exist in io_struct.py, an unused local variable was left in serving_chat.py, and the eviction bucket precedence logic in evict_policy.py is prone to incorrect overwrites and should be refactored.
+
+ Important
+The consumer version of Gemini Code Assist on GitHub is being sunset. Starting June 18, 2026, new organization installations will be blocked, and all code review activity will officially cease on July 17, 2026.
+
+For more details on the timeline and next steps, please review the Help Documentation.
+
+[RENDERED BLOCK author=? date=2026-06-24T12:34:20Z]
+The time module is used in _annotate_agent_cache_node (specifically time.monotonic()), but it is not imported in this file. This will result in a NameError at runtime when attempting to annotate cache nodes with TTL hints. Please import time at the top of the file.
+
+ 
+ 
+ 
+ Suggested change
+ 
+
+ 
+
+ 
+ 
+ 
+ 
+
+ from __future__ import annotations
+
+ 
+
+ 
+ 
+
+ from __future__ import annotations
+
+ 
+
+ 
+ 
+
+ import time
+
+[RENDERED BLOCK author=? date=2026-06-24T12:34:20Z]
+The _normalize_agent_hints method is defined twice in this class (first at lines 606-621, and again here at lines 638-655). The second definition is redundant and should be removed.
+
+[RENDERED BLOCK author=? date=2026-06-24T12:34:20Z]
+The agent_hints field is defined twice in TokenizedGenerateReqInput (first at line 860, and again at line 865). Please remove the duplicate definition.
+
+ 
+ 
+ 
+ Suggested change
+ 
+
+ 
+
+ 
+ 
+ 
+ 
+
+ # Priority for the request
+
+ 
+
+ 
+ 
+
+ priority: Optional[int] = None
+
+ 
+
+ 
+ 
+
+ 
+
+ 
+
+ 
+ 
+
+ agent_hints: Optional[Dict[str, Any]] = None
+
+ 
+
+ 
+ 
+
+ # Priority for the request
+
+ 
+
+ 
+ 
+
+ priority: Optional[int] = None
+
+[RENDERED BLOCK author=? date=2026-06-24T12:34:20Z]
+The local variable agent_hints is defined here but never used, as GenerateReqInput is constructed later using a separate inline definition of agent_hints. This unused variable should be removed.
+
+[RENDERED BLOCK author=? date=2026-06-24T12:34:20Z]
+The current logic for determining the eviction bucket is prone to overwrites and hard to follow. For example, if expired_ttl is true, bucket is set to 0, but if reuse_hint is in HIGH_REUSE_HINTS, it gets overwritten to 2. Refactoring this to apply reuse hints first and then override them with TTL rules makes the precedence clear and robust.
+
+ 
+ 
+ 
+ Suggested change
+ 
+
+ 
+
+ 
+ 
+ 
+ 
+
+ active_ttl = ttl_deadline is not None and ttl_deadline > now
+
+ 
+
+ 
+ 
+
+ expired_ttl = ttl_deadline is not None and ttl_deadline <= now
+
+ 
+
+ 
+ 
+
+ 
+
+ 
+
+ 
+ 
+
+ if expired_ttl:
+
+ 
+
+ 
+ 
+
+ bucket = 0
+
+ 
+
+ 
+ 
+
+ elif reuse_hint in self.LOW_REUSE_HINTS:
+
+ 
+
+ 
+ 
+
+ bucket = 0
+
+ 
+
+ 
+ 
+
+ 
+
+ 
+
+ 
+ 
+
+ if reuse_hint in self.HIGH_REUSE_HINTS:
+
+ 
+
+ 
+ 
+
+ bucket = 2
+
+ 
+
+ 
+ 
+
+ 
+
+ 
+
+ 
+ 
+
+ # Active TTL is the strongest soft-retention signal.
+
+ 
+
+ 
+ 
+
+ # It must override low reuse_hint.
+
+ 
+
+ 
+ 
+
+ if active_ttl:
+
+ 
+
+ 
+ 
+
+ bucket = 2
+
+ 
+
+ 
+ 
+
+ active_ttl = ttl_deadline is not None and ttl_deadline > now
+
+ 
+
+ 
+ 
+
+ expired_ttl = ttl_deadline is not None and ttl_deadline <= now
+
+ 
+
+ 
+ 
+
+ 
+
+ 
+
+ 
+ 
+
+ if reuse_hint in self.HIGH_REUSE_HINTS:
+
+ 
+
+ 
+ 
+
+ bucket = 2
+
+ 
+
+ 
+ 
+
+ elif reuse_hint in self.LOW_REUSE_HINTS:
+
+ 
+
+ 
+ 
+
+ bucket = 0
+
+ 
+
+ 
+ 
+
+ 
+
+ 
+
+ 
+ 
+
+ # TTL rules override reuse hints
+
+ 
+
+ 
+ 
+
+ if active_ttl:
+
+ 
+
+ 
+ 
+
+ bucket = 2
+
+ 
+
+ 
+ 
+
+ elif expired_ttl:
+
+ 
+
+ 
+ 
+
+ bucket = 0

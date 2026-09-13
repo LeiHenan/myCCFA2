@@ -1,0 +1,1055 @@
+
+
+[Spec Decode] Adaptive verifier step-length for DFlash/PARD (D-Cut-style) by EanWang211123 · Pull Request #44885 · vllm-project/vllm · GitHub 
+
+Skip to content 
+
+Navigation Menu
+
+Sign in Appearance settings
+
+Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+GitHub Copilot app Direct agents from issue to merge 
+MCP Registry Integrate external tools 
+
+DEVELOPER WORKFLOWS Actions Automate any workflow 
+Codespaces Instant dev environments 
+Issues Plan and track work 
+Code Review Manage code changes 
+Code Quality Enforce quality at merge 
+
+APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+Code security Secure your code as you build 
+Secret protection Stop leaks before they start 
+
+EXPLORE Why GitHub 
+Documentation 
+Blog 
+Changelog 
+Marketplace 
+
+View all features 
+
+Solutions BY COMPANY SIZE Enterprises 
+Small and medium teams 
+Startups 
+Nonprofits 
+
+BY USE CASE App Modernization 
+DevSecOps 
+DevOps 
+CI/CD 
+View all use cases 
+
+BY INDUSTRY Healthcare 
+Financial services 
+Manufacturing 
+Government 
+View all industries 
+
+View all solutions 
+
+Resources EXPLORE BY TOPIC AI 
+Software Development 
+DevOps 
+Security 
+View all topics 
+
+EXPLORE BY TYPE Customer stories 
+Events & webinars 
+Ebooks & reports 
+Business insights 
+GitHub Skills 
+
+SUPPORT & SERVICES Documentation 
+Customer support 
+Community forum 
+Trust center 
+Partners 
+
+View all resources 
+
+Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+PROGRAMS Security Lab 
+Maintainer Community 
+GitHub Stars 
+Archive Program 
+
+REPOSITORIES Topics 
+Trending 
+Collections 
+
+Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+Copilot for Business Enterprise-grade AI features 
+Premium Support Enterprise-grade 24/7 support 
+
+Pricing 
+Search / 
+
+Sign in 
+Sign up Appearance settings
+
+You signed in with another tab or window. Reload to refresh your session. 
+You signed out in another tab or window. Reload to refresh your session. 
+You switched accounts on another tab or window. Reload to refresh your session. 
+
+Dismiss alert 
+
+{{ message }}
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+vllm-project
+
+/ 
+
+vllm 
+
+Public 
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+Notifications
+You must be signed in to change notification settings 
+
+Fork
+22.1k 
+
+Star
+91.6k 
+
+Code 
+
+Issues 
+2.4k 
+
+Pull requests 
+5k+ 
+
+Discussions 
+
+Actions 
+
+Projects 
+
+Security and quality 
+76 
+
+Insights 
+
+Additional navigation options 
+
+Code
+
+Issues
+
+Pull requests
+
+Discussions
+
+Actions
+
+Projects
+
+Security and quality
+
+Insights
+
+[Spec Decode] Adaptive verifier step-length for DFlash/PARD (D-Cut-style) - # 44885 
+# 44885 
+
+Closed 
+EanWang211123 wants to merge 7 commits into vllm-project:main vllm-project/vllm:main from EanWang211123:feat/d-cut/base EanWang211123/vllm:feat/d-cut/base Copy head branch name to clipboard 
+
+Conversation Commits 7 ( 7 ) Checks Files changed 
+
+Closed 
+[Spec Decode] Adaptive verifier step-length for DFlash/PARD (D-Cut-style) # 44885 EanWang211123 wants to merge 7 commits into vllm-project:main vllm-project/vllm:main from EanWang211123:feat/d-cut/base EanWang211123/vllm:feat/d-cut/base Copy head branch name to clipboard 
+
+Conversation
+
+EanWang211123 
+
+commented
+
+Jun 8, 2026 
+
+• 
+
+edited by github-actions
+Bot 
+
+Loading 
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+Copy link
+
+Copy Markdown
+
+Contributor 
+
+Purpose
+
+Add adaptive verifier step-length for parallel speculative decoding (DFlash, PARD / draft_model + parallel_drafting ). The drafter still proposes the full num_speculative_tokens every step, but the verifier dynamically shortens the next step's query_len based on drafter softmax probabilities and a profiled ITL cost table.
+
+Motivation
+
+PR #32374 shows that at high concurrency, truncated verifier shapes are more likely to run under PCG than FCG. The PCG–FCG latency gap at high batch sizes can be outweighed by the end-to-end gain from adaptive step-length pruning (less verify work on positions likely to be rejected).
+
+Core algorithm follows D-Cut: Adaptive Verification Depth Pruning for Speculative Decoding : hardware-profiled cost table + draft-confidence prefix-product scores + batch-wide global top-K allocation to maximize expected_accepted_tokens / verifier_ITL .
+
+Runtime flow
+
+Step N
+execute_model start
+→ read cached draft_len[req] from step N-1
+→ truncate scheduled_spec_decode_tokens
+(draft_len=0 removes the spec entry for that request)
+verifier forward (truncated query lengths)
+propose_draft_token_ids
+→ drafter still drafts full num_speculative_tokens
+→ selected_probs[B, T] (softmax prob of each sampled draft token)
+sample_tokens (after _bookkeeping_sync)
+→ choose_query_lens_discrete → cache draft_len[req] for step N+1
+
+Step N+1
+execute_model start applies the cached draft_len …
+
+probs(N) only affects verifier(N+1) (strict one-step lag).
+
+Core algorithm (D-Cut-style)
+
+Verifier cost is profiled as cost = ITL(batch_size, sum_query_len) , where
+
+sum_query_len = B + Σ_i draft_lens[i] (each sequence always contributes one
+
+anchor token).
+
+Per decode step, for active (post-prefill) sequences:
+
+Input : probs[i][t] — accept-probability proxy (softmax at the sampled
+
+draft token); B — full batch size; candidate Q — profiled sum_query_len 
+
+keys for bs_key (ceil of B on the batch axis).
+
+Marginal gain : m[i,t] = p[i,1] * … * p[i,t] . Within each sequence m 
+
+is non-increasing, so a global top- S pick satisfies the prefix constraint.
+
+Score each candidate Q : S = Q - B , score = (B + sum(top-S gains)) / cost_table[(bs_key, Q)] .
+
+Output : pick best Q , map top- best_S marginals to per-request
+
+draft_len[i] , cache for next-step truncation. Drafter still drafts full
+
+num_speculative_tokens ; only verifier query_len[i] = 1 + draft_len[i] is
+
+adapted (0 to num_speculative_tokens ).
+
+Implementation notes
+
+Probs transfer and CPU-side decision still add overhead; we avoid an extra
+
+blocking GPU sync on the critical path by piggybacking the D2H copy on the
+
+existing default-stream sync in RejectionSampler.parse_output .
+
+TP-safe: broadcast rank-0 cost_table after warmup profiling to avoid
+
+divergent draft_lens .
+
+Performance bottlenecks and outlook
+
+1. Low-concurrency overhead (~10%) 
+
+At concurrency 1, enabling adaptive verify still shows a measurable throughput
+
+drop vs static full-step verify (observed ~370 vs ~410 tok/s in internal runs;
+
+exact numbers depend on model / GPU). The main suspected bottleneck is
+
+selected_probs GPU→CPU transfer and the CPU-side marginal-gain decision — not
+
+the extra softmax in the drafter itself ( needs_draft_probs alone without the
+
+controller is much cheaper).
+
+Current mitigation (not zero-cost):
+
+Queue a non-blocking D2H copy of selected_probs to pinned CPU memory 
+
+on the default CUDA stream in _copy_draft_token_ids_to_cpu .
+
+Piggyback on the existing default-stream sync in
+
+RejectionSampler.parse_output (inside _bookkeeping_sync ), so we do not add
+
+a separate blocking .cpu() on the hot path.
+
+Run choose_query_lens_discrete at the end of sample_tokens , after
+
+bookkeeping, when the GPU is otherwise idle.
+
+This removes the worst-case standalone D2H stall, but residual cost remains:
+
+extra drafter logit/prob work, pinned-memory copy bandwidth, and NumPy decision
+
+latency. ~10% low-concurrency regression is still expected today and should
+
+be called out in benchmarks.
+
+2. Complementary control with PR #32374 
+
+This PR and PR #32374 target different levers and are intended to compose:
+
+PR #32374 
+This PR (adaptive verify) 
+
+When
+
+Prior — at / around draft time
+
+Posterior — after draft, before next verify
+
+Signal
+
+Draft-side scheduling / shape control
+
+Draft confidence ( selected_probs )
+
+Effect
+
+Better draft–verify shape alignment (e.g. PCG-friendly buckets)
+
+Shorter verifier query_len on low-confidence tails
+
+Together: PR #32374 improves the drafting / graph-shape side; this PR prunes
+
+verify depth from measured draft quality. At high concurrency the verify savings
+
+can dominate; at low concurrency the combined story is still being evaluated.
+
+3. Async scheduling 
+
+This change is developed and validated primarily on the synchronous DFlash
+
+path ( use_gpu_toks , drafter before _bookkeeping_sync ). Async scheduling
+
+( async_scheduling=True ) uses a different draft / bookkeeping ordering and may
+
+skip or defer _copy_draft_token_ids_to_cpu ; the adaptive hooks are not yet
+
+fully adapted to that pipeline. Follow-up work: relocate prob capture / consume
+
+to the async-specific draft sync points without breaking the one-step-lag
+
+correctness guarantee ( probs(N) → verifier(N+1) ).
+
+Changes
+
+New modules
+
+File 
+Summary 
+
+vllm/v1/spec_decode/verify_adaptive_config.py 
+
+JSON-backed config dataclass: profiling grid (batch / query_len axes), warmup_seq_lens , measurement iters, validation.
+
+vllm/v1/spec_decode/verify_adaptive_controller.py 
+
+Core controller: profile_cost_table , NumPy choose_query_lens_discrete , per-request draft_lens cache, TP broadcast of cost table.
+
+vllm/v1/spec_decode/verify_adaptive.md 
+
+Feature doc: enablement, runtime flow, cost model, code map.
+
+Config & CLI
+
+File 
+Summary 
+
+vllm/config/speculative.py 
+
+Add speculative_adaptive_verify_config field and supports_adaptive_verify() (DFlash or parallel draft_model only).
+
+vllm/engine/arg_utils.py 
+
+Add --speculative-adaptive-verify-config CLI flag and speculative-config JSON key wiring.
+
+Drafter: draft-token probability collection
+
+File 
+Summary 
+
+vllm/v1/spec_decode/llm_base_proposer.py 
+
+Add needs_draft_probs , _last_selected_probs , take_last_selected_probs() , _gather_selected_probs() (logsumexp, no full-vocab softmax). Extend _sample_draft_tokens to return selected_probs for parallel and serial draft paths.
+
+Runner integration
+
+File 
+Summary 
+
+vllm/v1/worker/gpu_model_runner.py 
+
+Init controller + pinned CPU buffer; truncate scheduled_spec_decode_tokens at execute_model start; non-blocking D2H in _copy_draft_token_ids_to_cpu (residual CPU/numpy cost remains); consume probs in sample_tokens after _bookkeeping_sync ; invalidate on request finish; _adaptive_profile_run + profile_adaptive_cost .
+
+vllm/v1/worker/gpu_worker.py 
+
+Call profile_adaptive_cost() at end of compile_or_warm_up_model (after CUDA-graph / JIT warmup).
+
+Test Plan
+
+Qwen3-8B, 2× RTX 4090, TP=2 : compare AR baseline vs DFlash/PARD static
+
+(full verify) vs dynamic (adaptive verify) at concurrency 4 / 16 / 32 / 48.
+
+Enable adaptive verify on DFlash and confirm adaptive: debug logs appear
+
+after warmup.
+
+TP=2 sustained load: no NCCL / RPC timeout observed.
+
+[x ] Verify correctness lag: step-N selected_probs only changes step-(N+1)
+
+verifier length (inspect per-step draft_lens logs).
+
+Example serve command (DFlash + adaptive verify):
+
+vllm serve Qwen/Qwen3-8B \
+--tensor-parallel-size 2 \
+--spec-method dflash \
+--spec-model < dflash_draft_model > \
+--spec-tokens 15 \
+--speculative-adaptive-verify-config /path/to/verify_adaptive_config.json
+
+Test Result
+
+Setup : Qwen3-8B, 2× RTX 4090, TP=2, output_throughput (tok/s).
+
+Concurrency 
+4 
+16 
+32 
+48 
+
+DFlash — AR baseline 
+
+331.68
+
+967.21
+
+1794.32
+
+1612.29
+
+DFlash — static (full verify)
+
+1057.60
+
+1896.82
+
+2347.33
+
+2451.30
+
+DFlash — dynamic (adaptive verify)
+
+926.87
+
+2141.59
+
+2784.74
+
+2638.20
+
+Concurrency 
+4 
+16 
+32 
+48 
+
+PARD — AR baseline 
+
+335.68
+
+883.11
+
+1479.43
+
+1703.14
+
+PARD — static (full verify)
+
+891.91
+
+1589.51
+
+2001.02
+
+2197.50
+
+PARD — dynamic (adaptive verify)
+
+643.67
+
+1454.21
+
+2517.18
+
+2715.72
+
+Observations 
+
+Low concurrency (bs=4) : dynamic is below static for both DFlash (−12%) and
+
+PARD (−28%), consistent with the residual probs D2H / CPU-decision overhead
+
+discussed above.
+
+Mid–high concurrency (bs≥16) : dynamic overtakes static; largest gain at
+
+bs=32 (DFlash +19%, PARD +26% vs static). At bs=48, dynamic still leads static
+
+on both methods.
+
+vs AR baseline (DFlash): at bs=32 dynamic 1.55× / static 1.31× ; at
+
+bs=48 dynamic 1.64× / static 1.52× . Adaptive verify extends the
+
+high-concurrency advantage of parallel speculative decoding.
+
+Essential Elements of an Effective PR Description Checklist 
+
+The purpose of the PR, such as "Fix some issue (link existing issues this PR will resolve)".
+
+The test plan, such as providing test command.
+
+The test results, such as pasting the results comparison before and after, or e2e results
+
+(Optional) The necessary documentation update, such as updating supported_models.md and examples for a new model ( verify_adaptive.md added).
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+--> 
+
+👍 
+1 
+depthfirst-app[bot] reacted with thumbs up emoji 
+
+All reactions 
+
+👍 
+1 reaction 
+
+EanWang211123 
+
+added 7 commits
+June 4, 2026 19:38 
+
+[feat] support d-cut adaptive verify controller 
+
+…
+
+d0b4610 
+
+Signed-off-by: EanWang211123 <wangyiheng@sangfor.com.cn>
+
+[update] update adaptve-verify-warmup logits 
+
+…
+
+6287a7d 
+
+Signed-off-by: EanWang211123 <wangyiheng@sangfor.com.cn>
+
+[update] fix query-len for warmup with gdn 
+
+…
+
+7f4386a 
+
+Signed-off-by: EanWang211123 <wangyiheng@sangfor.com.cn>
+
+[update] add draft prob obs to default stream 
+
+…
+
+c30b358 
+
+Signed-off-by: EanWang211123 <wangyiheng@sangfor.com.cn>
+
+[update] support any parallel decoding 
+
+…
+
+41aefe4 
+
+Signed-off-by: EanWang211123 <wangyiheng@sangfor.com.cn>
+
+[update] remove example config json 
+
+…
+
+0b8822e 
+
+Signed-off-by: EanWang211123 <wangyiheng@sangfor.com.cn>
+
+Merge branch 'main' into feat/d-cut/base 
+
+fb15480 
+
+EanWang211123 
+
+requested review from
+MatthewBonanni , 
+ProExpertProg , 
+WoosukKwon , 
+benchislett , 
+hmellor , 
+houseroad , 
+luccafong , 
+mgoin , 
+njhill , 
+robertgshaw2-redhat , 
+tlrmchlsmth , 
+yewentao256 and 
+youkaichao 
+as code owners 
+
+June 8, 2026 13:33 
+
+claude 
+Bot 
+
+reviewed
+
+Jun 8, 2026 
+
+View reviewed changes 
+
+claude 
+Bot 
+
+left a comment
+
+Copy link
+
+Copy Markdown
+
+There was a problem hiding this comment.
+
+Choose a reason for hiding this comment
+
+The reason will be displayed to describe this comment to others. Learn more .
+
+--> 
+
+Choose a reason
+
+Spam 
+Abuse 
+Off Topic 
+Outdated 
+Duplicate 
+Resolved 
+Low Quality 
+
+Hide comment 
+
+Claude Code Review
+
+This pull request is from a fork — automated review is disabled. A repository maintainer can comment @claude review to run a one-time review.
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+--> 
+
+All reactions 
+
+mergify 
+Bot 
+
+added
+
+speculative-decoding
+
+v1
+
+labels
+
+Jun 8, 2026 
+
+benchislett 
+
+commented
+
+Jun 8, 2026 
+
+Copy link
+
+Copy Markdown
+
+Member 
+
+As discussed here, the surface area of this feature is too significant to justify the marginal and hardware-specific gains #35301 
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+benchislett 
+
+closed this
+
+Jun 8, 2026 
+
+EanWang211123 
+
+commented
+
+Jun 9, 2026 
+
+Copy link
+
+Copy Markdown
+
+Contributor 
+
+Author 
+
+@benchislett 
+
+Thank you very much for the reply! I understand the concern that this feature currently introduces a relatively large amount of change and may be difficult to maintain. However, I would like to add a few points for consideration:
+
+Better hardware adaptivity. 
+
+Both [speculative decoding] Add dynamic speculation length with confidence-threshold early exit #35301 and [Core][Spec Decode] Dynamic verification for dflash #43522 are based on setting a threshold over the draft probability to decide where to truncate. However, if the hardware changes, this threshold will likely need to be retuned. In contrast, a throughput-aware approach considers both the additional overhead of speculative decoding under different workloads and the expected benefit of drafting/verifying different numbers of steps. This makes it possible to adapt to different hardware platforms and workloads automatically. Therefore, I do not think this is only a hardware-specific optimization. In my tests, I observed around a 20% throughput improvement under medium-to-high concurrency on a 2x RTX 4090 setup, and around a 40–50% throughput improvement on H20.
+
+Per-sequence isolation within the same batch. 
+
+As mentioned in [speculative decoding] Add dynamic speculation length with confidence-threshold early exit #35301 , if we use batch size as the observation granularity and force all sequences in the batch to share the same dynamic step length, we cannot eliminate the differences between individual sequences. A better approach is to make decisions at the per-sequence level, since even within the same batch, some sequences may have longer query lengths while others may be shorter.
+
+Ease of use in production. 
+
+Another reason why I believe this feature is valuable is that, when serving many different customers, it is often necessary to manually tune hyperparameters such as the number of draft steps. With this feature, the system can fit toward a better operating point automatically without requiring manual intervention for each customer's parameters. It can also adapt the verify length and draft length at runtime as the online workload changes. As far as I can tell, the approaches in the above PRs, as well as [V1][Spec Decode] Add Dynamic SD #32374 , still require users to manually configure thresholds or other parameters, so they do not fully close the loop from an engineering perspective.
+
+System intrusiveness. 
+
+Although I agree that the current code structure still has a lot of room for improvement, I think the actual algorithmic intrusion is mainly limited to adding some operations after drafting and before verification. This may introduce some synchronization/blocking overhead, which also seems to be a concern in other PRs, and I am currently trying to address it.
+
+Algorithmic rationale. 
+
+Based on my experiments, the optimization brought by speculative decoding is roughly determined by the average accepted length after drafting several steps divided by the ITL overhead under a specific workload. The latter can be estimated through a dummy-run at startup, while the former can be estimated using the draft probability. Therefore, I believe the algorithm is reasonably well motivated.
+
+Overall, I still believe that the optimization potential and engineering stability of dynamic step length have not yet reached their upper bound. I also think that hardware-dependent overhead is a factor that should not be ignored. Although this PR introduces relatively large changes compared with the current code structure, I hope this approach can still be considered as a candidate for future dynamic step-length development, especially after some more fundamental dynamic step-length solutions are merged.I would also be very happy to discuss this further and learn how the community thinks about dynamic step length for speculative decoding in general.
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+ooolmk 
+
+commented
+
+Jun 15, 2026 
+
+Copy link
+
+Copy Markdown
+
+Since using draft confidence as the cutoff criterion cannot avoid slowdowns under low concurrency, would it be more straightforward and effective to cut verification tokens directly based on the concurrency level instead?
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+benchislett 
+
+commented
+
+Jun 16, 2026 
+
+Copy link
+
+Copy Markdown
+
+Member 
+
+This feature is now supported! @ooolmk 
+
+https://docs.vllm.ai/en/latest/features/speculative_decoding/dynamic_speculative_decoding 
+
+--> 
+
+👍 
+2 
+ooolmk and EanWang211123 reacted with thumbs up emoji 
+
+All reactions 
+
+👍 
+2 reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+EanWang211123 
+
+commented
+
+Jun 16, 2026 
+
+Copy link
+
+Copy Markdown
+
+Contributor 
+
+Author 
+
+@benchislett @ooolmk Yes, the main branch already supports batch-size-aware + DFlash dynamic drafting. However, while I was experimenting with other parallel drafting speculative decoding algorithms (such as PARD and P-EAGLE), I found a small issue that needs to be fixed.
+
+#45695 
+
+--> 
+
+All reactions 
+
+--> 
+
+Sorry, something went wrong.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+LJX-xixi 
+
+mentioned this pull request
+
+Jul 10, 2026 
+
+[RFC]: Per-request effective proposal lengths for adaptive speculative decoding
+#48202 
+
+Closed
+
+1 task 
+
+--> 
+
+This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+Learn more about bidirectional Unicode characters 
+
+Show hidden characters
+
+Sign up for free 
+to join this conversation on GitHub .
+Already have an account?
+Sign in to comment 
+
+--> 
+
+Reviewers
+
+claude[bot] 
+
+claude[bot] left review comments 
+
+njhill 
+
+Awaiting requested review from njhill 
+
+njhill is a code owner 
+
+benchislett 
+
+Awaiting requested review from benchislett 
+
+benchislett is a code owner 
+
+luccafong 
+
+Awaiting requested review from luccafong 
+
+luccafong is a code owner 
+
+MatthewBonanni 
+
+Awaiting requested review from MatthewBonanni 
+
+MatthewBonanni is a code owner 
+
+WoosukKwon 
+
+Awaiting requested review from WoosukKwon 
+
+WoosukKwon is a code owner 
+
+youkaichao 
+
+Awaiting requested review from youkaichao 
+
+youkaichao is a code owner 
+
+robertgshaw2-redhat 
+
+Awaiting requested review from robertgshaw2-redhat 
+
+robertgshaw2-redhat is a code owner 
+
+mgoin 
+
+Awaiting requested review from mgoin 
+
+mgoin is a code owner 
+
+tlrmchlsmth 
+
+Awaiting requested review from tlrmchlsmth 
+
+tlrmchlsmth is a code owner 
+
+houseroad 
+
+Awaiting requested review from houseroad 
+
+houseroad is a code owner 
+
+hmellor 
+
+Awaiting requested review from hmellor 
+
+hmellor is a code owner 
+
+yewentao256 
+
+Awaiting requested review from yewentao256 
+
+yewentao256 is a code owner 
+
+ProExpertProg 
+
+Awaiting requested review from ProExpertProg 
+
+ProExpertProg is a code owner 
+
+--> 
+
+Assignees
+
+No one assigned
+
+Labels
+
+speculative-decoding 
+
+v1 
+
+--> 
+
+Projects
+
+None yet
+
+--> 
+
+Milestone
+
+No milestone
+
+--> 
+
+Development
+
+Successfully merging this pull request may close these issues.
+
+Uh oh!
+
+There was an error while loading. Please reload this page .
+
+3 participants
+
+Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+
+Footer
+
+© 2026 GitHub, Inc.
+
+Footer navigation
+
+Terms 
+
+Privacy 
+
+Security 
+
+Status 
+
+Community 
+
+Docs 
+
+Contact 
+
+Manage cookies
+
+Do not share my personal information
+
+You can’t perform that action at this time.
+
+

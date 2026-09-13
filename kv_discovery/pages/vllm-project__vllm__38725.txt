@@ -1,0 +1,132 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/38725  (is_pr=False, 282284 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 38725
+  title = [Proposal] Topology-Aware KV Cache Compression for Memory-Efficient Inference
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2026-04-01T14:20:23Z
+  updatedAt = 2026-08-06T02:18:09Z
+  closedAt = None
+  author = jianxinglee62-prog
+  labels = ['performance', 'stale']
+
+[GRAPHQL COMMENT by jagmarques assoc=NONE at 2026-04-07T17:52:38Z]
+Interesting proposal — the four-phase lifecycle framing (Initial → Mid → Recent → Terminal) maps onto something real in attention behavior: early layers tend to have broader, more diffuse attention while later layers concentrate on specific positions. Exploiting that asymmetry for adaptive compression rates makes sense.
+
+A few observations from the compression literature that might sharpen the implementation:
+
+**On directional pruning**: The rotation step (Hadamard/random orthogonal) matters a lot here. Without it, KV vector coordinates have highly correlated, non-Gaussian distributions that make scalar quantization inefficient. TurboQuant/PolarQuant (ICLR 2026) showed that a fixed random rotation before quantization makes the coordinate distribution predictable, enabling data-oblivious quantization with no calibration. This would interact with your "selective directional pruning" — worth deciding whether pruning happens in rotated or unrotated space.
+
+**On the 70-85% memory reduction claim**: That's 6-7x compression, achievable but the quality-compression curve is steep past ~4x for most quantization-only approaches. Combining quantization with token eviction (keeping recent + high-importance tokens) gets you further while containing quality loss.
+
+**On MoE/MLA compatibility**: DeepSeek-V3's MLA compresses KV at the architecture level by using a shared latent vector. The residual KV cache is already smaller, so external compression may have diminishing returns. Worth benchmarking whether the gain is meaningful post-MLA vs. standard MHA models.
+
+I've been exploring a related direction with [NexusQuant](https://github.com/jagmarques/nexusquant) — Hadamard rotation + E8 lattice VQ (a sphere-packing optimal codebook) + temporal predictive coding, reaching ~7x on Mistral/Llama without training. The main honest limitation: compression ratio stated without overhead accounting can be misleading — scale factors and codebook indices need to be included in the reported ratio.
+
+Happy to discuss the tradeoffs if you're working toward a vLLM PR.
+
+[GRAPHQL COMMENT by jagmarques assoc=NONE at 2026-04-07T18:08:16Z]
+The topology-aware framing is interesting, particularly the four-phase lifecycle idea — it maps to an empirical observation that attention distributions are genuinely non-stationary across the prefill-decode boundary and across decode depth.
+
+A few technical notes on the proposal:
+
+The 'selective directional pruning based on sparsity thresholds' in low-bit regimes is addressing a real problem: scalar quantizers (INT4/INT8) applied to KV tensors that have heavy-tailed singular value distributions will waste bits on near-zero directions. Rotating the KV space before quantization (Hadamard or random orthogonal rotation, as in QuaRot and similar work) spreads energy more uniformly across dimensions and significantly reduces this problem without requiring directional selection. It is simpler and often more effective than explicitly pruning sparse directions.
+
+The phase-adaptive compression rate is the most novel part here. The risk is that phase boundaries are model- and workload-dependent — what counts as 'Initial' vs 'Mid' varies across tasks. You would need either a learned phase classifier or a fixed heuristic (e.g. token position bins), and the latter might not generalize.
+
+On NPU optimization: this is architecturally important for edge deployment but independent of the compression algorithm. Any compression method that reduces KV bandwidth should benefit NPU-bound inference.
+
+For reference on the quantization side, lattice vector quantization (E8 lattice) is mathematically optimal for quantizing Gaussian-distributed vectors, which KV tensors approximately are after Hadamard rotation. NexusQuant (https://github.com/jagmarques/nexusquant) implements this combination and achieves 5-7x compression with competitive quality on Llama and Mistral — no retraining required. The tradeoff vs. this proposal is that it does not do phase-adaptive rates, so there may be a synthesis worth exploring.
+
+Overall a thoughtful proposal — the phase lifecycle angle is the most differentiated part and worth pursuing empirically.
+
+[GRAPHQL COMMENT by jagmarques assoc=NONE at 2026-04-07T18:13:05Z]
+The topology-aware framing is interesting — treating KV compression as a function of where in the serving topology a request is (prefill node vs decode node, local vs remote cache) rather than a single global policy.
+
+A few observations from working on KV compression:
+
+**Compression ratio tolerance varies by position in the sequence**: earlier KV entries (prefill tokens) are accessed many times during decode and are worth compressing aggressively. Recent KV entries (last ~100 tokens) are accessed once per step and are better left in full precision. A topology-aware policy that distinguishes "cold" prefill cache from "hot" recent cache maps well onto this.
+
+**Quantization vs eviction have different topology fits**: quantization (e.g., E8 lattice as in [NexusQuant](https://github.com/jagmarques/nexusquant)) preserves all tokens at lower precision — good for remote/disaggregated cache where you want deterministic retrieval. Token eviction is better for local hot cache where you want to maximize SRAM hit rate.
+
+**Transfer compression**: if the topology involves KV migration between nodes, on-the-wire compression ratio matters more than decode-time overhead. VQ-based compression (like E8) is fast to decompress but asymmetric — compress-once, decompress-many, which fits disaggregated prefill/decode well.
+
+Has there been any modeling of the cross-node KV transfer bandwidth requirements in the proposal? That's often the binding constraint in topology-aware designs.
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-07-07T02:17:02Z]
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+[GRAPHQL COMMENT by github-actions assoc=NONE at 2026-08-06T02:18:09Z]
+This issue has been automatically closed due to inactivity. Please feel free to reopen if you feel it is still relevant. Thank you!
+
+[GRAPHQL CLOSED by github-actions at 2026-08-06T02:18:09Z reason=NOT_PLANNED]
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=jianxinglee62-prog date=Apr 1, 2026]
+Proposal to improve performance
+
+[Proposal] Topology-Aware KV Cache Compression for Memory-Efficient Inference
+
+Is your feature request related to a problem? Please describe.
+
+Long-context LLM inference (e.g., 128K tokens with DeepSeek-V3, Llama 3.1, etc.) faces significant KV cache memory pressure, limiting batch size, throughput, and real-time service stability. Current KV cache compression methods (e.g., SnapKV, StreamingLLM, H2O) don't fully leverage directional topology information or adapt to phase-dependent attention patterns.
+
+Describe the solution you'd like
+
+This proposal introduces a topology-aware KV cache compression framework with:
+
+- Selective directional pruning: Retains top-k dense directions based on sparsity thresholds, reducing quantization noise in low-bit regimes
+
+- Four-phase lifecycle compression: Adaptive compression rates across Initial → Mid → Recent → Terminal stages, mirroring natural attention evolution
+
+- NPU-optimized matrix operations: Exponential-free computation through matrix-only operations, enabling efficient NPU acceleration
+
+Expected Impact
+
+- 70-85% KV cache memory reduction for long-context workloads
+
+- 15-20% FLOPs margin improvement, enhancing real-time service stability
+
+- Particularly effective for Mixture-of-Experts (MoE) architectures like DeepSeek-V3, Qwen2.5-MoE, etc.
+
+Relevant Context
+
+This approach extends attention head importance scoring principles to KV cache directional sparsity. The framework is designed to integrate with vLLM's PagedAttention architecture and is compatible with:
+
+- DeepSeek-V3's MLA (Multi-head Latent Attention)
+
+- MoE routing patterns for dynamic compression
+
+- NPU backends (Huawei Ascend, etc.) via matrix-optimized operations
+
+Additional Context
+
+- Full technical proposal (12-page detailed specification) available upon request
+
+- Already shared with DeepSeek team via official channels
+
+- Seeking community feedback and potential collaboration on vLLM integration
+
+Would you be willing to contribute?
+
+Yes, willing to collaborate on implementation, testing, and benchmarking within vLLM's existing attention backend architecture.
+
+Report of performance regression
+
+No response
+
+Misc discussion on performance
+
+No response
+
+Your current environment (if you think it is necessary)
+
+The output of `python collect_env.py`
+
+Before submitting a new issue...
+
+- Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page, which can answer lots of frequently asked questions.

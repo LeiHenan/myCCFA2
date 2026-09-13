@@ -1,0 +1,1603 @@
+[TRTLLM-10319][feat] Dynamic draft length on spec decode one-model path by zheyuf · Pull Request #10860 · NVIDIA/TensorRT-LLM · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ NVIDIA
+ / 
+ TensorRT-LLM 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 2.7k 
+ Star
+ 14.6k 
+ Code 
+ Issues 
+ 587 
+ Pull requests 
+ 879 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [TRTLLM-10319][feat] Dynamic draft length on spec decode one-model path - # 10860 
+ # 10860 
+ Merged 
+ zheyuf merged 12 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from zheyuf:max_con_1_model zheyuf/TensorRT-LLM:max_con_1_model Copy head branch name to clipboard 
+ Mar 13, 2026 
+ Conversation Commits 12  ( 12 ) Checks Files changed 
+ Merged 
+ [TRTLLM-10319][feat] Dynamic draft length on spec decode one-model path # 10860 zheyuf merged 12 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from zheyuf:max_con_1_model zheyuf/TensorRT-LLM:max_con_1_model Copy head branch name to clipboard 
+ Conversation
+ zheyuf 
+ commented
+ Jan 20, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Summary by CodeRabbit
+ Release Notes
+ New Features 
+ Added support for dynamic draft length scheduling in speculative decoding, allowing draft lengths to vary based on batch size for improved performance and resource utilization.
+ Improvements 
+ Enhanced per-draft-length caching and resource management for more efficient memory allocation and CUDA graph compatibility across varying batch sizes.
+ Description
+ This PR adds support for dynamic draft length (based on batch size) and max concurrency control (disable speculation when batch size is above threshold) in the one-model speculative decoding path.
+ LLM API: Users can define a batch size → runtime draft length mapping via speculative_config.draft_len_schedule.
+For example, draft_len_schedule = {4: 4, 8: 2, 32: 1} means:
+ Batch sizes 1–4: use runtime_draft_len=4
+ Batch sizes 5–8: use runtime_draft_len=2
+ Batch sizes 9–32: use runtime_draft_len=1
+ Batch sizes 33+: use runtime_draft_len=0 (implicit max concurrency control; speculation disabled)
+ The runtime draft length is determined at the beginning of each iteration. For CUDA graph compatibility, when the runtime draft length changes between iterations, draft tokens are padded or truncated to match the current iteration's draft length. We allow speculation off and turn on later if the batch size gets smaller.
+ For future works (will be in future PRs):
+ Algorithm coverage: This PR currently supports only Eagle3. Will add support for all other one-model spec decode algorithm like MTP.
+ Feature compatibility: Currently compatible with CUDA graphs and the overlap scheduler. Will test compatibility with other features.
+ Speculation-off for low acceptance rate: Will port from the two-model path.
+ Test Coverage
+ Added accuracy tests on GSM8K in tests/integration/defs/accuracy/test_llm_api_pytorch.py for both dynamic draft length and max concurrency control. For dynamic draft length, as requests are submitted and completed, the batch size changes naturally, causing the draft length to change like 4→3→2→0→2→3→4.
+ Added a unit test in tests/unittest/_torch/speculative/test_dynamic_spec_decode.py. A mock function forces the runtime draft length to cycle through 0, 2, and 4 (e.g., 4→4→2→2→0→0→2→2→…), which cover the tests of draft length increases, decreases, and disable/re-enable transitions.
+ PR Checklist
+ Please review the following before submitting your PR:
+ PR description clearly explains what and why. If using CodeRabbit's summary, please make sure it makes sense.
+ PR Follows TRT-LLM CODING GUIDELINES to the best of your knowledge.
+ Test cases are provided for new code paths (see test instructions )
+ Any new dependencies have been scanned for license and vulnerabilities
+ CODEOWNERS updated if ownership changes
+ Documentation updated as needed
+ Update tava architecture diagram if there is a significant design change in PR.
+ The reviewers assigned automatically/manually are appropriate for the PR.
+ Please check this after reviewing the above items as appropriate for this PR.
+ GitHub Bot Help
+ /bot [-h] ['run', 'kill', 'skip', 'reuse-pipeline'] ... 
+ Provide a user friendly way for developers to interact with a Jenkins server.
+ Run /bot [-h|--help] to print this help message.
+ See details below for each supported subcommand.
+ Details 
+ run [--reuse-test (optional)pipeline-id --disable-fail-fast --skip-test --stage-list "A10-PyTorch-1, xxx" --gpu-type "A30, H100_PCIe" --test-backend "pytorch, cpp" --add-multi-gpu-test --only-multi-gpu-test --disable-multi-gpu-test --post-merge --extra-stage "H100_PCIe-TensorRT-Post-Merge-1, xxx" --detailed-log --debug(experimental)] 
+ Launch build/test pipelines. All previously running jobs will be killed.
+ --reuse-test (optional)pipeline-id (OPTIONAL) : Allow the new pipeline to reuse build artifacts and skip successful test stages from a specified pipeline or the last pipeline if no pipeline-id is indicated. If the Git commit ID has changed, this option will be always ignored. The DEFAULT behavior of the bot is to reuse build artifacts and successful test results from the last pipeline.
+ --disable-reuse-test (OPTIONAL) : Explicitly prevent the pipeline from reusing build artifacts and skipping successful test stages from a previous pipeline. Ensure that all builds and tests are run regardless of previous successes.
+ --disable-fail-fast (OPTIONAL) : Disable fail fast on build/tests/infra failures.
+ --skip-test (OPTIONAL) : Skip all test stages, but still run build stages, package stages and sanity check stages. Note: Does NOT update GitHub check status.
+ --stage-list "A10-PyTorch-1, xxx" (OPTIONAL) : Only run the specified test stages. Examples: "A10-PyTorch-1, xxx". Note: Does NOT update GitHub check status.
+ --gpu-type "A30, H100_PCIe" (OPTIONAL) : Only run the test stages on the specified GPU types. Examples: "A30, H100_PCIe". Note: Does NOT update GitHub check status.
+ --test-backend "pytorch, cpp" (OPTIONAL) : Skip test stages which don't match the specified backends. Only support [pytorch, cpp, tensorrt, triton]. Examples: "pytorch, cpp" (does not run test stages with tensorrt or triton backend). Note: Does NOT update GitHub pipeline status.
+ --only-multi-gpu-test (OPTIONAL) : Only run the multi-GPU tests. Note: Does NOT update GitHub check status.
+ --disable-multi-gpu-test (OPTIONAL) : Disable the multi-GPU tests. Note: Does NOT update GitHub check status.
+ --add-multi-gpu-test (OPTIONAL) : Force run the multi-GPU tests in addition to running L0 pre-merge pipeline.
+ --post-merge (OPTIONAL) : Run the L0 post-merge pipeline instead of the ordinary L0 pre-merge pipeline.
+ --extra-stage "H100_PCIe-TensorRT-Post-Merge-1, xxx" (OPTIONAL) : Run the ordinary L0 pre-merge pipeline and specified test stages. Examples: --extra-stage "H100_PCIe-TensorRT-Post-Merge-1, xxx".
+ --detailed-log (OPTIONAL) : Enable flushing out all logs to the Jenkins console. This will significantly increase the log volume and may slow down the job.
+ --debug (OPTIONAL) : Experimental feature . Enable access to the CI container for debugging purpose. Note: Specify exactly one stage in the stage-list parameter to access the appropriate container environment. Note: Does NOT update GitHub check status.
+ For guidance on mapping tests to stage names, see docs/source/reference/ci-overview.md 
+and the scripts/test_to_stage_mapping.py helper.
+ kill
+ kill 
+ Kill all running builds associated with pull request.
+ skip
+ skip --comment COMMENT 
+ Skip testing for latest commit on pull request. --comment "Reason for skipping build/test" is required. IMPORTANT NOTE: This is dangerous since lack of user care and validation can cause top of tree to break.
+ reuse-pipeline
+ reuse-pipeline 
+ Reuse a previous pipeline to validate current commit. This action will also kill all currently running builds associated with the pull request. IMPORTANT NOTE: This is dangerous since lack of user care and validation can cause top of tree to break.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ ❤️ 
+ 2 
+ YAMY1234 and ooctipus reacted with heart emoji 
+ All reactions 
+ ❤️ 
+ 2 reactions 
+ zheyuf 
+ force-pushed 
+ the
+ max_con_1_model 
+ branch
+ 2 times, most recently
+ from
+ 70b533a to
+ 9e05b78 
+ Compare 
+ January 29, 2026 18:24 
+ zheyuf 
+ force-pushed 
+ the
+ max_con_1_model 
+ branch
+ 4 times, most recently
+ from
+ a59824e to
+ a4a5c69 
+ Compare 
+ February 19, 2026 04:04 
+ zheyuf 
+ requested a review
+ from mikeiovine 
+ February 19, 2026 04:04 
+ zheyuf 
+ marked this pull request as ready for review
+ February 19, 2026 04:04 
+ zheyuf 
+ requested review from
+ a team 
+ as code owners 
+ February 19, 2026 04:04 
+ zheyuf 
+ requested review from
+ QiJune and 
+ Superjomn 
+ February 19, 2026 04:04 
+ zheyuf 
+ commented
+ Feb 19, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run --disable-fail-fast
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Feb 19, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #36204 [ run ] triggered by Bot. Commit: a4a5c69 Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ coderabbitai 
+ Bot 
+ commented
+ Feb 19, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ 📝 Walkthrough 
+ Walkthrough
+ Introduces dynamic draft length support for speculative decoding, enabling variable draft lengths per batch iteration based on a configurable schedule. Changes span the attention backend, CUDA graph runner, model engine, and speculative decoding workers to track and propagate runtime draft length throughout the execution pipeline.
+ Changes
+ Cohort / File(s) 
+ Summary 
+ Attention Backend 
+ tensorrt_llm/_torch/attention_backend/trtllm.py 
+ Added per-draft-length caching for position offsets and packed masks; introduced _is_linear_tree calculation and helper methods _position_offsets_for_dynamic_draft_len() and _packed_mask_for_dynamic_draft_len() to lazily compute cached tensors based on runtime draft length instead of eagerly allocating for max draft length. 
+ CUDA Graph Infrastructure 
+ tensorrt_llm/_torch/pyexecutor/cuda_graph_runner.py , tensorrt_llm/_torch/pyexecutor/model_engine.py , tensorrt_llm/_torch/pyexecutor/py_executor.py 
+ Added runtime_draft_len attribute to track per-iteration draft length; introduced dynamic_draft_len_mapping to map batch sizes to supported draft lengths; added _compute_dynamic_draft_len_mapping() and _get_graphs_to_capture() methods to determine which graphs to capture; extended padding logic to use per-draft-length dummy requests and batch size rounding aware of draft lengths. 
+ Speculative Decoding Core 
+ tensorrt_llm/_torch/speculative/interface.py , tensorrt_llm/_torch/speculative/eagle3.py , tensorrt_llm/_torch/speculative/mtp.py 
+ Added runtime_draft_len to SpecMetadata and support_dynamic_draft_len to SpeculativeDecodingMode ; replaced max_draft_len references with runtime_draft_len in draft generation loops, token shaping, and acceptance logic; introduced skip_drafting() method to handle zero-draft-length cases. 
+ Utilities & State 
+ tensorrt_llm/_torch/speculative/utils.py , tensorrt_llm/_torch/pyexecutor/sampler.py 
+ Added get_draft_len_for_batch_size() utility function to lookup draft length from schedule via binary search; added optional runtime_draft_len field to SampleState dataclass. 
+ Configuration & Validation 
+ tensorrt_llm/llmapi/llm_args.py 
+ Added _merge_schedule_keys() static method to merge draft length schedule thresholds with CUDA graph batch sizes; updated validation to enforce that smallest schedule key maps to max_draft_len and auto-enable padding when schedule is provided. 
+ Tests 
+ tests/integration/defs/accuracy/test_llm_api_pytorch.py , tests/unittest/_torch/speculative/test_dynamic_spec_decode.py 
+ Added enable_dynamic_draft_len parameter to integration test; refactored unit test to focus on dynamic draft length scheduling with mocked draft-length provider instead of heavy multi-process setup. 
+ Sequence Diagram
+ sequenceDiagram
+ participant PyExec as PyExecutor
+ participant Engine as Model Engine
+ participant Graph as CUDA Graph Runner
+ participant Attn as Attention Backend
+ participant Worker as Speculative Worker
+ PyExec->>Engine: _handle_dynamic_draft_len(scheduled_batch)
+ Engine->>Engine: Resolve runtime_draft_len from schedule
+ Engine->>Attn: Set runtime_draft_len for iteration
+ Engine->>Graph: Create/update CUDA graphs with dynamic_draft_len_mapping
+ PyExec->>Engine: forward(spec_metadata)
+ Engine->>Engine: Propagate runtime_draft_len to spec_metadata
+ Engine->>Graph: Pad batch for CUDA graph (per-draft-length dummy requests)
+ Graph->>Graph: Use dynamic_draft_len_mapping to round batch size
+ Engine->>Worker: Invoke with spec_metadata.runtime_draft_len
+ Worker->>Worker: Draft generation loop (up to runtime_draft_len)
+ Worker->>Attn: Query cached position offsets/masks for runtime_draft_len
+ Attn->>Attn: Return _position_offsets_for_dynamic_draft_len(runtime_draft_len)
+ Worker->>Worker: Token acceptance/rewinds using runtime_draft_len
+ Worker-->>PyExec: Return results with runtime_draft_len
+ Loading 
+ Estimated code review effort
+ 🎯 3 (Moderate) | ⏱️ ~25 minutes
+ Possibly related PRs
+ [TRTLLM-8160][feat] Add draft token tree runtime on CDL  #8586 : Modifies spec-decoding attention handling and introduces runtime draft-length aware control flow similar to this PR's per-iteration draft length propagation.
+ [None][chroe] Mass integration of release/1.2 - 2nd  #11088 : Updates speculative decoding mode signatures and model engine wiring that interact with the dynamic draft length feature introduced here.
+ Suggested reviewers
+ mikeiovine
+ yihwang-nv
+ syuoni
+ byshiue
+ kris1025
+ PerkzZheng
+ 🚥 Pre-merge checks | ✅ 2 | ❌ 1 
+ ❌ Failed checks (1 warning)
+ Check name 
+ Status 
+ Explanation 
+ Resolution 
+ Docstring Coverage 
+ ⚠️ Warning 
+ Docstring coverage is 49.25% which is insufficient. The required threshold is 80.00%. 
+ Write docstrings for the functions missing them to satisfy the coverage threshold. 
+ ✅ Passed checks (2 passed) 
+ Check name 
+ Status 
+ Explanation 
+ Title check 
+ ✅ Passed 
+ The PR title '[TRTLLM-10319][feat] Dynamic draft length on spec decode one-model path' clearly and concisely describes the main change: adding dynamic draft length support for the one-model speculative decoding path. The title is specific, follows the repository's convention, and accurately summarizes the primary objective. 
+ Description check 
+ ✅ Passed 
+ The PR description comprehensively covers the feature, implementation approach, test coverage, and future work, with clear examples of the draft_len_schedule syntax and behavior. 
+ ✏️ Tip: You can configure your own custom pre-merge checks in the settings. 
+ ✨ Finishing Touches 
+ 🧪 Generate unit tests (beta) 
+ Create PR with unit tests
+ Post copyable unit tests in a comment
+ Tip
+ Try Coding Plans . Let us write the prompt for your AI agent so you can ship faster (with fewer bugs).
+Share your feedback on Discord .
+ Comment @coderabbitai help to get the list of available commands and usage tips. 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ coderabbitai 
+ Bot 
+ reviewed
+ Feb 19, 2026 
+ View reviewed changes 
+ coderabbitai 
+ Bot 
+ left a comment
+ Copy link
+ Copy Markdown
+ Contributor 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Actionable comments posted: 13 
+ Caution
+ Some comments are outside the diff and can’t be posted inline due to platform limitations.
+ ⚠️ Outside diff range comments (4) 
+ tensorrt_llm/_torch/pyexecutor/cuda_graph_runner.py (2) 
+ 108-113 : ⚠️ Potential issue | 🟡 Minor 
+ Fix undefined Request type in padding_dummy_requests . 
+ Ruff flags F821 here; Request isn’t defined. Use llm_request.LlmRequest (or import the concrete type) to avoid lint failure.
+ 🔧 Suggested fix 
+ @@
+ - from .llm_request import get_draft_token_length 
+ + from . import llm_request 
+ + from .llm_request import get_draft_token_length 
+@@
+ - self.padding_dummy_requests: Dict[int, "Request"] = {} 
+ + self.padding_dummy_requests: Dict[int, llm_request.LlmRequest] = {} 
+ 🤖 Prompt for AI Agents 
+ Verify each finding against the current code and only fix it if needed.
+In `@tensorrt_llm/_torch/pyexecutor/cuda_graph_runner.py` around lines 108 - 113,
+The type annotation for padding_dummy_requests uses an undefined Request causing
+F821; update the annotation to use the concrete type llm_request.LlmRequest (or
+import LlmRequest as Request) and add the appropriate import for llm_request at
+the top of cuda_graph_runner.py so padding_dummy_requests: Dict[int, "Request"]
+becomes Dict[int, llm_request.LlmRequest] (or Dict[int, Request] if you import
+Request alias); ensure the import matches how LlmRequest is exported so linters
+resolve the symbol.
+ 214-222 : ⚠️ Potential issue | 🟠 Major 
+ Guard against empty generation_requests to prevent max([]) error. 
+ The code assumes batch.generation_requests is non-empty, but max(draft_len_list) will raise ValueError if the list is empty. While generation-only batches should have requests, defensive handling is prudent. Guard this case explicitly or use the existing get_draft_token_length helper, which is already imported and handles edge cases safely.
+ 🛠️ Suggested guard 
+ - draft_len_list = [] 
+ - for request in batch.generation_requests: 
+ - draft_len_list.append(len(request.py_draft_tokens)) 
+ - draft_len = max(draft_len_list) 
+ - assert len( 
+ - set(draft_len_list)) == 1, "All draft lengths must be the same" 
+ + if not batch.generation_requests: 
+ + draft_len = 0 
+ + else: 
+ + draft_len_list = [ 
+ + len(request.py_draft_tokens) 
+ + for request in batch.generation_requests 
+ + ] 
+ + draft_len = max(draft_len_list) 
+ + assert len( 
+ + set(draft_len_list)) == 1, "All draft lengths must be the same" 
+ 🤖 Prompt for AI Agents 
+ Verify each finding against the current code and only fix it if needed.
+In `@tensorrt_llm/_torch/pyexecutor/cuda_graph_runner.py` around lines 214 - 222,
+The loop computing draft_len_list from batch.generation_requests can yield an
+empty list and cause max([]) to raise; replace this manual aggregation with the
+existing helper get_draft_token_length (already imported) or add an explicit
+guard: compute draft_len via get_draft_token_length(batch) (or if using the
+list, check if draft_len_list is empty and handle accordingly) before asserting
+uniformity and building the cache key (the key using batch_size, draft_len,
+False, short_seq_len_mode); ensure you still assert or validate that all draft
+lengths match when non-empty.
+ tensorrt_llm/llmapi/llm_args.py (1) 
+ 3291-3342 : ⚠️ Potential issue | 🟡 Minor 
+ enable_padding is auto-set to True after batch sizes are generated without it 
+ When draft_len_schedule is configured and the user has not provided explicit batch_sizes , the flow is:
+ Else-branch (lines 3324–3328): _generate_cuda_graph_batch_sizes(max_batch_size, config.enable_padding) is called with enable_padding=False , producing a dense distribution [1, 2, …, 31, 32, 64, 128] .
+ Lines 3334–3338: enable_padding is flipped to True , but the already-generated dense batch_sizes is not regenerated.
+ This leaves enable_padding=True with a dense non-padded batch-size set. The intent of enable_padding=True is to reduce CUDA-graph compilation overhead by forcing batches onto a coarser set ( [1, 2, 4, 8, 16, 24, 32, …] ). With the dense set, padding is effectively a no-op and you compile far more graphs than necessary.
+ The simplest fix is to check for draft_len_schedule before generating batch_sizes :
+ 🐛 Proposed fix 
+ + # Step 4 (early): auto-enable padding before batch_sizes are generated. 
+ + has_schedule = ( 
+ + self.speculative_config is not None 
+ + and self.speculative_config.draft_len_schedule is not None) 
+ + if has_schedule and not config.enable_padding: 
+ + logger.info( 
+ + "Automatically enabling cuda_graph_config.enable_padding " 
+ + "because draft_len_schedule is set.") 
+ + config.enable_padding = True 
+ + 
+ if config.batch_sizes:
+ config.batch_sizes = sorted(config.batch_sizes)
+ derived_max = max(config.batch_sizes)
+ ...
+ else:
+ max_batch_size = config.max_batch_size or 128
+ generated_sizes = CudaGraphConfig._generate_cuda_graph_batch_sizes(
+ - max_batch_size, config.enable_padding) 
+ + max_batch_size, config.enable_padding) # now True when schedule present 
+ config.batch_sizes = generated_sizes
+ config.max_batch_size = max_batch_size
+ - # Auto-enable padding when draft_len_schedule is provided, since 
+ - # dynamic draft length with CUDA graphs requires padded batch sizes. 
+ - if (self.speculative_config is not None 
+ - and self.speculative_config.draft_len_schedule is not None): 
+ - if not config.enable_padding: 
+ - logger.info( 
+ - "Automatically enabling cuda_graph_config.enable_padding " 
+ - "because draft_len_schedule is set.") 
+ - config.enable_padding = True 
+ - config.batch_sizes = CudaGraphConfig._merge_schedule_keys( 
+ - config.batch_sizes, self.speculative_config.draft_len_schedule) 
+ + if has_schedule: 
+ + config.batch_sizes = CudaGraphConfig._merge_schedule_keys( 
+ + config.batch_sizes, self.speculative_config.draft_len_schedule) 
+ 🤖 Prompt for AI Agents 
+ Verify each finding against the current code and only fix it if needed.
+In `@tensorrt_llm/llmapi/llm_args.py` around lines 3291 - 3342, In
+validate_cuda_graph_config, when speculative_config.draft_len_schedule is set we
+currently generate batch_sizes using the pre-flipped config.enable_padding and
+only then set enable_padding=True, producing the wrong (dense) sizes; fix by
+checking speculative_config.draft_len_schedule before calling
+CudaGraphConfig._generate_cuda_graph_batch_sizes (or, alternatively, after
+auto-enabling padding regenerate batch_sizes) so that
+CudaGraphConfig._generate_cuda_graph_batch_sizes receives the final
+enable_padding value; update code around validate_cuda_graph_config,
+CudaGraphConfig._generate_cuda_graph_batch_sizes call, and the auto-enable block
+(and then still call CudaGraphConfig._merge_schedule_keys) to ensure
+padded/coarse batch sizes are produced when draft_len_schedule exists.
+ tests/integration/defs/accuracy/test_llm_api_pytorch.py (1) 
+ 1-1 : ⚠️ Potential issue | 🟡 Minor 
+ Update the NVIDIA copyright year to reflect the latest modification. 
+ This file is modified in 2026, but the header still lists 2025. Please update it to the current year to satisfy repository policy. As per coding guidelines, include NVIDIA copyright header on ALL new files and update year on modified files.
+ 🤖 Prompt for AI Agents 
+ Verify each finding against the current code and only fix it if needed.
+In `@tests/integration/defs/accuracy/test_llm_api_pytorch.py` at line 1, Update
+the copyright header at the top of the file
+tests/integration/defs/accuracy/test_llm_api_pytorch.py by changing the year
+from 2025 to 2026 so the header reflects the modification year; locate the
+SPDX/header comment on the first line and replace "2025" with "2026".
+ 🧹 Nitpick comments (8) 
+ tests/unittest/_torch/speculative/test_dynamic_spec_decode.py (2) 
+ 24-25 : Unused mock parameters should use _ prefix to suppress Ruff ARG001 warnings 
+ draft_len_schedule , batch_size , and max_total_draft_tokens are intentionally ignored (only call_count controls the output). Prefixing with _ documents this intent and eliminates the Ruff warnings without suppression comments.
+ ♻️ Proposed fix 
+ - def mock_get_draft_len_for_batch_size(draft_len_schedule, batch_size, 
+ - max_total_draft_tokens): 
+ + def mock_get_draft_len_for_batch_size(_draft_len_schedule, _batch_size, 
+ + _max_total_draft_tokens): 
+ 🤖 Prompt for AI Agents 
+ Verify each finding against the current code and only fix it if needed.
+In `@tests/unittest/_torch/speculative/test_dynamic_spec_decode.py` around lines
+24 - 25, The function mock_get_draft_len_for_batch_size currently defines unused
+parameters draft_len_schedule, batch_size, and max_total_draft_tokens; rename
+them to _draft_len_schedule, _batch_size, and _max_total_draft_tokens in the
+mock_get_draft_len_for_batch_size signature so their unused status is explicit
+and Ruff ARG001 warnings are suppressed while leaving the function logic
+(including call_count usage) unchanged.
+ 42-46 : Redundant reset_mock() + explicit call_count = 0 on a freshly created Mock 
+ A newly constructed Mock already has call_count=0 . reset_mock() (line 45) resets it to 0 again. The subsequent mock_get_draft_len_for_batch_size.call_count = 0 (line 46) is then redundant. Keep only the explicit assignment (clearest intent) or drop both.
+ ♻️ Proposed cleanup 
+ mock_get_draft_len_for_batch_size = Mock(
+ side_effect=mock_get_draft_len_for_batch_size)
+ - # Reset mock state before using it 
+ - mock_get_draft_len_for_batch_size.reset_mock() 
+ - mock_get_draft_len_for_batch_size.call_count = 0 
+ + # Ensure call_count starts at 0 (Mock default, stated explicitly for clarity) 
+ + mock_get_draft_len_for_batch_size.call_count = 0 
+ 🤖 Prompt for AI Agents 
+ Verify each finding against the current code and only fix it if needed.
+In `@tests/unittest/_torch/speculative/test_dynamic_spec_decode.py` around lines
+42 - 46, The newly created Mock mock_get_draft_len_for_batch_size is being reset
+twice; remove the redundant call to
+mock_get_draft_len_for_batch_size.reset_mock() and keep the explicit
+mock_get_draft_len_for_batch_size.call_count = 0 assignment to clearly express
+intent and ensure the mock starts with zero calls.
+ tensorrt_llm/llmapi/llm_args.py (2) 
+ 183-186 : Silent drop of schedule keys exceeding max_batch_size ; no guard for empty batch_sizes 
+ Two related concerns:
+ Empty batch_sizes : Line 183 accesses batch_sizes[-1] without checking for an empty list. Since this is a @staticmethod with no precondition documented, a future caller (or a test) passing [] would get an unguarded IndexError .
+ Silent key drop : Keys in schedule that exceed max_batch_size are silently filtered out (line 184). A user who specifies draft_len_schedule={200: 3} with max_batch_size=128 will have the key ignored with no warning, making misconfiguration hard to diagnose.
+ ♻️ Proposed improvement 
+ max_bs = batch_sizes[-1]
+ + if not batch_sizes: 
+ + return list(sorted(schedule.keys())) 
+ + max_bs = batch_sizes[-1] 
+ extra = sorted(bs for bs in schedule if bs <= max_bs)
+ + dropped = [bs for bs in schedule if bs > max_bs] 
+ + if dropped: 
+ + logger.warning( 
+ + "draft_len_schedule keys %s exceed max_batch_size=%d and will be ignored.", 
+ + dropped, max_bs) 
+ if not extra:
+ return batch_sizes 
+ 🤖 Prompt for AI Agents 
+ Verify each finding against the current code and only fix it if needed.
+In `@tensorrt_llm/llmapi/llm_args.py` around lines 183 - 186, The staticmethod
+that computes extra batch sizes currently does batch_sizes[-1] without guarding
+against an empty batch_sizes and silently drops schedule keys > max_bs; update
+this method to first validate batch_sizes is non-empty (raise a ValueError with
+a clear message referencing batch_sizes) and compute max_bs safely, then detect
+any keys in schedule that exceed max_bs and either raise a descriptive exception
+or emit a warning (choose consistent behavior with the module: raise for invalid
+config or log.warn) instead of silently filtering them; refer to the variables
+batch_sizes, schedule and max_bs in your changes so reviewers can find and test
+the logic.
+ 783-789 : Ruff TRY003: long validation message should live in the exception class (optional) 
+ The static analysis tool flags the verbose f-string in the raise ValueError(...) block. This is a minor style note — moving the message into a helper or a dedicated exception class would silence it, but it's not a correctness concern.
+ 🤖 Prompt for AI Agents 
+ Verify each finding against the current code and only fix it if needed.
+In `@tensorrt_llm/llmapi/llm_args.py` around lines 783 - 789, The long f-string in
+the ValueError raised when draft_len_schedule mismatches max_draft_len should be
+moved out of the raise site into a helper or custom exception to satisfy TRY003;
+change the raise in the validation block that checks "if max_draft_len is not
+None and v[smallest_batch_size] != max_draft_len" to raise a concise exception
+(e.g., DraftLengthScheduleError or ValueError with a short message) and
+implement a helper function (e.g.,
+_format_draft_len_schedule_error(smallest_batch_size, v, max_draft_len)) or a
+custom exception class (e.g., DraftLengthScheduleError.__str__ returning the
+full message) that contains the verbose message so the long string no longer
+appears inline in the check.
+ tensorrt_llm/_torch/speculative/interface.py (1) 
+ 446-455 : Suppress Ruff ARG002 warnings for intentionally-unused arguments. 
+ Static analysis flags input_ids , position_ids , hidden_states , and draft_model as unused. Prefixing with _ preserves the call-site API while silencing the linter.
+ ♻️ Proposed fix 
+ - def skip_drafting( 
+ - self, 
+ - input_ids, 
+ - position_ids, 
+ - hidden_states, 
+ - logits, 
+ - attn_metadata, 
+ - spec_metadata, 
+ - draft_model, 
+ - ): 
+ + def skip_drafting( 
+ + self, 
+ + _input_ids, 
+ + _position_ids, 
+ + _hidden_states, 
+ + logits, 
+ + attn_metadata, 
+ + spec_metadata, 
+ + _draft_model, 
+ + ): 
+ 🤖 Prompt for AI Agents 
+ Verify each finding against the current code and only fix it if needed.
+In `@tensorrt_llm/_torch/speculative/interface.py` around lines 446 - 455, The
+skip_drafting method currently declares parameters input_ids, position_ids,
+hidden_states, and draft_model but does not use them, triggering Ruff ARG002; to
+silence the linter while preserving the public API, rename those parameters to
+_input_ids, _position_ids, _hidden_states, and _draft_model in the skip_drafting
+signature (leave logits, attn_metadata, spec_metadata unchanged), and update any
+internal references in skip_drafting to use the new underscored names if needed.
+ tensorrt_llm/_torch/speculative/mtp.py (1) 
+ 269-276 : runtime_draft_len: Optional[int] is misleading — None is never passed. 
+ Every call-site supplies the value via getattr(state, "runtime_draft_len", self.draft_len) , which always yields an int . [:None] would silently return the full list instead of an empty one when runtime_draft_len == 0 , but the current code is functionally correct only because None is never actually passed. Using int here makes the contract explicit.
+ ♻️ Proposed fix 
+ - def _request_common_handling(self, request: LlmRequest, 
+ - next_draft_tokens: list[list[int]], 
+ - runtime_draft_len: Optional[int]): 
+ + def _request_common_handling(self, request: LlmRequest, 
+ + next_draft_tokens: list[list[int]], 
+ + runtime_draft_len: int): 
+ 🤖 Prompt for AI Agents 
+ Verify each finding against the current code and only fix it if needed.
+In `@tensorrt_llm/_torch/speculative/mtp.py` around lines 269 - 276, The parameter
+runtime_draft_len in _request_common_handling is marked Optional[int] but
+callers always pass an int (via getattr(state, "runtime_draft_len",
+self.draft_len)); change the signature to runtime_draft_len: int to make the
+contract explicit and avoid surprising behavior when slicing with [:None];
+update the type annotation for _request_common_handling and any related
+doc/comment if present, keeping the existing slice request.py_draft_tokens =
+next_draft_tokens[request.py_seq_slot][:runtime_draft_len] unchanged.
+ tensorrt_llm/_torch/pyexecutor/model_engine.py (2) 
+ 811-849 : cuda_graph_batch_sizes parameter is silently ignored in Case 2 
+ Cases 1 and 3 use the cuda_graph_batch_sizes parameter to build their output lists, but Case 2 (lines 833–834) ignores it entirely and iterates self._dynamic_draft_len_mapping.items() directly. The result is functionally equivalent today because both derive from self._cuda_graph_batch_sizes , but it makes the method's parameter contract misleading — callers cannot rely on the parameter being respected. Consider either removing the cuda_graph_batch_sizes parameter (making the method always access self.* state directly) or using it uniformly across all three cases for consistency.
+ 🤖 Prompt for AI Agents 
+ Verify each finding against the current code and only fix it if needed.
+In `@tensorrt_llm/_torch/pyexecutor/model_engine.py` around lines 811 - 849, The
+Case 2 branch in _get_graphs_to_capture ignores the cuda_graph_batch_sizes
+parameter by iterating self._dynamic_draft_len_mapping.items(); update it to
+respect the cuda_graph_batch_sizes argument: for each bs in
+cuda_graph_batch_sizes, look up draft_len from self._dynamic_draft_len_mapping
+(e.g., via get or indexing), build graphs = [(bs, draft_len) for bs in
+cuda_graph_batch_sizes if bs in self._dynamic_draft_len_mapping], and adjust the
+logger message accordingly; this keeps the method contract consistent while
+still supporting dynamic draft lengths in _dynamic_draft_len_mapping.
+ 679-679 : runtime_draft_len is not restored after warmup, unlike enable_spec_decode 
+ warmup() resets self.enable_spec_decode = self.is_spec_decode (line 679) after CUDA graph capture, but self.runtime_draft_len is left at the value from the last captured graph iteration (line 917). For a dynamic-draft schedule, the last graph captured (smallest (bs, draft_len) pair) may have draft_len = 0 , leaving the engine in an inconsistent state until py_executor writes the correct value. An explicit reset mirrors the established enable_spec_decode pattern and makes the state machine easier to reason about.
+ ♻️ Proposed fix 
+ # Set the value back to the original value after all warmups are complete
+ self.enable_spec_decode = self.is_spec_decode
+ + self.runtime_draft_len = self.max_draft_len 
+ 🤖 Prompt for AI Agents 
+ Verify each finding against the current code and only fix it if needed.
+In `@tensorrt_llm/_torch/pyexecutor/model_engine.py` at line 679, In warmup(),
+after the CUDA-graph capture where you reset self.enable_spec_decode =
+self.is_spec_decode, also reset the draft-length state by assigning
+self.runtime_draft_len back to the engine's configured draft length (e.g.
+self.runtime_draft_len = self.draft_len) so the runtime isn't left using the
+last-captured graph's draft_len (often 0); place this alongside the
+enable_spec_decode reset in warmup() so py_executor can still overwrite it
+later.
+ 🤖 Prompt for all review comments with AI agents 
+ Verify each finding against the current code and only fix it if needed.
+Inline comments:
+In `@tensorrt_llm/_torch/attention_backend/trtllm.py`:
+- Around line 1595-1609: The caches _pos_offsets_cache and _packed_mask_cache
+are created lazily; initialize them explicitly in the class __init__ by adding
+self._pos_offsets_cache = {} and self._packed_mask_cache = {} so these
+externally visible members exist for the object's lifetime (update the class
+__init__ method where other members are initialized to include these two empty
+dicts).
+- Around line 1592-1624: The two helper methods
+_position_offsets_for_dynamic_draft_len and _packed_mask_for_dynamic_draft_len
+use non-Google (brief) docstrings; replace them with Google-style docstrings
+that Sphinx can parse by adding a one-line summary, an Args section documenting
+draft_len (int) and meaning, and a Returns section indicating a torch.Tensor (on
+CUDA) and that the tensor is cached per draft_len; also mention any notable
+behavior (e.g., width = draft_len + 1, caching in self._pos_offsets_cache /
+self._packed_mask_cache, and packed mask shape/num_blocks) so readers and Sphinx
+get correct type and purpose information.
+- Around line 1583-1589: Guard access to spec_metadata.runtime_draft_len in the
+linear-tree branch: if spec_metadata is None use max_draft_len as the fallback.
+Specifically, before calling self.generate_spec_decoding_generation_length,
+compute runtime_draft_len = spec_metadata.runtime_draft_len if spec_metadata is
+not None else max_draft_len, then pass that runtime_draft_len into
+generate_spec_decoding_generation_length and use it for calls to
+_position_offsets_for_dynamic_draft_len and _packed_mask_for_dynamic_draft_len;
+keep existing assertions (max_draft_len == max_total_draft_tokens) intact.
+In `@tensorrt_llm/_torch/pyexecutor/model_engine.py`:
+- Around line 1909-1913: The comment describing new_tokens_device's shape is
+incorrect and misleading: update the comment near new_tokens_device / the slice
+that uses new_tokens_device.transpose(0, 1)[previous_slots,
+:num_tokens_per_extend_request].flatten() to state the pre-transpose layout is
+[1 + max_draft_len, batch, beam_width] and that transpose(0, 1) produces [batch,
+1 + max_draft_len, beam_width], so the subsequent indexing with previous_slots
+and num_tokens_per_extend_request is valid; reference new_tokens_device,
+previous_slots, num_tokens_per_extend_request and the transpose(0, 1) call when
+updating the comment.
+- Around line 779-793: The method _compute_dynamic_draft_len_mapping currently
+annotates -> dict but can return None; update the signature to return
+Optional[dict] (or more specific Optional[Dict[int,int]]) and add the
+corresponding typing import (from typing import Optional, Dict) and then ensure
+callers such as _get_graphs_to_capture handle the None case (e.g., check for
+None before calling .items() or treat None as an empty mapping) so type-checkers
+and runtime behavior are consistent.
+In `@tensorrt_llm/_torch/pyexecutor/py_executor.py`:
+- Around line 1616-1622: Replace the inline function import with a module import
+and call the function via its namespace: change the import `from
+tensorrt_llm._torch.speculative.utils import get_draft_len_for_batch_size` to
+import the module (e.g., `import tensorrt_llm._torch.speculative.utils as
+speculative_utils`) and update the call site where
+`get_draft_len_for_batch_size(...)` is used (in the computation of
+`runtime_draft_len`) to `speculative_utils.get_draft_len_for_batch_size(...)`;
+keep the existing arguments (`self.model_engine.spec_config.draft_len_schedule,
+scheduled_batch.batch_size, self.model_engine.max_draft_len`) unchanged.
+- Around line 1594-1611: Update the _handle_dynamic_draft_len docstring to
+Google style by replacing the freeform description with a Google-style docstring
+that includes an Args section documenting scheduled_batch (type
+ScheduledRequests) and any other parameters, a Returns section (if the function
+returns None, state "None: Does not return a value"), and a short summary
+describing behavior (determines runtime_draft_len on model_engine and
+pads/truncates each request's py_draft_tokens to match that length; when dynamic
+is disabled, runtime_draft_len is set to max_draft_len). Also mention side
+effects on model_engine.runtime_draft_len and that KV cache allocation depends
+on calling this before prepare_resources.
+In `@tensorrt_llm/_torch/pyexecutor/sampler.py`:
+- Around line 150-155: Add an inline attribute docstring for the
+SampleState.runtime_draft_len field using the required triple-quoted inline
+format; update the class SampleState by annotating runtime_draft_len with a
+docstring like """Optional[int]: Current draft length planned for this sample at
+runtime""" placed immediately after the runtime_draft_len declaration so the
+attribute is documented in the class body following the coding guidelines.
+In `@tensorrt_llm/_torch/speculative/utils.py`:
+- Around line 1-3: Add the NVIDIA Apache 2.0 copyright header (with year 2026)
+to the top of tensorrt_llm/_torch/speculative/utils.py before the existing
+imports; insert the standard Apache License 2.0 header block used across the
+repo (matching other .py files) as the first lines of the file so the current
+imports (bisect_left, dataclass, typing) remain unchanged and the file now
+includes the required NVIDIA header.
+- Around line 1-3: The import currently uses "from bisect import bisect_left";
+change it to "import bisect" and update all call sites that reference
+bisect_left (e.g., any use of bisect_left in this module) to use the qualified
+name bisect.bisect_left so the bisect namespace is preserved per guidelines;
+ensure you update every occurrence (including the instances referenced around
+lines 321-324) to the qualified form.
+- Around line 290-329: The current get_draft_len_for_batch_size (uses
+bisect_left) conflicts with drafter.py semantics; change it to use bisect_right
+on schedule_batch_sizes and map insertion index to the "largest key ≤
+batch_size" with special handling for values outside range: compute idx =
+bisect_right(schedule_batch_sizes, batch_size); if idx ==
+len(schedule_batch_sizes) return 0 (speculation disabled for batch sizes above
+all thresholds); if idx == 0 return draft_len_schedule[schedule_batch_sizes[0]]
+(batch sizes below smallest threshold use the smallest-key value); otherwise
+return draft_len_schedule[schedule_batch_sizes[idx-1]]; update
+get_draft_len_for_batch_size accordingly to match drafter.py behavior.
+In `@tests/integration/defs/accuracy/test_llm_api_pytorch.py`:
+- Around line 3812-3822: The CudaGraphConfig is being constructed with
+max_batch_size which can be None; change the code so max_batch_size is an int
+when passed or omit the argument entirely: keep using max_batch_size variable
+set by enable_dynamic_draft_len, but when max_batch_size is None do not include
+max_batch_size in the CudaGraphConfig instantiation (or set it to a valid int
+default like 0); update the pytorch_config creation that references
+CudaGraphConfig(...) accordingly so CudaGraphConfig is only called with an
+integer max_batch_size or without that parameter.
+In `@tests/unittest/_torch/speculative/test_dynamic_spec_decode.py`:
+- Around line 26-38: Update the misleading inline comment describing the draft
+length sequence to match the actual sequence produced by the side-effect logic
+that reads mock_get_draft_len_for_batch_size.call_count (which is incremented
+before the side-effect runs); replace "4-4-2-2-0-0-2-2-…" with the correct
+sequence "4-2-2-0-0-2-2-4-…" so readers understand the true iteration pattern
+used by the conditional branches that set dynamic_draft_len.
+---
+Outside diff comments:
+In `@tensorrt_llm/_torch/pyexecutor/cuda_graph_runner.py`:
+- Around line 108-113: The type annotation for padding_dummy_requests uses an
+undefined Request causing F821; update the annotation to use the concrete type
+llm_request.LlmRequest (or import LlmRequest as Request) and add the appropriate
+import for llm_request at the top of cuda_graph_runner.py so
+padding_dummy_requests: Dict[int, "Request"] becomes Dict[int,
+llm_request.LlmRequest] (or Dict[int, Request] if you import Request alias);
+ensure the import matches how LlmRequest is exported so linters resolve the
+symbol.
+- Around line 214-222: The loop computing draft_len_list from
+batch.generation_requests can yield an empty list and cause max([]) to raise;
+replace this manual aggregation with the existing helper get_draft_token_length
+(already imported) or add an explicit guard: compute draft_len via
+get_draft_token_length(batch) (or if using the list, check if draft_len_list is
+empty and handle accordingly) before asserting uniformity and building the cache
+key (the key using batch_size, draft_len, False, short_seq_len_mode); ensure you
+still assert or validate that all draft lengths match when non-empty.
+In `@tensorrt_llm/llmapi/llm_args.py`:
+- Around line 3291-3342: In validate_cuda_graph_config, when
+speculative_config.draft_len_schedule is set we currently generate batch_sizes
+using the pre-flipped config.enable_padding and only then set
+enable_padding=True, producing the wrong (dense) sizes; fix by checking
+speculative_config.draft_len_schedule before calling
+CudaGraphConfig._generate_cuda_graph_batch_sizes (or, alternatively, after
+auto-enabling padding regenerate batch_sizes) so that
+CudaGraphConfig._generate_cuda_graph_batch_sizes receives the final
+enable_padding value; update code around validate_cuda_graph_config,
+CudaGraphConfig._generate_cuda_graph_batch_sizes call, and the auto-enable block
+(and then still call CudaGraphConfig._merge_schedule_keys) to ensure
+padded/coarse batch sizes are produced when draft_len_schedule exists.
+In `@tests/integration/defs/accuracy/test_llm_api_pytorch.py`:
+- Line 1: Update the copyright header at the top of the file
+tests/integration/defs/accuracy/test_llm_api_pytorch.py by changing the year
+from 2025 to 2026 so the header reflects the modification year; locate the
+SPDX/header comment on the first line and replace "2025" with "2026".
+---
+Nitpick comments:
+In `@tensorrt_llm/_torch/pyexecutor/model_engine.py`:
+- Around line 811-849: The Case 2 branch in _get_graphs_to_capture ignores the
+cuda_graph_batch_sizes parameter by iterating
+self._dynamic_draft_len_mapping.items(); update it to respect the
+cuda_graph_batch_sizes argument: for each bs in cuda_graph_batch_sizes, look up
+draft_len from self._dynamic_draft_len_mapping (e.g., via get or indexing),
+build graphs = [(bs, draft_len) for bs in cuda_graph_batch_sizes if bs in
+self._dynamic_draft_len_mapping], and adjust the logger message accordingly;
+this keeps the method contract consistent while still supporting dynamic draft
+lengths in _dynamic_draft_len_mapping.
+- Line 679: In warmup(), after the CUDA-graph capture where you reset
+self.enable_spec_decode = self.is_spec_decode, also reset the draft-length state
+by assigning self.runtime_draft_len back to the engine's configured draft length
+(e.g. self.runtime_draft_len = self.draft_len) so the runtime isn't left using
+the last-captured graph's draft_len (often 0); place this alongside the
+enable_spec_decode reset in warmup() so py_executor can still overwrite it
+later.
+In `@tensorrt_llm/_torch/speculative/interface.py`:
+- Around line 446-455: The skip_drafting method currently declares parameters
+input_ids, position_ids, hidden_states, and draft_model but does not use them,
+triggering Ruff ARG002; to silence the linter while preserving the public API,
+rename those parameters to _input_ids, _position_ids, _hidden_states, and
+_draft_model in the skip_drafting signature (leave logits, attn_metadata,
+spec_metadata unchanged), and update any internal references in skip_drafting to
+use the new underscored names if needed.
+In `@tensorrt_llm/_torch/speculative/mtp.py`:
+- Around line 269-276: The parameter runtime_draft_len in
+_request_common_handling is marked Optional[int] but callers always pass an int
+(via getattr(state, "runtime_draft_len", self.draft_len)); change the signature
+to runtime_draft_len: int to make the contract explicit and avoid surprising
+behavior when slicing with [:None]; update the type annotation for
+_request_common_handling and any related doc/comment if present, keeping the
+existing slice request.py_draft_tokens =
+next_draft_tokens[request.py_seq_slot][:runtime_draft_len] unchanged.
+In `@tensorrt_llm/llmapi/llm_args.py`:
+- Around line 183-186: The staticmethod that computes extra batch sizes
+currently does batch_sizes[-1] without guarding against an empty batch_sizes and
+silently drops schedule keys > max_bs; update this method to first validate
+batch_sizes is non-empty (raise a ValueError with a clear message referencing
+batch_sizes) and compute max_bs safely, then detect any keys in schedule that
+exceed max_bs and either raise a descriptive exception or emit a warning (choose
+consistent behavior with the module: raise for invalid config or log.warn)
+instead of silently filtering them; refer to the variables batch_sizes, schedule
+and max_bs in your changes so reviewers can find and test the logic.
+- Around line 783-789: The long f-string in the ValueError raised when
+draft_len_schedule mismatches max_draft_len should be moved out of the raise
+site into a helper or custom exception to satisfy TRY003; change the raise in
+the validation block that checks "if max_draft_len is not None and
+v[smallest_batch_size] != max_draft_len" to raise a concise exception (e.g.,
+DraftLengthScheduleError or ValueError with a short message) and implement a
+helper function (e.g., _format_draft_len_schedule_error(smallest_batch_size, v,
+max_draft_len)) or a custom exception class (e.g.,
+DraftLengthScheduleError.__str__ returning the full message) that contains the
+verbose message so the long string no longer appears inline in the check.
+In `@tests/unittest/_torch/speculative/test_dynamic_spec_decode.py`:
+- Around line 24-25: The function mock_get_draft_len_for_batch_size currently
+defines unused parameters draft_len_schedule, batch_size, and
+max_total_draft_tokens; rename them to _draft_len_schedule, _batch_size, and
+_max_total_draft_tokens in the mock_get_draft_len_for_batch_size signature so
+their unused status is explicit and Ruff ARG001 warnings are suppressed while
+leaving the function logic (including call_count usage) unchanged.
+- Around line 42-46: The newly created Mock mock_get_draft_len_for_batch_size is
+being reset twice; remove the redundant call to
+mock_get_draft_len_for_batch_size.reset_mock() and keep the explicit
+mock_get_draft_len_for_batch_size.call_count = 0 assignment to clearly express
+intent and ensure the mock starts with zero calls.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ Comment thread 
+ tensorrt_llm/_torch/attention_backend/trtllm.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tensorrt_llm/_torch/attention_backend/trtllm.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tensorrt_llm/_torch/attention_backend/trtllm.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tensorrt_llm/_torch/pyexecutor/model_engine.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tensorrt_llm/_torch/pyexecutor/model_engine.py 
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ 2 hidden conversations
+ Load more…
+ Comment thread 
+ tensorrt_llm/_torch/pyexecutor/sampler.py 
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tensorrt_llm/_torch/speculative/utils.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tensorrt_llm/_torch/speculative/utils.py 
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tests/integration/defs/accuracy/test_llm_api_pytorch.py 
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tests/unittest/_torch/speculative/test_dynamic_spec_decode.py 
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Feb 19, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #36204 [ run ] completed with state SUCCESS . Commit: a4a5c69 
+ /LLM/main/L0_MergeRequest_PR pipeline #27985 completed with status: 'FAILURE'
+ ⚠️ Action Required: 
+ Please check the failed tests and fix your PR
+ If you cannot view the failures, ask the CI triggerer to share details
+ Once fixed, request an NVIDIA team member to trigger CI again
+ Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ mikeiovine 
+ reviewed
+ Feb 19, 2026 
+ View reviewed changes 
+ mikeiovine 
+ left a comment
+ Copy link
+ Copy Markdown
+ Collaborator 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Great work. Left a few comments
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ Comment thread 
+ tensorrt_llm/_torch/attention_backend/trtllm.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tensorrt_llm/_torch/attention_backend/trtllm.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tensorrt_llm/_torch/attention_backend/trtllm.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tensorrt_llm/_torch/attention_backend/trtllm.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tensorrt_llm/_torch/pyexecutor/cuda_graph_runner.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tensorrt_llm/_torch/pyexecutor/cuda_graph_runner.py 
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tensorrt_llm/_torch/pyexecutor/model_engine.py 
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tensorrt_llm/_torch/pyexecutor/model_engine.py 
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tensorrt_llm/_torch/pyexecutor/py_executor.py 
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Comment thread 
+ tensorrt_llm/_torch/speculative/interface.py 
+ Outdated
+ Show resolved 
+ Hide resolved 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ zheyuf 
+ force-pushed 
+ the
+ max_con_1_model 
+ branch
+ from
+ a4a5c69 to
+ adfbbe0 
+ Compare 
+ February 25, 2026 23:41 
+ zheyuf 
+ requested a review
+ from a team 
+ as a code owner 
+ February 25, 2026 23:41 
+ zheyuf 
+ force-pushed 
+ the
+ max_con_1_model 
+ branch
+ from
+ 1edce1b to
+ e5f2597 
+ Compare 
+ February 26, 2026 23:31 
+ StanleySun639 
+ approved these changes
+ Feb 27, 2026 
+ View reviewed changes 
+ zheyuf 
+ force-pushed 
+ the
+ max_con_1_model 
+ branch
+ from
+ af0defb to
+ 4039dc9 
+ Compare 
+ March 3, 2026 01:14 
+ zheyuf 
+ commented
+ Mar 3, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run --disable-fail-fast
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ zheyuf 
+ requested a review
+ from mikeiovine 
+ March 3, 2026 01:14 
+ zheyuf 
+ commented
+ Mar 3, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run --disable-fail-fast
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Mar 3, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #37403 [ run ] triggered by Bot. Commit: 4039dc9 Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Mar 3, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #37404 [ run ] triggered by Bot. Commit: 4039dc9 Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ 79 hidden items
+ Load more…
+ Merge branch 'main' into max_con_1_model 
+ 31891a5 
+ zheyuf 
+ commented
+ Mar 9, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Mar 9, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #38329 [ run ] triggered by Bot. Commit: 31891a5 Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Mar 10, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #38329 [ run ] completed with state SUCCESS . Commit: 31891a5 
+ /LLM/main/L0_MergeRequest_PR pipeline #29705 completed with status: 'FAILURE'
+ ⚠️ Action Required: 
+ Please check the failed tests and fix your PR
+ If you cannot view the failures, ask the CI triggerer to share details
+ Once fixed, request an NVIDIA team member to trigger CI again
+ Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ zheyuf 
+ commented
+ Mar 10, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ zheyuf 
+ commented
+ Mar 10, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run --disable-fail-fast
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Mar 10, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #38348 [ run ] triggered by Bot. Commit: 31891a5 Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Mar 10, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #38349 [ run ] triggered by Bot. Commit: 31891a5 Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Mar 10, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #38348 [ run ] completed with state ABORTED . Commit: 31891a5 
+ Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ zheyuf 
+ commented
+ Mar 10, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run --disable-fail-fast
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Mar 10, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #38379 [ run ] triggered by Bot. Commit: 31891a5 Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Mar 10, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #38379 [ run ] completed with state SUCCESS . Commit: 31891a5 
+ /LLM/main/L0_MergeRequest_PR pipeline #29748 completed with status: 'FAILURE'
+ ⚠️ Action Required: 
+ Please check the failed tests and fix your PR
+ If you cannot view the failures, ask the CI triggerer to share details
+ Once fixed, request an NVIDIA team member to trigger CI again
+ Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ zheyuf 
+ and others 
+ added 2 commits
+ March 10, 2026 19:22 
+ Fix Chaindrafter CI 
+ …
+ b3d292a 
+ Signed-off-by: Zheyu Fu <zheyuf@NVIDIA.com> 
+ Merge branch 'main' into max_con_1_model 
+ d3b4aa9 
+ zheyuf 
+ commented
+ Mar 10, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run --disable-fail-fast
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Mar 10, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #38488 [ run ] triggered by Bot. Commit: d3b4aa9 Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Mar 11, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #38488 [ run ] completed with state SUCCESS . Commit: d3b4aa9 
+ /LLM/main/L0_MergeRequest_PR pipeline #29840 completed with status: 'FAILURE'
+ ⚠️ Action Required: 
+ Please check the failed tests and fix your PR
+ If you cannot view the failures, ask the CI triggerer to share details
+ Once fixed, request an NVIDIA team member to trigger CI again
+ Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ zheyuf 
+ commented
+ Mar 11, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Author 
+ /bot run
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Mar 11, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #38530 [ run ] triggered by Bot. Commit: d3b4aa9 Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ tensorrt-cicd 
+ commented
+ Mar 11, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ PR_Github #38530 [ run ] completed with state SUCCESS . Commit: d3b4aa9 
+ /LLM/main/L0_MergeRequest_PR pipeline #29876 completed with status: 'SUCCESS'
+ CI Report 
+ Link to invocation 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ zheyuf 
+ requested a review
+ from StanleySun639 
+ March 11, 2026 06:34 
+ StanleySun639 
+ approved these changes
+ Mar 11, 2026 
+ View reviewed changes 
+ QiJune 
+ approved these changes
+ Mar 13, 2026 
+ View reviewed changes 
+ QiJune 
+ left a comment
+ Copy link
+ Copy Markdown
+ Collaborator 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ LGTM for the LLM API change
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ Hide details 
+ View details 
+ zheyuf 
+ merged commit fb7c634 
+ into
+ NVIDIA : main 
+ Mar 13, 2026 
+ 5 checks passed
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ coderabbitai 
+ Bot 
+ mentioned this pull request
+ Mar 17, 2026 
+ [TRTLLM-11556][feat] Expand dynamic speculation to all spec decode algorithms
+ #12262 
+ Merged
+ 1 task 
+ limin2021 
+ pushed a commit
+ to limin2021/TensorRT-LLM
+ that referenced
+ this pull request
+ Mar 19, 2026 
+ [TRTLLM-10319][feat] Dynamic draft length on spec decode one-model pa… 
+ … 
+ b1eaa20 
+ …th ( NVIDIA#10860 )
+Signed-off-by: Zheyu Fu <zheyuf@NVIDIA.com> 
+ coderabbitai 
+ Bot 
+ mentioned this pull request
+ Mar 25, 2026 
+ [https://nvbugs/5879577][fix] Fix KeyError in DeepSeekV3Lite FP8 MTP weight loading
+ #12529 
+ Closed
+ 3 tasks 
+ longcheng-nv 
+ pushed a commit
+ to longcheng-nv/TensorRT-LLM
+ that referenced
+ this pull request
+ Mar 31, 2026 
+ [TRTLLM-10319][feat] Dynamic draft length on spec decode one-model pa… 
+ … 
+ 8bb17c8 
+ …th ( NVIDIA#10860 )
+Signed-off-by: Zheyu Fu <zheyuf@NVIDIA.com> 
+ coderabbitai 
+ Bot 
+ mentioned this pull request
+ Apr 14, 2026 
+ [TRTLLM-11540][feat] Revert EAGLE3 dynamic tree speculative decoding support (#12062)
+ #13006 
+ Merged
+ 1 task 
+ chungen04 
+ mentioned this pull request
+ Jun 6, 2026 
+ [#15022][fix] Guided decoding (xgrammar) + EAGLE-3 + draft_len_schedule reaching 0 crashes during CUDA graph capture, "bitmask must have the same batch size as logits"
+ #15023 
+ Merged
+ 1 task 
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ coderabbitai[bot] 
+ coderabbitai[bot] left review comments 
+ mikeiovine 
+ mikeiovine approved these changes 
+ QiJune 
+ QiJune approved these changes 
+ StanleySun639 
+ StanleySun639 approved these changes 
+ Superjomn 
+ Awaiting requested review from Superjomn 
+ Superjomn was automatically assigned from NVIDIA/trt-llm-llmapi-devs 
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ None yet
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 5 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

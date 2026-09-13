@@ -1,0 +1,237 @@
+FETCHED: https://github.com/vllm-project/vllm/issues/22605  (is_pr=False, 347426 bytes)
+GRAPHQL NODE: issue
+GRAPHQL META:
+  number = 22605
+  title = [RFC]: Separated CPU KV Cache Offloading/Transfer Process
+  state = CLOSED
+  stateReason = NOT_PLANNED
+  createdAt = 2025-08-10T23:42:54Z
+  updatedAt = 2026-03-27T02:18:15Z
+  closedAt = None
+  author = ApostaC
+  labels = ['RFC', 'stale']
+
+[GRAPHQL COMMENT by david6666666 assoc=CONTRIBUTOR at 2025-08-11T01:09:07Z]
+Nice job, looking forward to the follow-up progress
+
+[GRAPHQL COMMENT by KuntaiDu assoc=COLLABORATOR at 2025-08-11T05:29:28Z]
+Looking forward to a fully-async world!
+
+[GRAPHQL COMMENT by vadimkantorov assoc=NONE at 2025-08-11T23:59:41Z]
+Please add functionality for explicit (via python method call or via rpc-method), on-demand releasing all KV-cache memory (and also explicit method for re-allocating it back). This is important in co-location scenarios where vllm is not alone using the VRAM and RAM - especially if now part of KV-cache management goes onto another special process.
+
+[GRAPHQL COMMENT by njhill assoc=MEMBER at 2025-08-12T00:29:46Z]
+Thanks @ApostaC, I think this is a great idea!
+
+I think we should be careful though not to conflate use of a separate process with other design points that are potentially orthogonal:
+- Async offloading/onloading is already supported. Are the "before" numbers above using layer-wise offload or fully async as proposed [here](https://github.com/LMCache/LMCache/pull/666)? We should probably also ensure cuda streams are arranged optimally (per https://github.com/vllm-project/vllm/pull/21988).
+- I think this can be seen as applicable to connectors in general, not just CPU offloading? I.e. the worker-side of the connector interface would run in the separate process instead of the worker. So that it could also be leveraged for P/D, NIXL, different offload implementations, etc. The main limitation would be loss of layer-wise hooks as mentioned.
+- HMA compatibility and fault-tolerance are things that are needed in both cases, I guess "failure isolation" might be a better way to describe the specific benefit here.
+- Similarly eviction-based offloading I think is orthogonal to the separate process idea?
+
+Do you agree or is there anything I have understood incorrectly?
+
+[GRAPHQL COMMENT by ApostaC assoc=COLLABORATOR at 2025-08-12T16:40:50Z]
+> Please add functionality for explicit (via python method call or via rpc-method), on-demand releasing all KV-cache memory (and also explicit method for re-allocating it back). This is important in co-location scenarios where vllm is not alone using the VRAM and RAM - especially if now part of KV-cache management goes onto another special process.
+
+@vadimkantorov Thanks for the suggestion. One clarification question: when you say `releasing all KV-cache memory`, what specific memory are you referring to? vLLM's GPU KV memory or the memory managed by the separate process? And when will the functionality be used?
+
+[GRAPHQL COMMENT by ApostaC assoc=COLLABORATOR at 2025-08-12T16:47:00Z]
+Thanks @njhill ! I think I agree with you in general. Just a few points:
+- This proposal is not trying to re-invent the wheel for async offloading. I think the main difference here is whether we need to launch anything in the vLLM worker process. Even though there is asynchronous offloading/onloading in the current connector implementation, we still see some CPU kernel launching overhead slowing down the worker execution.
+- `I think this can be seen as applicable to connectors in general` -- totally agreed. One caveat is that in this proposal, we don't have any function calls on worker during runtime, which means the "new connectors" will probably live in another process as well.
+- `I guess "failure isolation" might be a better way to describe the specific benefit here.` -- Agreed
+- `Similarly eviction-based offloading I think is orthogonal to the separate process idea?` Yeah, it's orthogonal to the idea and I believe it needs extra support in both scheduler and KV cache manager in vLLM
+
+[GRAPHQL COMMENT by vadimkantorov assoc=NONE at 2025-08-12T16:50:07Z]
+> vLLM's GPU KV memory or the memory managed by the separate process
+
+In the first place, vLLM's GPU KV memory (for the RAM managed by separate process - it's also interesting, but less pertinent).
+
+To be used in co-located regime, e.g. for Verl training with GRPO where we'd like to free/dealloc the KV-cache VRAM while rollout model is not being used, and instead the VRAM is needed for the main training. (and same for the vllm.LLM model weights - good to be able to unload the weights. Not sure if it's possible to do without complete destruction of the vllm.LLM instance)
+
+[GRAPHQL COMMENT by njhill assoc=MEMBER at 2025-08-12T17:26:09Z]
+Thanks @ApostaC 
+
+> * This proposal is not trying to re-invent the wheel for async offloading. I think the main difference here is whether we need to launch anything in the vLLM worker process. Even though there is asynchronous offloading/onloading in the current connector implementation, we still see some CPU kernel launching overhead slowing down the worker execution.
+
+Completely understand and I expect the separate process to be beneficial from a performance/overhead pov. Just that when quantifying this we should ensure that's the only variable i.e. we compare with an async in-worker case without cuda stream contention.
+
+> * `I think this can be seen as applicable to connectors in general` -- totally agreed. One caveat is that in this proposal, we don't have any function calls on worker during runtime, which means the "new connectors" will probably live in another process as well.
+
+Yes that was my assumption, that the connector would still have a "worker side" interface except that it would now run in the dedicated process not the worker.
+
+
+
+[GRAPHQL COMMENT by robertgshaw2-redhat assoc=COLLABORATOR at 2025-08-14T02:05:29Z]
+One major concern I have is that we made the ConnectorAPI public. And so many people have built on it already. So we need to be responsible about how we message this to the community and users
+
+[GRAPHQL COMMENT by ApostaC assoc=COLLABORATOR at 2025-08-14T02:07:25Z]
+@robertgshaw2-redhat Yeah, I think we should make sure that the new design is compatible with connector API. I do see a way to evolve the current connector API a bit and achieve all the requirements in this RFC
+
+[GRAPHQL COMMENT by robertgshaw2-redhat assoc=COLLABORATOR at 2025-08-14T03:20:08Z]
+> [@robertgshaw2-redhat](https://github.com/robertgshaw2-redhat) Yeah, I think we should make sure that the new design is compatible with connector API. I do see a way to evolve the current connector API a bit and achieve all the requirements in this RFC
+
+SG!
+
+[GRAPHQL COMMENT by singzhou assoc=NONE at 2025-08-14T13:06:39Z]
+I do have concerns about this RFC for the community:
+(1) As @robertgshaw2-redhat said, how the other cache system like LMCache deal with this change?
+(2) Technically, separating processing for offloading the KV cache is feasible when we talk about CUDA, what about the hardware like Ascend-NPU that do not supporting sharing npu tensors between processes (at least for now)? I believe current device <--> host KV cache transfer is still triggered within the  worker process so it will be working fine with torch_npu, cuz the worker process hold the actual KV cache tensor reference.
+
+[GRAPHQL COMMENT by njhill assoc=MEMBER at 2025-08-14T16:23:42Z]
+I was also wondering about non-CUDA cases. We'd want to support native offloading in a mostly HW-backend-agnostic way if possible.
+
+[GRAPHQL COMMENT by KuntaiDu assoc=COLLABORATOR at 2025-08-14T17:08:08Z]
+In this case, maybe it is better to support both process-decoupled implementation and non-process-decoupled implementation (just like how `VLLM_ENABLE_V1_MULTIPROCESSING` works)
+
+########## RENDERED TIMELINE EVENTS ##########
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=ApostaC date=Aug 10, 2025]
+Motivation.
+
+CPU KV cache offloading and CPU-based KV cache transmission are always very important to vLLM.
+
+There are already some existing solutions, such as KV-connector-based offloading, KV-connector-based KV transmissions.
+
+Quite a few RFCs are also proposing new solutions for CPU KV cache offloading (#16144, #19854).
+
+However, the current implementations and proposals have several inefficiencies and complexity issues:
+
+- CPU overhead in workers – memcpy kernel launches and other CPU KV tasks run in worker processes, impacting inference performance.
+
+- Extra cross-worker IPC – CPU KV metadata gathering requires additional IPC, adding latency and complexity.
+
+- Coupling with inference loop – Transmission logic is only triggered when a worker is invoked, adding unnecessary latency.
+
+- Fragmented code paths – CPU offloading, eviction, and CPU-based prefill/disaggregated paths are handled separately, resulting in duplicated h2d/d2h calls.
+
+- Scheduler complexity – The scheduler has grown complicated due to various asynchronous handling requirements.
+
+Also, to land such functionality in production, there are a few more points to think about
+
+- Fault tolerance -- the error in the KV cache offloading/transmission module should not be propagated to the main vLLM process, nor impact the output correctness.
+
+- Full CUDA-graph compatibility -- the offloading operations should be compatible with CUDA graph operations.
+
+- Compatibility with the hybrid memory allocator.
+
+Proposed Change.
+
+Instead of embedding the offloading function call into the worker process, this RFC proposes a new design of "separating KV cache offloader/sender/receiver into another process" as shown in the diagram below.
+
+The key technique behind this proposal is PyTorch's UntypedStorage (for raw tensor data access) and CUDA IPC handle (for inter-process data sharing).
+
+Workflow in the new proposal
+
+During the bootstrap, the scheduler will send a handshake message to the "CPU KV process" that has the vLLM config, and workers will also send handshake messages to register the GPU KV cache tensors in the CPU KV process.
+
+During runtime, the scheduler will send the requests/pages that need to offload/onload/send KV cache to the CPU KV process via zmq. The CPU KV process will send back the "finished request IDs" to the scheduler after the corresponding offloading/onloading/send/receive KV operations are finished.
+
+The key difference from all the existing solutions is that the worker won't need to launch any memory-related kernels anymore. Therefore, the overhead inside the worker process can be minimized, and thus the GPU utilization can be maximized.
+
+Key benefits
+
+- Minimizing overhead: All memcpy kernel launches are moved out of the workers into the CPU KV Manager process, minimizing worker overhead. Also, a single shared CPU KV memory buffer across all workers, which eliminates cross-worker IPC for KV metadata.
+
+- No extra copy: Unifies CPU KV transmission, CPU offloading, and eviction into one module.
+
+- Cleaner code structure: Decouples CPU KV transmission from the LLM inference loop.
+
+- Fault tolerance: Failures in the CPU KV cache won't impact the main vLLM processes.
+
+- CUDA graph compatibility: CUDA graph compatibility (the new process won't impact vLLM's CUDA graph)
+
+Other side benefits (with careful engineering)
+
+- For MLA models, only needs to save a single version of KV cache when TP > 1
+
+- Simplified code paths for async offloading/eviction, which will clean the code in the scheduler.
+
+Feedback Period.
+
+No response
+
+CC List.
+
+@simon-mo @WoosukKwon @robertgshaw2-redhat @njhill @KuntaiDu
+
+Any Other Things.
+
+Early promise
+
+We use the following 2 workloads to test the worst-case overhead of the offloading (i.e., 0% prefix cache hit)
+
+- Llama 3.1 8B Random workload, 1000 input, 100 output, 1000 requests
+
+- Llama 3.1 8B Random workload, 8000 input, 100 output, 200 requests
+
+The new prototype implementation (without careful engineering) has already reduced the overhead from ~10% to ~3%.
+
+On workload 1:
+
+Original vLLM
+existing connector
+proposed prototype
+
+Mean TPOT (ms)
+
+162.11
+
+181.27
+
+169.16
+
+Token throughput (tokens/sec)
+
+33161.90
+
+29690.18
+
+32013.08
+
+On workload 2:
+
+Original vLLM
+existing connector
+proposed prototype
+
+Mean TPOT (ms)
+
+200.33
+
+214.42
+
+209.48
+
+Token throughput (tokens/sec)
+
+30846.83
+
+28738.53
+
+29833.48
+
+Roadmap
+
+- CPU KV cache server structure ( [Feat][KV offload][WIP] Separated process for CPU KV cache processing #22607)
+
+- Scheduler changes that call the new KV cache server (WIP, too many changes need to be cleaned up, code can be found at: https://github.com/vllm-project/vllm/compare/main...ApostaC:vllm:local-dev/scheduler-changes?expand=1)
+
+- Prototype implementation of the CPU offloading functionality ( [Feat][KV offloading][WIP] The prototype implementation of a KV offloader used in CPU KV server #22608)
+
+- Prototype implementation of the KV sending/receiving functionality
+
+- Eviction-based CPU offloading
+
+Other potential discussions
+
+- Layerwise pipelining
+
+There is a concern that if we separate the CPU KV cache management into another process, it will be hard to do layerwise pipelining. However, layerwise pipelining is less important after we separate the process. This is because (i) the overhead at the work side is already minimized, and the computation and communication are naturally overlapped in the new design, and (ii) for PD-disaggregation, we can do chunk-by-chunk pipelining to achieve similar performance as layerwise pipelining.
+
+Before submitting a new issue...
+
+- Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page, which can answer lots of frequently asked questions.

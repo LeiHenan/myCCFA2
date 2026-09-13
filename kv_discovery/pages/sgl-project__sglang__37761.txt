@@ -1,0 +1,76 @@
+FETCHED: https://github.com/sgl-project/sglang/issues/37761  (is_pr=True, 290358 bytes)
+LAYOUT NODE (PR):
+  number = 37761
+  title = [PD] Batch all KV cache layers into a single transfer for intra-node NVLink
+  state = CLOSED
+  closedTime = 2026-09-03T09:57:17Z
+  createdTime = 2026-09-03T09:12:51Z
+  mergedTime = None
+  mergedBy = None
+  commitsCount = 1
+  baseBranch = main
+  headBranch = nvlinkk
+  author = BJWang-ant
+
+########## RENDERED TIMELINE EVENTS ##########
+EV: js-timeline-progressive-focus-container" data-gid="C_kwDOQwYkYtoAKDFiNjVkZTA2MzU4NzIzMWI1NGUyYTJkZGY0N2ZhMTQ0NTRkMWVmNGM"> | support nvlink mooncake | 1b65de0 | <div class="
+EV: js-timeline-progressive-focus-container" data-gid="RRE_lADOLCAjRs8AAAABPfhwF88AAAAHGI0pzw"> | BJWang-ant | requested review from | ByronHsu, | Duyi-Wang, | HaiShaw, | ShangmingCai, | hnyls2002 and | sogalin | as code owners | September 3, 2026 09:12 | BJWang-ant | marked this pull request as draft | September 3, 2026 09:13 | BJWang-ant | closed this | Sep 3, 2026 | --> | <div id="copil
+
+########## RENDERED TIMELINE (markdown blocks) ##########
+
+[RENDERED BLOCK author=BJWang-ant date=2026-09-03T09:12:51Z]
+Motivation
+
+When SGLANG_MOONCAKE_CUSTOM_MEM_POOL=INTRA_NODE_NVLINK is enabled, Mooncake currently submits one transfer task per KV-cache layer through the thread pool.
+
+This behavior was inherited from the custom-memory-pool path, which historically avoided large batch transfers for MNNVL/NVLink due to correctness concerns. The underlying transfer path now supports batch_transfer_sync, but INTRA_NODE_NVLINK still follows the per-layer submission path.
+
+Submitting transfers per layer introduces additional overhead from:
+
+- Thread-pool task creation and scheduling
+
+- Multiple Python-to-Mooncake calls
+
+- Repeated transfer submission and synchronization
+
+- CPU contention when many layers are transferred concurrently
+
+Changes
+
+This PR enables all-layer batching when the custom memory pool type is INTRA_NODE_NVLINK.
+
+For each KV chunk and target decode rank, the transfer path now:
+
+- Builds transfer blocks for all local KV-cache layers.
+
+- Combines them into one transfer-block list.
+
+- Submits the list through a single batch_transfer_sync call.
+
+The change covers:
+
+- Generic MHA/MLA KV-cache transfer
+
+- DCP KV-cache relayout transfer
+
+- Heterogeneous-TP head-sliced KV-cache transfer
+
+The existing behavior is preserved for NVLINK and BAREX, which continue to submit transfers per layer through the thread pool. The default non-custom-memory-pool path is unchanged.
+
+The staging-buffer path already batches all layers and therefore requires no changes.
+
+Expected Benefit
+
+This reduces transfer submission overhead and thread-pool contention for intra-node NVLink transfers, especially for models with many KV-cache layers.
+
+The batching scope is one KV chunk per target decode rank. Auxiliary states and different chunks are still transferred independently.
+
+Perf testing
+
+CI States
+
+Latest PR Test (Base): ❌ Run #33737602474
+
+Latest PR Test (Extra): ❌ Run #33737602193
+
+Latest PR Test (AMD ROCm 7.2): ❌ Run #33737602302
