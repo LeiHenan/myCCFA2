@@ -1,0 +1,90 @@
+# S3b 已解决性核查（Solved-elsewhere check） — 批组成不变性：确定性的代价与收益
+
+**候选**：`batch-invariance-cost` ｜ **成本上限**：0 GPU·h（检索 + 读正文）
+**目标**：在花任何 GPU 之前回答：**这个痛点，别的引擎/别的社区是不是早就解决了？** 只查单一引擎的 roadmap 与源码**不算**——上一轮的失败正是如此。
+
+**判定（2026-09-13，goal-ebcec24d 第 1 轮）：🔴 杀 —— 在 0 GPU·h 被 S3b 拦下。**
+
+**理由（命中杀出口）**：同一问题类在两个主流引擎里**都已 ship 专用开关**，且**上游把失效机制写进了代码**：
+
+| 引擎 | 开关 | 默认 | 文档串原文 | 打开后关/改什么 |
+|---|---|---|---|---|
+| vLLM 0.29.0 | `VLLM_BATCH_INVARIANT`（`envs.py:617-619`） | `0` | *"deterministic results regardless of batch composition. Requires NVIDIA GPU with compute capability >= 9.0"* | attn cascade（`config/vllm.py:1730`）、allreduce（`all_reduce_utils.py:136/165`）、symm mem + FlashInfer allreduce（`cuda_communicator.py:63/235/254/457`）、LoRA kernel（`lora/ops/triton_ops/utils.py:222`）；另有专门模块 `determinism/batch_invariant.py` |
+| SGLang 0.5.19 | `--enable-deterministic-inference`（`server_args.py:3474-3478`） | `False` | **"Enable deterministic inference mode with batch invariant ops"** | 采样后端强制 `pytorch`（`overrides.py:1030-1035`）、禁用 FlashInfer allreduce fusion（`overrides.py:1066-1077`）、禁用 `FLASHINFER_MOE_FUSED_FINALIZE`（`serving_hook.py:404-405`） |
+
+**最致命的一条**：SGLang `arg_groups/speculative_hook.py:770-776` 直接 `raise ValueError(...)`，
+原话是 *"the sampling kernel draws coins from the global RNG and is not batch-invariant"* ⇒
+**上游不但知道，还在代码里把非不变性 kernel 挡住**。
+
+**⇒ 这不是"没人想到"，而是"已知、已建开关、已被容忍"**。剩下的可写内容只有"把它的代价测一遍"，
+那是**程度性**差异轴（违反判据 2）且属**测量类**（违反用户"只接受优化类"裁定）⇒ **杀，且不花 1 GPU·h**。
+
+## 问题类定义
+
+**问题类（不含任何引擎的功能名）**：
+
+> **"批量推理系统的数值结果依赖于批的组成与形状，因此『同一请求 + 同一随机种子 + 贪心解码』并不保证同一输出；
+> 而要让结果与批组成无关，必须付出可测的性能代价。"**
+
+**换成别的引擎/社区会叫什么**（S3b 硬要求，防止只在一个引擎的词表里找答案）：
+
+| 场景 | 该问题类的叫法 |
+|---|---|
+| vLLM | `VLLM_BATCH_INVARIANT`（env 开关）、`determinism/batch_invariant.py`、deterministic allreduce |
+| SGLang | 待查（是否已有对应开关 / 文档承诺） |
+| TensorRT-LLM | 待查（是否有 deterministic / batch-invariant 运行模式） |
+| llama.cpp / 边缘引擎 | 待查（单批为主，问题形态可能不同） |
+| 数值计算社区 | **"reproducibility of floating-point reductions under varying shapes"**（经典话题，但**不是** LLM 服务语境） |
+| 训练社区 | **"bitwise reproducibility across batch sizes / gradient accumulation"**（PyTorch 有 `torch.use_deterministic_algorithms`，但那是**算子级**，不是**批组成级**） |
+| 服务 / MLOps 社区 | **"output drift across replicas / load"**、A/B 与灰度发布的有效性 |
+
+## 判定矩阵（跨引擎 × 跨社区）
+
+> 规则：每行必须有**可点开的 URL**与**查证深度**；未读正文的写 `未取证（TITLE ONLY）`。
+
+| # | 对象 | 状态 | URL / 位置 | 查证深度 | 与我们的差异 |
+|---|---|---|---|---|---|
+| 1 | **vLLM 0.29.0** `VLLM_BATCH_INVARIANT` | **已 ship（opt-in，默认 `0`）** | 本地已装树 `vllm/envs.py:617-619`（注释原文：*"Enable batch-invariant mode: deterministic results regardless of batch composition. Requires NVIDIA GPU with compute capability >= 9.0."*） | **READ BODY**（读了 `envs.py:610-630` + 全仓消费点 grep） | 上游**承认问题存在**并提供开关；**未量化**"不开时差多少、开了付多少" |
+| 2 | **vLLM 0.29.0** 开关的性能副作用清单 | 已 ship（随开关生效） | `config/vllm.py:1730`（关 cascade attention）、`config/parallel.py:1035`、`distributed/device_communicators/all_reduce_utils.py:136/165`、`cuda_communicator.py:63/235/254/457`（symm mem / FlashInfer allreduce / `use_deterministic_rs`）、`lora/ops/triton_ops/utils.py:222`、`model_executor/determinism/batch_invariant.py`（含 `mm_batch_invariant`） | **READ BODY**（逐处 grep 命中行） | 证明**代价真实且分布很广**（注意力 / 通信 / LoRA / matmul 四处） |
+| 3 | **vLLM 0.29.0** 逐请求采样 generator | 已 ship | `v1/sample/ops/topk_topp_sampler.py:207-212`（`q[i].exponential_(generator=generator)`） | **READ BODY** | 采样侧**已有**逐请求 generator ⇒ 发散若存在，来源更可能是**算子/归约**而非采样器 |
+| 4 | **vLLM 0.29.0** 投机解码默认值 | **opt-in（非默认开启）** | `config/vllm.py:372` `speculative_config: SpeculativeConfig \| None = None`；`config/speculative.py:1146-1158`（ngram 时 `prompt_lookup_min = max = 5`） | **READ BODY** | **纠错**：我此前说"prompt-lookup 是默认特性"是错的（decision #109） |
+| 5 | **SGLang 0.5.19** 是否有对应开关/承诺 | 待查 | 待填 | 待填 | — |
+| 6 | **TensorRT-LLM / llama.cpp** | 待查 | 待填 | 待填 | — |
+| 7 | **研究文献** | 待查（⚠️ 已知邻作 *Same Request, Different Answer* 打的是**缓存导致分歧**，属**不同机制**，须分开记） | 待填 | 待填 | — |
+| 8 | **生产实践（issue / 论坛 / 工程博客）** | 待查 | 待填 | 待填 | — |
+
+## 命中与缺口
+
+**命中面（当前）**：1 条已 ship（vLLM 开关）+ 1 条配套副作用清单 ⇒ **2 / ≥3，未达标**。
+
+**已能说清的部分**：上游**自认**该问题（否则不会建开关、不会专门写 `determinism/batch_invariant.py`），
+且代价**分布在注意力 / 通信 / LoRA / matmul 四处** ⇒ 这不是"没人想到"，而是"**已知且被容忍**"。
+
+**尚未说清（禁止进 S4）**：
+- 「不开开关时，批组成导致的发散**有多大、在什么条件下发生**」——未见任何量化。
+- 「打开开关的**性能代价**具体是多少」——未见任何基准。
+- 上述两条正是本候选要填的格子；**若文献里已有同等量化 ⇒ 按 S3b 杀**。
+
+## 反证与自证伪
+
+**待填**：必须主动找证据说明"这个问题已被解决或已被充分刻画"。
+**已知候选反证**：① 该开关存在本身说明上游认为它重要；② 若社区已有"批不变性代价"基准，则差异轴会被压成
+"换个模型再测一遍" ⇒ **应杀**。
+
+## 降级路径
+
+**待填**（若被占）：可能形态 —— 把主张从"量化发散"改为"**刻画代价在别的维度上的二阶影响**"
+（例如批不变性对投机解码接受率 / 前缀缓存命中率的影响），或降级为纯测量记录。
+
+## 完成清单
+
+> 校验器逐条比对下面的文本；全部 `[x]` 才算该阶段完成。
+
+- [x] 用**问题类**（而非某个引擎的功能名）描述候选，并写出「换成别的引擎/别的社区会叫什么」 —— §问题类定义：单一表述 + **7 个视角**的词表（vLLM / SGLang / TRT-LLM / 边缘引擎 / 数值计算社区 / 训练社区 / MLOps 社区）
+- [ ] 判定矩阵 ≥5 行，覆盖 **≥3 个引擎/实现**（vLLM / SGLang / TRT-LLM / llama.cpp / 专用库等）与 **≥2 个研究社区**（会议论文 / 开源库 / 生产实践）
+- [ ] 每行含：对象 / 状态（已 ship / RFC / 论文 / 无人做）/ 可点开的 URL / 查证深度（读了哪一节或哪个 file:line）/ 与我们的差异
+- [ ] 整体命中面 ≥3 条，并**逐条**推理「为什么剩下的缺口不是没人想到，而是结构上难/不划算」
+- [ ] 写一条**反证**：主动找证据说明整个方向可能已被解决（若找不到，写明搜索词与范围）
+- [ ] 写明「若被占，本方向降级成什么」，且降级形态不需要新半径
+
+> **杀出口**：任一引擎/社区**已 ship 或已发表**同一问题类的同等解法，且我们的差异轴讲不出条件性区别 ⇒ **杀**；判定矩阵不足 5 行或缺 URL/查证深度 ⇒ **禁止进入 S4**（不许开 GPU）
