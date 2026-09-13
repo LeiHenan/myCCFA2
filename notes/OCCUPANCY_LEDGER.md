@@ -79,3 +79,31 @@
 5. **🔴 的判定标准（v1.1.2 收紧）**：只有『已 ship **且** 在本代硬件/本负载上被验证有效 **且** 无未关闭的同类失败报告』才可标 🔴；若只是『有个开关』而有效性未验、或仍有 open 失败报告、或文档与实现不一致 ⇒ 记 **⚠**。本条来自 2026-09-13 的自我更正：第 3 轮据『两家都 ship 了开关』把 `batch-invariance-cost` 判死，而检索显示 vLLM #27433 仍 OPEN、多个 open issue 报告开了开关仍发散、修复 PR 仍在 merge。
 
 **其余**：新增条目必须带 URL 或 `file:line` + 查证深度；**不得**把"我没搜到"写成"✅ 缺口"（本表不收录未取证的空白）。
+
+---
+
+## 六、2026-09-14 新增（`goal-a729588f` 三方向测绘 + p20/p21 实测后）
+
+**为什么新增这一节**：两张方向地图（投机解码 1,191 行、KV cache 3,541 行）到位后，我在**同一天内**用**实测**验证了两条看起来最有希望的线索，
+结果**两条都撞上 OPEN 的占位者**。这一节把两个新问题类登记进来，并**收窄第 4 行（批不变性）的适用前提**。
+
+| # | 问题类 | 占位者（带证据） | 查证深度 | 我们的墓碑 |
+|---|---|---|---|---|
+| 9 | **动态投机调度（DSD）在 K=0 档的代价** | **PR [#53426](https://github.com/vllm-project/vllm/pull/53426)（OPEN）**标题即机制：*"Opt-in skip of the **K=0 draft sync forward** (MTP + DFlash, default off)"*；issue [#49548](https://github.com/vllm-project/vllm/issues/49548)（OPEN，含报告者自建仪器 `VLLM_DSD_K0_DIAG=1`）；issue [#48494](https://github.com/vllm-project/vllm/issues/48494)（OPEN，*"12–25% throughput penalty … even with an all-K=0 table"*）；PR [#47737](https://github.com/vllm-project/vllm/pull/47737)（OPEN，K=0 的 cudagraph 捕获 ZeroDivisionError） | READ BODY（4 条） | **≈0.55**（p20 三轮六臂） |
+| 10 | **DFlash/DSpark × 前缀缓存的交互**（"命中仍要重算"） | issue [#47930](https://github.com/vllm-project/vllm/issues/47930)（**OPEN**，标题即我们的实测结论：*"DFlash/DSpark draft acceptance collapses with automatic prefix caching enabled"*）；PR [#47926](https://github.com/vllm-project/vllm/pull/47926)（OPEN/Draft，机制原文：dflash 需 target 辅助隐藏状态建 context KV，而**前缀缓存恢复的 token 从不过 target** ⇒ 读未初始化 KV；且明写 *"**MTP/EAGLE-style drafters … are unaffected**"*）；PR [#54163](https://github.com/vllm-project/vllm/pull/54163)（**OPEN**，*"the whole context was recomputed on every reply"*）；issue [#54094](https://github.com/vllm-project/vllm/issues/54094)（**OPEN**，环境栏正是 **RTX PRO 6000 Blackwell**） | READ BODY（4 条） | **≈0.15**（p21 四臂） |
+
+**第 7 行（前缀复用 × 投机）的措辞须按实测收窄**：本表原先把它记成一类，**实测显示它是方法特异的** ——
+在 vLLM 0.29 / Qwen3-4B / 4096-token prompt 上，**`dflash2` 第 2 遍前缀缓存命中 = 0（重算 100% prompt，256× 于不投机），
+而 `eagle3`（2 blocks）与 `ngram`（1 block）与不投机同样正常**。⇒ 今后凡涉及此格，**必须按 drafter 类别分别陈述，不得写"EAGLE/MTP"**（上游 #47926 的机制说明与此一致）。
+
+**第 4 行（批不变性）的适用前提被收窄（结论不变、理由改变）**：我此前关闭该线索的依据是"开关有效 ⇒ 干预点就是开关"，
+但那批实验**全部在关闭前缀缓存下做**。p21 实测：**默认配置（前缀缓存开启）下 T=0 的确定性本身就不成立**
+（同 prompt 冷 vs 热，文本在 `nospec` 7/8、`eagle3` 7/8、`ngram` **5/8** 相同；冷 vs 热的 token_logprobs 四臂 **8/8** 不同）。
+⇒ **仍然不立项**，但理由从"已解决"改为"**未解决且已被他人占位**"（vLLM PR [#46592](https://github.com/vllm-project/vllm/pull/46592) 是他人 OPEN 的 canonical-chunking 实现，
+跟踪 issue [#27433](https://github.com/vllm-project/vllm/issues/27433) 把 "Prefix caching support" 列为 help-wanted 未打勾）。
+
+**本轮新增的正面数字（不立项，但已取证、可引用）**：投机在 **dense 4B / 4k prompt / 并发 8 / 前缀缓存开启** 下净赚 **+48.5%**（K=3）、**+11.2%**（K=1）；
+**全 K=0 表 −31.7%**；**K=0 档的 ITL（17.4 ms）≈ 真投机档（18.0 ms）≫ 不投机（11.9 ms）**。
+⇒ 与第 3 节"文献 A 类已 20+ 篇"的批不变性形成对照：**投机在本机小模型短上下文下是明确正收益**，地图 §1.9 那批负结果的条件（185k 上下文 / MoE / 长 CoT）与本机不同。
+
+**✅ 结构性缺口计数不变：仍为 0。** 新增的两类都是 🔴（已被 OPEN PR/issue 占位）。
