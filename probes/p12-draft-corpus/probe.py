@@ -84,6 +84,8 @@ def one_request(base, prompt, out_len, temperature, timeout):
         "ttft": meta.get("ttft"),
         # 缓存（用于把「冷启动」与「前缀缓存」区分开）
         "cached_tokens": meta.get("cached_tokens"),
+        # 模型续写正文：用于构造 **output-as-corpus** 语料（上游 PR #22569 的语义）
+        "output": d.get("text"),
         "meta_keys": sorted(meta.keys()),
     }
     return rec, None
