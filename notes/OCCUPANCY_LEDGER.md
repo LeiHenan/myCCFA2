@@ -107,3 +107,53 @@
 ⇒ 与第 3 节"文献 A 类已 20+ 篇"的批不变性形成对照：**投机在本机小模型短上下文下是明确正收益**，地图 §1.9 那批负结果的条件（185k 上下文 / MoE / 长 CoT）与本机不同。
 
 **✅ 结构性缺口计数不变：仍为 0。** 新增的两类都是 🔴（已被 OPEN PR/issue 占位）。
+
+---
+
+## 七、2026-09-14 续：**"OPEN" ≈ "正在施工"，不是"无人区"** —— 四簇独立线索、四次 S3b、全部被占位
+
+**这一节是本轮最有价值的产出，比任何一个具体候选都重要。**
+
+本节起因：我肉眼筛地图时漏掉了**主机内存 KV 卸载分层**这一簇（见 `notes/DIRECTION_MAP_3AXIS.md` §4.5），
+用 `pipeline/tools/prescreen_map.py` 补扫捞回。补扫后又对它做了 S3b —— **同样被占位，而且占位者连地图自己都没记**：
+
+| 格（地图标注 OPEN） | 地图原本引的证据 | **我 S3b 新查到的占位者** | 状态 |
+|---|---|---|---|
+| **B42** 卸载层之间没有背压检测 | #38470/#38448 等 | **vLLM PR [#50045](https://github.com/vllm-project/vllm/pull/50045) *"[KV Offloading] Back-pressure detection and remediation"*** | **OPEN**（标题与格子问题一一对应） |
+| **B41** 分层卸载把所有等待请求都提升，冲刷主 DRAM 层 | #49902/#50014 | **vLLM PR [#49952](https://github.com/vllm-project/vllm/pull/49952) *"Reserve primary-tier headroom so speculative promotions don't starve running stores"*** | **CLOSED**（**merged 与否未取证**，不写成"已解决"） |
+| **B44** host→device 回载坐在关键路径、未与 forward 重叠 | #38470/#38448 | **SGLang PR [#17843](https://github.com/sgl-project/sglang/pull/17843) *"[HiCache] Support direct io backend offload&load overlap"***（CLOSED）；**PR [#34519](https://github.com/sgl-project/sglang/pull/34519) *"fix(hicache): limit load-back pending to write-back"***（**MERGED**） | 部分已修 |
+
+**四次独立 S3b 的汇总（本轮）**：
+
+| # | 线索 | 我的实测投入 | S3b 判定 | 占位者 |
+|---|---|---|---|---|
+| 1 | DSD 的 K=0 档代价 | 0.55 GPU·h | 🔴 | PR #53426（OPEN，"K=0 draft sync forward"）、#49548、#48494、#47737 |
+| 2 | DFlash/DSpark × 前缀缓存 | 0.15 GPU·h | 🔴 | #47930（OPEN）、#47926、#54163、#54094 |
+| 3 | 前缀缓存 + batch-invariant | 0 GPU·h | 🔴 | PR #46592（OPEN），跟踪 issue #27433 列为 help-wanted |
+| 4 | 主机内存 KV 卸载分层（B41/B42/B44） | 0 GPU·h（纯检索） | 🔴 | PR #50045（OPEN）、#49952、SGLang #34519（MERGED）/#17843 |
+
+### 7.1 战略结论（必须记下来，否则下一轮还会犯）
+
+**"地图上标 OPEN" 与 "无人占位" 是两件不同的事，而且在本领域它们高度负相关。**
+原因是机制性的：一张三态地图的 **B 段是靠"有人还在问"的证据建起来的** ——
+而**"有人还在问"恰恰是最容易长出 PR 的状态**。所以 B 段在很大程度上是**在飞工作的快照**，
+不是**无人区的地图**。⇒ **B 段不该被当作候选池；它该被当作"施工路段警示牌"。**
+
+**这解释了本轮的全部经历**：我按地图的"最开放"格去测，测一条撞一条，
+四次全部命中 OPEN PR —— 不是运气差，是**筛选方向本身就偏了**：
+我一直在"最热闹的地方"找"没人做过的事"。
+
+**⇒ 对下一轮筛选的修订（写进 `notes/FILTER_3AXIS.md` 的待办）**：
+
+1. **B 段（OPEN）应当降权**，而不是像现在这样被当作首要候选池。
+2. **真正的候选池在两个地方**：
+   - **C 段（试过被放弃）里"失败理由依赖某个已改变的约束"的那些**（FILTER §1a 原本就是这么设计的，
+     但 §1 的"C 类优先"在本轮被 B 段的表观丰度盖过了 —— 这是我的执行偏差）；
+   - **没有任何 issue/PR 讨论过的地方** —— 这最难找，但**唯一可能真正空闲**。
+     可行的探法：从**已装引擎源码**里的 `TODO` / `not supported` / `NotImplementedError` 反查
+     （`probes/p17-open-cells/scan_engine_todos.py` 已具备，274 条命中），
+     再**逐条去 GitHub 搜是否已有人提** —— **搜不到才是信号**。
+3. **S3b 必须前置到"花钱之前"，且证据要独立于地图**：本轮 #4 的占位者**地图自己都没记**
+   （地图引的是另一批号）⇒ **不能拿地图当 S3b 的证据源**，地图只能当线索源。这条要写进 S3b 流程。
+
+**✅ 结构性缺口计数仍为 0。**
