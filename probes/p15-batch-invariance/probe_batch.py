@@ -44,8 +44,12 @@ def load_prompt(path):
 
 def call_batch(base, prompt, n, max_tokens, timeout, temperature=0.0):
     """一个请求 = 一个批（n 份相同 prompt）。不传 seed（SGLang 不接受）。"""
+    # ⚠️ 关键（2026-09-13 实测教训）：SGLang 的 `SamplingParams.normalize()` 把
+    #    `0 <= temperature < _SAMPLING_EPS` **改写成 1.0**（`sampling_params.py:150-152`），
+    #    即 **只设 temperature=0 得到的是标准采样，不是贪心**；真正的贪心是 `top_k=1`（:151 注释）。
+    #    初版漏了 top_k ⇒ 两臂都在采样 ⇒ 把随机性误读成"批组成效应"。
     body = {"text": [prompt] * n,
-            "sampling_params": {"temperature": temperature,
+            "sampling_params": {"temperature": temperature, "top_k": 1,
                                 "max_new_tokens": max_tokens, "ignore_eos": True}}
     t0 = time.perf_counter()
     try:
@@ -74,7 +78,8 @@ def summarize(outs):
     return {"total": len(outs), "unique_text": len(ct), "unique_fp": len(cf),
             "divergence_text": 1 - n_t / len(texts),
             "divergence_fp": 1 - n_f / len(fps),
-            "modal_fp": top_f, "modal_len": collections.Counter(o["n_out"] for o in outs).most_common(1)[0][0],
+            "modal_fp": top_f,
+            "all_fp_same": len(cf) == 1, "modal_len": collections.Counter(o["n_out"] for o in outs).most_common(1)[0][0],
             "sample_text": (top_t or "")[:60]}
 
 
