@@ -399,3 +399,55 @@ C141 曾是本轮最强候选（"llm-d 的文件系统 KV 缓存因**最小 stag
 但**每一条都在 0 GPU·h 内被判死且给出了机制级理由**（而不是"测得不对"）。
 **⚠️ 一处未取证**：C16 的后继 #56492 只能确认是 **Draft**（HTML 状态字段未渲染出 `state`，我从 `Status: Draft` 徽章判定）——
 若它其实已 merge，则 C16 归入"理由成立"。这一条标**未取证**，不据以下结论。
+
+---
+
+## 六、按 rev8 候选池 ① 对 **投机解码地图 C/G 段**的过筛（2026-09-14/15，0 GPU·h）
+
+**为什么做**：§五 把池① 施于 KV 地图（185 条 → 幸存 0）。投机地图是另一半 —— 它的 C 段（C1–C9）+ G 段（跨引擎放弃与负结果尾部）
+是同一类资产，且**没有任何人在做它的 E 段**（池②）。本轮补池①。
+
+**结果：池① 对投机地图同样幸存 0 条。** 两个最有希望的候选都被 S3b 在**零 GPU** 拦下：
+
+### 6.1 候选一：**SGLang jump-forward 解码被移除、且从未给出失败理由**（池① 形状最"干净"的一个）
+
+**为什么它看起来是好候选**（引文全部来自 C6.4）：
+- 维护者 zhyncs 的原话是 *"Remove jump forward to **simplify the code maintenance**"*，**不是技术失败**；
+- 而下游复核者 yhay81 明确写道：*"There is **no documented model-quality or regex-correctness failure** that caused the removal. … I could not find a stronger public claim such as 'it was slower' or 'it produced incorrect regex output.'"*
+- 维护者当年承诺 *"Maybe Jump forward will be implemented using speculative decoding **later on** by @hnyls2002"* —— **从未发生**；
+- **Discussion #32352（2026-07）仍在问为什么，无人回答**；
+- 且 vLLM 与 SGLang 现在**都不支持** `compute_ff_tokens`。
+⇒ 这符合 FILTER §1a（移除理由**不是**技术性的 ⇒ 无约束可"过期"，但也无理由阻止重做）+ 落在 rev8 明列的**"采样与结构化输出开销"**范围内。
+
+**S3b 判定：🔴 已被占位（我此前没查到，地图也没记）**
+- **vLLM PR [#47885](https://github.com/vllm-project/vllm/pull/47885)（OPEN）**：*"feat(spec_decode): **Grammar-aware draft token sampling for structured outputs**"*（jmamou）
+  ⇒ 结构化输出 × 投机解码这条轴**正在被做**。
+- vLLM PR [#15490](https://github.com/vllm-project/vllm/pull/15490) *"[V1][Experimental] Jump-forward decoding"*（aarnphm）—— 实验性提案，状态渲染为 Closed/Open 混合（**未取证**，不据以下结论）。
+- 第三方 `mudler/vllm.cpp` 已把它作为 `VT_ENABLE_JUMP_FORWARD`（默认 off）以 *"SGLang parity SW3"* 实现 ⇒ **连第三方复刻都有了**。
+⇒ **杀**。这条同时也是"**地图没有记的占位者**"的又一例（rev8 §0.5 的实证从 1 例变成 3 例：KV 的 #50045/#49952/#34519，加上这里的 #47885）。
+
+### 6.2 候选二：**投机解码消耗的 KV 容量是否付得起自己**（"draft-KV 税"）
+
+**为什么它看起来是好候选**：地图 C3.13（vLLM #41559，**CLOSED COMPLETED、零评论**）里上游给出的**量化理由**是
+> *"The spec decode throughput gains from DFlash **do not justify halving the KV pool** for long-context workloads."*
+—— 即 upstream 自己把"投机收益 vs KV 池损失"当成一个**权衡**在算。而**我手里刚有这条权衡的一个实测点**：
+p20 实测同一 rig 上投机臂的 KV 容量是 **246,794 token**、不投机是 **319,328 token**（**−22.7%**，draft 模型占显存所致），
+而暖态吞吐是 **+48.5%** ⇒ 在 24×4k prompt 这个负载上收益压过了容量损失。**问题是这个不等式在什么条件下翻转**，而且它是**三方向的交集**（引擎执行代价 × 投机解码 × KV Cache）。
+
+**S3b 判定：🔴 已被占位**
+- **论文 "Windowed-MTP: **Removing the Full-Context Draft-KV Tax** at Million-Token Context"**（HF papers `2607.21535`，
+  **已从 HF 论文页读回标题**；摘要正文未取到 ⇒ 标**部分未取证**）⇒ 这条轴**已有专门论文**，且题目用的词就是 "Draft-KV Tax"。
+- **vLLM issue [#54691](https://github.com/vllm-project/vllm/issues/54691)（OPEN）**：*"[Bug][Spec Decode]: DFlash is a **net loss at long context (~185k)** … drafter re-scans full accumulated KV every cycle; **no per-sequence-length disable hook**"*
+- 同簇文献：LongSpec、Vegas（ICML 2026）、Dustin（ICML 2026）、Nightjar —— 长上下文投机解码是一个**活跃子领域**。
+⇒ **杀**。
+
+### 6.3 池① 的全景结论（两张地图都已跑完）
+
+| 地图 | 池① 条数（带引文的放弃记录） | 幸存 | 最高价值的一次否证 |
+|---|---|---|---|
+| KV Cache | 185 | **0** | **C141**：放弃理由（llm-d 弃用）确已过期，但读 vLLM 0.29 的 `tiering/fs/manager.py` 发现**超量 staging 缓冲根本没随代码上游** ⇒ 0 GPU·h 判死 |
+| 投机解码 | C 段 C1–C9 + G 段（约 60 条带引文/负结果） | **0** | **jump-forward**：移除理由非技术性、维护者承诺未兑现、下游提问无人答、**看起来完美**——但 #47885 OPEN 正在做同一件事 |
+
+**⇒ 两张既有地图的池① 均已耗尽，幸存者 0。** 按 rev8，剩下的唯一来源是**池②（从未被讨论过）**：
+KV 线（子代理 `22470aaa` 在跑）、引擎执行代价线（子代理 `bac75c1d` 的 E 段在跑）、
+**投机线目前无人做** —— 下一步补上。
