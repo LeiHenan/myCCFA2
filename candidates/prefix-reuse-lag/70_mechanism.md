@@ -92,6 +92,39 @@
 - 若第 1 个块已不在池中 ⇒ **(a) 驱逐**所致（干预方向：让缓存块不被投机负载挤出，或提高缓存优先级）；
 - 若第 1 个块在池中但查表返回 0 ⇒ **(b) 哈希/组键不匹配**（干预方向：对齐组间的哈希或放宽"多组必须一致"的约束）。
 
+
+## 插桩 v3：**机制确认 —— 命中在 9 个 KV 组之间是"全有或全无"，而 target 组本来已经命中**
+
+判别器：`BlockPool.get_cached_block(hash, group_ids)` **只要任一 group 缺失就返回 `None`**
+（`block_pool.py:198`，逐组查 `make_block_hash_with_group_id(hash, gid)`）。
+于是对请求的**第一个块哈希**做两次探测：`[0]`（只看 target 组）与 `list(range(9))`（引擎实际语义）。
+
+| 配置 | 第 1 次（lookup #1–3） | **第 2 次（lookup #33–35）** | `computed` |
+|---|---|---|---|
+| **投机关**（1 组） | `group0=MISS` / `allgroups=MISS` | **`group0=HIT` / `allgroups=HIT`**，`per_group=[256]` | **4096** ✅ |
+| **投机开 d5γ3**（9 组） | `group0=MISS` / `allgroups=MISS` | **`group0=HIT` 但 `allgroups=MISS`**，`per_group=[0×9]` | **0** ❌ |
+
+**驱逐量 = 0**（进程退出汇总：`calls_to_evict=0 actual_evictions=0`，本次统计**无打印上限**）
+⇒ **排除驱逐**。
+
+### ⇒ 机制（已确认，非推测）
+
+1. 投机解码把 KV 缓存拆成 **9 组**（target 的注意力 KV + drafter 的多类状态各成一组）；
+2. **命中判定要求 9 组同时命中**（`get_cached_block` 任一组缺失即返回 `None`）；
+3. 第 2 次出现时，**target 组（group 0）已经命中**，但 **8 个非 target 组没有该块** ⇒ 整体判为 0
+   ⇒ **target 已缓存的 256 个块被白白浪费**，整段 prefill 重做；
+4. 到第 3 次时，其余组也积累了对应的块 ⇒ 整体命中 ⇒ 吞吐 2.63× 跳变。
+
+**这是一个可修复的引擎内部设计问题**：drafter 的状态组**本可以重算**（代价远小于重做整段 target prefill），
+但当前"全组一致"的语义让 target 的复用被 drafter 组绑架。
+
+### 干预方向（C4 判据的直接候选）
+
+- **最小干预**：让命中长度由**可前缀缓存的组**（至少 group 0）决定，而非全组一致；drafter 组缺失时
+  按"重算 drafter 状态"处理（drafter 只有几层，代价 << 重做 4k prompt 的 target prefill）；
+- **验证方式**：打补丁后重跑 onset 实验，看 **onset 是否从 3 回到 2**、该 rep 吞吐是否 **≥+8%**（C4 判据）。
+- ⚠️ **必须同时验证正确性**：drafter 状态重算后输出是否与非投机路径一致（lossless），否则不能主张。
+
 ## 替代解释与排除证据
 
 （填写）
