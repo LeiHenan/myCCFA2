@@ -82,3 +82,26 @@
 
 **复活的最小路径**：把差异轴换成"**比全开开关更省的等价方案**"——需先找到至少一个**按算子 / 按批规模**的局部关闭方式，
 并先做 S4 的 oracle 上界（"完美地只关必要的东西"能省回多少）。在当前半径内**没有**这样的线索。
+
+---
+
+## 五、第 7 轮补充：**"选择性恢复"这条可能补上可回收性的路，已被源码级排除**
+
+**想检验的假设**：若开关关掉的东西里有一部分**与数值可交换性无关**（纯吞吐优化），则有选择地恢复它们即可"保持确定性 + 拿回性能" ⇒ 那就构成真优化。
+
+**逐项核对 `override_envs_for_invariance()` 的 12 项改动**（`vllm/model_executor/determinism/batch_invariant.py:980-995`）：
+
+| 改动项 | 在我们负载（**单卡 TP=1**）上的性质 |
+|---|---|
+| `VLLM_ALLREDUCE_USE_SYMM_MEM=0`、`NCCL_LAUNCH_MODE/COLLNET_ENABLE/NVLS_ENABLE/P2P_NET_DISABLE/MIN_NCHANNELS/MAX_NCHANNELS/PROTO/ALGO/NTHREADS/SOCKET_NTHREADS`（共 11 项） | **属于通信路径** ⇒ **TP=1 时根本不执行** ⇒ 对数值零影响，**也不产生成本**。要验证其代价需要**张量并行**，本机只有一张卡 ⇒ **未测** |
+| `CUBLAS_WORKSPACE_CONFIG=:4096:8`、`VLLM_USE_AOT_COMPILE=0`、TF32→ieee | 数值相关（cuBLAS split-k、TF32 舍入） |
+
+**关键事实（源码）**：单卡下成本落在**算子替换**上 ——
+`model_executor/layers/layernorm.py:108` 把 tuned CUDA RMSNorm **换成** `rms_norm_batch_invariant`；
+注意力路径同理（`layers/attention/attention.py` 引用 BI 分支）。
+且 **`VLLM_BATCH_INVARIANT` 是唯一开关**（全仓 `*INVARIANT*` grep 只有它一个）
+⇒ **没有任何按算子 / 按批规模的粒度**。
+
+**⇒ 结论**：想"只关必要的那部分"在当前引擎里**做不到**（无接口）；想"恢复通信调参"在本负载上**没有可恢复的对象**（TP=1 不执行）。
+⇒ **可回收性在本半径内确定不成立**，本线索**正式关闭**。
+**未测项（如实登记）**：多卡下通信调参是否占 BI 代价的显著份额 —— 需 ≥2 卡，本机不可做。
