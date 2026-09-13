@@ -191,6 +191,46 @@ v3 的探测显示：第 2 次时 **`get_cached_block(h0, [0])` = HIT**（group 
 **下一轮**：直接在 `FullAttentionManager.find_longest_cache_hit` 内部打点（进入时的 `max_length`、
 逐块命中计数、返回前的 `hit_length`），即可定位是"取整归零"还是"偏移导致的空表"。
 
+
+## 插桩 v6 的失败与它带来的关键线索（2026-09-13）
+
+**尝试**：包裹 `single_type_kv_cache_manager` 里**所有**含 `find_longest_cache_hit` 的类（装载成功：
+`[T-INIT] v6 装载，包裹了 7 个 manager 类`），期望看到进入参数与返回的 `hit_length`。
+**结果**：**一条 `T-FLCH2` 都没有** —— 说明这条调用**没有经过**"实例方法"的形态。
+
+**找到原因（读源码）**：混合路径用的是
+`kv_cache_coordinator.py:905 find_longest_cache_hit_per_group`，它这样调用：
+
+```python
+manager = self.single_type_managers[group_ids[0]]
+blocks, group_hit = manager_cls.find_longest_cache_hit(
+    block_hashes=block_hashes,
+    max_length=max_cache_hit_length,
+    kv_cache_group_ids=group_ids,
+    block_pool=self.block_pool,
+    kv_cache_spec=spec,
+    drop_eagle_block=use_eagle,
+    alignment_tokens=self._cache_hit_alignment_tokens,      # ← 关键
+    dcp_world_size=manager.dcp_world_size,
+    pcp_world_size=manager.pcp_world_size,
+)
+```
+
+⇒ 两点：
+1. 它用**类**调用且**全部关键字传参** ⇒ 我的 `wrapper(self, ...)` 形态不匹配（因此零 trace）；
+2. **`alignment_tokens = self._cache_hit_alignment_tokens`**，而该属性的定义是
+   `hash_block_size if enable_partial_hash_hits else scheduler_block_size`
+   （`kv_cache_coordinator.py:666`）—— **这正是"取整"的来源**：若该对齐值大于请求可达的
+   块对齐长度，命中就会被取整（甚至归零）。这也与第 3 次的命中是 **4080 而非 4096** 吻合。
+
+### 下一步（改为**直接改源码**，不再 monkeypatch）
+
+1. 在 `find_longest_cache_hit_per_group` 里打印 `alignment_tokens`、`max_length`、`group_hit`
+   （**改文件 + 备份**，写入 `probes/p10-prefix-reuse-lag/patch_instrument.py`，保证可回滚）；
+2. 若确认是 `alignment_tokens` 过大导致取整归零，则把该值临时改为 `block_size`（16）做**干预 #3**，
+   重测 onset ⇒ 若 onset 3→2 且吞吐 ≥+8%，**C4 达成**；
+3. 反之若与对齐无关，则按预登记**降级**为"复用生效时序的刻画"，并换下一条线索。
+
 ## 替代解释与排除证据
 
 （填写）
