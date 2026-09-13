@@ -8,6 +8,10 @@
 set -uo pipefail
 export LC_ALL=C.UTF-8; export LANG=C.UTF-8
 VENV=/root/ccfa_venv; PY=$VENV/bin/python
+# ⚠️ vLLM 侧同样踩到 ninja/PATH：flashinfer 的 **sampling** JIT（flashinfer/sampling.py:68 → run_ninja）
+#    按**名字**找 ninja，而它在 $VENV/bin/ 里。报错是 FileNotFoundError: 'ninja'，会伪装成引擎起不来。
+#    （同类修复见 p12 的 SGLang 侧；这是第 2 次，故写进脚本头。）
+export PATH="$VENV/bin:$PATH"
 MODEL=/root/autodl-tmp/models/Qwen3-4B
 P=/root/myCCFA/probes/p15-batch-invariance
 OUT=/root/ccfa_results/$(date +%F)/p15_vllm; mkdir -p "$OUT"
