@@ -47,6 +47,9 @@ serve () { # $1=arm(on|off)
   #    `hf_overrides` 只喂给 **HF 的 config**（`config/model.py:561-575`），不是 vLLM 的 `ModelConfig` 字段；
   #    实测 `ModelConfig(hf_overrides={"disable_cascade_attn": False}).disable_cascade_attn` 仍是 `True`。
   #    而 argparse 实测 `--no-disable-cascade-attn` ⇒ `False`，`EngineArgs:1840` 会把它传进 ModelConfig。
+  #    （血的教训：上一次改这里时，我的两步替换**把这一行整个删掉了**，于是 on 臂其实没带任何 flag、
+  #      与 off 臂完全相同 —— 是运行器里的断言把这次无效 A/B 拦了下来，没有产出假结论。）
+  [ "$arm" = on ] && args+=(--no-disable-cascade-attn)
   "$PY" -m vllm.entrypoints.openai.api_server "${args[@]}" > "$log" 2>&1 &
   SERVE_PID=$!; local ok=0 i
   for i in $(seq 1 120); do curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && { ok=1; break; }
