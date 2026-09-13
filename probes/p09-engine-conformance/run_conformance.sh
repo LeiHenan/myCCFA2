@@ -64,6 +64,12 @@ serve_sglang() {  # $1=spec(off|ngram)
   if [ "$1" = "ngram" ]; then
     extra=(--speculative-algorithm NGRAM --speculative-num-steps "$GAMMA" --speculative-num-draft-tokens "$((GAMMA + 1))")
   fi
+  # ⚠️ 环境修复：SGLang 的 NGRAM 走 JIT 编译的 C++ 内核，需要 GLIBCXX_3.4.30，
+  #    而本机 **conda 的 libstdc++ 只到 3.4.29**（系统 /usr/lib/x86_64-linux-gnu 有 3.4.30）。
+  #    ⇒ 必须 LD_PRELOAD 系统那份，否则报
+  #    "Failed to load dynamic shared library ... sgl_kernel_jit_ngram_corpus.so:
+  #     version `GLIBCXX_3.4.30' not found"（首次运行就是这样失败的，被误判为 sm120 不支持）
+  LD_PRELOAD=${SGL_PRELOAD:-/usr/lib/x86_64-linux-gnu/libstdc++.so.6} \
   "$SGLPY" -m sglang.launch_server --model-path "$MODEL" \
     --port "$PORT" --context-length "$MAXLEN" --mem-fraction-static "$UTIL" \
     --max-running-requests "$MAXSEQS" --enable-metrics --kv-cache-dtype bfloat16 "${extra[@]}" > "$LOG" 2>&1 &
