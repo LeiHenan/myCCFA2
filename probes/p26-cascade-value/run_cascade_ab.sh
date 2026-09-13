@@ -42,14 +42,19 @@ serve () { # $1=arm(on|off)
               --max-num-seqs 32 --gpu-memory-utilization 0.55 --enforce-eager
               --attention-backend FLASH_ATTN)
   # ⚠️ 前缀缓存**保持默认开启** —— cascade 的 common_prefix_len 需要已缓存的公共前缀
-  [ "$arm" = on ] && args+=(--hf-overrides '{"disable_cascade_attn": false}')
+  # ⚠️ 开关必须用 **`--no-disable-cascade-attn`**（BooleanOptionalAction）。
+  #    我先前试的 `--hf-overrides '{"disable_cascade_attn": false}'` **无效** ——
+  #    `hf_overrides` 只喂给 **HF 的 config**（`config/model.py:561-575`），不是 vLLM 的 `ModelConfig` 字段；
+  #    实测 `ModelConfig(hf_overrides={"disable_cascade_attn": False}).disable_cascade_attn` 仍是 `True`。
+  #    而 argparse 实测 `--no-disable-cascade-attn` ⇒ `False`，`EngineArgs:1840` 会把它传进 ModelConfig。
   "$PY" -m vllm.entrypoints.openai.api_server "${args[@]}" > "$log" 2>&1 &
   SERVE_PID=$!; local ok=0 i
   for i in $(seq 1 120); do curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && { ok=1; break; }
     kill -0 $SERVE_PID 2>/dev/null || break; sleep 2; done
   if [ "$ok" != 1 ]; then echo "[$arm] serve 未就绪"; grep -nE "Error|error" "$log" | tail -3; return 1; fi
   # **断言开关真的生效**（不假设）：从 EngineCore 的配置转储里读回实际取值
-  local got; got=$(grep -oE "disable_cascade_attn[=: ]+(True|False|true|false)" "$log" | head -1)
+  # 旧正则 `disable_cascade_attn[=: ]+` 漏掉了名字后面的**引号**（日志写的是 `'disable_cascade_attn': False`）
+  local got; got=$(grep -oE "disable_cascade_attn'?[=: ]+(True|False|true|false)" "$log" | head -1)
   echo "[$arm] ready  $(grep -oE 'Using V[12] Model Runner' "$log" | head -1)  配置回读: ${got:-未找到}"
   if [ "$arm" = on ] && ! echo "$got" | grep -qiE "false"; then
     echo "  ⚠️ 期望 disable_cascade_attn=False 但回读到 '${got:-空}' ⇒ 该臂**开关未生效**，A/B 无效"; return 1; fi
