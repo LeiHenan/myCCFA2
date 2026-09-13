@@ -1,7 +1,7 @@
 """列出 SGLang server_args 中与 ngram / speculative / cache / mem 相关的参数（权威取值）。"""
 import re, sys
 src = open(sys.argv[1]).read()
-pat = re.compile(r"^    ([a-z_0-9]+): A\[(.*?)\n    \]", src, re.S | re.M)
+pat = re.compile(r"^    ([a-z_0-9]+): A\[(.*?)\n    \]", src, flags=re.S | re.M)
 want = ("ngram", "speculative", "cache", "mem_fraction", "max_running", "page_size",
         "attention_backend", "context_length", "tp_size", "dtype", "disable_radix",
         "chunked_prefill", "schedule_policy")
