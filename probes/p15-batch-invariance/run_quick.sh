@@ -26,9 +26,12 @@ for bi in 0 1; do
   if [ "$ok" != 1 ]; then echo "!! [bi=$bi] 未就绪"; tail -15 "$OUT/bi$bi.serve.log"; kill $pid 2>/dev/null; continue; fi
   echo "[bi=$bi] ready pid=$pid $(date +%T)"
   grep -oE "Using [A-Z_]+ attention backend" "$OUT/bi$bi.serve.log" | head -1 | tee "$OUT/bi$bi.backend.txt"
-  "$PY" "$P/probe_determinism.py" --tag "quick_bi${bi}_n8" --protocol openai --model q3 \
-    --base "http://127.0.0.1:$PORT" --prompt "$PROMPT" --n 8 --max-tokens 48 --repeats 3 \
-    --out "$OUT/bi${bi}_n8.jsonl" 2>&1 | tee "$OUT/bi${bi}_n8.probe.log"
+  # 多个**并发度**（= 不同批组成）：divergence=0 有两种解释，必须靠"跨并发度对比"来区分
+  for n in 1 2 4 8 16; do
+    "$PY" "$P/probe_determinism.py" --tag "q_bi${bi}_n${n}" --protocol openai --model q3 \
+      --base "http://127.0.0.1:$PORT" --prompt "$PROMPT" --n "$n" --max-tokens 48 --repeats 3 \
+      --out "$OUT/bi${bi}_n${n}.jsonl" 2>&1 | tee "$OUT/bi${bi}_n${n}.probe.log"
+  done
   kill $pid 2>/dev/null; wait $pid 2>/dev/null; sleep 4
 done
 echo "########## 收工自检 ##########"
