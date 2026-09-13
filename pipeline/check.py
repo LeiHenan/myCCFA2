@@ -91,14 +91,15 @@ def check(dossier, gates, through=None, repo=None, verbose=True):
     # 仓库级不变量
     if repo:
         slug = os.path.basename(os.path.normpath(dossier))
-        if cfg.get("require_prereg_promotion") and os.path.exists(os.path.join(dossier, "50_prereg.md")):
+        s5_claimed = through is not None and lib.stage_index(through) >= 5
+        if cfg.get("require_prereg_promotion") and s5_claimed:
             reg = os.path.join(repo, "notes", "prereg", f"{slug}.md")
             if not os.path.exists(reg):
-                blocking.append(f"S5 已写 prereg 但未提升为 notes/prereg/{slug}.md（预登记的效力来自仓库级冻结副本）")
+                blocking.append(f"S5 已声称完成但未提升为 notes/prereg/{slug}.md（预登记的效力来自仓库级冻结副本）")
         if cfg.get("require_decision_log_row"):
             dl = os.path.join(repo, "notes", "decision_log.md")
             if os.path.exists(dl) and slug not in open(dl, encoding="utf-8").read():
-                rows.append(("", "", f"⚠️ 决策日志没有提到 `{slug}`", "notes/decision_log.md", "结题时补"))
+                rows.append(("", "", f"⚠️ 决策日志没有提到 `{slug}`", "notes/decision_log.md", "推进中应补"))
     if verbose:
         print(f"{'阶段':<5}{'名称':<26}{'状态':<22}{'缺小节':<8}{'未完成'}")
         print("-" * 84)

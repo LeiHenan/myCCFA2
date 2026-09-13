@@ -15,7 +15,8 @@ GATES = os.path.join(HERE, "gates.json")
 SECTION_RE = re.compile(r"^##\s+(.+?)\s*$", re.M)
 BOX_RE = re.compile(r"^-\s+\[( |x|X)\]\s+(.*)$", re.M)
 PAIN_RE = re.compile(r"^#{2,3}\s*(P\d+[^\n]*)$", re.M)
-EVID_RE = re.compile(r"证据[：:]\s*(.*)$", re.M)   # 必须 re.M：痛点块是多行字符串（漏了会让"证据"永远找不到）
+# 必须 re.M（痛点块是多行字符串）；`\*{0,2}` 兼容 `- **证据**：` 这类加粗写法
+EVID_RE = re.compile(r"证据\*{0,2}\s*[：:]\s*(.*)$", re.M)
 
 
 def load_gates(path=GATES):
