@@ -79,6 +79,40 @@ def one_batch(base, prompt, n, max_tokens, seed, timeout, protocol="generate"):
     return parse_response(d, protocol), None, wall
 
 
+def one_batch_concurrent(base, prompt, n, max_tokens, seed, timeout, protocol):
+    """并发提交 n 个**相同**请求（单请求 n=1），让调度器把它们合进同一批。
+
+    为什么不用 `n`: vLLM 在贪心采样下拒绝 `n>1`（`n must be 1 when using greedy sampling`）。
+    """
+    import concurrent.futures as cf
+    url, _ = build_request(base, prompt, 1, max_tokens, seed, protocol)
+    def _one(_):
+        body = dict(_)
+        if protocol == "openai":
+            body["n"] = 1
+        t0 = time.perf_counter()
+        try:
+            d = _post(url, body, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            return None, f"HTTP {e.code}: {e.read()[:200]!r}", None
+        except Exception as e:  # noqa: BLE001
+            return None, f"{type(e).__name__}: {e}", None
+        return parse_response(d, protocol), None, time.perf_counter() - t0
+    _, body = build_request(base, prompt, 1, max_tokens, seed, protocol)
+    outs, errs, walls = [], [], []
+    with cf.ThreadPoolExecutor(max_workers=n) as ex:
+        for o, e, w in ex.map(_one, [body] * n):
+            if e:
+                errs.append(e)
+            else:
+                outs.extend(o)
+            if w:
+                walls.append(w)
+    if errs and not outs:
+        return None, errs[0], None
+    return outs, (f"{len(errs)} 个子请求失败" if errs else None), (max(walls) if walls else None)
+
+
 def summarize(outs):
     texts = [o["text"] for o in outs]
     c = collections.Counter(texts)
@@ -93,10 +127,14 @@ def run(a):
     rows = []
     with open(a.out, "w", encoding="utf-8") as out:
         for rep in range(a.repeats):
-            outs, err, wall = one_batch(a.base, a.prompt, a.n, a.max_tokens, a.seed,
-                                        a.timeout, a.protocol)
+            if a.mode == "concurrent":
+                outs, err, wall = one_batch_concurrent(a.base, a.prompt, a.n, a.max_tokens,
+                                                       a.seed, a.timeout, a.protocol)
+            else:
+                outs, err, wall = one_batch(a.base, a.prompt, a.n, a.max_tokens, a.seed,
+                                            a.timeout, a.protocol)
             row = {"tag": a.tag, "rep": rep, "n": a.n, "seed": a.seed,
-                   "max_tokens": a.max_tokens, "protocol": a.protocol,
+                   "max_tokens": a.max_tokens, "protocol": a.protocol, "mode": a.mode,
                    "err": err, "wall_s": wall}
             if outs:
                 row.update(summarize(outs))
@@ -145,6 +183,8 @@ def main():
     ap.add_argument("--tag", default="run")
     ap.add_argument("--base", default="http://127.0.0.1:32010")
     ap.add_argument("--protocol", choices=["generate", "openai"], default="generate")
+    ap.add_argument("--mode", choices=["concurrent", "n"], default="concurrent",
+                    help="concurrent=并发 N 个相同请求（推荐，vLLM 贪心下禁用 n>1）")
     ap.add_argument("--model", default="q3")
     ap.add_argument("--prompt", default="The capital of the state containing New York City is")
     ap.add_argument("--n", type=int, default=8)
