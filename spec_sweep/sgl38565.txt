@@ -1,0 +1,866 @@
+
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ sgl-project
+ / 
+ sglang 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 8.8k 
+ Star
+ 35.9k 
+ Code 
+ Issues 
+ 890 
+ Pull requests 
+ 4.4k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ [Sampling] Deterministic top-p / top-k renorm by default (fixes TP rank divergence in DFlash/DSpark) - # 38565 
+ # 38565 
+ Open 
+ gilfordting wants to merge 1 commit into sgl-project:main sgl-project/sglang:main from gilfordting:fix/deterministic-renorm gilfordting/sglang:fix/deterministic-renorm Copy head branch name to clipboard 
+ Conversation Commits 1 ( 1 ) Checks Files changed 
+ Open 
+ [Sampling] Deterministic top-p / top-k renorm by default (fixes TP rank divergence in DFlash/DSpark) # 38565 gilfordting wants to merge 1 commit into sgl-project:main sgl-project/sglang:main from gilfordting:fix/deterministic-renorm gilfordting/sglang:fix/deterministic-renorm Copy head branch name to clipboard 
+ Conversation
+ gilfordting 
+ commented
+ Sep 8, 2026 
+ • 
+ edited by github-actions
+ Bot 
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Motivation
+ Fixes the root cause behind the DFlash/DSpark TP>1 deadlocks in #33549 and #33289 (the ones #33614 works around by broadcasting rank 0's decisions).
+ Root cause. sgl_kernel.top_p_renorm_probs and sgl_kernel.top_k_renorm_probs forward to flashinfer's default kernels, and both of those are non-deterministic run to run on byte-identical input:
+ top_p_renorm_probs (flashinfer >= 0.6.7, [feat] Add air top-p algorithm flashinfer-ai/flashinfer#2752 ) dispatches rows longer than 2048 entries to the AIR radix kernel. Its default is_deterministic=False path accumulates the bucket histogram with float atomicAdd ( include/flashinfer/air_top_p.cuh ). sglang never passes is_deterministic .
+ top_k_renorm_probs dispatches to RadixTopKRenormProbMultiCTA , which accumulates the kept-mass sum with float atomicAdd ( include/flashinfer/topk.cuh ). flashinfer has no deterministic option for it.
+ Every TP rank runs these kernels independently on the same logits. In DFlash/DSpark non-greedy verification ( build_dflash_verify_target_probs -> tree_speculative_sampling_target_only ) the output is compared against a uniform coin per draft position, and the bonus token is sampled from relu(q - p) over the same tensor. When a coin lands inside the few-ULP gap between two ranks' target_probs , one rank alone accepts/rejects a draft token or picks a different bonus token. Its radix/KV state silently drifts from the other ranks; a later turn on that conversation prefix-matches to different lengths per rank and the ranks wedge in an NCCL collective. EAGLE calls the same kernels but broadcasts predict / accept_index from rank 0, which is why only DFlash/DSpark hang. The min_p path of the main sampler has the same exposure for committed tokens (see the comment in Sampler._sync_token_ids_across_tp about "rare instances where they are not deterministic": this is one of them).
+ Measurements (Modal, lmsysorg/sglang:v0.5.19-cu130 , flashinfer 0.6.18, also reproduced on the v0.5.16 + flashinfer 0.6.15 stack; identical on H100, B200 and B300).
+ Kernel-level, 200 repeated calls on the same input (256 rows x 163840 vocab, top_p 0.95 / top_k 40):
+ kernel 
+ calls differing from call 0 
+ max abs diff 
+ top_p_renorm_probs default (AIR) 
+ 199 / 199 
+ 1.2e-6, up to ~500K elements, some flip between 0 and non-zero (the cutoff set itself changes) 
+ top_p_renorm_probs(is_deterministic=True) 
+ 0 / 199 
+ 0 
+ top_k_renorm_probs default (radix multi-CTA) 
+ 199 / 199 
+ 8.9e-8 (3 ULPs) 
+ sgl_kernel's compiled single-CTA top_k_renorm_probs 
+ 0 / 199 
+ 0 
+ torch softmax/topk, tree_speculative_sampling_target_only , flashinfer top_k_top_p_sampling_from_probs , sampling_from_probs , min_p_sampling_from_probs (seeded) 
+ 0 
+ 0 
+ The top-p noise is entropy-gated (bit-stable on 4,096 peaky real Llama-3.1-8B decode rows, fires on flat rows); the top-k noise is not (87 to 99 of 99 calls differ even on peaky rows).
+ End to end, TP=2, DFlash, Llama-3.1-8B + z-lab/LLaMA3.1-8B-Instruct-DFlash-UltraChat , temperature=1.0 , top_p=0.9 , 32 concurrent multi-turn streams, fp8 KV, with a per-verify-step all-gather of fingerprints of {rng state, prefix_lens, draft_tokens, target_logits, target_probs, accept_len, bonus, commit_lens, out_tokens} so the first differing quantity is named:
+ run 
+ change 
+ outcome 
+ unfixed, H100 (x2) and B300 (x1) 
+ none 
+ all three hung within 3 to 4 minutes. Divergence chain recorded every time: target_probs differs (logits, prefix_lens, RNG identical) -> bonus / out_tokens differ on one rank -> next step's draft_tokens differ -> wedge. 0.4 to 0.7 % of top_p_renorm_probs calls returned different bytes when called twice on the same input on the same rank 
+ top_p=1.0 
+ kernel never called 
+ 15 min, 0 divergence, no hang 
+ top_p=0.9 , top_k=40 
+ renorm on [rows, 40] uses the single-CTA kernel 
+ 15 min, 26,000 calls, 0 non-deterministic, 0 divergence, no hang 
+ unfixed config + deterministic renorm (this PR's behavior) 
+ 30 min, 21,294 requests, 82,000 calls, 0 non-deterministic, 0 divergence, no hang 
+ The earlier failure to reproduce this synthetically was because test traffic used top_p=1.0 , which skips the renorm kernel entirely ( need_top_p_sampling is False).
+ Modifications
+ New python/sglang/srt/layers/sampling_renorm.py exposing top_p_renorm_prob / top_k_renorm_prob with a deterministic: Optional[bool] = None argument that defaults to the env var SGLANG_RENORM_DETERMINISTIC (default on):
+ top-p deterministic: flashinfer top_p_renorm_probs(..., is_deterministic=True) (integer-histogram AIR; the flag exists since 0.6.7 and sglang pins newer). Without flashinfer (MUSA) the single-CTA kernel compiled into sgl_kernel , which is deterministic.
+ top-k deterministic: the single-CTA top_k_renorm_probs already compiled into sgl_kernel (flashinfer renorm.cu at the pinned commit; fixed-order block reductions). flashinfer has no deterministic option for its radix top-k.
+ deterministic=False (or SGLANG_RENORM_DETERMINISTIC=0 ) keeps today's kernels.
+ sampler.py , speculative/dflash_utils.py , speculative/eagle_utils.py : import the renorm functions from that module instead of sgl_kernel . These are the only three call sites.
+ environ.py : SGLANG_RENORM_DETERMINISTIC documented next to the other determinism knobs.
+ test/registered/kernels/ops/moe/test_renorm.py : existing correctness tests now run through the new module, plus two regression tests that call each renorm 30 times on a flat 256 x 128256 distribution and assert bit-identical output (the same check against the default flashinfer kernels fails 30 times out of 30).
+ The fix lives in sglang rather than in the sgl_kernel wrappers on purpose: sglang-kernel ships as a pinned prebuilt wheel, so a wrapper change there would neither be testable in CI nor reach users until the next kernel release (a first version of this PR did that and CI ran the tests against the 0.4.6.post1 wheel). Making the same default in sgl_kernel later is a natural follow-up, as is an is_deterministic option for flashinfer's radix top-k so the fast kernel can be used again.
+ This is complementary to #33614 , not a replacement. #33614 makes replicated state agree whatever the source of disagreement; this PR removes the source, so rank 0's own output and every other consumer of target_probs (logprobs, sampling masks) become reproducible as well.
+ Accuracy Tests
+ Numerically the deterministic variants compute the same renormalization (the existing test_renorm.py correctness tests pass unchanged; deterministic mode differs from the default only in accumulation order). The 30-minute TP=2 DFlash run above produced 21,294 requests with zero errors and the same accept length as the unfixed runs before they wedged.
+ Speed Tests and Profiling
+ Microbenchmark, B200, flashinfer 0.6.18, 50 iterations after warmup, batch x vocab:
+ kernel 
+ 32 x 128256 
+ 256 x 128256 
+ 256 x 163840 
+ 989 x 128256 
+ top-p AIR default 
+ 0.136 ms 
+ 0.573 ms 
+ 0.701 ms 
+ 1.87 ms 
+ top-p AIR is_deterministic=True (new default) 
+ 0.165 ms 
+ 0.826 ms 
+ 1.03 ms 
+ 2.71 ms 
+ top-k radix default 
+ 0.039 ms 
+ 0.224 ms 
+ 0.268 ms 
+ 0.759 ms 
+ top-k single-CTA (new default) 
+ 0.482 ms 
+ 0.927 ms 
+ 1.29 ms 
+ 3.04 ms 
+ Cost per decode step. The renorm runs once per speculative verify step over batch_size x draft_tokens rows, and in the plain sampler only on the min_p path (the fused top_k_top_p_sampling_from_probs kernel, already deterministic, is untouched). For a representative production shape (32 requests x 8 draft tokens = 256 rows, 163840 vocab, Kimi K2.6 NVFP4 on 4 GPUs, 25 to 40 ms per step):
+ traffic 
+ extra per step 
+ share of step 
+ top_p < 1 , no top_k (the common case; dense path, top-p only) 
+ +0.33 ms 
+ ~1 % 
+ batch mixes top_k and non- top_k requests (dense path, top-k then top-p) 
+ +1.35 ms 
+ ~3 to 5 % 
+ every request has top_k (sparse torch.topk path, renorm on [rows, k] ) 
+ 0 (already the single-CTA kernel) 
+ 0 
+ greedy or top_p = 1.0 
+ 0 (renorm not called) 
+ 0 
+ Today's whole sampling stage (softmax, renorm, accept) is roughly 1 to 2 ms of such a step, so this is a change within that slice, not to the model forward. End to end on the TP=2 DFlash run above (H100, 32 streams, top_p=0.9 ) throughput was ~710 requests/min with the deterministic kernels versus ~715 requests/min for the default kernels in the minutes before they wedged, i.e. unchanged within noise. Deployments that want the faster kernels and do not run TP>1 speculative decoding can set SGLANG_RENORM_DETERMINISTIC=0 .
+ Checklist
+ Format your code according to the Format code with pre-commit .
+ Add unit tests according to the Run and add unit tests .
+ Update documentation according to Write documentations .
+ Provide accuracy and speed benchmark results according to Test the accuracy and Benchmark the speed .
+ Follow the SGLang code style guidance .
+ 🤖 Generated with Claude Code 
+ CI States
+ Latest PR Test (Base): ❌ Run #34291766245 
+Latest PR Test (Extra): ❌ Run #34291765978 
+Latest PR Test (AMD ROCm 10): ❌ Run #34291766176 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ 👀 
+ 1 
+ quicksandznzn reacted with eyes emoji 
+ All reactions 
+ 👀 
+ 1 reaction 
+ github-actions 
+ Bot 
+ added
+ the 
+ sgl-kernel
+ label
+ Sep 8, 2026 
+ gilfordting 
+ force-pushed 
+ the
+ fix/deterministic-renorm 
+ branch
+ from
+ 451ff7b to
+ bad0bb3 
+ Compare 
+ September 8, 2026 21:33 
+ gilfordting 
+ commented
+ Sep 8, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ /rerun-test registered/kernels/ops/moe/test_renorm.py registered/sampling/test_sampling_mask.py registered/core/test_basic_sanity_dflash.py registered/core/test_basic_sanity_dspark.py registered/core/test_basic_sanity_eagle3.py registered/spec/dflash/test_dflash.py registered/spec/eagle/test_eagle_reject_sampling.py registered/spec/eagle/test_spec_eagle.py registered/spec/dspark/test_dspark_kernel_parity.py
+ --> 
+ 👍 
+ 1 
+ github-actions[bot] reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ github-actions 
+ Bot 
+ commented
+ Sep 8, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Results for /rerun-test registered/kernels/ops/moe/test_renorm.py registered/sampling/test_sampling_mask.py registered/core/test_basic_sanity_dflash.py registered/core/test_basic_sanity_dspark.py registered/core/test_basic_sanity_eagle3.py registered/spec/dflash/test_dflash.py registered/spec/eagle/test_eagle_reject_sampling.py registered/spec/eagle/test_spec_eagle.py registered/spec/dspark/test_dspark_kernel_parity.py :
+ 🚀 1-gpu-h100 (2 tests): ❌ View workflow run 
+ cd test/ && python3 registered/kernels/ops/moe/test_renorm.py
+cd test/ && python3 registered/core/test_basic_sanity_dspark.py
+ 🚀 1-gpu-5090 (6 tests): ✅ View workflow run 
+ cd test/ && python3 registered/sampling/test_sampling_mask.py
+cd test/ && python3 registered/core/test_basic_sanity_dflash.py
+cd test/ && python3 registered/core/test_basic_sanity_eagle3.py
+cd test/ && python3 registered/spec/dflash/test_dflash.py
+cd test/ && python3 registered/spec/eagle/test_spec_eagle.py
+cd test/ && python3 registered/spec/dspark/test_dspark_kernel_parity.py
+ 🚀 2-gpu-h100 (1 test): ✅ View workflow run 
+ cd test/ && python3 registered/spec/eagle/test_eagle_reject_sampling.py
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ gilfordting 
+ changed the title
+ [Kernel] Make top-p / top-k renorm deterministic by default (fixes TP rank divergence in DFlash/DSpark) 
+ [Sampling] Deterministic top-p / top-k renorm by default (fixes TP rank divergence in DFlash/DSpark) 
+ Sep 8, 2026 
+ gilfordting 
+ force-pushed 
+ the
+ fix/deterministic-renorm 
+ branch
+ from
+ bad0bb3 to
+ f063d4c 
+ Compare 
+ September 8, 2026 21:52 
+ bingxche 
+ mentioned this pull request
+ Sep 8, 2026 
+ [CI Monitor] Daily Report - 2026-09-08
+ bingxche/sglang-ci-bot#189 
+ Open
+ gilfordting 
+ mentioned this pull request
+ Sep 8, 2026 
+ fix(sampling): make multi-CTA top-k renorm deterministic (fixed-order cross-CTA sum)
+ flashinfer-ai/flashinfer#5034 
+ Draft
+ 3 tasks 
+ gilfordting 
+ commented
+ Sep 8, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ /rerun-group unit/mem_cache
+ --> 
+ 👍 
+ 1 
+ github-actions[bot] reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ gilfordting 
+ commented
+ Sep 8, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ /rerun-group unit/observability
+ --> 
+ 👍 
+ 1 
+ github-actions[bot] reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ gilfordting 
+ commented
+ Sep 8, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ /rerun-test test_metrics.py test_radix_cache_hit.py test_unified_radix_cache_kl_full.py test_hicache_variants.py test_hicache_storage.py
+ --> 
+ 👍 
+ 1 
+ github-actions[bot] reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ github-actions 
+ Bot 
+ commented
+ Sep 8, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Results for /rerun-group unit/mem_cache :
+ 🚀 1-gpu-5090 (18 tests): ✅ View workflow run 
+ cd test/ && python3 registered/unit/mem_cache/test_asymmetric_mha_pool.py
+cd test/ && python3 registered/unit/mem_cache/test_decode_retraction_backup.py
+cd test/ && python3 registered/unit/mem_cache/test_dsa_pool_host_unit.py
+cd test/ && python3 registered/unit/mem_cache/test_hicache_load_back_timing.py
+cd test/ && python3 registered/unit/mem_cache/test_hicache_nixl_storage.py
+cd test/ && python3 registered/unit/mem_cache/test_hiradix_cache_unit.py
+cd test/ && python3 registered/unit/mem_cache/test_mamba_path_state_cap.py
+cd test/ && python3 registered/unit/mem_cache/test_mamba_unittest.py
+cd test/ && python3 registered/unit/mem_cache/test_minimax_sparse_pool_host_unit.py
+cd test/ && python3 registered/unit/mem_cache/test_radix_cache_unit.py
+cd test/ && python3 registered/unit/mem_cache/test_rust_unified_radix_cache_bench.py
+cd test/ && python3 registered/unit/mem_cache/test_rust_unified_radix_cache_unittest.py
+cd test/ && python3 registered/unit/mem_cache/test_swa_lock_release_lifecycle.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_handout_zeroing.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_mla_block_table.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_mla_gpu_parity.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_radix_cache_bench.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_radix_cache_unittest.py
+ 🚀 ubuntu-latest (75 tests): ✅ View workflow run 
+ cd test/ && python3 registered/unit/mem_cache/test_asymmetric_mha_pool_host_unit.py
+cd test/ && python3 registered/unit/mem_cache/test_buffer_mode_sidecar.py
+cd test/ && python3 registered/unit/mem_cache/test_decode_radix_lock_ref.py
+cd test/ && python3 registered/unit/mem_cache/test_dllm_fdfo_kv_reuse.py
+cd test/ && python3 registered/unit/mem_cache/test_dsa_layer_shard_utils.py
+cd test/ && python3 registered/unit/mem_cache/test_dsv4_c4_state_lifecycle.py
+cd test/ && python3 registered/unit/mem_cache/test_dsv4_compress_write_pad.py
+cd test/ && python3 registered/unit/mem_cache/test_embedding_cache_controller.py
+cd test/ && python3 registered/unit/mem_cache/test_evict_policy.py
+cd test/ && python3 registered/unit/mem_cache/test_flashkda_strided_state_access.py
+cd test/ && python3 registered/unit/mem_cache/test_full_loc_fast_path.py
+cd test/ && python3 registered/unit/mem_cache/test_hicache_dcp_host_pool.py
+cd test/ && python3 registered/unit/mem_cache/test_hicache_file_lru_unit.py
+cd test/ && python3 registered/unit/mem_cache/test_hicache_host_register.py
+cd test/ && python3 registered/unit/mem_cache/test_hicache_nixl_cleaner.py
+cd test/ && python3 registered/unit/mem_cache/test_hicache_staged_write_back_dispatch.py
+cd test/ && python3 registered/unit/mem_cache/test_hiradix_pp_sync_drain.py
+cd test/ && python3 registered/unit/mem_cache/test_hisparse_allocator.py
+cd test/ && python3 registered/unit/mem_cache/test_hisparse_max_token_pool_size.py
+cd test/ && python3 registered/unit/mem_cache/test_hybrid_pool_assembler.py
+cd test/ && python3 registered/unit/mem_cache/test_inkling_sconv_strided_conv_state.py
+cd test/ && python3 registered/unit/mem_cache/test_kda_fused_decode_strided_state.py
+cd test/ && python3 registered/unit/mem_cache/test_kv_index_translator.py
+cd test/ && python3 registered/unit/mem_cache/test_layout_compat.py
+cd test/ && python3 registered/unit/mem_cache/test_linker_pool_assembler.py
+cd test/ && python3 registered/unit/mem_cache/test_mamba_donated_alloc_ratio.py
+cd test/ && python3 registered/unit/mem_cache/test_mamba_state_transfer_buffers.py
+cd test/ && python3 registered/unit/mem_cache/test_mem_cache_utils.py
+cd test/ && python3 registered/unit/mem_cache/test_mem_pool_host.py
+cd test/ && python3 registered/unit/mem_cache/test_minimax_sparse_pool_pd_unit.py
+cd test/ && python3 registered/unit/mem_cache/test_mla_host_dedup_primitives.py
+cd test/ && python3 registered/unit/mem_cache/test_mmap_allocator.py
+cd test/ && python3 registered/unit/mem_cache/test_mooncake_group_semantics.py
+cd test/ && python3 registered/unit/mem_cache/test_mooncake_standalone_dummy_mamba.py
+cd test/ && python3 registered/unit/mem_cache/test_mooncake_tenant_config.py
+cd test/ && python3 registered/unit/mem_cache/test_multi_ended_allocator.py
+cd test/ && python3 registered/unit/mem_cache/test_mxfp8_scale_transfer_buffers.py
+cd test/ && python3 registered/unit/mem_cache/test_page_major_layout.py
+cd test/ && python3 registered/unit/mem_cache/test_paged_allocator_lazy_release.py
+cd test/ && python3 registered/unit/mem_cache/test_paged_free_segment.py
+cd test/ && python3 registered/unit/mem_cache/test_pd_envelope_transfer_layout.py
+cd test/ && python3 registered/unit/mem_cache/test_pure_swa_chunk_cache.py
+cd test/ && python3 registered/unit/mem_cache/test_quantized_kv_pool.py
+cd test/ && python3 registered/unit/mem_cache/test_radix_cache_cpp_unit.py
+cd test/ && python3 registered/unit/mem_cache/test_radix_cache_slru_accuracy.py
+cd test/ && python3 registered/unit/mem_cache/test_radix_force_miss.py
+cd test/ && python3 registered/unit/mem_cache/test_registry.py
+cd test/ && python3 registered/unit/mem_cache/test_replayssm_ring_accounting.py
+cd test/ && python3 registered/unit/mem_cache/test_retraction_mamba_backup.py
+cd test/ && python3 registered/unit/mem_cache/test_rust_tree_core.py
+cd test/ && python3 registered/unit/mem_cache/test_rust_tree_core_integration.py
+cd test/ && python3 registered/unit/mem_cache/test_session_token_share_unit.py
+cd test/ && python3 registered/unit/mem_cache/test_session_unified_radix_cache.py
+cd test/ && python3 registered/unit/mem_cache/test_streaming_session_unit.py
+cd test/ && python3 registered/unit/mem_cache/test_swa_alloc_extend_page_estimation.py
+cd test/ && python3 registered/unit/mem_cache/test_swa_cpu_copy_filter.py
+cd test/ && python3 registered/unit/mem_cache/test_swa_locked_full_recover_unified.py
+cd test/ && python3 registered/unit/mem_cache/test_swa_pool_v_head_dim.py
+cd test/ && python3 registered/unit/mem_cache/test_tree_core_registry.py
+cd test/ && python3 registered/unit/mem_cache/test_umbp_host_allocator.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_byte_accounting.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_byte_budget_sizing.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_cache_linker.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_capacity_memo.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_free_no_host_sync.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_mamba_views.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_mha_views.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_mla_views.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_npool_sweep.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_radix_allocation_eviction.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_radix_hicache_dispatch.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_radix_lock_ref.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_swa_shared_virtual_ids.py
+cd test/ && python3 registered/unit/mem_cache/test_unified_tri_pool.py
+cd test/ && python3 registered/unit/mem_cache/test_uno_allocation_sizing.py
+ 🚀 4-gpu-b200 (1 test): ✅ View workflow run 
+ cd test/ && python3 registered/unit/mem_cache/test_dsa_layer_split_broadcast.py
+ 🚀 1-gpu-h100 (2 tests): ✅ View workflow run 
+ cd test/ && python3 registered/unit/mem_cache/test_swa_eviction_boundary.py
+cd test/ && python3 registered/unit/mem_cache/test_swa_unittest.py
+ ⛔ registered/unit/mem_cache/test_umbp_store.py : test/registered/unit/mem_cache/test_umbp_store.py is registered for AMD (suite stage-a-test-1-gpu-small-amd ), not for CUDA or CPU; rerun-test.yml has no AMD job. Rerun it with /rerun-failed-ci, or dispatch the AMD workflow manually.
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ github-actions 
+ Bot 
+ commented
+ Sep 8, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Results for /rerun-group unit/observability :
+ 🚀 ubuntu-latest (12 tests): ✅ View workflow run 
+ cd test/ && python3 registered/unit/observability/test_cpu_monitor.py
+cd test/ && python3 registered/unit/observability/test_forward_pass_metrics.py
+cd test/ && python3 registered/unit/observability/test_func_timer.py
+cd test/ && python3 registered/unit/observability/test_label_transform.py
+cd test/ && python3 registered/unit/observability/test_metrics_utils.py
+cd test/ && python3 registered/unit/observability/test_ray_wrappers.py
+cd test/ && python3 registered/unit/observability/test_req_time_stats.py
+cd test/ && python3 registered/unit/observability/test_request_metrics_exporter.py
+cd test/ && python3 registered/unit/observability/test_scheduler_stage_metrics.py
+cd test/ && python3 registered/unit/observability/test_startup_func_log_and_timer.py
+cd test/ && python3 registered/unit/observability/test_stat_loggers_di.py
+cd test/ && python3 registered/unit/observability/test_trace.py
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ github-actions 
+ Bot 
+ commented
+ Sep 8, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Results for /rerun-test test_metrics.py test_radix_cache_hit.py test_unified_radix_cache_kl_full.py test_hicache_variants.py test_hicache_storage.py :
+ 🚀 1-gpu-5090 (3 tests): ✅ View workflow run 
+ cd test/ && python3 registered/observability/test_metrics.py
+cd test/ && python3 registered/radix_cache/test_radix_cache_hit.py
+cd test/ && python3 registered/hicache/test_hicache_storage.py
+ 🚀 2-gpu-h100 (1 test): ✅ View workflow run 
+ cd test/ && python3 registered/radix_cache/unified_radix_tree/test_unified_radix_cache_kl_full.py
+ 🚀 1-gpu-h100 (1 test): ✅ View workflow run 
+ cd test/ && python3 registered/hicache/test_hicache_variants.py
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ gilfordting 
+ commented
+ Sep 8, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ /rerun-test registered/kernels/ops/moe/test_renorm.py registered/sampling/test_sampling_mask.py registered/core/test_basic_sanity_dflash.py registered/core/test_basic_sanity_dspark.py registered/core/test_basic_sanity_eagle3.py registered/spec/dflash/test_dflash.py registered/spec/eagle/test_eagle_reject_sampling.py registered/spec/eagle/test_spec_eagle.py registered/spec/dspark/test_dspark_kernel_parity.py
+ --> 
+ 👍 
+ 1 
+ github-actions[bot] reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ github-actions 
+ Bot 
+ commented
+ Sep 8, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Results for /rerun-test registered/kernels/ops/moe/test_renorm.py registered/sampling/test_sampling_mask.py registered/core/test_basic_sanity_dflash.py registered/core/test_basic_sanity_dspark.py registered/core/test_basic_sanity_eagle3.py registered/spec/dflash/test_dflash.py registered/spec/eagle/test_eagle_reject_sampling.py registered/spec/eagle/test_spec_eagle.py registered/spec/dspark/test_dspark_kernel_parity.py :
+ 🚀 1-gpu-h100 (2 tests): ✅ View workflow run 
+ cd test/ && python3 registered/kernels/ops/moe/test_renorm.py
+cd test/ && python3 registered/core/test_basic_sanity_dspark.py
+ 🚀 1-gpu-5090 (6 tests): ✅ View workflow run 
+ cd test/ && python3 registered/sampling/test_sampling_mask.py
+cd test/ && python3 registered/core/test_basic_sanity_dflash.py
+cd test/ && python3 registered/core/test_basic_sanity_eagle3.py
+cd test/ && python3 registered/spec/dflash/test_dflash.py
+cd test/ && python3 registered/spec/eagle/test_spec_eagle.py
+cd test/ && python3 registered/spec/dspark/test_dspark_kernel_parity.py
+ 🚀 2-gpu-h100 (1 test): ✅ View workflow run 
+ cd test/ && python3 registered/spec/eagle/test_eagle_reject_sampling.py
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ [Sampling] Deterministic top-p / top-k renorm by default (fixes TP ra… 
+ …
+ e8ee82d 
+ …nk divergence in DFlash/DSpark)
+flashinfer's default top_p_renorm_probs (AIR radix, >= 0.6.7) and
+top_k_renorm_probs (radix multi-CTA) accumulate float sums with atomicAdd,
+so two calls on byte-identical input return probabilities that differ in
+the last bits. Every TP rank runs them independently on the same logits in
+speculative verification (DFlash, DSpark, EAGLE) and in the sampler's min_p
+path; a last-bit gap flips a rejection-sampling coin or the bonus token on
+one rank only, the per-rank radix/KV caches drift, and a later prefix match
+deadlocks an NCCL collective ( sgl-project#33549 , sgl-project#33289 ; sgl-project#33614 is the broadcast
+workaround).
+Add sglang.srt.layers.sampling_renorm with top_p_renorm_prob /
+top_k_renorm_prob that default to deterministic kernels: flashinfer's
+integer-histogram AIR (is_deterministic=True) for top-p, and the single-CTA
+kernel already compiled into sgl_kernel for top-k. Route the three call
+sites (sampler, dflash_utils, eagle_utils) through it. New `deterministic`
+kwarg and SGLANG_RENORM_DETERMINISTIC env var opt back into the faster
+kernels. Add regression tests asserting bit-identical output across
+repeated calls.
+The change lives in sglang rather than the sgl_kernel wrappers because
+sglang-kernel ships as a pinned prebuilt wheel; a wrapper change would not
+be testable in CI or reach users until the next kernel release.
+Measured: TP=2 DFlash with top_p=0.9 and 32 streams wedged within 4 min
+on H100 and B300 three times out of three; with deterministic renorm it
+ran 30 min, 21k requests, zero cross-rank divergence.
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+ gilfordting 
+ force-pushed 
+ the
+ fix/deterministic-renorm 
+ branch
+ from
+ f063d4c to
+ e8ee82d 
+ Compare 
+ September 8, 2026 23:41 
+ gilfordting 
+ commented
+ Sep 8, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ /rerun-test registered/kernels/ops/moe/test_renorm.py registered/sampling/test_sampling_mask.py registered/core/test_basic_sanity_dflash.py registered/core/test_basic_sanity_dspark.py registered/core/test_basic_sanity_eagle3.py registered/spec/dflash/test_dflash.py registered/spec/eagle/test_eagle_reject_sampling.py registered/spec/eagle/test_spec_eagle.py registered/spec/dspark/test_dspark_kernel_parity.py
+ --> 
+ 👍 
+ 1 
+ github-actions[bot] reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ github-actions 
+ Bot 
+ commented
+ Sep 8, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Results for /rerun-test registered/kernels/ops/moe/test_renorm.py registered/sampling/test_sampling_mask.py registered/core/test_basic_sanity_dflash.py registered/core/test_basic_sanity_dspark.py registered/core/test_basic_sanity_eagle3.py registered/spec/dflash/test_dflash.py registered/spec/eagle/test_eagle_reject_sampling.py registered/spec/eagle/test_spec_eagle.py registered/spec/dspark/test_dspark_kernel_parity.py :
+ 🚀 1-gpu-h100 (2 tests): ✅ View workflow run 
+ cd test/ && python3 registered/kernels/ops/moe/test_renorm.py
+cd test/ && python3 registered/core/test_basic_sanity_dspark.py
+ 🚀 1-gpu-5090 (6 tests): ✅ View workflow run 
+ cd test/ && python3 registered/sampling/test_sampling_mask.py
+cd test/ && python3 registered/core/test_basic_sanity_dflash.py
+cd test/ && python3 registered/core/test_basic_sanity_eagle3.py
+cd test/ && python3 registered/spec/dflash/test_dflash.py
+cd test/ && python3 registered/spec/eagle/test_spec_eagle.py
+cd test/ && python3 registered/spec/dspark/test_dspark_kernel_parity.py
+ 🚀 2-gpu-h100 (1 test): ✅ View workflow run 
+ cd test/ && python3 registered/spec/eagle/test_eagle_reject_sampling.py
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ gilfordting 
+ marked this pull request as ready for review
+ September 9, 2026 01:12 
+ gilfordting 
+ requested review from
+ BBuf , 
+ Fridge003 , 
+ HaiShaw , 
+ Qiaolin-Yu , 
+ Ying1123 , 
+ ch-wan , 
+ hnyls2002 , 
+ ispobock and 
+ merrymercy 
+ as code owners 
+ September 9, 2026 01:12 
+ gilfordting 
+ requested a review
+ from Edwardf0t1 
+ as a code owner 
+ September 9, 2026 01:12 
+ gilfordting 
+ commented
+ Sep 9, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ /tag-and-rerun-ci
+ --> 
+ 👍 
+ 1 
+ github-actions[bot] reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ github-actions 
+ Bot 
+ added
+ the 
+ run-ci
+ label
+ Sep 9, 2026 
+ gilfordting 
+ commented
+ Sep 9, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ /rerun-failed-ci
+ --> 
+ 👍 
+ 1 
+ github-actions[bot] reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ This was referenced Sep 9, 2026 
+ [CI Monitor] Daily Report - 2026-09-09
+ bingxche/sglang-ci-bot#190 
+ Open
+ [CI Monitor] Daily Report - 2026-09-11
+ bingxche/sglang-ci-bot#192 
+ Open
+ [CI Monitor] Daily Report - 2026-09-12
+ bingxche/sglang-ci-bot#193 
+ Open
+ [CI Monitor] Daily Report - 2026-09-13
+ bingxche/sglang-ci-bot#194 
+ Open
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ Ying1123 
+ Awaiting requested review from Ying1123 
+ Ying1123 is a code owner 
+ merrymercy 
+ Awaiting requested review from merrymercy 
+ merrymercy is a code owner 
+ hnyls2002 
+ Awaiting requested review from hnyls2002 
+ hnyls2002 is a code owner 
+ Qiaolin-Yu 
+ Awaiting requested review from Qiaolin-Yu 
+ Qiaolin-Yu is a code owner 
+ Fridge003 
+ Awaiting requested review from Fridge003 
+ Fridge003 is a code owner 
+ ispobock 
+ Awaiting requested review from ispobock 
+ ispobock is a code owner 
+ HaiShaw 
+ Awaiting requested review from HaiShaw 
+ HaiShaw is a code owner 
+ ch-wan 
+ Awaiting requested review from ch-wan 
+ ch-wan is a code owner 
+ BBuf 
+ Awaiting requested review from BBuf 
+ BBuf is a code owner 
+ Edwardf0t1 
+ Awaiting requested review from Edwardf0t1 
+ Edwardf0t1 is a code owner 
+ At least 1 approving review is required to merge this pull request.
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ run-ci 
+ sgl-kernel 
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 1 participant
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

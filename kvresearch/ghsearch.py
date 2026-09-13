@@ -40,22 +40,25 @@ def parse_nodes(t):
         num = node.get("number")
         if not num:
             continue
-        title = node.get("titleHtml") or node.get("title") or ""
+        title = node.get("titleHtml") or node.get("titleHTML") or node.get("title") or ""
         title = html.unescape(re.sub(r"<[^>]+>", "", title)).strip()
         labels = [e["node"]["name"] for e in node.get("labels", {}).get("edges", []) if e.get("node")]
         author = (node.get("author") or {}).get("login")
+        st = node.get("state") or node.get("pullRequestState")
         out.append({
             "number": num,
             "type": node.get("__typename"),
             "title": title,
-            "state": node.get("state"),
+            "state": st,
             "stateReason": node.get("stateReason"),
-            "closed": node.get("closed"),
+            "closed": node.get("closed") if node.get("closed") is not None
+                      else (st in ("CLOSED", "MERGED")),
             "closedAt": (node.get("closedAt") or "")[:10],
             "createdAt": (node.get("createdAt") or "")[:10],
             "updatedAt": (node.get("updatedAt") or "")[:10],
             "author": author,
             "labels": labels,
+            "isDraft": node.get("isDraft"),
             "repo": ((node.get("repository") or {}).get("owner") or {}).get("login", "") + "/" +
                     ((node.get("repository") or {}).get("name") or ""),
         })

@@ -1,0 +1,315 @@
+
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ sgl-project
+ / 
+ sglang 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 8.8k 
+ Star
+ 35.9k 
+ Code 
+ Issues 
+ 890 
+ Pull requests 
+ 4.4k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ [Bugfix] Fix EAGLE sliding-window verification in FlashInfer and Triton - # 39287 
+ # 39287 
+ Open 
+ whzzt wants to merge 1 commit into sgl-project:main sgl-project/sglang:main from whzzt:fix/eagle-swa-verification whzzt/sglang:fix/eagle-swa-verification Copy head branch name to clipboard 
+ Conversation Commits 1 ( 1 ) Checks Files changed 
+ Open 
+ [Bugfix] Fix EAGLE sliding-window verification in FlashInfer and Triton # 39287 whzzt wants to merge 1 commit into sgl-project:main sgl-project/sglang:main from whzzt:fix/eagle-swa-verification whzzt/sglang:fix/eagle-swa-verification Copy head branch name to clipboard 
+ Conversation
+ whzzt 
+ commented
+ Sep 13, 2026 
+ • 
+ edited by github-actions
+ Bot 
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Motivation
+ EAGLE verification can produce incorrect outputs with sliding-window attention in FlashInfer and Triton. FlashInfer clips the prefix but gathers from offset zero and retains the full-prefix mask layout. Triton's deterministic path also reads the full mask with a shortened row width, while its normal path applies the window using flattened query indices, which differ from tree depth for sibling nodes.
+ The DFlash fix in #27469 handles the KV start offset for sliding-window verification. EAGLE additionally needs a matching tree mask and window bounds based on each node's position.
+ Cross-backend validation also found a missing causal mask in TRT-LLM MHA's XQA verification call. This is already addressed by the open PRs #32269 and #36038 , so it is outside the scope of this PR.
+ AITER may have similar issues, but is outside the scope of this PR.
+ Modifications
+ Reuse the existing tree builder with retained prefix lengths to produce a compact SWA mask, preserving the original positions and retrieval indices. Apply the logical window bound only at the tree-sized edge of the mask; reuse the original mask when the whole tree fits.
+ Pass the retained KV offset and SWA mask through FlashInfer and Triton EAGLE/SWA verification. Keep SWA and full-attention graph buffers separate, and preserve the mask across batch splitting and stream recording.
+ The tree builder and attention kernel sources are unchanged.
+ Accuracy Tests
+ Evaluated on one RTX PRO 6000 Blackwell 96GB with TP=1, temperature=0, max_new_tokens=8192, concurrency=16 and paged prefill. MT-Bench uses the Qwen3-30B-A3B-Instruct-2507 judge; LiveCodeBench uses the official checker.
+ Model 
+ Backend 
+ Task 
+ N 
+ Score 
+ Acc. Length 
+ Gemma3-27B AWQ (EAGLE3) 
+ FlashInfer 
+ MT-Bench 
+ 80 
+ 6.1063 → 8.9313 
+ 1.026 → 1.041 
+ Gemma3-27B AWQ (EAGLE3) 
+ FlashInfer 
+ LiveCodeBench v6 increment 
+ 175 
+ 21.14% → 25.71% 
+ 1.194 → 1.369 
+ This PR also addresses the verification issue behind the degradation reported in #39286 . Results with both fixes applied:
+ Model 
+ Backend 
+ Task 
+ N 
+ Score 
+ Acc. Length 
+ Gemma3-27B AWQ (EAGLE3) 
+ FlashInfer 
+ MT-Bench 
+ 80 
+ 8.8000 
+ 1.563 
+ Gemma3-27B AWQ (EAGLE3) 
+ FlashInfer 
+ LiveCodeBench v6 increment 
+ 175 
+ 25.71% 
+ 1.840 
+ Speed Tests and Profiling
+ Same model and GPU. End-to-end throughput using sglang.benchmark.offline_throughput , 2048 input tokens and 256 output tokens ( ignore_eos=True ), with the default warmup. Median of two runs per variant in Before/After/After/Before order, comparing upstream e91c9480 with the patched checkout. Timing includes mask construction and first-use SWA compilation.
+ C=16
+N=16 # For concurrency 1, use C=1 and N=4. 
+SGLANG_FLASHINFER_USE_PAGED=1 SGLANG_SWA_EVICTION_INTERVAL=1 \
+python -m sglang.benchmark.offline_throughput \
+ --model-path gaunernst/gemma-3-27b-it-int4-awq \
+ --revision 7cf8bdc81343c635390dd1e1bf590ab22dd6f366 \
+ --speculative-draft-model-path witcheer/gemma-3-27b-eagle3-drafter \
+ --speculative-draft-model-revision 66d6a10655c1729fe26df5cd15545f02041a0161 \
+ --speculative-algorithm EAGLE3 --speculative-num-steps 3 \
+ --speculative-eagle-topk 4 --speculative-num-draft-tokens 8 \
+ --attention-backend flashinfer --speculative-draft-attention-backend flashinfer \
+ --dtype bfloat16 --tp-size 1 --trust-remote-code \
+ --context-length 32768 --max-total-tokens 65536 \
+ --chunked-prefill-size 2048 --mem-fraction-static 0.9 --disable-radix-cache \
+ --cuda-graph-backend-prefill disabled --cuda-graph-max-bs-decode " $C " \
+ --max-running-requests " $C " --random-seed 0 \
+ --dataset-name random --random-input-len 2048 --random-output-len 256 \
+ --random-range-ratio 1 --num-prompts " $N " --seed 42 \
+ --result-filename result.jsonl
+ Concurrent requests 
+ Before tok/s 
+ After tok/s 
+ Change 
+ 1 
+ 44.2 
+ 43.0 
+ -2.9% 
+ 16 
+ 241.1 
+ 241.1 
+ <0.1% 
+ Checklist
+ Code formatted.
+ Unit tests added.
+ No documentation update is needed.
+ Accuracy and speed benchmark results provided.
+ Follow the SGLang code style.
+ Assisted-by: OpenAI Codex
+ CI States
+ Latest PR Test (Base): ❌ Run #34747886719 
+Latest PR Test (Extra): ❌ Run #34747886591 
+Latest PR Test (AMD ROCm 10): ❌ Run #34747886684 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ Fix EAGLE sliding-window verification in FlashInfer and Triton 
+ 937e780 
+ whzzt 
+ requested review from
+ Fridge003 , 
+ HaiShaw , 
+ Qiaolin-Yu , 
+ Ying1123 , 
+ hebiao064 , 
+ hnyls2002 , 
+ ispobock and 
+ merrymercy 
+ as code owners 
+ September 13, 2026 08:31 
+ github-actions 
+ Bot 
+ added
+ the 
+ speculative-decoding
+ label
+ Sep 13, 2026 
+ whzzt 
+ mentioned this pull request
+ Sep 13, 2026 
+ [Bugfix] Fix Gemma auxiliary hidden-state captures
+ #39286 
+ Open
+ 5 tasks 
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ Ying1123 
+ Awaiting requested review from Ying1123 
+ Ying1123 is a code owner 
+ merrymercy 
+ Awaiting requested review from merrymercy 
+ merrymercy is a code owner 
+ hnyls2002 
+ Awaiting requested review from hnyls2002 
+ hnyls2002 is a code owner 
+ Qiaolin-Yu 
+ Awaiting requested review from Qiaolin-Yu 
+ Qiaolin-Yu is a code owner 
+ Fridge003 
+ Awaiting requested review from Fridge003 
+ Fridge003 is a code owner 
+ ispobock 
+ Awaiting requested review from ispobock 
+ ispobock is a code owner 
+ hebiao064 
+ Awaiting requested review from hebiao064 
+ hebiao064 is a code owner 
+ HaiShaw 
+ Awaiting requested review from HaiShaw 
+ HaiShaw is a code owner 
+ At least 1 approving review is required to merge this pull request.
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ speculative-decoding 
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 1 participant
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+
