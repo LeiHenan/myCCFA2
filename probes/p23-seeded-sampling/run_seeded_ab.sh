@@ -61,8 +61,11 @@ run_cfg () { # $1=cfg $2=graphs $3=conc
   local cfg=$1 g=$2 c=$3 fail=0 r
   echo "---- $cfg (graphs=$g, concurrency=$c) ----"
   serve "$g" || { reap; return 1; }
-  echo "  [预热]（丢弃）"; one "$cfg" "$g" "$c" warmup 0 "--seeded" >/dev/null 2>&1 || true
-  one "$cfg" "$g" "$c" warmup 0 "" >/dev/null 2>&1 || true
+  # ⚠️ 教训：这里**曾经**是 `>/dev/null 2>&1` —— 结果连错误信息一起丢了，导致我看不到失败原因
+  # （与决策 #123 的"bench 日志 0 字节"同一类错误：**不要丢弃证据**）。现在预热也写文件、并**显式打印失败原因**。
+  echo "  [预热]（丢弃结果，但保留日志）"
+  one "$cfg" "$g" "$c" warmup 0 "--seeded" || echo "    (预热 seeded 失败，原因见上方)"
+  one "$cfg" "$g" "$c" warmup 0 ""          || echo "    (预热 unseeded 失败，原因见上方)"
   for r in $(seq 1 $REPS); do
     one "$cfg" "$g" "$c" unseeded "$r" "" || fail=1
     one "$cfg" "$g" "$c" seeded   "$r" "--seeded" || fail=1
