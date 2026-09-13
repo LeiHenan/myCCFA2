@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # C.1 Closed-unmerged pull requests
+from _gen_C_util import R, T
 ITEMS1 = [
  {'sec':'C.1','h':'vLLM `[Core] Cache policy framework` — the `CachePolicy` eviction abstraction for V0, closed unmerged',
   'u':['S3-ABANDONED-2'],'c':'PR closed unmerged by a named human maintainer (`hmellor`, vLLM Member), not a bot.',
@@ -78,7 +79,7 @@ ITEMS1 = [
   'q':[R('S11-ABANDONED-53')]},
  {'sec':'C.1','h':'vLLM rejecting prefix caching for pooling / encoder-only models — sibling PR closed unmerged',
   'u':['S11-ABANDONED-54'],
-  'c':'closed unmerged; no formal maintainer closure sentence exists, but a review comment on the page records the de-facto reason (the sibling PR #55159 targets the same function).',
+  'c':'closed unmerged; no formal maintainer closure sentence exists, but a review comment on the page records the de-facto reason (the sibling PR #55159 targets the same function). The review comment is reproduced here exactly as the verification report renders it, including its ellipsis.',
   'q':[T('duplicates **#55159** … which targets the exact same function'),T('\\[Bugfix\\] Reject unsupported prefix caching for pooling models')],
   'qlab':['the commit subject of the closed PR itself']},
  {'sec':'C.1','h':'TensorRT-LLM Blackwell-native FlashInfer context attention — closed as relocated out of the repository',
@@ -90,7 +91,7 @@ ITEMS1 = [
   'q':[T('Close since we already have a bugfix PR https://github.com/NVIDIA/TensorRT-LLM/pull/18544')]},
  {'sec':'C.1','h':'vLLM unified `context_parallel_size` configuration/parallel-group design — superseded by the split PCP/DCP config',
   'u':['S12-ABANDONED-3','S12-ABANDONED-15'],
-  'c':'PRs closed unmerged by a human maintainer (`hmellor`) with a technical supersede reason — the cleanest maintainer verdict in this class.',
+  'c':'PRs closed unmerged by a human maintainer (`hmellor`) with a technical supersede reason — a named-maintainer verdict rather than bot text or a stale timer.',
   'q':[R('S12-ABANDONED-15')],
   'd':'#26057/#26058 created 2025-10-01, closed 2026-03-06'},
  {'sec':'C.1','h':'vLLM MoRIIO multi-node TP16 prefill→decode KV dispatch — closed unmerged as superseded by three merged PRs',
@@ -110,4 +111,9 @@ ITEMS1 = [
   'u':['S13-ABANDONED-13'],
   'c':'PR closed unmerged by its author as superseded; the same change was re-split into the stacked series #39108/#39109/#39110, all still open — the work moved rather than stopped.',
   'q':[R('S13-ABANDONED-13')]},
+ {'sec':'C.1','h':'vLLM fine-grained prefix-cache hits for sliding-window groups — implementation closed unmerged twice by its own author',
+  'u':['S2-ABANDONED-3'],
+  'c':'both PRs (#54319 and its revision #54397) closed unmerged by their own author with no closure comment. The only retrievable statement of the blocking condition is an automated merge-conflict notice.',
+  'q':[T('This pull request has merge conflicts that must be resolved before it can be merged. Please rebase the PR, @RichApple123 .'),R('S2-ABANDONED-3')],
+  'qlab':['the design intent that is now unmerged, from the PR body']},
 ]

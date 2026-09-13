@@ -32,7 +32,7 @@ run_arm () { # $1=tag $2=spec
     "$PY" -m vllm.benchmarks.serve --backend openai --base-url "http://127.0.0.1:$PORT" \
       --endpoint /v1/completions --model q3 --dataset-name custom --dataset-path /root/autodl-tmp/prompts/prompts_4096.jsonl \
       --num-prompts $NPROMPT --max-concurrency $CONC --ignore-eos --disable-shuffle \
-      --output-len $OUTLEN --save-result --result-dir "$OUT" --result-filename "$tag.r$r.json" \
+      --output-len $OUTLEN --save-result --result-dir "$OUT" \
       > "$OUT/$tag.r$r.bench.log" 2>&1 || echo "[$tag r$r] bench 失败"
   done
   if [ -n "$spec" ]; then "$PY" "$P/collect_spec_metrics.py" --base "http://127.0.0.1:$PORT" fetch --out "$post" >/dev/null 2>&1 || true
@@ -44,8 +44,8 @@ echo "########## p20 DSD 网格 $(date -Is) 共 6 臂 × 3 重复 ##########"
 nvidia-smi --query-gpu=memory.used --format=csv,noheader
 run_arm A1_nospec ""
 run_arm A2_static_k3        "{\"method\":\"dflash\",\"model\":\"$DF\",\"num_speculative_tokens\":3}"
-run_arm A3_static_k0        "{\"method\":\"dflash\",\"model\":\"$DF\",\"num_speculative_tokens\":0}"
-run_arm A4_table_allk0      "{\"method\":\"dflash\",\"model\":\"$DF\",\"num_speculative_tokens\":0,\"num_speculative_tokens_per_batch_size\":[[1,8192,0]]}"
+run_arm A3_static_k1        "{\"method\":\"dflash\",\"model\":\"$DF\",\"num_speculative_tokens\":1}"
+run_arm A4_table_allk0      "{\"method\":\"dflash\",\"model\":\"$DF\",\"num_speculative_tokens\":1,\"num_speculative_tokens_per_batch_size\":[[1,8192,0]]}"
 run_arm A5_table_switch     "{\"method\":\"dflash\",\"model\":\"$DF\",\"num_speculative_tokens\":3,\"num_speculative_tokens_per_batch_size\":[[1,3,3],[4,8192,0]]}"
 run_arm A6_table_const3     "{\"method\":\"dflash\",\"model\":\"$DF\",\"num_speculative_tokens\":3,\"num_speculative_tokens_per_batch_size\":[[1,8192,3]]}"
 echo "########## 收工 ##########"

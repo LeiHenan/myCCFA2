@@ -1,0 +1,32 @@
+# -*- coding: utf-8 -*-
+# C.6 Papers whose own limitations undercut their technique
+from _gen_C_util import R, T
+ITEMS6 = [
+ {'sec':'C.6','h':'AVMP — the paper frames its own production impact as an unmeasured hypothesis',
+  'u':['S1-ABANDONED-7'],
+  'c':'paper whose own text undercuts the technique — its central production claim is explicitly labelled a hypothesis to be tested, not a measured outcome.',
+  'q':[R('S1-ABANDONED-7')],
+  'w':'AVMP authors, arXiv 2605.22416 (the quote is in §6.3 “Production hypothesis”, not in a limitations section — verifier correction to the evidence file’s label)',
+  'd':'submitted 21 May 2026'},
+ {'sec':'C.6','h':'QAQ needs attention scores that do not exist at quantisation time — worked around with an assumption rather than solved',
+  'u':['S4-ABANDONED-13'],
+  'c':'self-declared limitation inside the paper: the method’s required attention scores are not available at quantisation time, so it invokes the persistence-of-importance assumption. No 2025–2026 revision and no implementation in either engine tree.',
+  'q':[R('S4-ABANDONED-13')],
+  'w':'Shichen Dong, Wen Cheng, Jiayu Qin, Wei Wang — the QAQ paper’s own text (arXiv:2403.04643). Verifier correction: the evidence file’s shorthand “Cheng et al.” follows the submitting author, not the first author.'},
+ {'sec':'C.6','h':'Monolithic single-cartridge KV for a whole document collection — collapses to near-chance when composed, and the replacement does not cover mid-conversation insertion',
+  'u':['S8-ABANDONED-5','S13-ABANDONED-16'],
+  'c':'published paper concluding the earlier “cartridges” technique does not pay off at collection scale, while its own limitations section concedes that mid-conversation cartridge loading would invalidate the previously computed KV, that compression tolerance varies by document type (100× TechQA vs ≤2× FinQA), and that retrieval quality is bounded by raw-text matching.',
+  'q':[R('S8-ABANDONED-5')]},
+ {'sec':'C.6','h':'Region-aware eviction decays — MemDecay’s own abstract names attention-score normalisation as the main limitation',
+  'u':['S9-ABANDONED-11'],
+  'c':'published paper whose own abstract undercuts part of the technique: accumulated-attention retention performs better on unpinned content, and the main limitation is identified as attention-score normalisation.',
+  'q':[R('S9-ABANDONED-11')]},
+ {'sec':'C.6','h':'CacheTTL’s TTL cost model assumes the tool-call distribution is stable — the paper’s own Appendix D concedes it may produce suboptimal TTLs under distribution shift',
+  'u':['S9-ABANDONED-12'],
+  'c':'published paper’s own limitations section scoping the TTL derivation — a scoped failure mode, not a retraction.',
+  'q':[R('S9-ABANDONED-12')]},
+ {'sec':'C.6','h':'Star Attention — distributed attention is SLOWER than ordinary single-machine inference below 32K, by the paper’s own Appendix/Table 6',
+  'u':['S12-ABANDONED-14'],
+  'c':'published result that undercuts the technique’s own applicability range: for sequence lengths below 32K vanilla inference is faster, and the technique also permits accuracy loss by design (1.6–4.9% Multi-NIAH, 0.9–6.8% QA declines).',
+  'q':[R('S12-ABANDONED-14')]},
+]
