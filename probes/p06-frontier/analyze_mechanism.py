@@ -7,7 +7,14 @@ A 系列此前只读了 `output_throughput` 一个字段 ⇒ 只能回答"谁快
 重读 `bench.json` 发现机制数据**当时就已经采到了但从没被分析**：
   - `spec_decode_acceptance_length`（平均接受长度）
   - `spec_decode_per_position_acceptance_rates`（逐位置接受率，list[γ]）
-  - `mean_itl_ms`（**每步**间隔）⇒ `step_ms = mean_itl_ms` = **每个 verify 步的代价**
+  - `mean_itl_ms`（**流式 chunk** 间隔）⇒ `step_ms ≈ mean_itl_ms` = **每个 verify 步的代价**（见下方更正）
+    ⚠️ **2026-09-13 就地更正（decision #82）**：`mean_itl_ms` 的**源码定义**是「**每个流式 chunk**
+    的间隔」（`vllm/benchmarks/lib/endpoint_request_func.py:241`，位于 `if choices := data.get("choices")` 内），
+    而 `mean_tpot_ms = (latency - ttft)/(output_len - 1)`（`benchmarks/serve.py:616`）是**每 token**。
+    ⇒ 二者之比 ≈「每个 chunk 携带的 token 数」。在 **dflash2** 下该数恰好 = `accept_len`
+    ⇒ `step_ms ≈ itl` 在本文件的数据上**数值成立、结论不变**；但换到 **NGRAM** 实测 `itl/tpot = 1.07`
+    （chunk ≈1 token）⇒ **itl 不是通用的「每步」定义**。证据：
+    `candidates/engine-metric-conformance/70_mechanism.md`。
   - 另存 `.metrics` 里的 `num_preemptions_total`（**计数器**，唯一在跑完后仍有意义的字段）
     与 serve log 里的 `GPU KV cache size`（启动期容量）
 
@@ -129,7 +136,7 @@ def cell(rep_map, mode="steady"):
     curves = [c for c in curves if isinstance(c, list) and c]
     perpos = [st.mean(c[i] for c in curves if i < len(c))
               for i in range(max(len(c) for c in curves))] if curves else []
-    # step_ms = mean_itl_ms（每步延迟，实测 tpot = itl/accept_len）
+    # step_ms ≈ mean_itl_ms（chunk 间隔；dflash2 下数值 = 每步，见文件头更正）
     steps = [_f(r["mean_itl_ms"]) for r in use if _f(r.get("mean_itl_ms"))]
     return {
         "n": len(use),
