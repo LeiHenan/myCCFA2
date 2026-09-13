@@ -1,0 +1,144 @@
+
+ [RFC]: Hybrid checkpoint ABI for non-KV prefix resume · Issue #40533 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu Sign in Appearance settings Platform AI CODE CREATION GitHub Copilot Write better code with AI GitHub Copilot app Direct agents from issue to merge MCP Registry Integrate external tools DEVELOPER WORKFLOWS Actions Automate any workflow Codespaces Instant dev environments Issues Plan and track work Code Review Manage code changes Code Quality Enforce quality at merge APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities Code security Secure your code as you build Secret protection Stop leaks before they start EXPLORE Why GitHub Documentation Blog Changelog Marketplace View all features Solutions BY COMPANY SIZE Enterprises Small and medium teams Startups Nonprofits BY USE CASE App Modernization DevSecOps DevOps CI/CD View all use cases BY INDUSTRY Healthcare Financial services Manufacturing Government View all industries View all solutions Resources EXPLORE BY TOPIC AI Software Development DevOps Security View all topics EXPLORE BY TYPE Customer stories Events & webinars Ebooks & reports Business insights GitHub Skills SUPPORT & SERVICES Documentation Customer support Community forum Trust center Partners View all resources Open Source COMMUNITY GitHub Sponsors Fund open source developers PROGRAMS Security Lab Maintainer Community GitHub Stars Archive Program REPOSITORIES Topics Trending Collections Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features Copilot for Business Enterprise-grade AI features Premium Support Enterprise-grade 24/7 support Pricing Search / Sign in Sign up Appearance settings 
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }} 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [RFC]: Hybrid checkpoint ABI for non-KV prefix resume #40533 New issue Copy link New issue Copy link Closed as not planned Closed as not planned [RFC]: Hybrid checkpoint ABI for non-KV prefix resume #40533 Copy link Labels RFC stale Over 90 days of inactivity Over 90 days of inactivity Description CarlOskarRost opened on Apr 21, 2026 Issue body actions Motivation. 
+ Prefix caching is comparatively clean for transformer KV state because the cache object and the reuse boundary align closely. Hybrid models complicate that with non-KV state such as recurrent state, conv buffers, and local-window or hybrid side state. That state is often updated in place, materialized differently across phases, backend-specific in storage layout, and not safely validated by raw backing-buffer equality alone. 
+ A recent Metal/MLX proof point showed that storing live runtime-backed arrays in a hybrid checkpoint cache can be unsafe, and that a correct restore contract must distinguish payload immutability from logical state equality . 
+ Public vLLM docs already describe hybrid cache coordination and still note that Mamba-style prefix caching is a work in progress. A checkpoint ABI would give hybrid recurrent-state resume the same kind of explicit correctness contract that APC already gives KV prefix reuse. 
+ Numbers from the Metal/MLX proof point: 
+ first TTFT: 10.93s → repeated replay TTFT: 1.90s (~5.7x) 
+ 8-request soak: warm-tail TTFT stable at 1.88–1.90s after request 1 
+ tool calls, content, and finish reason identical across replays 
+ semantic drift fully eliminated on the tested Hermes workload 
+ Before the fix, repeated replay was fast but wrong: cache hits were real and TTFT collapsed, but a request that previously emitted a web_search tool call would instead terminate with stop and no tool call on replay. After the fix, that drift is gone. 
+ This RFC proposes making that distinction explicit in the architecture rather than rediscovering it per-backend. 
+ Proposed Change. 
+ Summary 
+ This RFC proposes a backend-agnostic correctness contract for hybrid prefix resume. 
+ The central idea is that hybrid cross-request resume is a two-key system: 
+ APC / KV logic proves reusable prefix identity at a logical boundary. 
+ Checkpoint ABI proves logically equivalent non-KV state at that same boundary. 
+ This RFC does not propose replacing the existing KV cache managers. It proposes adding an explicit checkpoint ABI for the non-KV side of hybrid resume. 
+ Proposed model 
+ Two-key resume 
+ Hybrid resume is legal only when both hold at the same boundary B : 
+ Prefix identity: the paged KV side proves that boundary B is reusable. 
+ State identity: the checkpoint side proves that non-KV hybrid state at B is logically equivalent. 
+ This means hybrid resume should not be treated as "KV hit plus some side state." It should be treated as one coherent restart boundary where both proofs meet. 
+ Checkpoint ABI 
+ The checkpoint ABI should define: 
+ checkpoint key: boundary identity aligned with the same logical boundary discipline used by prefix caching 
+ tensor metadata: tensor kind, layer id, shape, logical dtype, storage dtype, layout tag 
+ payload: immutable authoritative payload bytes 
+ hashes:
+ payload_hash for stored-payload immutability 
+ value_hash for canonical logical equality 
+ restore phases:
+ payload → scratch 
+ scratch → live slot 
+ live slot → post-restore materialized live view 
+ Equality contract 
+ The key proposal is to separate two notions of equality: 
+ payload equality: the stored checkpoint bytes have not changed 
+ logical value equality: the restored state means the same thing, even if the backend realizes it differently in memory 
+ This explicitly allows backends to change pointer identity, physical layout, packing/contiguity, and page or block placement, as long as the canonical logical tensor value is preserved. 
+ Design goals 
+ preserve the existing KV ownership model 
+ make non-KV state identity explicit and testable 
+ support backend-specific realization without backend-specific correctness contracts 
+ keep correctness work separate from optional performance work 
+ allow derived mirrors / materialized caches without making them authoritative 
+ Non-goals 
+ This RFC does not attempt to: 
+ replace existing KV cache managers 
+ mandate a single physical storage format across all backends 
+ force every backend to land the same implementation at once 
+ claim that all hybrid cache cases are already solved 
+ Backend split 
+ Shared core answers: 
+ what a checkpoint means 
+ what metadata must be declared 
+ what equality must hold 
+ what restore phases are permitted 
+ Each backend answers: 
+ how payload bytes are materialized 
+ how scratch tensors are built 
+ how live slots are assigned 
+ how any optional mirror / fast path is realized 
+ acceptance criteria for any implementation 
+ A backend implementation of this ABI should be able to show: 
+ repeated exact replay correctness at a fixed boundary 
+ stable first-step logits (or equivalent deterministic behavior) at that boundary 
+ fail-closed behavior when logical equality cannot be established 
+ a clean separation between authoritative payload, optional materialized mirror, and live mutable request state 
+ questions for discussion 
+ What metadata is the minimum shared checkpoint schema? 
+ Should canonical value_hash rules be fully standardized or partially backend-defined? 
+ How should checkpoint boundaries align with the existing prefix-cache identity machinery? 
+ How should fail-closed resume surface to the scheduler/runtime? 
+ Should an optional read-only mirror be part of the shared abstraction, or remain purely backend-local? 
+ About this RFC 
+ I am opening this as a design discussion before submitting an implementation PR. A working Metal/MLX implementation exists with repeated-replay correctness verified, and is ready to be submitted as a correctness-first PR to vllm-project/vllm-metal . A parallel CUDA instantiation is in progress. 
+ I would like to align with maintainers on the ABI shape before submitting code. Happy to iterate on scope, naming, or boundaries based on maintainer feedback. 
+ Feedback Period. 
+ 1-2 weeks 
+ CC List. 
+ No response 
+ Any Other Things. 
+ A technical writeup of this work is being prepared for arXiv and will be linked here once posted. The Metal/MLX implementation is ready to submit to vllm-project/vllm-metal as a correctness-first PR, and I would prefer to get directional feedback on the ABI shape here first before opening that PR. 
+ Before submitting a new issue... 
+ Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page , which can answer lots of frequently asked questions. 
+ Reactions are currently unavailable Activity Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment Metadata Metadata Assignees No one assigned Labels RFC stale Over 90 days of inactivity Over 90 days of inactivity Type No type Projects No projects Milestone No milestone Relationships None yet Development No branches or pull requests Issue actions Open in GitHub Copilot app 
+ Footer 
+ © 2026 GitHub, Inc.
+ Footer navigation 
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

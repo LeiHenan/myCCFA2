@@ -1,0 +1,314 @@
+
+ [CacheBlend] [blocker availability] Unbounded blend store fills the L2 disk and evicts the serving pods via node DiskPressure - no size cap · Issue #4664 · LMCache/LMCache · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ LMCache
+ / 
+ LMCache 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 1.9k 
+ Star
+ 11.8k 
+ Code 
+ Issues 
+ 211 
+ Pull requests 
+ 479 
+ Discussions 
+ Actions 
+ Projects 
+ Wiki 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Wiki
+ Security and quality
+ Insights
+ [CacheBlend] [blocker availability] Unbounded blend store fills the L2 disk and evicts the serving pods via node DiskPressure - no size cap #4664 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Closed as not planned 
+ Closed as not planned 
+ [CacheBlend] [blocker availability] Unbounded blend store fills the L2 disk and evicts the serving pods via node DiskPressure - no size cap #4664 
+ Copy link 
+ Description
+ shawnguyen-tensormesh 
+ opened on Aug 20, 2026 
+ Issue body actions 
+ [CacheBlend] [blocker availability] Unbounded blend store fills the L2 disk and evicts the serving pods via node DiskPressure - no size cap
+ Date: 2026-08-20
+ Verdict: CONFIRMED (for the fs_native /GDS L2 backend, i.e. GdsBackend ). REFUTED by construction for the alternative LocalDiskBackend path, which does enforce a hard cap + LRU eviction.
+ Confidence: High for the code mechanism (primary source, exact pinned versions, decisive "feature-absent" evidence) and now for the unbounded write stream (MEASURED - §4: +10,923 store chunks over 100 novel queries, strictly linear, no plateau). Medium only on the wall-clock time-to-outage (extrapolated, not driven to failure - deliberately, see Caveats).
+ Severity: High / availability blocker for any long-lived deployment using the fs_native /GDS L2 tier.
+ Problem at a glance
+ flowchart LR
+ Q["novel-ordering CacheBlend traffic"] --> W["about 109 new chunks written per query"]
+ W --> G["GdsBackend fs_native: no size cap, no eviction"]
+ G --> DSK["L2 disk grows without bound"]
+ DSK --> F["disk fills"]
+ F --> DP["node DiskPressure"]
+ DP --> EV["kubelet evicts serving pods"]
+ LDB["LocalDiskBackend: has cap plus LRU"] -.->|not the selected backend| G
+ Loading 
+ 1. Issue in one sentence
+ The fs_native L2 disk backend (LMCache GdsBackend ) writes one file per distinct KV chunk unconditionally, with no size cap and no eviction implemented at all , so under CacheBlend novel-ordering traffic (which mints new distinct chunk keys continuously) the on-disk store grows without bound until the L2 filesystem/PVC fills, the node crosses the kubelet DiskPressure threshold, and the serving pods are evicted.
+ 2. Versioning (exact)
+ Item 
+ Value 
+ LMCache source 
+ git describe = v0.5.3-cu129-12-g9fc6e1af , commit 9fc6e1afe83335a1c41b31662470fa115b2b6ac8 
+ vLLM source 
+ submodule vLLM , git describe = v0.26.1rc0-557-g436be94e13 , commit 436be94e135fd07fc94e4c165a1b6870af72bf31 
+ Engine + blend-server image (ticket) 
+ lmcache/vllm-openai:v0.5.3 
+ CacheBlend plugin image (ticket) 
+ cacheblend-plugin:v0.5.3 
+ Model / quant / HW / TP (ticket bench env) 
+ gpt-oss-20b , MXFP4, RTX PRO 6000 Blackwell, TP=1 
+ Cluster 
+ a dev Kubernetes cluster 
+ Relevant config defaults (LMCache config.py ) 
+ chunk_size=256 ; max_local_disk_size default 0.0 ; gds_buffer_size default None (a GPU staging buffer, not a disk cap) 
+ L2 backend under test 
+ l2.type: fs_native ( use_gds: true , gds_backend: cufile ) → routes to LMCache GdsBackend 
+ 3. Issue description (plain terms)
+ LMCache offers more than one on-disk ("L2") backend. They do not behave the same way with respect to disk safety:
+ LocalDiskBackend - the " local_disk " path. It is created only when a positive max_local_disk_size is set, and it enforces that cap with LRU eviction on every write. Bounded by construction. 
+ GdsBackend - the " gds_path " path, selected by l2.type: fs_native (GDS/cuFile, or plain O_DIRECT/POSIX on a non-GDS filesystem). It has no size/quota/cap parameter at all , and eviction is explicitly not implemented - the code literally logs "GDS Backend does not support eviction" . Every distinct KV chunk is written as a new file and never reclaimed. Unbounded. 
+ Any deployment that selects l2.type: fs_native uses the unbounded GdsBackend , and LMCache exposes no knob to bound it - the backend accepts no size parameter, so there is nothing a config layer could set.
+ Why it matters at production level: the L2 tier is a shared node resource (a dedicated NVMe device / PVC). When it fills, the failure is not a graceful cache miss - it is a node-level DiskPressure condition. The kubelet responds by evicting pods on that node. That takes down the serving engines (and can affect co-tenants on the same node), i.e. a self-inflicted availability outage that grows more likely the longer the deployment runs and the more distinct traffic it sees. CacheBlend traffic is the worst case for this: its whole point is non-prefix reuse over many document orderings, and each novel ordering produces new distinct chunk keys → the distinct-key set grows monotonically → the store grows monotonically.
+ 4. How verified
+ Method
+ Primary-source code read at the exact pinned commits above (no reliance on any existing doc). The claim is structural - the absence of a size cap and of eviction in a code path - so it is fully decidable from source. A live fill-to-failure run was deliberately not performed (it would harm the shared node; see Caveats for the safe signature recipe).
+ CODE evidence - the fs_native /GDS backend has no cap and no eviction
+ (a) Put is unconditional - no capacity/size check before writing. 
+ lmcache/v1/storage_backend/gds_backend.py:591 submit_put_task(...) and :615 batched_submit_put_task(...) go straight to _async_save_bytes_to_disk - there is no max_cache_size , no current_cache_size , no eviction loop anywhere in the write path:
+ # gds_backend.py:591 
+ def submit_put_task ( self , key , memory_obj , on_complete_callback = None ) -> Future :
+ ...
+ future = asyncio . run_coroutine_threadsafe (
+ self . _async_save_bytes_to_disk ( key , memory_obj , on_complete_callback ),
+ self . loop )
+ return future 
+ _async_save_bytes_to_disk ( :636 ) os.makedirs(...) + _save_gds(...) writes a file per key. Every distinct key ⇒ one new file, always.
+ (b) Eviction is explicitly not implemented. 
+ # gds_backend.py:1105 / 1109 (pin/unpin) 
+ # NOTE (ApostaC): Since gds doesn't have eviction now, we don't need 
+ # to implement pin and unpin 
+ # gds_backend.py:1139-1140 and 1187-1188 (allocate / batched allocate) 
+ if eviction :
+ logger . warning ( "GDS Backend does not support eviction" )
+ (c) No disk-size cap knob exists for this backend. 
+ GdsBackend.__init__ ( gds_backend.py:21 ) reads only gds_path , gds_path_sharding , use_gds , gds_backend , gds_buffer_size . gds_buffer_size is a GPU staging allocator size ( gds_backend.py:1126 : allocator_cls(config.gds_buffer_size * 1024**2) ), not a disk quota. There is no max_*_disk_size equivalent.
+ CODE evidence - the other backend ( LocalDiskBackend ) IS bounded (why the claim is path-specific)
+ (d) It only exists with a positive cap, and enforces it with LRU eviction. 
+ # storage_backend/__init__.py:217 
+ if ( config . local_disk and config . max_local_disk_size > 0 
+ and "LocalDiskBackend" not in _skip ):
+ ... LocalDiskBackend (...)
+ # local_disk_backend.py:174 
+ self . max_cache_size = int ( config . max_local_disk_size * 1024 ** 3 )
+ # local_disk_backend.py:346 (inside submit_put_task, under disk_lock) 
+ while self . current_cache_size + required_size > self . max_cache_size :
+ evict_keys = self . cache_policy . get_evict_candidates ( self . dict , num_candidates = 1 )
+ if not evict_keys :
+ logger . warning ( "No eviction candidates found. Disk space under pressure." )
+ evict_success = False 
+ break 
+ ...
+ So LocalDiskBackend cannot even be instantiated without a positive cap, and once running it evicts LRU entries to stay under that cap. This is the code that the ticket title implicitly assumes is missing - it exists, but on a different backend than fs_native /GdsBackend .
+ CODE evidence - selecting fs_native routes to the unbounded backend
+ storage_backend/__init__.py:235 if config.gds_path is not None: GdsBackend(...) - an fs_native L2 config populates gds_path , so selecting it routes to the unbounded GdsBackend .
+ RUN leg - safe store-growth SIGNATURE (MEASURED 2026-08-20; no disk-fill)
+ A fill-to-DiskPressure run is prohibited on the shared node, so instead the store's write stream was measured directly on a live blend server (gpt-oss-20b, one shared blend server, 100 novel-ordering queries , scraping the server /metrics per batch) - the safe proxy for "does the store grow without bound":
+ counter 
+ start → end (100 novel queries) 
+ Δ 
+ per query 
+ lmcache_mp_l1_write_chunks_total 
+ 26,179 → 37,102 
+ +10,923 
+ ~109 chunks/query 
+ lmcache_mp_l1_evicted_chunks_total 
+ 24,228 → 35,254 
+ +11,026 
+ ~110/query 
+ lmcache_blend_lookup_stale_chunks_total 
+ 12,283 → 20,472 
+ +8,189 
+ ~82/query 
+ lmcache_mp_l1_memory_usage_bytes 
+ rose every batch (+3.4 GB, +1.6 GB, +2.1 GB … then tapering) 
+ monotonic 
+ - 
+ The store writes ~109 new chunks per novel query and never stops - write_chunks_total is strictly linear in query count (no dedup, no plateau-from-dedup). On the bounded L1 the write rate ≈ the evict rate (10,923 ≈ 11,026): L1 caps residency by evicting the warm set (this is also the decay mechanism of the sibling perf ticket). On the fs_native /GDS L2 GdsBackend , which has no eviction (code evidence above), that identical ~109-chunks/query write stream accumulates on disk without bound → the disk-fill/DiskPressure outcome is the L2 manifestation of exactly this measured write stream. This confirms the mechanism at runtime without ever approaching the disk limit.
+ 5. Clues / evidence (summary)
+ Signal 
+ Backend 
+ Location 
+ Meaning 
+ No max_cache_size / eviction in write path 
+ GdsBackend (fs_native) 
+ gds_backend.py:591 , :615 , :636 
+ writes every distinct key unconditionally 
+ "GDS Backend does not support eviction" 
+ GdsBackend 
+ gds_backend.py:1140 , :1188 
+ nothing is ever reclaimed 
+ "gds doesn't have eviction now" 
+ GdsBackend 
+ gds_backend.py:1105 , :1109 
+ pin/unpin are no-ops - no LRU machinery 
+ No disk-cap config field 
+ GdsBackend 
+ config.py:336-346 , gds_backend.py:__init__ 
+ gds_buffer_size is a GPU staging buffer, not a cap 
+ Cap + LRU present, requires cap>0 to exist 
+ LocalDiskBackend (not selected here) 
+ __init__.py:217 , local_disk_backend.py:174,346 
+ the bounded path - not the one selected here 
+ fs_native selects GdsBackend 
+ LMCache 
+ storage_backend/__init__.py:235 
+ any deployment using fs_native gets the unbounded backend 
+ Growth arithmetic (mechanism): distinct chunks written = f(distinct chunk keys served). CacheBlend serves novel document orderings; with chunk_size=256 , each novel ordering that isn't a pure prefix of a prior one produces fresh chunk keys. On-disk size ≈ (number of distinct chunks) × (serialized bytes per chunk). Because reclamation is 0, this is strictly monotonic non-decreasing for the life of the pod - it can only ever go up until the disk is full.
+ 6. Chart
+ Measured cumulative store writes on the shared blend server over 100 novel-ordering queries - strictly linear (no dedup, no plateau):
+ xychart-beta
+ title "Store write stream is unbounded (measured)"
+ x-axis ["q0","q20","q40","q60","q80","q100"]
+ y-axis "cumulative chunks written" 26000 --> 37500
+ line [26179, 28364, 30549, 32734, 34918, 37102]
+ Loading 
+ The bounded LocalDiskBackend (cap + LRU) would plateau; GdsBackend has no eviction, so this line only rises until the disk fills.
+ 7. Root-cause analysis
+ The GdsBackend was built as a high-throughput GPU-Direct-Storage / O_DIRECT write path and, by the authors' own in-code notes, eviction was never added to it ("Since gds doesn't have eviction now…"). It therefore has neither a capacity parameter nor any reclamation policy: submit_put_task → _async_save_bytes_to_disk writes a file per key and returns. The sibling LocalDiskBackend carries the cap+LRU logic, but it is a different backend selected by a different config ( local_disk + max_local_disk_size>0 ), not the fs_native path.
+ Selecting l2.type: fs_native routes to GdsBackend , which exposes no size limit (nor could a config layer add one - the backend accepts none). So a deployment using it has no layer that bounds the L2 store. Combined with CacheBlend's continuously-novel key stream, the store grows until the filesystem fills. On Kubernetes, a full node filesystem is a DiskPressure condition, which the kubelet resolves by evicting pods - hence the "evicts the serving pods" outcome in the title. The mechanism claimed by the ticket is real for the configuration that actually ships.
+ 8. Caveats & unverified
+ Not driven to failure (by design). The DiskPressure/eviction outcome is inferred from the standard kubelet behavior for a full node filesystem, not reproduced - reproducing it would degrade the shared dev node. The store- growth half is code-certain; the eviction half is the well-known kubelet consequence of it.
+ Time-to-outage not quantified. Wall-clock time to fill depends on serialized bytes/chunk (model dims, chunk_size=256 , dtype), L2 device capacity, and traffic novelty rate - none measured here. The chart axes are therefore unitless.
+ Whether an external backend (RESP/remote) has its own server-side cap is out of scope; this report covers the on-node fs_native /GDS L2 ( GdsBackend ). A resp (Redis-protocol) remote backend's capacity would be governed by that server, not this code.
+ use_gds: false (plain O_DIRECT fs_native) uses the same GdsBackend class and the same no-cap/no-evict paths - it does not change the verdict.
+ Single cleanest next check (safe, GPU-light, does NOT approach disk-full): deploy one throwaway CacheBlend engine with a small L1 and an fs_native L2 pointed at a small, isolated, bounded scratch dir; drive N successive novel-ordering batches (well short of filling the dir); after each batch record ls "$BASE_PATH" | wc -l and du -sh "$BASE_PATH" . Expect a strictly increasing file count and byte total with zero decreases across batches (no eviction). Fit the slope to bytes-per-distinct-chunk, then divide real L2 capacity by that slope to project time/volume-to-DiskPressure - extrapolate to the outage; never cause it. Tear down the engine and delete the scratch dir afterward.
+ Reproduction pointers (so this file stands alone)
+ Code: LMCache @ 9fc6e1af ; read lmcache/v1/storage_backend/gds_backend.py (lines 591, 615, 636, 1105, 1139, 1187), lmcache/v1/storage_backend/local_disk_backend.py (lines 174, 346), lmcache/v1/storage_backend/__init__.py (lines 217, 235), lmcache/v1/config.py (lines 90, 113, 336-346, 1203-1205).
+ Every fact above is labeled: CODE-VERIFIED = read from source at the pinned commit; INFERRED = the kubelet DiskPressure→eviction consequence and the time-to-outage; nothing here is MEASURED from a live run (none was performed). 
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

@@ -1,0 +1,713 @@
+
+ benchmark: add reproducible prefix-cache hit-rate evaluation by sammysun0711 · Pull Request #37359 · sgl-project/sglang · GitHub 
+ Skip to content 
+ Navigation Menu Sign in Appearance settings Platform AI CODE CREATION GitHub Copilot Write better code with AI GitHub Copilot app Direct agents from issue to merge MCP Registry Integrate external tools DEVELOPER WORKFLOWS Actions Automate any workflow Codespaces Instant dev environments Issues Plan and track work Code Review Manage code changes Code Quality Enforce quality at merge APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities Code security Secure your code as you build Secret protection Stop leaks before they start EXPLORE Why GitHub Documentation Blog Changelog Marketplace View all features Solutions BY COMPANY SIZE Enterprises Small and medium teams Startups Nonprofits BY USE CASE App Modernization DevSecOps DevOps CI/CD View all use cases BY INDUSTRY Healthcare Financial services Manufacturing Government View all industries View all solutions Resources EXPLORE BY TOPIC AI Software Development DevOps Security View all topics EXPLORE BY TYPE Customer stories Events & webinars Ebooks & reports Business insights GitHub Skills SUPPORT & SERVICES Documentation Customer support Community forum Trust center Partners View all resources Open Source COMMUNITY GitHub Sponsors Fund open source developers PROGRAMS Security Lab Maintainer Community GitHub Stars Archive Program REPOSITORIES Topics Trending Collections Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features Copilot for Business Enterprise-grade AI features Premium Support Enterprise-grade 24/7 support Pricing Search / Sign in Sign up Appearance settings 
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }} 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ sgl-project
+ / 
+ sglang 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 8.8k 
+ Star
+ 35.9k 
+ Code 
+ Issues 
+ 890 
+ Pull requests 
+ 4.4k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ benchmark: add reproducible prefix-cache hit-rate evaluation - # 37359 # 37359 Open sammysun0711 wants to merge 10 commits into sgl-project:main sgl-project/sglang:main from sammysun0711:feat/prefix-cache-aware-benchmark sammysun0711/sglang:feat/prefix-cache-aware-benchmark Copy head branch name to clipboard Conversation Commits 10 ( 10 ) Checks Files changed Open benchmark: add reproducible prefix-cache hit-rate evaluation # 37359 sammysun0711 wants to merge 10 commits into sgl-project:main sgl-project/sglang:main from sammysun0711:feat/prefix-cache-aware-benchmark sammysun0711/sglang:feat/prefix-cache-aware-benchmark Copy head branch name to clipboard Conversation 
+ sammysun0711 
+ commented
+ Sep 1, 2026 
+ • 
+ edited by github-actions
+ Bot 
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ Copy link
+ Copy Markdown
+ Motivation 
+ co-author with @Richardyu114 and @FionaZZ92 
+ Prefix-hit-aware benchmarking is essential for evaluating real agent workloads, where repeated system prompts, tool schemas, and conversation context make high cache-hit rates. To accurately simulate production workload, this PR introduces a benchmark that measures inference performance under controlled prefix-cache hit rates. 
+ sglang.bench_serving can generate shared-prefix requests and report cached tokens, but it previously lacked a deterministic way to benchmark a requested cache-hit rate. In particular, ordinary warmup is followed by cache flushing, so measured requests can race to populate the prefix cache unless prefixes are primed in a separate phase. 
+ This PR adds a controlled lifecycle: 
+ generate requests -> model warmup -> flush cache -> prime prefix groups
+ -> measured traffic -> cache-hit validation -> resumable artifacts
+ The implementation reuses the existing generated-shared-prefix dataset instead of introducing another dataset API. Exact prefix metadata travels with each DatasetRow , so the benchmark never reconstructs token prefixes from text. 
+ Non-goals 
+ The following item are out of scope of this PR: 
+ Selecting which HiCache tier serves a hit. 
+ Trace-driven prefix lifetime simulation. 
+ Multi-turn conversation semantics. 
+ Scheduler or cache-eviction changes. 
+ Guaranteeing target residency when the prefix working set exceeds cache capacity. 
+ Modifications 
+ Add optional cache_prefix and cache_prefix_len metadata to DatasetRow . 
+ Add --gsp-prewarm-prefixes and bounded --gsp-prewarm-concurrency . 
+ Prime one request per unique (routing_key, cache_prefix) after cache flush and before the measurement timer. 
+ Exclude priming requests from TTFT, TPOT, ITL, throughput, and request counts. 
+ Report expected prefix tokens and server-observed cached tokens in prefix_cache_config and cache_report . 
+ Add benchmark/prefix_cache/bench_prefix_cache.py , a standalone, resumable matrix runner. 
+ Support cold 0% controls, uniform/Zipf group popularity, repetitions, and deterministic seeds without model-specific scripts. 
+ Reject missing or inaccurate cache-hit results using a page-aware tolerance: 
+ Write manifest.json , append-only results.jsonl , latest-per-tag summary.csv , and one log per point. Restarting the command skips only valid points. 
+ Add a minimal README, workflow/data-structure diagrams, Bench Serving documentation, and registered CPU tests. 
+ Minimal usage 
+ Start an SGLang server with cache reporting: 
+ PYTHONPATH=python python3 -m sglang.launch_server \
+ --model-path MODEL_PATH \
+ --enable-cache-report 
+ Run one controlled 32K-input, 512-output, 50%-hit point at concurrency 8: 
+ python3 -m sglang.benchmark.serving \
+ --backend sglang \
+ --base-url http://127.0.0.1:30000 \
+ --model MODEL_PATH \
+ --tokenizer MODEL_PATH \
+ --dataset-name generated-shared-prefix \
+ --num-prompts 50 \
+ --gsp-num-groups 2 \
+ --gsp-prompts-per-group 25 \
+ --gsp-system-prompt-len 16384 \
+ --gsp-question-len 16384 \
+ --gsp-output-len 512 \
+ --gsp-range-ratio 1.0 \
+ --gsp-group-distribution uniform \
+ --max-concurrency 8 \
+ --request-rate inf \
+ --warmup-requests 5 \
+ --flush-cache \
+ --gsp-prewarm-prefixes \
+ --gsp-prewarm-concurrency 1 \
+ --seed 42 \
+ --cache-report \
+ --tag prefix-cache-in32768-out512-hit50-c8 \
+ --output-file prefix-cache-single-point.jsonl 
+ Run a controlled matrix: 
+ python3 benchmark/prefix_cache/bench_prefix_cache.py \
+ --base-url http://127.0.0.1:30000 \
+ --model MODEL_PATH \
+ --tokenizer MODEL_PATH \
+ --input-lens 32768 65536 \
+ --output-lens 512 1024 \
+ --cache-hit-percentages 0 30 50 70 90 \
+ --concurrencies 1 8 \
+ --num-prompts 50 \
+ --num-groups 2 \
+ --warmup-requests 5 \
+ --repetitions 3 \
+ --result-dir prefix-cache-results \
+ --quiet 
+ A single results.jsonl entry example 
+ {
+ "tag" : " prefix-cache-in32768-out512-hit50-c8-r1 " ,
+ "completed" : 50 ,
+ "max_concurrency" : 8 ,
+ "mean_ttft_ms" : 4628.35 ,
+ "mean_tpot_ms" : 11.94 ,
+ "request_throughput" : 0.733 ,
+ "prefix_cache_config" : {
+ "mode" : " prewarmed " ,
+ "num_prefixes" : 2 ,
+ "prewarm_requests" : 2 ,
+ "expected_hit_rate_pct" : 50.01 ,
+ "actual_hit_rate_pct" : 49.90 ,
+ "hit_rate_verified" : true 
+ },
+ "cache_report" : {
+ "total_prompt_tokens" : 1705959 ,
+ "total_cached_tokens" : 851200 ,
+ "cache_hit_rate_pct" : 49.90 ,
+ "device_cached_tokens" : 851200 ,
+ "host_cached_tokens" : 0 
+ }
+} 
+ Accuracy Tests 
+ This PR does not modify model forward code, kernels, sampling, scheduling, or generated token semantics. Accuracy impact is therefore not expected. 
+ The tests cover request generation, exact prefix metadata, prefix deduplication, priming failures, uniform/Zipf validation, 0% controls, page rounding, cache-hit tolerance, latest-attempt resume behavior, and summary output. 
+ PYTHONPATH=python python3 -m pytest -q \
+ test/registered/bench_fn/test_benchmark_datasets_api.py 
+ 59 passed
+14 subtests passed
+ Speed Tests and Profiling 
+ This PR does not change inference execution speed. The results below validate that the 
+benchmark creates the requested cache state and captures the expected performance 
+signal; they are not a server optimization claim. 
+ GLM-5.2 validation 
+ Model: zai-org/GLM-5.2-FP8 
+ Hardware: 8 × AMD Instinct MI355X ( gfx950 ), TP8 
+ Attention: TileLang DSA prefill/decode 
+ KV cache: FP8 E4M3 
+ Speculative decoding: built-in EAGLE 
+ Workload: 2 prefix groups × 25 measured requests, 5 warmups per point 
+ Validated subset: all 32K/64K input, 512/1024/2048 output, 30/50/70/90% hit, 
+concurrency 1/8 combinations 
+ Server command 
+ python3 -m sglang.launch_server \
+ --model-path zai-org/GLM-5.2-FP8 \
+ --served-model-name GLM-5.2-FP8 \
+ --trust-remote-code \
+ --reasoning-parser glm45 \
+ --tool-call-parser glm47 \
+ --tp 8 \
+ --dsa-prefill-backend tilelang \
+ --dsa-decode-backend tilelang \
+ --chunked-prefill-size 32768 \
+ --max-prefill-tokens 32768 \
+ --mem-fraction-static 0.80 \
+ --kv-cache-dtype fp8_e4m3 \
+ --max-running-requests 64 \
+ --schedule-policy lpm \
+ --cuda-graph-max-bs-decode 8 \
+ --cuda-graph-bs-decode 1 2 4 8 \
+ --speculative-algorithm EAGLE \
+ --speculative-num-steps 5 \
+ --speculative-eagle-topk 1 \
+ --speculative-num-draft-tokens 6 \
+ --model-loader-extra-config ' {"enable_multithread_load": true} ' \
+ --watchdog-timeout 1200 \
+ --enable-cache-report \
+ --enable-metrics \
+ --host 127.0.0.1 \
+ --port 9080 
+ Benchmark command 
+ python3 benchmark/prefix_cache/bench_prefix_cache.py \
+ --base-url http://127.0.0.1:9080 \
+ --model GLM-5.2-FP8 \
+ --tokenizer zai-org/GLM-5.2-FP8 \
+ --input-lens 32768 65536 \
+ --output-lens 512 1024 2048 \
+ --cache-hit-percentages 30 50 70 90 \
+ --concurrencies 1 8 \
+ --num-prompts 50 \
+ --num-groups 2 \
+ --warmup-requests 5 \
+ --prewarm-concurrency 1 \
+ --seed 42 \
+ --result-dir benchmark-results/glm52-prefix-cache-valid \
+ --quiet 
+ The validated subset contains 48 points and 2,400 measured requests . 
+ Target 
+ Mean actual cache hit rate 
+ Actual cache hit rate range 
+ Maximum error 
+ 30% 
+ 29.96% 
+ 29.91–30.01% 
+ 0.12 pp 
+ 50% 
+ 49.94% 
+ 49.90–49.98% 
+ 0.11 pp 
+ 70% 
+ 69.93% 
+ 69.92–69.93% 
+ 0.09 pp 
+ 90% 
+ 89.93% 
+ 89.90–89.96% 
+ 0.11 pp 
+ The following tables report every validated output length and cache-hit target. 
+ Concurrency 1 
+ At concurrency 1, increasing cache hit from 30% to 90% reduces mean TTFT by about 78% 
+while TPOT remains nearly unchanged, which is the expected signal when cached prefixes 
+remove prefill work without changing decode work. 
+ Input 
+ Output 
+ Target cache hit rate 
+ Actual cache hit rate 
+ Mean TTFT 
+ Mean TPOT 
+ 32K 
+ 512 
+ 30% 
+ 29.91% 
+ 1,425.02 ms 
+ 3.89 ms 
+ 32K 
+ 512 
+ 50% 
+ 49.90% 
+ 1,044.83 ms 
+ 3.85 ms 
+ 32K 
+ 512 
+ 70% 
+ 69.93% 
+ 677.59 ms 
+ 3.60 ms 
+ 32K 
+ 512 
+ 90% 
+ 89.90% 
+ 299.28 ms 
+ 4.00 ms 
+ 32K 
+ 1024 
+ 30% 
+ 29.91% 
+ 1,387.50 ms 
+ 3.60 ms 
+ 32K 
+ 1024 
+ 50% 
+ 49.90% 
+ 1,036.70 ms 
+ 4.07 ms 
+ 32K 
+ 1024 
+ 70% 
+ 69.93% 
+ 690.61 ms 
+ 3.52 ms 
+ 32K 
+ 1024 
+ 90% 
+ 89.90% 
+ 316.05 ms 
+ 3.53 ms 
+ 32K 
+ 2048 
+ 30% 
+ 29.91% 
+ 1,405.55 ms 
+ 3.56 ms 
+ 32K 
+ 2048 
+ 50% 
+ 49.90% 
+ 1,047.38 ms 
+ 3.42 ms 
+ 32K 
+ 2048 
+ 70% 
+ 69.93% 
+ 690.49 ms 
+ 3.47 ms 
+ 32K 
+ 2048 
+ 90% 
+ 89.90% 
+ 313.95 ms 
+ 3.51 ms 
+ 64K 
+ 512 
+ 30% 
+ 30.01% 
+ 2,991.23 ms 
+ 4.02 ms 
+ 64K 
+ 512 
+ 50% 
+ 49.98% 
+ 2,280.02 ms 
+ 3.72 ms 
+ 64K 
+ 512 
+ 70% 
+ 69.92% 
+ 1,563.04 ms 
+ 3.84 ms 
+ 64K 
+ 512 
+ 90% 
+ 89.96% 
+ 643.02 ms 
+ 4.07 ms 
+ 64K 
+ 1024 
+ 30% 
+ 30.01% 
+ 2,990.21 ms 
+ 3.77 ms 
+ 64K 
+ 1024 
+ 50% 
+ 49.98% 
+ 2,278.07 ms 
+ 3.95 ms 
+ 64K 
+ 1024 
+ 70% 
+ 69.92% 
+ 1,542.28 ms 
+ 3.99 ms 
+ 64K 
+ 1024 
+ 90% 
+ 89.96% 
+ 641.84 ms 
+ 3.64 ms 
+ 64K 
+ 2048 
+ 30% 
+ 30.01% 
+ 2,977.25 ms 
+ 3.55 ms 
+ 64K 
+ 2048 
+ 50% 
+ 49.98% 
+ 2,268.28 ms 
+ 3.66 ms 
+ 64K 
+ 2048 
+ 70% 
+ 69.92% 
+ 1,536.51 ms 
+ 3.72 ms 
+ 64K 
+ 2048 
+ 90% 
+ 89.96% 
+ 638.84 ms 
+ 3.54 ms 
+ Concurrency 8 
+ Input 
+ Output 
+ Target cache hit rate 
+ Actual cache hit rate 
+ Mean TTFT 
+ Mean TPOT 
+ 32K 
+ 512 
+ 30% 
+ 29.91% 
+ 5,163.64 ms 
+ 15.84 ms 
+ 32K 
+ 512 
+ 50% 
+ 49.90% 
+ 4,628.35 ms 
+ 11.94 ms 
+ 32K 
+ 512 
+ 70% 
+ 69.93% 
+ 1,992.21 ms 
+ 10.84 ms 
+ 32K 
+ 512 
+ 90% 
+ 89.90% 
+ 771.76 ms 
+ 7.68 ms 
+ 32K 
+ 1024 
+ 30% 
+ 29.91% 
+ 3,882.61 ms 
+ 11.57 ms 
+ 32K 
+ 1024 
+ 50% 
+ 49.90% 
+ 3,377.41 ms 
+ 9.26 ms 
+ 32K 
+ 1024 
+ 70% 
+ 69.93% 
+ 1,850.99 ms 
+ 8.02 ms 
+ 32K 
+ 1024 
+ 90% 
+ 89.90% 
+ 1,011.01 ms 
+ 5.88 ms 
+ 32K 
+ 2048 
+ 30% 
+ 29.91% 
+ 4,251.44 ms 
+ 8.18 ms 
+ 32K 
+ 2048 
+ 50% 
+ 49.90% 
+ 2,890.03 ms 
+ 7.19 ms 
+ 32K 
+ 2048 
+ 70% 
+ 69.93% 
+ 1,875.25 ms 
+ 6.35 ms 
+ 32K 
+ 2048 
+ 90% 
+ 89.90% 
+ 662.38 ms 
+ 5.68 ms 
+ 64K 
+ 512 
+ 30% 
+ 30.01% 
+ 11,998.43 ms 
+ 27.62 ms 
+ 64K 
+ 512 
+ 50% 
+ 49.98% 
+ 7,412.44 ms 
+ 24.98 ms 
+ 64K 
+ 512 
+ 70% 
+ 69.92% 
+ 5,581.12 ms 
+ 15.99 ms 
+ 64K 
+ 512 
+ 90% 
+ 89.96% 
+ 2,557.80 ms 
+ 7.62 ms 
+ 64K 
+ 1024 
+ 30% 
+ 30.01% 
+ 13,516.72 ms 
+ 14.84 ms 
+ 64K 
+ 1024 
+ 50% 
+ 49.98% 
+ 7,493.04 ms 
+ 15.22 ms 
+ 64K 
+ 1024 
+ 70% 
+ 69.92% 
+ 4,540.38 ms 
+ 12.08 ms 
+ 64K 
+ 1024 
+ 90% 
+ 89.96% 
+ 1,664.72 ms 
+ 7.34 ms 
+ 64K 
+ 2048 
+ 30% 
+ 30.01% 
+ 14,534.77 ms 
+ 9.02 ms 
+ 64K 
+ 2048 
+ 50% 
+ 49.98% 
+ 5,388.67 ms 
+ 11.25 ms 
+ 64K 
+ 2048 
+ 70% 
+ 69.92% 
+ 4,545.24 ms 
+ 8.40 ms 
+ 64K 
+ 2048 
+ 90% 
+ 89.96% 
+ 1,613.85 ms 
+ 6.13 ms 
+ Checklist 
+ Format your code according to the Format code with pre-commit . 
+ Add unit tests according to the Run and add unit tests . 
+ Update documentation according to Write documentations . 
+ Provide accuracy and speed benchmark results according to Test the accuracy and Benchmark the speed . 
+ Follow the SGLang code style guidance . 
+ Review and Merge Process 
+ Ping Merge Oncalls to start the process. See the PR Merge Process . 
+ Get approvals from CODEOWNERS and other reviewers. 
+ Trigger CI tests with comments or contact authorized users to do so.
+ Common commands include /tag-and-rerun-ci , /tag-run-ci-label , /rerun-failed-ci 
+ After green CI and required approvals, ask Merge Oncalls or people with Write permission to merge the PR. 
+ CI States 
+ Latest PR Test (Base): ❌ Run #34096174270 
+Latest PR Test (Extra): ❌ Run #34096173807 
+Latest PR Test (AMD ROCm 7.2): ❌ Run #34096174075 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ --> 
+ 👍 
+ 2 
+ Richardyu114 and apinge reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 2 reactions 
+ sammysun0711 
+ added 8 commits
+ August 31, 2026 13:12 
+ benchmark: prewarm generated shared prefixes 
+ …
+ 661fbab 
+ Signed-off-by: Xiake Sun <xiake.sun@amd.com> 
+ benchmark: add reusable prefix cache benchmark 
+ …
+ af50d0f 
+ Signed-off-by: Xiake Sun <xiake.sun@amd.com> 
+ docs: call prefix cache utility a matrix runner 
+ …
+ 8818430 
+ Signed-off-by: Xiake Sun <xiake.sun@amd.com> 
+ benchmark: validate prefix cache hit accuracy 
+ …
+ 50f5d5c 
+ Signed-off-by: Xiake Sun <xiake.sun@amd.com> 
+ benchmark: account for cache page rounding 
+ …
+ 4879acf 
+ Signed-off-by: Xiake Sun <xiake.sun@amd.com> 
+ test: cover prefix cache summary tolerance 
+ …
+ 0e3176d 
+ Signed-off-by: Xiake Sun <xiake.sun@amd.com> 
+ benchmark: refactor prefix cache runner layout 
+ …
+ 9045b75 
+ Signed-off-by: Xiake Sun <xiake.sun@amd.com> 
+ docs: consolidate prefix cache benchmark guide 
+ …
+ a4e2bbc 
+ Signed-off-by: Xiake Sun <xiake.sun@amd.com> 
+ github-actions 
+ Bot 
+ added
+ the 
+ documentation
+ Improvements or additions to documentation 
+ label
+ Sep 1, 2026 
+ Richardyu114 
+ mentioned this pull request
+ Sep 1, 2026 
+ benchmark: harden controlled prefix-cache workloads 
+ sammysun0711/sglang#25 
+ Open
+ sammysun0711 
+ marked this pull request as ready for review
+ September 2, 2026 01:30 
+ sammysun0711 
+ requested review from
+ JustinTong0323 , 
+ sogalin , 
+ wisclmy0611 and 
+ zijiexia 
+ as code owners 
+ September 2, 2026 01:30 
+ Richardyu114 
+ commented
+ Sep 2, 2026 
+ Copy link
+ Copy Markdown
+ Assume all prewarmed prefixes are expected to fit in HBM, num_groups=1 and num_groups>1 have the same first-order token workload. Each request reuses the same number of cached prefix tokens, prefills the same number of uncached suffix tokens, and decodes the same number of output tokens. Therefore, num_groups=1 provides the cleanest baseline for measuring the direct relationship between cache-hit rate and serving performance. groups increase the physical KV working set, reduce repeated access to the same KV pages, may introduce prefix-content diversity, and can interact differently with routing, scheduling, memory locality, MoE expert selection, and speculative decoding. 
+ So, num_groups=1 is the baseline for the current device-resident cache-hit-rate evaluation. num_groups>1 provides a more realistic resident multi-prefix workload and enables future extensions for heterogeneous request sizes and hierarchical-cache pressure. 
+ --> 
+ 👍 
+ 1 
+ sammysun0711 reacted with thumbs up emoji 
+ All reactions 
+ 👍 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ sammysun0711 
+ and others 
+ added 2 commits
+ September 7, 2026 14:59 
+ Merge branch 'main' into feat/prefix-cache-aware-benchmark 
+ 12c0244 
+ fix lint format 
+ …
+ bf7c48a 
+ Signed-off-by: Xiake Sun <xiake.sun@amd.com> 
+ mottopanikeiku 
+ mentioned this pull request
+ Sep 9, 2026 
+ [Benchmark] Fix generated-prefix cache reuse across orderings
+ #38705 
+ Open
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ wisclmy0611 
+ Awaiting requested review from wisclmy0611 
+ wisclmy0611 is a code owner 
+ zijiexia 
+ Awaiting requested review from zijiexia 
+ zijiexia is a code owner 
+ JustinTong0323 
+ Awaiting requested review from JustinTong0323 
+ JustinTong0323 is a code owner 
+ sogalin 
+ Awaiting requested review from sogalin 
+ sogalin is a code owner 
+ At least 1 approving review is required to merge this pull request.
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ documentation 
+ Improvements or additions to documentation 
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues. 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ 2 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer 
+ © 2026 GitHub, Inc.
+ Footer navigation 
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

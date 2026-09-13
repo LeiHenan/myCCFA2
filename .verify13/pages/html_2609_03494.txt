@@ -1,0 +1,1604 @@
+ 
+ GrowPage: On-Demand KV Budgeting for Efficient LLM Reasoning Serving 
+ Report GitHub Issue 
+ × 
+ Title: 
+ Content selection saved. Describe the issue below: 
+ Description: 
+ Submit without GitHub 
+ Submit in GitHub 
+ arXiv is now an independent nonprofit! 
+ Learn more 
+ × 
+ Back to arXiv 
+ Why HTML? 
+ Report Issue 
+ Back to Abstract 
+ Download PDF 
+ Abstract 
+ 1 Introduction 
+ 2 Why On-Demand KV Budgeting? 
+ 3 Methodology 
+ 3.1 Theoretical Analysis 
+ 3.2 Online Demand Estimation 
+ Dual-timescale query summaries. 
+ Attention-demand trend. 
+ 3.3 Trend-Guided Capacity Control 
+ Compress & Hold. 
+ Grow by One Page. 
+ 4 System Integration 
+ 4.1 Lightweight Per-Request State Management 
+ 4.2 Scheduler-Aware Page Allocation and Fallback 
+ 5 Experiments 
+ 5.1 Experimental Setup 
+ Models and benchmarks. 
+ Evaluation metrics and implementation. 
+ 5.2 Main Results 
+ Benchmark comparison. 
+ Pareto Analysis under Mixed Workloads. 
+ 5.3 Analysis and Discussion 
+ Future Demand Evolution Prediction. 
+ Capacity Expansion Benefit Analysis. 
+ Dual-Timescale Signal Ablation. 
+ Runtime Overhead Analysis. 
+ 6 Related Work 
+ KV-cache compression for LLM inference. 
+ System-aware KV optimization. 
+ 7 Conclusion 
+ References 
+ A Overview of Mathematical Notation 
+ B Extended Related Works 
+ Fine-Grained KV Compression. 
+ KV Compression for Long Reasoning. 
+ System-Level KV Management. 
+ C Proof of Theorem 
+ D Hyperparameter Sensitivity 
+ D.1 Effect of Demand Threshold 
+ D.2 Effect of Local Retention Quota 
+ E System Implementation Details 
+ E.1 Dual-Timescale Query Management and Online Demand Estimation 
+ Pre-allocated query-state pool. 
+ Initialization and online update. 
+ Demand estimation at capacity boundaries. 
+ E.2 Prefix-Caching Support 
+ E.3 Asynchronous Decoding and Compression 
+ F Experimental Details 
+ F.1 Datasets and Evaluation Protocol 
+ F.2 Mixed-Workload Construction 
+ G Extended Analysis of Main Results 
+ G.1 Additional Mixed-Workload Results 
+ G.2 Detailed Serving Metrics 
+ End-to-end efficiency. 
+ Per-token decoding efficiency. 
+ H Additional Capacity-Control Analysis 
+ H.1 Alternative Capacity-Control Policies 
+ Compared policies. 
+ Effect of demand-guided adaptation. 
+ Why not aggressively shrink capacity? 
+ H.2 System-Level Event Analysis 
+ Decision frequency versus decision timing. 
+ Cost of dynamic capacity adaptation. 
+ Capacity over-expansion and bidirectional resizing. 
+ I Request-Level Capacity Alignment 
+ License: arXiv.org perpetual non-exclusive license
+arXiv:2609.03494v1 [cs.AI] 03 Sep 2026 
+GrowPage: On-Demand KV Budgeting for Efficient LLM Reasoning Serving
+ Qiankun Ma
+ Affiliation: Shenzhen Institutes of Advanced Technology, Chinese Academy of Sciences
+ Affiliation: Pengcheng Laboratory
+ Affiliation: University of Chinese Academy of Sciences
+ Yanjiang Zhou
+ Affiliation: Pengcheng Laboratory
+ Zinan Xiong
+ Affiliation: Pengcheng Laboratory
+ Haofei Wang
+ Affiliation: Pengcheng Laboratory
+ Zhen Song
+ Affiliation: Pengcheng Laboratory
+ Yang Xiang
+ Affiliation: Pengcheng Laboratory
+ Ziyao Zhang
+ Hairong Zheng
+ Email: maqiankun25@mails.ucas.ac.cn † Corresponding authors 
+ Affiliation: Shenzhen Institutes of Advanced Technology, Chinese Academy of Sciences
+ Affiliation: Pengcheng Laboratory
+ Abstract 
+ Long-output reasoning has made the key–value (KV) cache a critical memory bottleneck for efficient LLM serving.
+Existing KV compression methods usually rely on a predefined per-request budget and adjust only which KV states are retained, leaving the total capacity fixed throughout decoding.
+However, reasoning workloads exhibit substantial demand variation: different requests require different KV capacities, and the attention demand of an individual request evolves during generation.
+We introduce GrowPage , an on-demand KV budgeting framework that treats KV capacity as a runtime resource.
+GrowPage maintains lightweight dual-timescale query summaries to capture recent and long-term attention behaviors, and uses their relative attention working sets to estimate demand evolution.
+At each capacity boundary, GrowPage either compresses KV states within the current allocation or acquires an additional physical page when broader demand emerges.
+By integrating with PagedAttention’s page-level memory abstraction, GrowPage preserves continuous batching and prefix caching.
+Experiments on reasoning benchmarks across multiple models show that GrowPage achieves a superior performance–throughput trade-off over existing approaches. 
+ 1 Introduction 
+ Large reasoning models ( Yuan et al., 2025 ; Guo et al., 2025 ) achieve strong performance on challenging tasks such as mathematical reasoning and code generation by producing long chains of thought (CoTs) that iteratively explore, verify, and revise candidate solutions ( Wei et al., 2022 ) .
+This capability, however, comes with substantial serving cost.
+Reasoning models can generate thousands or even tens of thousands of tokens, continuously expanding their key–value (KV) caches.
+When multiple long-running reasoning requests are served together, the resulting memory footprint limits the number of requests that can remain resident on GPU, making the KV cache a major bottleneck for efficient LLM serving. ( Hu et al., 2025 ; Chitty-Venkata et al., 2026 ) . 
+ This pressure has motivated extensive research on KV cache compression.
+Early methods mainly reduce prompt KV states ( Li et al., 2024 ; Cai et al., 2024 ; Feng et al., 2026 ) , while recent approaches extend token eviction to decoding to bound cache growth during long-output generation ( Ghadia et al., 2025 ; Cai et al., 2026 ; Liao et al., 2025 ; Ramachandran et al., 2026 ) .
+However, many such methods are difficult to integrate with modern serving mechanisms such as continuous batching and prefix caching, so their algorithmic memory savings do not necessarily translate into higher serving efficiency.
+Zipage ( Liao et al., 2026 ) bridges this gap through Compressed PagedAttention, combining token-wise KV eviction with PagedAttention while preserving key serving capabilities. 
+ Yet Zipage, like most existing KV compression methods, still operates under a predefined per-request KV capacity bound.
+This underutilizes PagedAttention’s block-based memory management, which naturally supports incremental physical-page allocation, and mismatches the heterogeneous memory demands of reasoning requests.
+Existing adaptive methods may change which KV states are retained or how a given budget is distributed, but typically leave the total per-request capacity fixed. GrowPage instead makes this capacity itself an online decision variable.
+As illustrated in Figure 1 (a), a generous budget over-provisions low-demand requests, whereas an aggressive budget can under-provision demanding requests and evict reasoning-critical history.
+Tuning a fixed budget therefore merely shifts the operating point between wasted memory and insufficient capacity. 
+ Figure 1: 
+Illustrative comparison of KV budgeting strategies for LLM reasoning.
+(a) Fixed-budget Zipage and on-demand GrowPage for low- and high-demand requests.
+(b) Reasoning performance vs. throughput on AMC23 with Qwen3-8B.
+ Our analyses in Section 2 reveal that this mismatch arises at two levels: the minimum sufficient KV budget varies substantially across requests, and attention concentration within an individual request also evolves throughout decoding.
+These observations motivate treating per-request KV capacity as a runtime quantity rather than a static budget chosen in advance.
+We theoretically connect attention concentration to the KV capacity required to preserve attention outputs, and empirically show that the relative working-set difference induced by recent and long-term query summaries provides a lightweight signal for tracking demand evolution. 
+ Based on these insights, we introduce GrowPage , an on-demand KV budgeting framework for efficient LLM reasoning serving.
+GrowPage maintains lightweight dual-timescale query summaries, using the long-timescale summary as a historical reference and the short-timescale summary to capture recent attention behavior.
+Their relative working sets estimate the current demand trend.
+At each capacity boundary, GrowPage either compresses historical KV states within the existing allocation or acquires an additional physical page.
+By coupling this decision with PagedAttention memory management, GrowPage adapts per-request KV capacity while preserving continuous batching and prefix caching.
+Across multiple mathematical reasoning and code-generation benchmarks and diverse model architectures, GrowPage consistently improves the reasoning performance–throughput trade-off; Figure 1 (b) shows a representative result on AMC23 with Qwen3-8B. 
+ Our contributions are summarized as follows: 
+ • 
+ We identify the demand mismatch underlying fixed KV budgeting in reasoning serving. 
+KV requirements vary both across requests and throughout decoding, making static capacity bounds prone to either memory over-provisioning or insufficient retention. 
+ • 
+ We propose GrowPage, an on-demand KV budgeting framework for reasoning LLMs. 
+GrowPage uses dual-timescale query summaries to estimate evolving attention demand and guide online compression or incremental physical-page allocation. 
+ • 
+ We co-design on-demand KV budgeting with PagedAttention-based serving. 
+GrowPage translates online demand estimates into page-level memory actions while preserving continuous batching and prefix caching, yielding a better reasoning performance–throughput trade-off under LLM reasoning serving. 
+ 2 Why On-Demand KV Budgeting? 
+ Static KV budgeting assumes that memory demand can be adequately captured by a capacity fixed in advance for the entire decoding process. We examine this assumption from two complementary perspectives: inter-request heterogeneity and intra-request temporal variation. 
+ Observation 1: Minimum sufficient KV budgets vary substantially across requests. 
+We first quantify the KV capacity required by individual reasoning requests.
+For each request–budget pair, we perform multiple independent generations and aggregate their correctness to reduce sampling variance.
+Given a set of budgets ℬ \mathcal{B} , we define the minimum sufficient KV budget of request i i as: 
+ B i ⋆ = min { B ∈ ℬ | c i ( B ′ ) = 1 , ∀ B ′ ∈ ℬ , B ′ ≥ B } , B_{i}^{\star}=\min\left\{B\in\mathcal{B}\;\middle|\;c_{i}(B^{\prime})=1,\ \forall B^{\prime}\in\mathcal{B},B^{\prime}\geq B\right\}, 
+ (1) 
+ where c i ​ ( B ) c_{i}(B) indicates whether request i i is answered correctly under budget B B , as determined from multiple independent generations.
+Requiring correctness to hold under all larger tested budgets reduces the influence of occasional non-monotonic outcomes.
+Requests that are not consistently solved under any tested budget are categorized as Unsolved . 
+ Figure 2: Distribution of minimum sufficient KV budgets for Qwen3 8B. 
+ As shown in Figure 2 , B i ⋆ B_{i}^{\star} spans the entire tested range across AIME24, AMC23, and LiveCode.
+This wide distribution indicates substantial inter-request heterogeneity: a small fixed budget under-provisions demanding requests, whereas a large one unnecessarily reserves KV memory for requests requiring much less capacity.
+Appendix I further shows that GrowPage generally allocates larger adaptive capacities to requests with higher minimum sufficient budgets, validating its request-level demand adaptation.
+This inter-request heterogeneity already challenges the use of a single fixed budget. However, the mismatch is not limited to differences across requests. KV demand can also evolve over time within the same request. 
+ Observation 2: KV demand varies substantially during decoding. 
+Prior work has shown that long-form reasoning traverses distinct reasoning stages with substantially different attention sparsity patterns ( Ramachandran et al., 2026 ) . 
+ Figure 3: Attention sparsity throughout decoding for DeepSeek-R1 Distill Llama 8B on LiveCodeBench. 
+ Consistent with this observation, Figure 3 shows that the attention sparsity of a representative request changes throughout decoding, repeatedly transitioning between concentrated and diffuse regimes.
+Such temporal variation suggests that the amount of historical KV information required by a request is itself non-stationary, making a capacity fixed before decoding unnecessarily conservative at some stages yet potentially insufficient at others. 
+ Together, these observations reveal that KV demand varies both across requests and over the course of decoding.
+They motivate treating KV capacity as an on-demand resource rather than a fixed reservation.
+In the next section, we formalize the connection between attention concentration and the KV capacity required to preserve attention outputs, providing the theoretical basis for GrowPage’s online capacity control. 
+ 3 Methodology 
+ 3.1 Theoretical Analysis 
+ Section 2 shows that attention concentration varies substantially throughout decoding.
+We now formalize why such variation implies changing KV capacity requirements.
+At decoding step t t , let
+ 𝐚 t = ( a t , 1 , … , a t , N t ) \mathbf{a}_{t}=(a_{t,1},\ldots,a_{t,N_{t}}) 
+denote the normalized attention distribution over N t N_{t} historical KV states, with
+ a t , ( 1 ) ≥ ⋯ ≥ a t , ( N t ) a_{t,(1)}\geq\cdots\geq a_{t,(N_{t})} 
+denoting the sorted attention weights.
+For a target coverage p ∈ ( 0 , 1 ) p\in(0,1) , we define the p p -coverage attention demand as: 
+ D p ​ ( 𝐚 t ) = min ⁡ { k : ∑ i = 1 k a t , ( i ) ≥ p } . D_{p}(\mathbf{a}_{t})=\min\left\{k:\sum_{i=1}^{k}a_{t,(i)}\geq p\right\}. 
+ (2) 
+ Intuitively, concentrated attention yields a smaller D p D_{p} , whereas diffuse attention requires a larger working set.
+We next connect this quantity to attention-output approximation.
+Let 𝐨 t \mathbf{o}_{t} denote the full-cache attention output and
+ 𝐨 ^ t ​ ( S ) \widehat{\mathbf{o}}_{t}(S) the output obtained by retaining and renormalizing a subset S S : 
+ 𝐨 t = ∑ i = 1 N t a t , i ​ 𝐯 i , 𝐨 ^ t ​ ( S ) = ∑ i ∈ S a t , i m t ​ ( S ) ​ 𝐯 i , m t ​ ( S ) = ∑ i ∈ S a t , i . \mathbf{o}_{t}=\sum_{i=1}^{N_{t}}a_{t,i}\mathbf{v}_{i},\qquad\widehat{\mathbf{o}}_{t}(S)=\sum_{i\in S}\frac{a_{t,i}}{m_{t}(S)}\mathbf{v}_{i},\quad m_{t}(S)=\sum_{i\in S}a_{t,i}. 
+ (3) 
+ Under the bounded-value assumption ‖ 𝐯 i ‖ 2 ≤ V max \|\mathbf{v}_{i}\|_{2}\leq V_{\max} , we define the worst-case KV capacity : 
+ C δ wc ​ ( 𝐚 t ) = min S ⁡ { | S | : sup ‖ 𝐯 i ‖ 2 ≤ V max ‖ 𝐨 t − 𝐨 ^ t ​ ( S ) ‖ 2 ≤ δ } . C_{\delta}^{\mathrm{wc}}(\mathbf{a}_{t})=\min_{S}\left\{|S|:\sup_{\|\mathbf{v}_{i}\|_{2}\leq V_{\max}}\left\|\mathbf{o}_{t}-\widehat{\mathbf{o}}_{t}(S)\right\|_{2}\leq\delta\right\}. 
+ (4) 
+ For any retained subset S S , its worst-case approximation error is exactly: 
+ sup ‖ 𝐯 i ‖ 2 ≤ V max ‖ 𝐨 t − 𝐨 ^ t ​ ( S ) ‖ 2 = 2 ​ V max ​ ( 1 − m t ​ ( S ) ) . \sup_{\|\mathbf{v}_{i}\|_{2}\leq V_{\max}}\left\|\mathbf{o}_{t}-\widehat{\mathbf{o}}_{t}(S)\right\|_{2}=2V_{\max}\bigl(1-m_{t}(S)\bigr). 
+ (5) 
+ The upper bound follows from the triangle inequality, and is tight by assigning retained and discarded values to opposite directions with norm V max V_{\max} ; the full proof is provided in Appendix C . 
+ Theorem 3.1 . 
+ Assume ‖ 𝐯 i ‖ 2 ≤ V max \|\mathbf{v}_{i}\|_{2}\leq V_{\max} for all i i .
+For any approximation tolerance 0 < δ < 2 ​ V max 0<\delta<2V_{\max} , the minimum worst-case KV capacity satisfies
+ C δ wc ​ ( 𝐚 t ) = D 1 − δ / ( 2 ​ V max ) ​ ( 𝐚 t ) C_{\delta}^{\mathrm{wc}}(\mathbf{a}_{t})=D_{1-\delta/(2V_{\max})}(\mathbf{a}_{t}) . 
+ Theorem 3.1 follows because guaranteeing error at most δ \delta is equivalent to retaining attention mass
+ m t ​ ( S ) ≥ 1 − δ / ( 2 ​ V max ) m_{t}(S)\geq 1-\delta/(2V_{\max}) , and the maximum mass achievable with k k retained states is obtained by selecting the top- k k attention weights.
+Thus, under the same tolerance, diffuse attention requires a larger robust KV capacity, whereas concentrated attention can be preserved with fewer states.
+For the realized value vectors of a particular request, the required capacity may be smaller; Theorem 3.1 characterizes the worst-case requirement determined solely by the attention distribution. 
+ Combined with the non-stationary attention behavior observed in Section 2 , this result motivates adapting KV capacity as attention demand evolves during decoding.
+We next describe how GrowPage tracks such changes online and translates them into on-demand capacity control. 
+ 3.2 Online Demand Estimation 
+ Figure 4 illustrates the overall workflow of GrowPage.
+During decoding, each request maintains short- and long-timescale query summaries.
+When the current KV capacity is exhausted, GrowPage compares their induced historical attention working sets to estimate the demand trend and decide whether to compress the existing KV states or acquire an additional physical page. 
+ Dual-timescale query summaries. 
+ GrowPage maintains two exponentially smoothed query representations for each request and attention layer.
+For clarity, we omit layer and head indices in Eq. 6 .
+Let 𝐪 t \mathbf{q}_{t} denote the current query after query normalization but before RoPE: 
+ 𝐪 ¯ t x = β x ​ 𝐪 ¯ t − 1 x + ( 1 − β x ) ​ 𝐪 t , x ∈ { S , L } , \bar{\mathbf{q}}_{t}^{x}=\beta_{x}\bar{\mathbf{q}}_{t-1}^{x}+(1-\beta_{x})\mathbf{q}_{t},\qquad x\in\{S,L\}, 
+ (6) 
+ where β S < β L \beta_{S}<\beta_{L} ; we use β S = 0.9 \beta_{S}=0.9 and β L = 0.999 \beta_{L}=0.999 by default.
+The long-timescale summary serves as a historical reference, while the short-timescale summary captures recent attention behavior.
+Their relative behavior therefore provides a lightweight estimate of demand evolution.
+Both summaries are maintained in the pre-RoPE space to avoid averaging queries under different rotary transformations.
+At each decision point, we calibrate their per-head RMS scales and apply RoPE at the current position before attention estimation. 
+ Figure 4: Overview of GrowPage. At each KV capacity boundary, GrowPage estimates the request’s attention-demand trend and dynamically chooses between Compress & Hold and Grow by One Page . 
+ Attention-demand trend. 
+ At a capacity boundary, GrowPage constructs a historical candidate set 𝒞 t \mathcal{C}_{t} and excludes the most recent KV block to reduce local-attention dominance.
+For layer ℓ \ell and KV head h h , the aligned short- and long-timescale queries induce normalized attention distributions 𝐚 t , ℓ , h S \mathbf{a}_{t,\ell,h}^{S} and 𝐚 t , ℓ , h L \mathbf{a}_{t,\ell,h}^{L} over 𝒞 t \mathcal{C}_{t} .
+Following Section 3.1 , we compute 
+ K t , ℓ , h x = min ⁡ { k : ∑ i = 1 k a t , ℓ , h , ( i ) x ≥ p } , r t , ℓ , h x = K t , ℓ , h x | 𝒞 t | , x ∈ { S , L } , K_{t,\ell,h}^{x}=\min\left\{k:\sum_{i=1}^{k}a_{t,\ell,h,(i)}^{x}\geq p\right\},\qquad r_{t,\ell,h}^{x}=\frac{K_{t,\ell,h}^{x}}{|\mathcal{C}_{t}|},\quad x\in\{S,L\}, 
+ (7) 
+ where a t , ℓ , h , ( i ) x a_{t,\ell,h,(i)}^{x} denotes the attention weights sorted in descending order, and we set p = 0.99 p=0.99 by default.
+Since page growth is a request-level decision, we follow the mean-aggregation convention of prior KV-cache methods and aggregate the working-set ratios across layers and KV heads: 
+ r t x = 1 ∑ ℓ ∈ ℒ | ℋ ℓ | ​ ∑ ℓ ∈ ℒ ∑ h ∈ ℋ ℓ r t , ℓ , h x , Δ t = r t S − r t L , r_{t}^{x}=\frac{1}{\sum_{\ell\in\mathcal{L}}|\mathcal{H}_{\ell}|}\sum_{\ell\in\mathcal{L}}\sum_{h\in\mathcal{H}_{\ell}}r_{t,\ell,h}^{x},\qquad\Delta_{t}=r_{t}^{S}-r_{t}^{L}, 
+ (8) 
+ where ℒ \mathcal{L} denotes the participating layers and ℋ ℓ \mathcal{H}_{\ell} the KV heads in layer ℓ \ell .
+A negative Δ t \Delta_{t} indicates increasing attention concentration, whereas a positive value indicates an expanding working set.
+To translate this trend into a page-level decision, GrowPage compares Δ t \Delta_{t} with a demand threshold τ \tau : it selects Grow by One Page when Δ t > τ \Delta_{t}>\tau , and otherwise performs Compress & Hold .
+We use τ = 0 \tau=0 by default; its sensitivity is analyzed in Appendix D.1 . 
+ 3.3 Trend-Guided Capacity Control 
+ GrowPage invokes capacity control only when the current KV allocation is exhausted.
+At each boundary, it chooses between Compress & Hold and Grow by One Page , naturally aligning adaptation with PagedAttention’s page granularity.
+GrowPage adopts monotonic capacity growth rather than actively shrinking live requests, since page reclamation requires additional irreversible KV eviction; bidirectional resizing is studied in Appendix H.1 . 
+ Compress & Hold. 
+ When recent demand becomes more concentrated, GrowPage retains the current allocation and creates space by compacting historical KV states.
+Unlike the request-level demand signal, KV selection is performed independently for each layer and KV head.
+For candidate token i i at layer ℓ \ell and head h h , we combine its importance under the two temporal summaries as: 
+ s i , ℓ , h = max ⁡ ( a i , ℓ , h S , a i , ℓ , h L ) . s_{i,\ell,h}=\max\left(a_{i,\ell,h}^{S},a_{i,\ell,h}^{L}\right). 
+ (9) 
+ Thus, different layer–head pairs can retain different token subsets, while the maximum across temporal views preserves tokens important to either recent or long-term attention.
+GrowPage releases exactly one page KV states at each compression event.
+Let P t P_{t} denote the current number of allocated pages, b b the page size, and ℛ t \mathcal{R}_{t} the protected recent tokens.
+The resulting historical retention budget is therefore determined by the target capacity ( P t − 1 ) ​ b (P_{t}-1)b , rather than treated as a tunable hyperparameter.
+We denote this derived budget by K t K_{t} .
+To prevent compression from over-concentrating on a few historical regions, GrowPage combines block-local retention with global selection independently for each layer–head pair.
+Let ℬ j \mathcal{B}_{j} denote the candidate positions from historical block j j and k loc k_{\mathrm{loc}} the minimum local retention quota.
+For each ( ℓ , h ) (\ell,h) , 
+ S loc ℓ , h \displaystyle S_{\mathrm{loc}}^{\ell,h} 
+ = ⋃ j TopK k loc ⁡ ( ℬ j ; s ℓ , h ) , \displaystyle=\bigcup_{j}\operatorname{TopK}_{k_{\mathrm{loc}}}(\mathcal{B}_{j};s_{\ell,h}), 
+ (10) 
+ S ℓ , h \displaystyle S^{\ell,h} 
+ = S loc ℓ , h ∪ TopK K t − | S loc ℓ , h | ⁡ ( 𝒞 t ∖ S loc ℓ , h , s ℓ , h ) , \displaystyle=S_{\mathrm{loc}}^{\ell,h}\cup\operatorname{TopK}_{K_{t}-|S_{\mathrm{loc}}^{\ell,h}|}\bigl(\mathcal{C}_{t}\setminus S_{\mathrm{loc}}^{\ell,h};s_{\ell,h}\bigr), 
+ where s ℓ , h = { s i , ℓ , h } i s_{\ell,h}=\{s_{i,\ell,h}\}_{i} .
+Thus, k loc k_{\mathrm{loc}} controls only the balance between block-local coverage and global importance, while the total number of retained historical tokens is fixed by the requirement to create one page worth of free slots.
+The effect of k loc k_{\mathrm{loc}} is studied in Appendix D.2 .
+The retained KV states are then compacted within the existing physical-page allocation. 
+ Grow by One Page. 
+ When recent demand becomes more diffuse, GrowPage acquires one additional physical KV page instead of further compressing the historical working set.
+The page is appended to the request’s block table, and decoding continues until the next capacity boundary. 
+ 4 System Integration 
+ Section 3 describes how GrowPage estimates the evolving KV demand of each request and converts it into page-level capacity decisions.
+We now describe how these decisions are integrated into a PagedAttention-based serving runtime with low additional state overhead and minimal disruption to batched scheduling. 
+ 4.1 Lightweight Per-Request State Management 
+ GrowPage introduces only a small amount of auxiliary state for online demand estimation.
+For each active request, the runtime maintains the short- and long-timescale query summaries described in Section 3.2 .
+These states are allocated together with the request metadata, updated in place during decoding, and recycled when the request completes.
+Unlike the KV cache itself, their size is independent of sequence length, avoiding additional memory growth as reasoning proceeds. 
+ To avoid frequent GPU-side memory allocation during continuous batching, GrowPage pre-allocates the storage required by these summaries for active request slots and reuses it across requests.
+We slightly modify the attention kernel to update the short- and long-timescale summaries from the normalized pre-RoPE queries during the regular decoding path.
+The more expensive attention-based demand estimation is invoked only at capacity boundaries, so most decoding steps require only lightweight in-place state updates. 
+ 4.2 Scheduler-Aware Page Allocation and Fallback 
+ GrowPage maps the capacity decisions in Section 3.3 directly onto PagedAttention’s physical-page abstraction.
+For Compress & Hold , the request keeps its existing physical-page allocation while selected historical KV states are compacted to release slots for subsequent tokens.
+For Grow by One Page , the scheduler obtains an additional page from the global free-page pool and appends its physical page identifier to the request’s block table.
+The request can then continue decoding without changing the underlying attention or block-table interface. 
+ Page growth is coordinated with global memory availability.
+When a free physical page is available, the growth request is satisfied immediately.
+Under memory pressure, however, granting additional capacity to one request may reduce the memory available to other concurrent requests.
+GrowPage therefore falls back to compression when additional page allocation cannot be safely satisfied, allowing the request to continue within its current allocation.
+If global memory pressure remains unresolved, the existing serving scheduler can further apply controlled request preemption and rescheduling.
+This keeps per-request adaptation subordinate to the global memory manager rather than allowing individual requests to monopolize the shared KV pool. 
+ Importantly, GrowPage preserves the page/block abstraction of PagedAttention rather than introducing a separate memory layout.
+It therefore remains compatible with serving mechanisms such as continuous batching, prefix caching, and CUDA Graph execution.
+More details see Appendix E .
+GrowPage additionally inherits the asynchronous compression pipeline of Zipage ( Liao et al., 2026 ) , allowing KV compaction to overlap with serving execution and reducing compression-induced stalls on the critical decoding path.
+Together, these design choices allow online KV-capacity adaptation to be incorporated into PagedAttention-based serving without sacrificing the system optimizations of the underlying engine. 
+ 5 Experiments 
+ 5.1 Experimental Setup 
+ Models and benchmarks. 
+ We evaluate GrowPage on two representative reasoning models:
+DeepSeek-R1-Distill-Llama-8B ( Guo et al., 2025 ) and Qwen3-8B ( Yang et al., 2025 ) .
+Following previous KV-cache compression studies, we consider both mathematical reasoning and code generation tasks, including GSM8K ( Cobbe et al., 2021 ) , MATH500 ( Hendrycks et al., 2021 ) , AMC23, AIME24, and LiveCodeBench ( Jain et al., 2025 ) .
+These benchmarks cover diverse reasoning workloads with varying output lengths and KV-cache demands. 
+ Table 1: 
+Main comparison on reasoning benchmarks.
+We report pass@1 accuracy (%) and decoding throughput (tokens/s). The results are evaluated on DeepSeek-R1-Distill-Llama-8B and Qwen3-8B.
+ Pass@1 Accuracy (%) ↑ \uparrow 
+ TPS (tokens/s) ↑ \uparrow 
+ Method 
+ GSM8K 
+ MATH500 
+ AMC23 
+ AIME24 
+ LiveCode 
+ Avg. 
+ GSM8K 
+ MATH500 
+ AMC23 
+ AIME24 
+ LiveCode 
+ Avg. 
+ DeepSeek-R1-Distill-Llama-8B 
+ FullKV (vLLM) 
+ 88.2 
+ 86.6 
+ 81.3 
+ 43.5 
+ 46.5 
+ 69.2 
+ 2705 
+ 1515 
+ 1235 
+ 766 
+ 1142 
+ 1472 
+ FullKV (nano-vLLM) 
+ 88.0 
+ 86.2 
+ 80.9 
+ 43.2 
+ 46.1 
+ 68.9 
+ 2576 
+ 1442 
+ 1182 
+ 722 
+ 1086 
+ 1401 
+ MorphKV (ICML’25) 
+ 85.5 
+ 75.8 
+ 70.4 
+ 35.8 
+ 33.9 
+ 60.3 
+ 507 
+ 235 
+ 189 
+ 119 
+ 178 
+ 245 
+ R-KV (NeurIPS’25) 
+ 87.1 
+ 84.7 
+ 77.8 
+ 39.9 
+ 42.2 
+ 66.3 
+ 450 
+ 218 
+ 177 
+ 102 
+ 162 
+ 221 
+ G-KV (arXiv’25) 
+ 87.7 
+ 85.1 
+ 78.3 
+ 40.5 
+ 42.8 
+ 66.9 
+ 472 
+ 228 
+ 185 
+ 111 
+ 171 
+ 233 
+ Zipage (ACL’26) 
+ 88.0 
+ 85.0 
+ 79.0 
+ 41.4 
+ 44.6 
+ 67.6 
+ 3018 
+ 2174 
+ 2060 
+ 1158 
+ 1271 
+ 1936 
+ GrowPage (Ours) 
+ 88.0 
+ 85.8 
+ 79.4 
+ 44.7 
+ 45.4 
+ 68.7 
+ 3833 
+ 2599 
+ 2398 
+ 1465 
+ 1794 
+ 2417 
+ Qwen3-8B 
+ FullKV (vLLM) 
+ 95.7 
+ 96.1 
+ 92.5 
+ 75.5 
+ 83.9 
+ 88.7 
+ 2658 
+ 1382 
+ 1064 
+ 607 
+ 1076 
+ 1357 
+ FullKV (nano-vLLM) 
+ 95.6 
+ 95.8 
+ 92.1 
+ 75.0 
+ 83.5 
+ 88.4 
+ 2486 
+ 1303 
+ 995 
+ 568 
+ 1015 
+ 1273 
+ MorphKV (ICML’25) 
+ 94.2 
+ 82.5 
+ 71.8 
+ 57.5 
+ 64.8 
+ 74.2 
+ 463 
+ 425 
+ 321 
+ 168 
+ 330 
+ 341 
+ R-KV (NeurIPS’25) 
+ 95.2 
+ 91.6 
+ 84.7 
+ 69.4 
+ 78.0 
+ 83.8 
+ 448 
+ 396 
+ 307 
+ 151 
+ 305 
+ 321 
+ G-KV (arXiv’25) 
+ 95.1 
+ 92.5 
+ 84.2 
+ 68.9 
+ 78.6 
+ 83.9 
+ 424 
+ 408 
+ 309 
+ 154 
+ 317 
+ 322 
+ Zipage (ACL’26) 
+ 95.7 
+ 93.7 
+ 89.5 
+ 72.7 
+ 80.7 
+ 86.5 
+ 3107 
+ 2076 
+ 1805 
+ 1007 
+ 1271 
+ 1853 
+ GrowPage (Ours) 
+ 95.9 
+ 94.9 
+ 91.4 
+ 73.8 
+ 81.5 
+ 87.5 
+ 3280 
+ 2553 
+ 2261 
+ 1190 
+ 1589 
+ 2174 
+ Evaluation metrics and implementation. 
+ All experiments are conducted on a single NVIDIA A100 GPU with 80 GB memory.
+Following Zipage, we implement GrowPage on nano-vLLM with PagedAttention-based KV management and integrate the proposed capacity control mechanism into the decoding pipeline.
+Unless otherwise specified, we follow the same system configuration as Zipage, fixing the KV block size b b to 256 tokens and the protected recent-window size ℛ t \mathcal{R}_{t} to 16 tokens.
+We fix the GPU memory utilization ratio to 0.9 for all vLLM/nano-vLLM-based experiments to ensure a consistent memory budget.
+We measure serving efficiency using decoding throughput (TPS), defined as the total number of output tokens generated across all requests divided by the wall-clock time from the start of decoding until all requests complete.
+Additional experimental details, including implementation settings and dataset configurations, are provided in Appendix F.1 . 
+ 5.2 Main Results 
+ Figure 5: 
+Accuracy–throughput trade-off on the mixed GSM8K, AMC23, and AIME24 workload with Qwen3-8B.
+ Benchmark comparison. 
+ Table 1 compares GrowPage with full KV inference and representative KV-cache compression methods.
+For fixed-budget baselines, we use the dataset-specific KV budgets reported in Table 5 .
+To keep the main comparison concise, Table 1 reports only Pass@1 accuracy and decoding throughput (TPS), while additional serving metrics and detailed analysis are provided in Appendix G .
+All serving-system baselines use the same GPU memory budget, while MorphKV, R-KV, and G-KV use the largest executable batch size under the same memory constraint to maximize throughput.
+GrowPage consistently achieves a better reasoning performance–throughput trade-off across both models.
+Compared with full KV inference, GrowPage improves the average TPS by 64.3% on DeepSeek-R1-Distill-Llama-8B and 60.2% on Qwen3-8B while maintaining comparable pass@1 accuracy.
+Although MorphKV, R-KV, and G-KV substantially reduce KV memory, their lack of serving-system co-design limits the resulting throughput gains even under maximized batching.
+Compared with Zipage, which preserves PagedAttention compatibility, GrowPage further improves throughput by adapting KV capacity to request-specific demand rather than relying on a fixed budget. 
+ Pareto Analysis under Mixed Workloads. 
+ To evaluate on-demand KV budgeting under heterogeneous request demands, we construct a mixed workload combining GSM8K, AMC23, and AIME24, and compare GrowPage with FullKV and Zipage under different KV budgets.
+Details are provided in Appendix F.2 .
+As shown in Figure 5 , C C denotes the average number of concurrent requests resident in GPU memory during serving.
+Increasing the fixed budget of Zipage improves accuracy but reduces C C , resulting in lower throughput.
+GrowPage achieves 84.9% pass@1 accuracy at 2213 tokens/s with an average KV budget of 3442 and C = 121 C=121 .
+It outperforms Zipage-4096 in accuracy (84.9% vs. 83.7%), throughput (2213 vs. 1690 tokens/s), and resident concurrency ( 121 121 vs. 100 100 ), while approaching the accuracy of Zipage-8192 (85.1%) with nearly 1.9 × 1.9\times higher throughput and 1.8 × 1.8\times more resident requests.
+These results show that adaptive KV budgeting better translates limited GPU memory into serving concurrency and throughput under heterogeneous workloads. 
+ 5.3 Analysis and Discussion 
+ Figure 6: 
+Correlation between the GrowPage signal Δ t \Delta_{t} and future attention-demand change on Qwen3-8B with AMC23.
+ Figure 7: 
+Counterfactual validation of GrowPage adaptive capacity decisions on Qwen3-8B with AMC23.
+ Future Demand Evolution Prediction. 
+ We first evaluate whether Δ t \Delta_{t} reflects the actual change of future KV demand.
+Specifically, we define the future demand change as the variation between the current attention working set and the actual attention working set of tokens generated within the next physical KV page.
+A positive value indicates that future tokens require a broader historical working set, while a negative value indicates increasing attention concentration.
+Figure 7 shows the correlation between Δ t \Delta_{t} and future demand change on Qwen3-8B with AMC23.
+The two variables exhibit a strong monotonic relationship, achieving a Spearman correlation coefficient of ρ = 0.78 \rho=0.78 and a sign agreement of 80.3%.
+This demonstrates that the dual-timescale query summaries effectively capture the temporal evolution of attention demand. 
+ Table 2: Ablation of dual-timescale demand estimation on Qwen3-8B. 
+ β S \beta_{S} 
+ β L \beta_{L} 
+ Metric 
+ AMC23 
+ AIME24 
+ Pass@1 
+ TPS 
+ Pass@1 
+ TPS 
+ 0 
+ 0.999 
+ Top- p p 
+ 89.9 
+ 2394 
+ 71.2 
+ 1264 
+ 0 
+ 0.99 
+ Top- p p 
+ 89.1 
+ 2478 
+ 69.9 
+ 1317 
+ 0.9 
+ 0.99 
+ Top- p p 
+ 90.3 
+ 2362 
+ 71.7 
+ 1256 
+ 0.99 
+ 0.999 
+ Top- p p 
+ 90.9 
+ 2308 
+ 72.9 
+ 1218 
+ 0.9 
+ 0.999 
+ Entropy 
+ 90.5 
+ 2179 
+ 72.4 
+ 1136 
+ 0.9 
+ 0.999 
+ Top- p p 
+ 91.4 
+ 2261 
+ 73.8 
+ 1190 
+ Capacity Expansion Benefit Analysis. 
+ We further investigate whether Δ t \Delta_{t} can identify when allocating additional KV capacity is beneficial.
+At each capacity boundary, we construct two counterfactual KV states corresponding to Compress & Hold and Grow by One Page .
+To avoid the influence of different generation trajectories, we first obtain a reference decoding trace using full KV inference and replay the subsequent tokens under the two counterfactual KV states.
+Both branches share the same model parameters and future token sequence from the reference trajectory, differing only in the available KV capacity.
+We evaluate the prediction quality of the replayed tokens using teacher-forced negative log-likelihood (NLL).
+Let L compress L_{\mathrm{compress}} and L grow L_{\mathrm{grow}} denote the average NLL under Compress & Hold and Grow by One Page , respectively.
+We define the growth advantage as A t = L compress − L grow A_{t}=L_{\mathrm{compress}}-L_{\mathrm{grow}} , where a larger A t A_{t} indicates a larger reduction in prediction loss from allocating additional KV capacity.
+Figure 7 groups samples according to different Δ t \Delta_{t} ranges and reports the corresponding growth advantage.
+The growth advantage consistently increases as Δ t \Delta_{t} becomes larger, demonstrating that the proposed demand-trend signal not only captures attention-demand variation but also provides a reliable indicator for capacity expansion decisions. 
+ Figure 8: Runtime overhead analysis of GrowPage on Qwen3-8B with AMC23. 
+ Dual-Timescale Signal Ablation. 
+ We further ablate the design of the dual-timescale demand signal on Qwen3-8B, with results reported in Table 2 .
+Here, β S = 0 \beta_{S}=0 reduces the short-term summary to the current query.
+Across both AMC23 and AIME24, using the current query directly yields higher throughput but noticeably lower reasoning accuracy, while introducing moderate short-term smoothing improves the accuracy–throughput trade-off.
+A longer-term reference β L = 0.999 \beta_{L}=0.999 also consistently improves accuracy over β L = 0.99 \beta_{L}=0.99 under the same short-term setting.
+However, overly smoothing the short-term summary β S = 0.99 \beta_{S}=0.99 weakens its responsiveness and performs worse than the default ( β S , β L ) = ( 0.9 , 0.999 ) (\beta_{S},\beta_{L})=(0.9,0.999) , which achieves the highest pass@1 accuracy of 91.4% on AMC23 and 73.8% on AIME24.
+Replacing the Top- p p working-set metric with attention entropy further degrades both accuracy and throughput under the same EMA configuration.
+These results support the use of well-separated temporal summaries together with the Top- p p working set for robust online demand estimation. 
+ Runtime Overhead Analysis. 
+ GrowPage invokes demand estimation and capacity control only at capacity boundaries rather than at every decoding step.
+Figure 8 shows that Online Demand, Attention Score, Window Mask, Top-k Selection, and KV Compaction incur only 5.84, 8.54, 0.70, 8.72, and 19.05 ms per event, respectively, accounting for less than 0.32% of the corresponding decoding time.
+KV Compaction dominates the additional overhead, while the overall runtime cost remains negligible relative to long-output decoding. 
+ 6 Related Work 
+ KV-cache compression for LLM inference. 
+ KV-cache compression has become an important direction for reducing the memory footprint of long-context and reasoning inference.
+Early approaches mainly focus on retaining important tokens under a limited cache budget, such as StreamingLLM ( Xiao et al., 2024 ) , SnapKV ( Li et al., 2024 ) , and PyramidKV ( Cai et al., 2024 ) .
+Recent studies extend KV eviction to the decoding stage to control cache growth during long-form generation.
+Representative methods include H2O ( Zhang et al., 2023 ) , Quest ( Tang et al., 2024 ) , R-KV ( Cai et al., 2026 ) , G-KV ( Liao et al., 2025 ) , and ThinkKV ( Ramachandran et al., 2026 ) .
+These methods mainly improve token retention or eviction policies under a predefined KV budget.
+However, the allocated capacity itself is typically fixed during decoding, which limits their ability to adapt to heterogeneous and evolving KV demands across reasoning requests. 
+ System-aware KV optimization. 
+ Beyond token selection algorithms, recent works explore integrating KV management with practical LLM serving systems.
+PagedAttention ( Kwon et al., 2023 ) introduces a page-based memory abstraction that enables efficient KV management under continuous batching.
+Recent system-level KV management approaches further investigate efficient page organization and KV scheduling for long-sequence inference ( Mao et al., ) .
+Zipage ( Liao et al., 2026 ) integrates token-level KV eviction with PagedAttention through Compressed PagedAttention, preserving important serving features such as prefix caching.
+Nevertheless, existing system-compatible approaches still assume a predefined per-request KV capacity.
+In contrast, GrowPage treats KV capacity itself as a runtime resource and dynamically maps demand estimation into page-level allocation decisions. 
+ 7 Conclusion 
+ Large reasoning models introduce substantial KV-cache pressure due to their long chain-of-thought generation, making efficient memory management critical for LLM reasoning serving.
+Existing KV compression methods typically rely on fixed per-request capacity budgets, which cannot accommodate the heterogeneous and evolving KV demands of reasoning requests.
+In this work, we present GrowPage, an on-demand KV budgeting framework that treats KV capacity as a runtime resource.
+GrowPage uses lightweight dual-timescale query summaries to estimate demand evolution and dynamically chooses between KV compaction within the current allocation and incremental physical-page expansion.
+By integrating this capability with PagedAttention-based serving, GrowPage preserves key system optimizations including continuous batching and prefix caching while achieving improved reasoning performance–throughput trade-offs across diverse benchmarks. 
+ References 
+ Adnan et al. (2024) 
+ M. Adnan, A. Arunkumar, G. Jain, P. J. Nair, I. Soloveychik, and P. Kamath 
+ Keyformer: kv cache reduction through key tokens selection for efficient generative inference .
+ Proceedings of Machine Learning and Systems 6 , pp. 114–127 .
+ Cited by: Appendix B .
+ Cai et al. (2026) 
+ Z. Cai, W. Xiao, H. Sun, Y. Zhang, K. Wan, Y. Li, Y. Zhou, L. Chang, J. Gu, Z. Dong, et al. 
+ R-kv: redundancy-aware kv cache compression for reasoning models .
+ Advances in neural information processing systems 38 , pp. 60980–61005 .
+ Cited by: §1 ,
+ §6 .
+ Cai et al. (2024) 
+ Z. Cai, Y. Zhang, B. Gao, Y. Liu, Y. Li, T. Liu, K. Lu, W. Xiong, Y. Dong, J. Hu, et al. 
+ Pyramidkv: dynamic kv cache compression based on pyramidal information funneling .
+ arXiv preprint arXiv:2406.02069 .
+ Cited by: §1 ,
+ §6 .
+ Chen et al. (2024) 
+ Y. Chen, G. Wang, J. Shang, S. Cui, Z. Zhang, T. Liu, S. Wang, Y. Sun, D. Yu, and H. Wu 
+ NACL: a general and effective kv cache eviction framework for llm at inference time .
+ In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) ,
+ pp. 7913–7926 .
+ Cited by: Appendix B .
+ Cheng et al. (2026) 
+ P. Cheng, J. Wang, T. Chen, B. Liu, X. Hou, and J. Liu 
+ DesireKV: decoupling sensitivity and importance for reasoning-aware kv cache compression .
+ In Proceedings of the AAAI Conference on Artificial Intelligence ,
+ Vol. 40 , pp. 20518–20526 .
+ Cited by: Appendix B .
+ Chitty-Venkata et al. (2026) 
+ K. T. Chitty-Venkata, J. Ye, S. Raskar, A. Kougkas, X. Sun, M. Emani, V. Vishwanath, and B. Nicolae 
+ Pagedeviction: structured block-wise kv cache pruning for efficient large language model inference .
+ In Findings of the Association for Computational Linguistics: EACL 2026 ,
+ pp. 3207–3218 .
+ Cited by: §1 .
+ Cobbe et al. (2021) 
+ K. Cobbe, V. Kosaraju, M. Bavarian, M. Chen, H. Jun, L. Kaiser, M. Plappert, J. Tworek, J. Hilton, R. Nakano, et al. 
+ Training verifiers to solve math word problems .
+ arXiv preprint arXiv:2110.14168 .
+ Cited by: §5.1 .
+ Feng et al. (2026) 
+ Y. Feng, J. Lv, Y. Cao, X. Xie, and S. K. Zhou 
+ Ada-kv: optimizing kv cache eviction by adaptive budget allocation for efficient llm inference .
+ Advances in Neural Information Processing Systems 38 , pp. 113152–113188 .
+ Cited by: §1 .
+ Ge et al. (2024) 
+ S. Ge, Y. Zhang, L. Liu, M. Zhang, J. Han, and J. Gao 
+ Model tells you what to discard: adaptive kv cache compression for llms .
+ In International Conference on Learning Representations ,
+ Vol. 2024 , pp. 22975–22988 .
+ Cited by: Appendix B .
+ Ghadia et al. (2025) 
+ R. Ghadia, A. Kumar, G. Jain, P. Nair, and P. Das 
+ Dialogue without limits: constant-sized kv caches for extended responses in llms .
+ arXiv preprint arXiv:2503.00979 .
+ Cited by: §1 .
+ Guo et al. (2025) 
+ D. Guo, D. Yang, H. Zhang, J. Song, P. Wang, Q. Zhu, R. Xu, R. Zhang, S. Ma, X. Bi, et al. 
+ Deepseek-r1: incentivizing reasoning capability in llms via reinforcement learning .
+ arXiv preprint arXiv:2501.12948 .
+ Cited by: §1 ,
+ §5.1 .
+ Han et al. (2026) 
+ S. Han, Y. Wu, J. Yu, and O. Isayev 
+ KARA: efficient reasoning llm serving via sliding-window kv cache compression .
+ arXiv preprint arXiv:2607.01237 .
+ Cited by: Appendix B .
+ Hendrycks et al. (2021) 
+ D. Hendrycks, C. Burns, S. Kadavath, A. Arora, S. Basart, E. Tang, D. Song, and J. Steinhardt 
+ Measuring mathematical problem solving with the math dataset .
+ arXiv preprint arXiv:2103.03874 .
+ Cited by: §5.1 .
+ Hooper et al. (2024) 
+ C. Hooper, S. Kim, H. Mohammadzadeh, M. W. Mahoney, Y. S. Shao, K. Keutzer, and A. Gholami 
+ Kvquant: towards 10 million context length llm inference with kv cache quantization .
+ Advances in Neural Information Processing Systems 37 , pp. 1270–1303 .
+ Cited by: Appendix B .
+ Hu et al. (2024) 
+ C. Hu, H. Huang, J. Hu, J. Xu, X. Chen, T. Xie, C. Wang, S. Wang, Y. Bao, N. Sun, et al. 
+ Memserve: context caching for disaggregated llm serving with elastic memory pool .
+ arXiv preprint arXiv:2406.17565 .
+ Cited by: Appendix B .
+ Hu et al. (2025) 
+ J. Hu, W. Huang, W. Wang, Z. Li, T. Hu, Z. Liu, X. Chen, T. Xie, and Y. Shan 
+ Raas: reasoning-aware attention sparsity for efficient llm reasoning .
+ In Findings of the Association for Computational Linguistics: ACL 2025 ,
+ pp. 2577–2590 .
+ Cited by: §1 .
+ Jain et al. (2025) 
+ N. Jain, A. Gu, W. Li, F. Yan, T. Zhang, S. Wang, A. Solar-Lezama, K. Sen, and I. Stoica 
+ Livecodebench: holistic and contamination free evaluation of large language models for code .
+ In International Conference on Learning Representations ,
+ Vol. 2025 , pp. 58791–58831 .
+ Cited by: §5.1 .
+ Kai et al. (2026) 
+ J. Kai, Z. Xiao, A. Birch, and Z. Lin 
+ Information-aware kv cache compression for long reasoning .
+ arXiv preprint arXiv:2606.26875 .
+ Cited by: Appendix B .
+ Kang et al. (2024) 
+ H. Kang, Q. Zhang, S. Kundu, G. Jeong, Z. Liu, T. Krishna, and T. Zhao 
+ Gear: an efficient kv cache compression recipe for near-lossless generative inference of llm .
+ arXiv preprint arXiv:2403.05527 .
+ Cited by: Appendix B .
+ Kwon et al. (2023) 
+ W. Kwon, Z. Li, S. Zhuang, Y. Sheng, L. Zheng, C. H. Yu, J. Gonzalez, H. Zhang, and I. Stoica 
+ Efficient memory management for large language model serving with pagedattention .
+ In Proceedings of the 29th symposium on operating systems principles ,
+ pp. 611–626 .
+ Cited by: §6 .
+ Lee et al. (2024) 
+ W. Lee, J. Lee, J. Seo, and J. Sim 
+ { \{ infinigen } \} : Efficient generative inference of large language models with dynamic { \{ kv } \} cache management .
+ In 18th USENIX symposium on operating systems design and implementation (OSDI 24) ,
+ pp. 155–172 .
+ Cited by: Appendix B .
+ Li et al. (2026) 
+ M. Li, Y. Feng, X. Xie, and W. J. Song 
+ REAL: retrieval-reasoning and logic-constructed attention behaviors for long-context kv cache compression .
+ In Proceedings of the 64th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) ,
+ pp. 39035–39052 .
+ Cited by: Appendix B .
+ Li et al. (2024) 
+ Y. Li, Y. Huang, B. Yang, B. Venkitesh, A. Locatelli, H. Ye, T. Cai, P. Lewis, and D. Chen 
+ Snapkv: llm knows what you are looking for before generation .
+ Advances in Neural Information Processing Systems 37 , pp. 22947–22970 .
+ Cited by: §1 ,
+ §6 .
+ Liao et al. (2026) 
+ M. Liao, L. Wang, C. Zhang, B. Qiao, S. Qin, Q. Lin, S. Rajmohan, D. Zhang, and H. Wan 
+ Zipage: maintain high request concurrency for llm reasoning through compressed pagedattention .
+ In Findings of the Association for Computational Linguistics: ACL 2026 ,
+ pp. 7716–7737 .
+ Cited by: §E.2 ,
+ §E.3 ,
+ Appendix E ,
+ §1 ,
+ §4.2 ,
+ §6 .
+ Liao et al. (2025) 
+ M. Liao, L. Wang, C. Zhang, Z. Shen, X. Mao, S. Qin, Q. Lin, S. Rajmohan, D. Zhang, and H. Wan 
+ G-kv: decoding-time kv cache eviction with global attention .
+ arXiv preprint arXiv:2512.00504 .
+ Cited by: §1 ,
+ §6 .
+ Liu et al. (2024a) 
+ A. Liu, J. Liu, Z. Pan, Y. He, G. Haffari, and B. Zhuang 
+ Minicache: kv cache compression in depth dimension for large language models .
+ Advances in Neural Information Processing Systems 37 , pp. 139997–140031 .
+ Cited by: Appendix B .
+ Liu et al. (2024b) 
+ Y. Liu, H. Li, Y. Cheng, S. Ray, Y. Huang, Q. Zhang, K. Du, J. Yao, S. Lu, G. Ananthanarayanan, et al. 
+ Cachegen: kv cache compression and streaming for fast large language model serving .
+ In Proceedings of the ACM SIGCOMM 2024 Conference ,
+ pp. 38–56 .
+ Cited by: Appendix B .
+ Liu et al. (2023) 
+ Z. Liu, A. Desai, F. Liao, W. Wang, V. Xie, Z. Xu, A. Kyrillidis, and A. Shrivastava 
+ Scissorhands: exploiting the persistence of importance hypothesis for llm kv cache compression at test time .
+ Advances in Neural Information Processing Systems 36 , pp. 52342–52364 .
+ Cited by: Appendix B .
+ Liu et al. (2024c) 
+ Z. Liu, J. Yuan, H. Jin, S. Zhong, Z. Xu, V. Braverman, B. Chen, and X. Hu 
+ Kivi: a tuning-free asymmetric 2bit quantization for kv cache .
+ arXiv preprint arXiv:2402.02750 .
+ Cited by: Appendix B .
+ [30] 
+ Y. Mao, Q. Wang, M. Ester, and K. Li 
+ Efficient and accurate kv-cache management for long-sequence llms .
+ In ES-FoMo III: 3rd Workshop on Efficient Systems for Foundation Models ,
+ Cited by: §6 .
+ Prabhu et al. (2025) 
+ R. Prabhu, A. Nayak, J. Mohan, R. Ramjee, and A. Panwar 
+ Vattention: dynamic memory management for serving llms without pagedattention .
+ In Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1 ,
+ pp. 1133–1150 .
+ Cited by: Appendix B .
+ Qin et al. (2026) 
+ R. Qin, Z. Li, W. He, J. Cui, H. Tang, F. Ren, T. Ma, S. Cai, Y. Zhang, M. Zhang, et al. 
+ Mooncake: a kvcache-centric disaggregated architecture for llm serving .
+ ACM Transactions on Storage 22 ( 4 ), pp. 1–38 .
+ Cited by: Appendix B .
+ Ramachandran et al. (2026) 
+ A. Ramachandran, M. Neseem, C. Sakr, R. Venkatesan, B. Khailany, and T. Krishna 
+ Thinkv: thought-adaptive kv cache compression for efficient reasoning models .
+ In International Conference on Learning Representations ,
+ Vol. 2026 , pp. 110072–110106 .
+ Cited by: §1 ,
+ §2 ,
+ §6 .
+ Su et al. (2026) 
+ Y. Su, Z. Tian, D. Qiao, Y. Zhou, J. Li, and M. Zhang 
+ LongFlow: efficient kv cache compression for reasoning models .
+ arXiv preprint arXiv:2603.11504 .
+ Cited by: Appendix B .
+ Tang et al. (2024) 
+ J. Tang, Y. Zhao, K. Zhu, G. Xiao, B. Kasikci, and S. Han 
+ Quest: query-aware sparsity for efficient long-context llm inference .
+ arXiv preprint arXiv:2406.10774 .
+ Cited by: §6 .
+ Wei et al. (2022) 
+ J. Wei, X. Wang, D. Schuurmans, M. Bosma, F. Xia, E. Chi, Q. V. Le, D. Zhou, et al. 
+ Chain-of-thought prompting elicits reasoning in large language models .
+ Advances in neural information processing systems 35 , pp. 24824–24837 .
+ Cited by: §1 .
+ Xiao et al. (2025) 
+ G. Xiao, J. Tang, J. Zuo, J. Guo, S. Yang, H. Tang, Y. Fu, and S. Han 
+ Duoattention: efficient long-context llm inference with retrieval and streaming heads .
+ In International Conference on Learning Representations ,
+ Vol. 2025 , pp. 37228–37253 .
+ Cited by: Appendix B .
+ Xiao et al. (2024) 
+ G. Xiao, Y. Tian, B. Chen, S. Han, and M. Lewis 
+ Efficient streaming language models with attention sinks .
+ In International Conference on Learning Representations ,
+ Vol. 2024 , pp. 21875–21895 .
+ Cited by: §6 .
+ Yang et al. (2025) 
+ A. Yang, A. Li, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Gao, C. Huang, C. Lv, et al. 
+ Qwen3 technical report .
+ arXiv preprint arXiv:2505.09388 .
+ Cited by: §5.1 .
+ Yang et al. (2024) 
+ J. Y. Yang, B. Kim, J. Bae, B. Kwon, G. Park, E. Yang, S. J. Kwon, and D. Lee 
+ No token left behind: reliable kv cache compression via importance-aware mixed precision quantization .
+ arXiv preprint arXiv:2402.18096 .
+ Cited by: Appendix B .
+ Yuan et al. (2025) 
+ J. Yuan, H. Gao, D. Dai, J. Luo, L. Zhao, Z. Zhang, Z. Xie, Y. Wei, L. Wang, Z. Xiao, et al. 
+ Native sparse attention: hardware-aligned and natively trainable sparse attention .
+ In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) ,
+ pp. 23078–23097 .
+ Cited by: §1 .
+ Zhang et al. (2026) 
+ H. Zhang, H. Zhang, X. Ma, J. Zhang, and S. Guo 
+ Lazyeviction: lagged kv eviction with attention pattern observation for efficient long reasoning .
+ In Proceedings of the 64th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) ,
+ pp. 36335–36352 .
+ Cited by: Appendix B .
+ Zhang et al. (2023) 
+ Z. Zhang, Y. Sheng, T. Zhou, T. Chen, L. Zheng, R. Cai, Z. Song, Y. Tian, C. Ré, C. Barrett, et al. 
+ H2o: heavy-hitter oracle for efficient generative inference of large language models .
+ Advances in neural information processing systems 36 , pp. 34661–34710 .
+ Cited by: §6 .
+ Zhao et al. (2026) 
+ J. Zhao, Z. Fang, S. Li, S. Yang, and S. He 
+ Buzz: beehive-structured sparse kv cache with segmented heavy hitters for efficient llm inference .
+ ACM Transactions on Intelligent Systems and Technology 17 ( 4 ), pp. 1–22 .
+ Cited by: Appendix B .
+ Appendix 
+ Appendix A Overview of Mathematical Notation 
+ For clarity, Table 3 summarizes the key notation used in the theoretical analysis and the GrowPage capacity-control framework. 
+ Table 3: Summary of key notation used in the paper. 
+ Symbol 
+ Description 
+ B i ⋆ B_{i}^{\star} 
+ Minimum sufficient KV budget of request i i 
+ 𝐚 t \mathbf{a}_{t} 
+ Attention distribution over historical KV states at decoding step t t 
+ D p ​ ( 𝐚 t ) D_{p}(\mathbf{a}_{t}) 
+ Minimum number of KV states required to cover attention mass p p 
+ S S 
+ Subset of retained historical KV states 
+ m t ​ ( S ) m_{t}(S) 
+ Attention mass retained by subset S S 
+ 𝐨 t , 𝐨 ^ t ​ ( S ) \mathbf{o}_{t},\widehat{\mathbf{o}}_{t}(S) 
+ Full-cache and subset-renormalized attention outputs 
+ C δ wc ​ ( 𝐚 t ) C_{\delta}^{\mathrm{wc}}(\mathbf{a}_{t}) 
+ Minimum worst-case KV capacity under approximation tolerance δ \delta 
+ 𝐪 t \mathbf{q}_{t} 
+ Current normalized pre-RoPE query 
+ 𝐪 ¯ t S , 𝐪 ¯ t L \bar{\mathbf{q}}_{t}^{S},\bar{\mathbf{q}}_{t}^{L} 
+ Short- and long-timescale EMA query summaries 
+ β S , β L \beta_{S},\beta_{L} 
+ EMA decay factors for the two temporal query summaries 
+ 𝒞 t \mathcal{C}_{t} 
+ Historical candidate KV set for online demand estimation 
+ K t , ℓ , h x K_{t,\ell,h}^{x} 
+ Top- p p working-set size for temporal view x ∈ { S , L } x\in\{S,L\} 
+ r t S , r t L r_{t}^{S},r_{t}^{L} 
+ Request-level short- and long-timescale working-set ratios 
+ Δ t \Delta_{t} 
+ Demand-trend signal, defined as r t S − r t L r_{t}^{S}-r_{t}^{L} 
+ τ \tau 
+ Threshold controlling compression versus capacity growth 
+ s i , ℓ , h s_{i,\ell,h} 
+ KV importance score for token i i at layer ℓ \ell and head h h 
+ P t P_{t} 
+ Number of physical KV pages allocated to the request 
+ b b 
+ Number of KV-token slots in one physical page 
+ ℛ t \mathcal{R}_{t} 
+ Protected recent-token set excluded from compression 
+ K t K_{t} 
+ Historical KV retention budget at a compression event 
+ k loc k_{\mathrm{loc}} 
+ Block-local KV retention quota 
+ Appendix B Extended Related Works 
+ Fine-Grained KV Compression. 
+ Beyond the representative KV-eviction methods discussed in the main text, a broad body of work explores finer-grained cache adaptation and alternative compression dimensions.
+Scissorhands ( Liu et al., 2023 ) exploits the persistence of token importance to probabilistically retain historically influential KV states, while Keyformer ( Adnan et al., 2024 ) identifies a compact set of key tokens that dominate attention during generation.
+Rather than applying a uniform policy to all attention heads, FastGen ( Ge et al., 2024 ) profiles their attention structures and assigns different cache strategies accordingly, and DuoAttention ( Xiao et al., 2025 ) separates retrieval heads requiring long-context access from streaming heads that can operate with compact caches.
+NACL ( Chen et al., 2024 ) combines proxy-token-based importance with randomized eviction, whereas BUZZ ( Zhao et al., 2026 ) preserves recent context together with segmented historical heavy hitters.
+A complementary direction reduces the representation cost of retained KV states.
+KIVI ( Liu et al., 2024c ) introduces asymmetric low-bit quantization tailored to the distinct distributions of keys and values, and KVQuant ( Hooper et al., 2024 ) combines pre-RoPE key quantization, non-uniform datatypes, and explicit outlier handling.
+MiKV ( Yang et al., 2024 ) preserves important KV states at higher precision while representing less important states at lower precision, and GEAR ( Kang et al., 2024 ) combines quantization with low-rank and sparse error correction.
+Cross-layer redundancy has also been exploited by MiniCache ( Liu et al., 2024a ) , which merges similar KV states across neighboring layers.
+These approaches adapt which states are represented and how they are represented, but do not directly address online request-level decisions about how much total KV capacity should be allocated as generation evolves. 
+ KV Compression for Long Reasoning. 
+ Recent work has increasingly specialized KV-cache compression for long-output reasoning, where token importance can change substantially over an extended generation trajectory.
+LazyEviction ( Zhang et al., 2026 ) identifies token importance recurrence , observing that previously unimportant tokens may regain high attention after many decoding steps, and therefore delays irreversible eviction through an observation window.
+DesireKV ( Cheng et al., 2026 ) jointly considers attention-derived importance and quantization sensitivity, selectively retaining, quantizing, or evicting reasoning tokens according to their different roles.
+LongFlow ( Su et al., 2026 ) derives token-importance estimates directly from intermediate attention computations and co-designs them with fused kernels to reduce the overhead of continuous importance evaluation during long reasoning.
+InfoKV ( Kai et al., 2026 ) further argues that attention alone may overlook tokens with long-range future influence and supplements attention scores with information-theoretic signals related to predictive uncertainty.
+Kara ( Han et al., 2026 ) restricts compression to a sliding window of recently generated reasoning context and develops a serving implementation compatible with paged KV management.
+REAL ( Li et al., 2026 ) instead analyzes heterogeneous attention-head behaviors in both successful and failed retrieval-reasoning cases to construct more robust eviction policies.
+Together, these studies reinforce that reasoning-time KV importance is highly dynamic.
+Nevertheless, their adaptation primarily concerns importance estimation, eviction timing, token grouping, or representation precision; GrowPage operates on an orthogonal dimension by adapting the total per-request capacity according to the evolving demand of the request. 
+ System-Level KV Management. 
+ Another related direction optimizes where and how KV states are physically stored and transferred in serving systems.
+vAttention ( Prabhu et al., 2025 ) uses CUDA virtual memory to support dynamic physical-memory allocation while retaining a contiguous virtual KV layout, illustrating that the physical storage backing an active sequence can be managed independently from its logical address space.
+For memory hierarchies extending beyond GPU memory, InfiniGen ( Lee et al., 2024 ) predicts important KV entries and selectively fetches them from CPU memory, thereby reducing the transfer overhead of conventional KV offloading.
+CacheGen ( Liu et al., 2024b ) compresses reusable KV caches into compact bitstreams for efficient context loading and adapts compression to network conditions.
+At cluster scale, MemServe ( Hu et al., 2024 ) introduces an elastic distributed memory pool for context caching and disaggregated inference, while Mooncake ( Qin et al., 2026 ) builds a KV-cache-centric serving architecture that exploits heterogeneous CPU, DRAM, SSD, and network resources together with a global scheduler.
+These systems mainly improve KV placement, movement, reuse, or physical memory provisioning.
+GrowPage addresses a different but complementary problem: before allocating additional GPU-resident KV storage to an active reasoning request, it estimates whether the request’s evolving attention demand justifies expanding its logical cache capacity.
+This demand-aware capacity control allows the page-based memory manager to respond not only to sequence growth, but also to heterogeneous and time-varying information requirements. 
+ Appendix C Proof of Theorem 3.1 
+ For a retained subset S S , let 
+ m ⁡ ( S ) = ∑ i ∈ S a t , i . m(S)=\sum_{i\in S}a_{t,i}. 
+ The difference between the full and renormalized attention outputs is 
+ 𝐨 t − 𝐨 ^ t ​ ( S ) = ∑ i ∉ S a t , i ​ 𝐯 i − 1 − m ⁡ ( S ) m ⁡ ( S ) ​ ∑ i ∈ S a t , i ​ 𝐯 i . \mathbf{o}_{t}-\widehat{\mathbf{o}}_{t}(S)=\sum_{i\notin S}a_{t,i}\mathbf{v}_{i}-\frac{1-m(S)}{m(S)}\sum_{i\in S}a_{t,i}\mathbf{v}_{i}. 
+ Using ‖ 𝐯 i ‖ 2 ≤ V max \|\mathbf{v}_{i}\|_{2}\leq V_{\max} and the triangle inequality, 
+ ‖ 𝐨 t − 𝐨 ^ t ​ ( S ) ‖ 2 \displaystyle\left\|\mathbf{o}_{t}-\widehat{\mathbf{o}}_{t}(S)\right\|_{2} 
+ ≤ ∑ i ∉ S a t , i ​ V max + 1 − m ⁡ ( S ) m ⁡ ( S ) ​ ∑ i ∈ S a t , i ​ V max \displaystyle\leq\sum_{i\notin S}a_{t,i}V_{\max}+\frac{1-m(S)}{m(S)}\sum_{i\in S}a_{t,i}V_{\max} 
+ = 2 ​ V max ​ ( 1 − m ⁡ ( S ) ) . \displaystyle=2V_{\max}(1-m(S)). 
+ This bound is tight. Let 𝐮 \mathbf{u} be any unit vector and choose
+ 𝐯 i = − V max ​ 𝐮 \mathbf{v}_{i}=-V_{\max}\mathbf{u} for i ∈ S i\in S and
+ 𝐯 i = V max ​ 𝐮 \mathbf{v}_{i}=V_{\max}\mathbf{u} for i ∉ S i\notin S .
+Then 
+ ‖ 𝐨 t − 𝐨 ^ t ​ ( S ) ‖ 2 = 2 ​ V max ​ ( 1 − m ⁡ ( S ) ) . \left\|\mathbf{o}_{t}-\widehat{\mathbf{o}}_{t}(S)\right\|_{2}=2V_{\max}(1-m(S)). 
+ Hence, 
+ sup ‖ 𝐯 i ‖ 2 ≤ V max ‖ 𝐨 t − 𝐨 ^ t ​ ( S ) ‖ 2 = 2 ​ V max ​ ( 1 − m ⁡ ( S ) ) . \sup_{\|\mathbf{v}_{i}\|_{2}\leq V_{\max}}\left\|\mathbf{o}_{t}-\widehat{\mathbf{o}}_{t}(S)\right\|_{2}=2V_{\max}(1-m(S)). 
+ Therefore, guaranteeing error at most δ \delta for all admissible value vectors is equivalent to 
+ m ⁡ ( S ) ≥ 1 − δ 2 ​ V max . m(S)\geq 1-\frac{\delta}{2V_{\max}}. 
+ Among all subsets of cardinality k k , the maximum retained attention mass is obtained by selecting the k k largest attention weights.
+Thus, the minimum cardinality satisfying the above condition is 
+ C δ wc ​ ( 𝐚 t ) = D 1 − δ / ( 2 ​ V max ) ​ ( 𝐚 t ) , C_{\delta}^{\mathrm{wc}}(\mathbf{a}_{t})=D_{1-\delta/(2V_{\max})}(\mathbf{a}_{t}), 
+ which proves the theorem. 
+ Figure 9: 
+Accuracy–throughput trade-offs under different demand thresholds τ \tau on Qwen3-8B with AMC23 and AIME24.
+ Appendix D Hyperparameter Sensitivity 
+ D.1 Effect of Demand Threshold 
+ We further study the sensitivity of GrowPage to the demand threshold τ \tau , which controls the trade-off between KV compression and capacity expansion.
+As shown by the counterfactual analysis in Figure 7 , the benefit of allocating additional KV capacity changes noticeably as Δ t \Delta_{t} crosses the region around zero.
+We therefore focus on the fine-grained interval around [ − 0.005 , 0.005 ] [-0.005,0.005] and vary τ \tau from − 0.003 -0.003 to 0.003 0.003 with a step size of 0.001 0.001 .
+All experiments are conducted on Qwen3-8B using AMC23 and AIME24.
+Figure 9 shows that τ \tau provides a direct mechanism for controlling the accuracy–throughput operating point of GrowPage.
+A smaller threshold makes capacity expansion more permissive, causing more requests to acquire additional KV pages.
+This preserves a larger historical working set and generally improves reasoning accuracy, but increases per-request KV consumption and consequently reduces serving throughput.
+Conversely, a larger τ \tau makes GrowPage more conservative about expansion, resulting in more frequent Compress & Hold decisions and higher throughput at the cost of more aggressive information removal.
+Across both AMC23 and AIME24, τ = 0 \tau=0 provides a stable operating point with a balanced trade-off between reasoning accuracy and serving throughput.
+We therefore adopt τ = 0 \tau=0 as the default threshold throughout our experiments. 
+ Table 4: Effect of the local retention quota k loc k_{\mathrm{loc}} on Qwen3-8B. 
+ k loc k_{\mathrm{loc}} 
+ AMC23 
+ AIME24 
+ Pass@1 
+ Pass@1 
+ 16 
+ 90.3 
+ 72.4 
+ 32 
+ 90.9 
+ 73.1 
+ 64 
+ 91.4 
+ 73.8 
+ 128 
+ 90.6 
+ 72.8 
+ D.2 Effect of Local Retention Quota 
+ As described in Section 3.3 , k loc k_{\mathrm{loc}} specifies the minimum number of tokens retained from each historical block before the remaining budget is filled by global importance-based selection.
+We evaluate its sensitivity on Qwen3-8B using AMC23 and AIME24.
+We report only Pass@1 because different k loc k_{\mathrm{loc}} values yield nearly identical TPS; k loc k_{\mathrm{loc}} mainly affects which KV states are retained rather than the total retained capacity, and therefore primarily influences reasoning accuracy.
+As shown in Table 4 , performance first improves as k loc k_{\mathrm{loc}} increases from 16 to 64, indicating that sufficient block-local coverage helps prevent globally important regions from dominating the retained KV states.
+However, further increasing k loc k_{\mathrm{loc}} to 128 slightly degrades accuracy, since an overly large local quota leaves less flexibility for global selection and forces more tokens to be preserved from relatively unimportant blocks.
+Overall, k loc = 64 k_{\mathrm{loc}}=64 achieves the best performance on both benchmarks, and we therefore use it as the default setting throughout our experiments. 
+ Appendix E System Implementation Details 
+ This section provides additional implementation details for the system integration described in Section 4 .
+We first describe the runtime management and computation of the dual-timescale query states.
+Our support for prefix caching and asynchronous KV compression largely follows the system design of Zipage ( Liao et al., 2026 ) , with the compression target adapted to GrowPage’s dynamically determined page capacity. 
+ E.1 Dual-Timescale Query Management and Online Demand Estimation 
+ Pre-allocated query-state pool. 
+ To avoid request-level GPU allocation and deallocation, GrowPage pre-allocates a fixed query-state tensor when the inference engine is initialized.
+Its layout is 
+ 𝒬 ∈ ℝ L × M × 2 × H q × d h , \mathcal{Q}\in\mathbb{R}^{L\times M\times 2\times H_{q}\times d_{h}}, 
+ (11) 
+ where L L is the number of attention layers, M M is the maximum number of query slots, H q H_{q} is the number of query heads per GPU, and d h d_{h} is the head dimension.
+The third dimension stores the short- and long-timescale EMA queries.
+We set M M to the serving engine’s maximum number of concurrent sequences ( max_num_seqs ), which is 512 by default. 
+ Query slots are bound to requests only when they enter the running queue.
+The scheduler maintains a pool of free slot identifiers and assigns one identifier to each newly admitted running request; requests waiting to be scheduled therefore consume no query-state slot.
+When a request finishes, its identifier is returned to the free pool without releasing the underlying GPU tensor.
+The same procedure is applied when a request is preempted; if it is scheduled again, it acquires a new slot and reinitializes its summaries.
+This slot-based design avoids frequent CUDA memory allocation and allows the pre-allocated storage to be continuously reused across requests.
+The resulting auxiliary memory is fixed with respect to sequence length and scales as
+ 2 ​ M ​ L ​ H q ​ d h 2MLH_{q}d_{h} elements. 
+ Initialization and online update. 
+ The query summaries are updated only during decoding.
+For the first decoding step of a newly assigned slot, both temporal states are initialized directly from the current normalized pre-RoPE query,
+ 𝐪 ¯ S = 𝐪 ¯ L = 𝐪 t \bar{\mathbf{q}}^{S}=\bar{\mathbf{q}}^{L}=\mathbf{q}_{t} ,
+thereby overwriting any stale values left by the previous owner of the slot without explicitly clearing the tensor.
+Subsequent decoding steps update the two states in place according to Eq. 6 , using β S = 0.9 \beta_{S}=0.9 and β L = 0.999 \beta_{L}=0.999 .
+No historical query sequence is materialized: each request stores only the two running summaries. 
+ Demand estimation at capacity boundaries. 
+ The regular decoding path only updates the two EMA states.
+The remaining demand-estimation operations are executed when a request reaches a capacity boundary.
+Because EMA averaging changes the magnitude of the stored queries, we first calibrate each temporal summary to the RMS scale of the current normalized query.
+For x ∈ { S , L } x\in\{S,L\} , we compute 
+ γ t x = RMS ⁡ ( 𝐪 t ) RMS ⁡ ( 𝐪 ¯ t x ) , 𝐪 ~ t x = γ t x ​ 𝐪 ¯ t x . \gamma_{t}^{x}=\frac{\operatorname{RMS}(\mathbf{q}_{t})}{\operatorname{RMS}(\bar{\mathbf{q}}_{t}^{x})},\qquad\widetilde{\mathbf{q}}_{t}^{x}=\gamma_{t}^{x}\bar{\mathbf{q}}_{t}^{x}. 
+ (12) 
+ The calibrated queries are then transformed by RoPE using the current decoding position.
+This preserves the temporal information accumulated in the common pre-RoPE space while aligning both summaries with the positional frame used by the current attention computation. 
+ We exclude the most recent physical KV block from the historical candidate set, corresponding to 256 tokens under our default block size, and independently compute the short- and long-timescale attention distributions over the remaining historical keys.
+The native GQA head mapping is preserved when matching query heads to KV heads.
+For each temporal view, the attention weights are sorted and accumulated until reaching the Top- p p coverage threshold ( p = 0.99 p=0.99 ), yielding the working-set ratios in Eq. 7 .
+These ratios are then aggregated across layers and KV heads according to Eq. 8 , producing the request-level signal Δ t \Delta_{t} .
+Finally, Δ t \Delta_{t} is compared with the demand threshold τ \tau to select between Compress & Hold and Grow by One Page .
+Thus, attention scoring, sorting, and working-set estimation are kept off the critical path of ordinary decoding steps and are invoked only when a capacity decision is required. 
+ E.2 Prefix-Caching Support 
+ GrowPage inherits the prefix-preserving compression mechanism of Zipage ( Liao et al., 2026 ) .
+Prefix sharing is tracked at physical-block granularity using reference counts, and a block referenced by multiple requests is never overwritten in place during compression.
+Instead, compression writes the retained KV states into a set of target blocks while leaving shared prefix blocks intact for the other requests.
+We adapt the target size to GrowPage’s dynamic capacity.
+For a request currently occupying P t P_{t} physical pages, Compress & Hold keeps the physical allocation unchanged but compacts the retained KV states into at most ( P t − 1 ) ​ b (P_{t}-1)b occupied slots, leaving one page worth of free slots for subsequent decoding.
+If shared prefix blocks occupy part of the original allocation, sufficient new target blocks are allocated to replace those shared blocks, while reusable non-shared blocks are retained whenever possible.
+After compaction, the request releases its references to the original shared blocks and their reference counts are updated accordingly.
+ Grow by One Page does not modify the shared prefix and simply appends the newly allocated page to the request’s block table.
+As in Zipage, temporary target-block allocation may precede the release of shared blocks; under severe memory pressure, the scheduler can therefore invoke preemption to avoid allocation deadlock. 
+ E.3 Asynchronous Decoding and Compression 
+ We also adopt the asynchronous decoding–compression pipeline of Zipage ( Liao et al., 2026 ) .
+At a given scheduling step, only a subset of requests reaching capacity boundaries require KV compaction.
+Executing compression synchronously would stall the remaining decode-ready requests and serialize a relatively small compression batch with the main decoding workload.
+Instead, requests selected for Compress & Hold enter the asynchronous compression path, while other ready requests continue decoding.
+Once compaction completes, the compressed requests rejoin a subsequent decoding batch.
+Requests taking Grow by One Page require only page allocation and block-table update and can resume decoding after the new page is installed.
+This preserves Zipage’s overlap between decoding and KV compaction while allowing GrowPage’s capacity decisions to remain request-specific. 
+ Appendix F Experimental Details 
+ F.1 Datasets and Evaluation Protocol 
+ We evaluate GrowPage on five reasoning benchmarks covering mathematical reasoning and code generation.
+Table 5 summarizes the dataset size, number of independent generations per question, maximum output length, and the KV budget used by fixed-budget compression baselines.
+Unless otherwise specified, we use a sampling temperature of 0.6.
+For benchmarks with multiple generations per question, each generation is evaluated independently and the reported Pass@1 is averaged over all sampled outputs.
+The dataset-specific KV budgets follow the configurations used in our fixed-budget comparisons; GrowPage does not use these predefined budgets and instead adapts its KV capacity online. 
+ Table 5: Evaluation settings for individual reasoning benchmarks.
+The KV budget denotes the per-request capacity used by fixed-budget compression baselines. 
+ Workload 
+ Number of Questions 
+ Sample Times 
+ Max Output Length 
+ KV Budget 
+ AMC23 
+ 40 
+ 32 
+ 16384 
+ 4096 
+ AIME24 
+ 30 
+ 32 
+ 32768 
+ 4096 
+ MATH500 
+ 500 
+ 8 
+ 16384 
+ 4096 
+ GSM8K 
+ 1319 
+ 4 
+ 16384 
+ 4096 
+ LiveCodeBench v1 
+ 400 
+ 8 
+ 16384 
+ 8192 
+ The sampling multiplicity is chosen according to the size and difficulty of each benchmark.
+For the smaller competition-level mathematics datasets AMC23 and AIME24, we use 32 independent generations per question to reduce sampling variance.
+For the larger MATH500, GSM8K, and LiveCodeBench datasets, fewer repetitions provide sufficient coverage while keeping the total evaluation cost manageable.
+The larger KV budget for LiveCodeBench reflects its substantially longer code-generation trajectories. 
+ F.2 Mixed-Workload Construction 
+ For the heterogeneous-workload experiment in Figure 5 , we combine AMC23, AIME24, and GSM8K into a single serving workload.
+Because these datasets differ substantially in the number of available questions, directly using each question once would cause GSM8K to dominate the workload.
+We therefore use different sampling multiplicities to obtain a more balanced contribution from the three datasets.
+The resulting workload contains 3559 requests, as summarized in Table 6 .
+All requests use a maximum output length of 32768 tokens. 
+ Table 6: Composition of the mixed reasoning workload. 
+ Dataset 
+ Number of Questions 
+ Samples 
+ Total Requests 
+ AMC23 
+ 40 
+ 32 
+ 1280 
+ AIME24 
+ 30 
+ 32 
+ 960 
+ GSM8K 
+ 1319 
+ 1 
+ 1319 
+ This construction prevents the much larger GSM8K dataset from overwhelmingly dominating the mixed workload and yields comparable numbers of requests from the three constituent benchmarks.
+Unlike the individual benchmark comparison in Table 5 , we do not assign a single fixed KV budget to this workload, since the purpose of this experiment is to explicitly evaluate Zipage across multiple fixed budgets and compare its resulting accuracy–throughput Pareto frontier with GrowPage. 
+ Appendix G Extended Analysis of Main Results 
+ G.1 Additional Mixed-Workload Results 
+ To examine whether the mixed-workload behavior in Figure 5 generalizes across model architectures, we repeat the same experiment on DeepSeek-R1-Distill-Llama-8B.
+We use the identical mixed workload described in Appendix F.2 , and compare GrowPage with FullKV and Zipage under fixed KV budgets ranging from 1024 to 8192 tokens. 
+ Figure 10: 
+Accuracy–throughput trade-off on the mixed GSM8K, AMC23, and AIME24 workload with DeepSeek-R1-Distill-Llama-8B. C C denotes the average number of requests resident in GPU memory.
+ As shown in Figure 10 , DeepSeek-R1-Distill-Llama-8B exhibits a trend consistent with the Qwen3-8B results in Figure 5 .
+Increasing the fixed KV budget of Zipage improves reasoning accuracy but progressively reduces resident concurrency and serving throughput.
+GrowPage instead reaches 64.3% Pass@1 at 2451 tokens/s with an average KV budget of 3234 tokens and C = 135 C=135 .
+Compared with Zipage-4096, GrowPage improves accuracy from 63.5% to 64.3% while increasing throughput from 2098 to 2451 tokens/s and resident concurrency from 107 to 135.
+Compared with the more conservative Zipage-8192 setting, GrowPage remains within 0.6 percentage points in accuracy while achieving 1.75 × 1.75\times higher throughput and 1.71 × 1.71\times more resident requests.
+It also closely matches FullKV accuracy (64.3% vs. 64.5%) while providing 2.11 × 2.11\times higher throughput.
+These results further show that on-demand KV budgeting achieves a favorable accuracy–efficiency trade-off across different reasoning-model architectures rather than being specific to Qwen3-8B. 
+ G.2 Detailed Serving Metrics 
+ Table 7 provides additional efficiency metrics for the main comparison in Table 1 .
+We report the total inference time for each benchmark and the time per output token (TPOT).
+The total time is converted from seconds to hours for readability.
+Since different benchmarks contain different numbers of sampled requests, total inference time should be compared across methods within the same benchmark rather than across datasets. 
+ Table 7: 
+Extended efficiency comparison on reasoning benchmarks.
+We report total inference time (hours) and time per output token (TPOT, ms/token); lower is better for both metrics.
+ Total Inference Time (h) ↓ \downarrow 
+ TPOT (ms/token) ↓ \downarrow 
+ Method 
+ GSM8K 
+ MATH500 
+ AMC23 
+ AIME24 
+ LiveCode 
+ Avg. 
+ GSM8K 
+ MATH500 
+ AMC23 
+ AIME24 
+ LiveCode 
+ Avg. 
+ DeepSeek-R1-Distill-Llama-8B 
+ FullKV (vLLM) 
+ 0.61 
+ 3.30 
+ 2.00 
+ 5.27 
+ 8.10 
+ 3.86 
+ 117 
+ 522 
+ 994 
+ 783 
+ 579 
+ 599.0 
+ FullKV (nano-vLLM) 
+ 0.64 
+ 3.44 
+ 2.06 
+ 5.25 
+ 8.51 
+ 3.98 
+ 123 
+ 546 
+ 1027 
+ 814 
+ 598 
+ 621.6 
+ MorphKV (ICML’25) 
+ 3.95 
+ 25.99 
+ 16.09 
+ 44.49 
+ 66.13 
+ 31.33 
+ 136 
+ 157 
+ 156 
+ 241 
+ 248 
+ 187.6 
+ R-KV (NeurIPS’25) 
+ 4.25 
+ 25.34 
+ 15.52 
+ 40.77 
+ 64.38 
+ 30.05 
+ 151 
+ 169 
+ 167 
+ 254 
+ 272 
+ 202.6 
+ G-KV (arXiv’25) 
+ 4.10 
+ 24.59 
+ 14.78 
+ 37.33 
+ 60.81 
+ 28.32 
+ 145 
+ 163 
+ 162 
+ 247 
+ 260 
+ 195.4 
+ Zipage (ACL’26) 
+ 0.55 
+ 2.63 
+ 1.23 
+ 3.48 
+ 7.75 
+ 3.13 
+ 81 
+ 128 
+ 127 
+ 240 
+ 225 
+ 160.2 
+ GrowPage (Ours) 
+ 0.49 
+ 2.18 
+ 1.19 
+ 2.93 
+ 5.75 
+ 2.51 
+ 78 
+ 110 
+ 112 
+ 207 
+ 155 
+ 132.4 
+ Qwen3-8B 
+ FullKV (vLLM) 
+ 1.23 
+ 4.09 
+ 2.66 
+ 6.58 
+ 6.35 
+ 4.18 
+ 139 
+ 381 
+ 826 
+ 938 
+ 496 
+ 556.0 
+ FullKV (nano-vLLM) 
+ 1.32 
+ 4.33 
+ 2.82 
+ 7.01 
+ 6.73 
+ 4.44 
+ 148 
+ 404 
+ 872 
+ 1003 
+ 525 
+ 590.4 
+ MorphKV (ICML’25) 
+ 8.29 
+ 17.08 
+ 10.76 
+ 35.64 
+ 26.69 
+ 19.69 
+ 170 
+ 165 
+ 169 
+ 250 
+ 232 
+ 197.2 
+ R-KV (NeurIPS’25) 
+ 8.41 
+ 16.63 
+ 10.13 
+ 30.94 
+ 25.68 
+ 18.36 
+ 176 
+ 181 
+ 181 
+ 263 
+ 254 
+ 211.0 
+ G-KV (arXiv’25) 
+ 8.63 
+ 16.01 
+ 10.23 
+ 31.25 
+ 24.33 
+ 18.09 
+ 181 
+ 174 
+ 176 
+ 256 
+ 246 
+ 206.6 
+ Zipage (ACL’26) 
+ 1.06 
+ 3.11 
+ 1.63 
+ 4.19 
+ 5.39 
+ 3.08 
+ 79 
+ 141 
+ 138 
+ 249 
+ 177 
+ 156.8 
+ GrowPage (Ours) 
+ 1.04 
+ 2.60 
+ 1.42 
+ 3.77 
+ 4.67 
+ 2.70 
+ 75 
+ 106 
+ 122 
+ 207 
+ 145 
+ 131.0 
+ End-to-end efficiency. 
+ Table 7 further confirms that the throughput improvements of GrowPage translate into shorter workload completion time.
+GrowPage achieves the lowest total inference time across all five benchmarks on both models.
+Compared with Zipage, its average inference time decreases from 3.13 to 2.51 hours on DeepSeek-R1-Distill-Llama-8B and from 3.08 to 2.70 hours on Qwen3-8B.
+The improvement becomes particularly pronounced on longer and more demanding workloads; for example, on LiveCodeBench with DeepSeek-R1-Distill-Llama-8B, GrowPage reduces the total inference time from 7.75 to 5.75 hours.
+These results indicate that adapting per-request KV capacity reduces unnecessary memory residency and enables the serving engine to complete batched reasoning workloads more efficiently. 
+ Per-token decoding efficiency. 
+ GrowPage also consistently achieves the lowest TPOT across all evaluated datasets.
+Averaged over the five benchmarks, GrowPage reduces TPOT from 160.2 to 132.4 ms/token relative to Zipage on DeepSeek-R1-Distill-Llama-8B, and from 156.8 to 131.0 ms/token on Qwen3-8B.
+This suggests that on-demand capacity control not only increases aggregate concurrency but also reduces the attention cost associated with unnecessarily large KV working sets.
+Interestingly, MorphKV, R-KV, and G-KV achieve substantially lower TPOT than FullKV on several long-generation workloads, yet exhibit much lower aggregate TPS in Table 1 .
+This discrepancy highlights that reducing per-token computation alone does not necessarily translate into higher serving throughput: without system-level integration with continuous batching and paged memory management, algorithmic KV compression may fail to efficiently exploit the freed memory under high concurrency.
+GrowPage combines both advantages, maintaining low per-token latency while translating KV savings into higher aggregate serving throughput. 
+ Appendix H Additional Capacity-Control Analysis 
+ H.1 Alternative Capacity-Control Policies 
+ We further investigate whether the performance gains of GrowPage arise specifically from its demand-guided capacity control, rather than merely from changing the KV capacity or the overall frequency of compression and growth.
+We compare the default GrowPage policy with four alternative capacity-control strategies on Qwen3-8B with AMC23. 
+ Compared policies. 
+ GrowPage-Fixed disables capacity expansion and maintains a fixed KV budget of 4096 tokens; whenever the current capacity is exhausted, it applies Compress & Hold .
+ GrowPage-Random removes the dependence on Δ t \Delta_{t} and randomly selects Compress & Hold with probability 0.7 0.7 and Grow by One Page otherwise.
+The probability is chosen to approximately match the empirical compression frequency of the default GrowPage policy, providing a frequency-matched control for evaluating whether the timing of capacity decisions matters.
+ GrowPage-Inverse reverses the default interpretation of the demand signal: it grows when Δ t ≤ 0 \Delta_{t}\leq 0 and compresses when Δ t > 0 \Delta_{t}>0 .
+Finally, GrowPage-Shrink introduces explicit bidirectional resizing with three actions: 
+ π shrink ​ ( Δ t ) = { Shrink , Δ t < − 0.005 , Compress & Hold , − 0.005 ≤ Δ t ≤ 0 , Grow by One Page , Δ t > 0 . \pi_{\mathrm{shrink}}(\Delta_{t})=\begin{cases}\text{\emph{Shrink}},&\Delta_{t}<-0.005,\\
+\text{\emph{Compress \& Hold}},&-0.005\leq\Delta_{t}\leq 0,\\
+\text{\emph{Grow by One Page}},&\Delta_{t}>0.\end{cases} 
+ (13) 
+ Here, Shrink compacts two pages worth of historical KV states and returns one physical page to the global memory pool, while leaving one page worth of free slots for subsequent decoding.
+We impose a minimum KV capacity of 1024 tokens to prevent excessive contraction.
+The threshold − 0.005 -0.005 is motivated by the low-demand region identified in the counterfactual analysis of Figure 7 . 
+ Table 8: 
+Comparison of alternative capacity-control policies on Qwen3-8B with AMC23.
+Total time denotes the end-to-end inference time of the workload.
+Lower is better for Avg. KV Budget, TPOT, and Total Time.
+ Method 
+ Avg. KV Budget ↓ \downarrow 
+ Pass@1 (%) ↑ \uparrow 
+ TPS (tokens/s) ↑ \uparrow 
+ TPOT (ms/token) ↓ \downarrow 
+ Total Time (h) ↓ \downarrow 
+ GrowPage-Fixed 
+ 4096 
+ 89.9 
+ 1874 
+ 136 
+ 1.59 
+ GrowPage-Shrink 
+ 2099 
+ 84.2 
+ 2546 
+ 107 
+ 1.44 
+ GrowPage-Random 
+ 3728 
+ 88.3 
+ 2008 
+ 137 
+ 1.57 
+ GrowPage-Inverse 
+ 6167 
+ 90.8 
+ 1340 
+ 175 
+ 2.13 
+ Zipage (ACL’26) 
+ 4096 
+ 89.5 
+ 1805 
+ 138 
+ 1.63 
+ GrowPage (Ours) 
+ 3164 
+ 91.4 
+ 2261 
+ 122 
+ 1.42 
+ Effect of demand-guided adaptation. 
+ Table 8 shows that dynamically adapting KV capacity is important for obtaining a favorable accuracy–efficiency trade-off.
+Compared with GrowPage-Fixed , the default policy reduces the average KV budget from 4096 to 3164 tokens while improving TPS from 1874 to 2261 and Pass@1 from 89.9% to 91.4%.
+This indicates that the benefit cannot be reproduced by simply maintaining a static capacity and repeatedly compressing within it. 
+ More importantly, GrowPage-Random produces an action frequency close to that of the default policy, but performs substantially worse.
+Despite using a similar fraction of compression and growth decisions, the random policy reaches only 88.3% Pass@1 at 2008 tokens/s, compared with 91.4% at 2261 tokens/s for GrowPage.
+It also maintains a larger average KV budget of 3728 tokens.
+This result shows that the gain does not arise merely from the marginal frequency of compression and growth; when each action is applied is critical. 
+ Reversing the demand signal leads to the opposite behavior.
+ GrowPage-Inverse expands much more aggressively, increasing the average KV budget to 6167 tokens and reducing throughput to 1340 tokens/s, while still achieving lower accuracy than the default GrowPage policy.
+This result complements the counterfactual analysis in Figure 7 and confirms that the direction of Δ t \Delta_{t} carries meaningful information for capacity allocation rather than serving only as a generic activity signal. 
+ Why not aggressively shrink capacity? 
+ GrowPage-Shrink achieves the smallest average KV budget and the highest raw throughput, but its Pass@1 drops sharply to 84.2%, 7.2 7.2 percentage points below the default GrowPage policy.
+The result exposes the cost of aggressively reclaiming physical pages from active reasoning requests: once additional historical KV states are irreversibly removed, later reasoning stages may again require information that is no longer available.
+GrowPage therefore adopts the more conservative Compress & Hold operation in the main design, retaining the current physical allocation while creating room for subsequent tokens.
+This yields a substantially better balance between memory efficiency, serving throughput, and reasoning accuracy. 
+ H.2 System-Level Event Analysis 
+ To better understand how different capacity-control policies affect the serving runtime, we further record the number of page-growth, compression, fallback, and request-preemption events.
+A fallback occurs when a requested page expansion cannot be safely satisfied by the global free-page pool and is therefore converted to compression.
+A preemption is triggered under severe memory pressure when page expansion fails and the subsequent fallback compression still cannot provide sufficient GPU memory; the scheduler then removes an active decoding request from the running batch, releases its occupied resources, and returns it to the waiting queue for later rescheduling.
+For GrowPage-Shrink , we separately report explicit Shrink events; these events are included in the total compression count recorded by the runtime but are separated from ordinary Compress & Hold events in Table 9 . 
+ Table 9: 
+Runtime capacity-control events on Qwen3-8B with AMC23.
+Grow Ratio is computed over the primary capacity decisions before fallback handling.
+For GrowPage-Shrink , explicit Shrink events are reported separately from Compress & Hold.
+ Method 
+ Grow 
+ Grow Ratio (%) 
+ Compress & Hold 
+ Shrink 
+ Fallback 
+ Preemptions 
+ GrowPage-Fixed 
+ 0 
+ 0.0 
+ 22285 
+ – 
+ 0 
+ 19 
+ GrowPage-Shrink 
+ 17909 
+ 45.5 
+ 12540 
+ 8927 
+ 103 
+ 4668 
+ GrowPage-Random 
+ 9345 
+ 30.4 
+ 21399 
+ – 
+ 944 
+ 1894 
+ GrowPage-Inverse 
+ 19881 
+ 66.7 
+ 9931 
+ – 
+ 286 
+ 2997 
+ GrowPage (Ours) 
+ 9500 
+ 30.9 
+ 21203 
+ – 
+ 597 
+ 1361 
+ Decision frequency versus decision timing. 
+ The runtime statistics provide a particularly controlled comparison between GrowPage and GrowPage-Random .
+The two policies have almost identical primary action distributions: GrowPage grows at 30.9% of capacity boundaries, while the random policy grows at 30.4%.
+Their total numbers of primary capacity decisions are also nearly identical.
+Nevertheless, GrowPage achieves substantially higher accuracy and throughput in Table 8 .
+This frequency-matched comparison further demonstrates that the effectiveness of GrowPage comes from using Δ t \Delta_{t} to determine where expansion is needed, rather than merely choosing an appropriate global compression-to-growth ratio.
+The demand-guided policy is also accompanied by fewer fallback and preemption events than its random counterpart. 
+ Cost of dynamic capacity adaptation. 
+ Dynamic capacity adaptation also introduces additional interactions with the global memory manager.
+Unlike GrowPage-Fixed , which never requests new physical pages and therefore incurs almost no fallback or preemption events, GrowPage triggers 597 fallbacks and 1361 preemptions as requests dynamically compete for additional KV capacity.
+This represents a system-level cost of on-demand expansion under memory pressure.
+Nevertheless, GrowPage still achieves higher throughput (2261 vs. 1874 tokens/s) and accuracy (91.4% vs. 89.9%) while using a smaller average KV budget (3164 vs. 4096), indicating that the benefit of demand-aware capacity allocation outweighs the additional scheduling pressure in our setting. 
+ Capacity over-expansion and bidirectional resizing. 
+ The event distribution of GrowPage-Inverse further illustrates the importance of the direction of the demand signal.
+Reversing the policy raises the growth ratio from 30.9% to 66.7%, leading to substantially larger average KV residency and lower serving throughput.
+Although this policy retains more KV information, the additional capacity does not translate into higher reasoning accuracy, indicating that indiscriminate expansion wastes shared GPU memory. 
+ GrowPage-Shrink exhibits a different failure mode.
+It triggers 8927 explicit shrink operations while also performing 17909 subsequent growth operations, resulting in substantially more bidirectional capacity transitions.
+This aggressive resizing is accompanied by 4668 request preemptions, considerably more than the 1361 observed with the default GrowPage policy.
+Together with the significant accuracy degradation in Table 8 , these results suggest that aggressively reclaiming pages from live reasoning requests can introduce unnecessary capacity churn and irreversible information loss.
+The default GrowPage policy therefore favors conservative Compress & Hold and incremental growth, which provides more stable online capacity adaptation under PagedAttention-based serving. 
+ Appendix I Request-Level Capacity Alignment 
+ Figure 2 shows that the minimum sufficient fixed KV budget varies substantially across requests.
+We further examine whether GrowPage’s online capacity allocation reflects this request-level demand heterogeneity.
+Specifically, we group requests according to the minimum sufficient budget B i ⋆ B_{i}^{\star} identified in Figure 2 , and rerun the same requests with GrowPage using the same random seed.
+For each request, we record its average allocated KV capacity over the decoding trajectory.
+Figure 11 reports the resulting request-level capacities together with the mean and 95% confidence interval for each fixed-budget class. 
+ Across the populated budget classes, requests requiring larger fixed budgets generally receive larger adaptive capacities from GrowPage.
+This trend is particularly clear on LiveCodeBench, where the average adaptive capacity increases consistently from the 512-token class to the 8K-token class.
+AMC23 shows the same tendency over its populated 512, 1K, and 2K classes.
+AIME24 also exhibits an overall positive relationship, although the sparsely populated 4K and 8K classes show larger variance.
+These results indicate that GrowPage does not allocate capacity uniformly across requests, but instead adapts its runtime KV allocation in accordance with their underlying memory demands. 
+ Importantly, the adaptive capacity is not expected to numerically match B i ⋆ B_{i}^{\star} .
+The latter denotes the minimum fixed capacity required throughout an entire generation, whereas GrowPage changes the allocated capacity online as demand evolves.
+Consequently, a request belonging to a high-budget class can still maintain a substantially smaller average capacity by using additional pages only during high-demand stages.
+This distinction highlights the advantage of on-demand budgeting over static reservation. 
+ We also observe that requests categorized as Unresolved tend to receive relatively large adaptive capacities.
+Since these requests are not consistently solved under any tested fixed budget, this behavior suggests that GrowPage responds to their elevated attention demand rather than to the eventual correctness outcome.
+Overall, the alignment between B i ⋆ B_{i}^{\star} and GrowPage’s adaptive allocation provides request-level evidence that the proposed demand signal translates heterogeneous reasoning demands into differentiated KV capacity. 
+ Figure 11: 
+Alignment between minimum sufficient fixed-budget classes and GrowPage’s adaptive KV capacity.
+Requests are grouped by the minimum sufficient budget identified in Figure 2 , and each point shows the average capacity allocated by GrowPage to the same request under the same random seed.
+Markers and error bars denote the class mean and 95% confidence interval.
+ Experimental support, please
+ view the build logs 
+ for errors. Generated by
+ L
+ A 
+ T
+ E 
+ xml 
+ .
+ Instructions for reporting errors 
+ We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility and mobile
+ support. To report errors in the HTML that will help us improve conversion and rendering, choose any of the
+ methods listed below: 
+ Click the "Report Issue" ( 
+ ) button, located in the page header. 
+ Tip: You can select the relevant text first, to include it in your report. 
+ Our team has already identified the following issues . We appreciate your time reviewing and reporting rendering errors we
+ may not have found yet. Your efforts will help us improve the HTML versions for all readers, because disability
+ should not be a barrier to accessing research. Thank you for your continued support in championing open access for
+ all. 
+ Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML maintain a list of packages that need conversion , and welcome developer contributions . 
+ We gratefully acknowledge support from
+ our major funders ,
+ member institutions , ,
+ and all contributors.
+ About 
+ · 
+ Help 
+ · 
+ Contact 
+ · 
+ Subscribe 
+ · 
+ Copyright 
+ · 
+ Privacy 
+ · 
+ Accessibility 
+ · 
+ Operational Status (opens in new tab) 
+ Major funding support from 

@@ -1,0 +1,228 @@
+
+ [RFC]: Cache-affinity-aware request ordering for the V1 scheduler · Issue #42185 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [RFC]: Cache-affinity-aware request ordering for the V1 scheduler #42185 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Closed as not planned 
+ Closed as not planned 
+ [RFC]: Cache-affinity-aware request ordering for the V1 scheduler #42185 
+ Copy link 
+ Labels
+ stale Over 90 days of inactivity Over 90 days of inactivity 
+ Description
+ kliukovkin 
+ opened on May 9, 2026 
+ Issue body actions 
+ [RFC]: Cache-affinity-aware request ordering for the V1 scheduler
+ Summary
+ A CacheAffinityScheduler plugin loadable via --scheduler-cls that reorders the V1 waiting queue by cached-prefix length before each scheduling iteration. In-engine equivalent of sglang's RadixAttention scheduling, on top of vLLM's existing block-hash prefix cache. No token-level radix tree, no KV cache manager surgery, no request-schema changes.
+ Motivation
+ vLLM has block-level prefix caching ( docs ), but the V1 scheduler admits waiting requests in priority + FCFS order. A waiting request with thousands of cached prefix tokens is treated identically to a request with no cached prefix — the prefill savings are left on the table when the cache-warm request waits behind a cache-cold one.
+ Issue #7883 (open since Aug 2024) identified the budget-calculation half of this problem; the in-flight [1/n] series fixes can_allocate to consider cached blocks. Waiting-queue ordering is the other half and is not addressed by that series — confirmed by reading the merged commits.
+ External evidence the gap is felt:
+ sglang's RadixAttention scheduling reports 10–30% throughput uplift on multi-turn / RAG / agentic workloads by reordering requests so those with longer cached prefixes execute first.
+ Multiple comparison articles ( Runpod sglang vs vLLM KV cache , Particula sglang vs vLLM ) cite this as the reason teams pick sglang over vLLM for those workloads.
+ vLLM forums thread " Is FCFS Scheduling Holding Back vLLM's Performance in Production? " repeatedly returns to this.
+ Proposed approach
+ Add CacheAffinityScheduler as a plugin loadable via --scheduler-cls vllm.v1.core.sched.cache_affinity_scheduler.CacheAffinityScheduler . The class subclasses the in-tree Scheduler (not the SchedulerInterface ABC, which the engine flags as not-public) and replaces self.waiting with a custom CacheAffinityRequestQueue that owns a composite sort.
+ At each schedule() call, the policy:
+ Iterates the sortable portion of the waiting queue (preempted requests are kept in a sticky-front sub-deque and not re-sorted).
+ For each request, calls kv_cache_manager.get_computed_blocks(req) to get num_cached_tokens . The score is num_cached_tokens // block_size . Requests below cache_affinity_min_blocks (default 2) score 0.
+ Requests waiting longer than cache_affinity_max_wait_s (default 0.2) get a starvation-override slot at the absolute front.
+ Sorts by composite key:
+ PRIORITY mode: (priority, -bucketed_score, arrival_time, request_id) 
+ FCFS mode: (-bucketed_score, arrival_time, request_id) 
+ Calls super().schedule() against the now-reordered queue. Everything downstream (chunked prefill, allocation, preemption ladder, KV connector) stays unchanged.
+ Score bucketing (default edges (4, 16, 64, 256) ) prevents per-iteration thrash on small score deltas. Sticky-front semantics preserve the V1 invariant that preempted requests are scheduled first in their preemption order.
+ Design details
+ Sort-key composition with priority
+ Cache affinity is a tiebreaker within a priority class, never across. A high-priority cache-cold request always beats a low-priority cache-warm request. Tested in unit test test_priority_overrides_cache .
+ Sticky-front for preempted requests
+ CacheAffinityRequestQueue maintains two internal deques: _sticky (for prepend_request calls — preempted requests) and _sortable (for add_request — new arrivals). pop_request drains _sticky first. The reorder pass only sorts _sortable . Preserves the existing invariant that preempted requests retain their preemption order. Composes correctly with the new capacity-triggered preemption path in PR #40087 (verified — the new path uses the same prepend_request mechanism).
+ Anti-starvation
+ cache_affinity_max_wait_s deadline. Catches the pathological case where a request with no cached prefix is forever deprioritized under bursty cached traffic.
+ Min-blocks threshold
+ cache_affinity_min_blocks (default 2). Requests with fewer cached blocks score 0. Avoids reordering thrash from one-block hits.
+ What we explicitly do NOT do in v1
+ No token-level radix tree. vLLM is committed to block-level prefix hashing; reproducing sglang's radix tree would require KV-manager surgery and clash with the existing design. Operating at block boundaries captures the bulk of the realistic benefit (system prompts, RAG contexts are typically block-aligned).
+ No request-schema changes. No new fields on Request . Config lives entirely on SchedulerConfig .
+ No thrash-eviction guard. Ship the metric vllm:cache_affinity_thrash_evictions_total to detect thrashing; add a guard in a follow-up PR if benchmarks show it firing. Ship simple, collect evidence, iterate.
+ Compatibility
+ Mutually exclusive at engine-load time with EWSJF (PR #33392 ) — different --scheduler-cls values, users pick one. Both are reference policies on the pluggable substrate. Future composite is possible (EWSJF's partition tag as outer key, cache-affinity as inner) but out of scope for v1.
+ Independent of and composable with the [1/n] series under issue [Performance]: Prefix-caching aware scheduling #7883 . That series fixes can_allocate budget calculation; this RFC reorders the queue. Different layers.
+ Compatible with priority scheduling ( PR #5958 , PR #19057 ) — composes via the sort-key tiebreaker.
+ Compatible with chunked prefill (chunk-size selection unchanged at scheduler.py:677-692 ).
+ Compatible with PR #40087 (sts07142, capacity-triggered preemption) — verified via 3-way speculative merge: clean, no overlapping changes.
+ No effect when --scheduler-cls points elsewhere (the policy is opt-in plugin-loaded).
+ Implementation plan
+ Reference implementation is drafted on a feature branch: 3 commits, ~250 LOC core + 26 LOC config + ~600 LOC tests, all 13 new unit tests + 117 baseline V1 scheduler tests passing.
+ vllm/v1/core/sched/cache_affinity_scheduler.py # NEW, ~309 lines
+vllm/config/scheduler.py # +26 lines (4 new optional fields)
+tests/v1/core/test_cache_affinity_scheduler.py # NEW, ~576 lines
+ No other source files touched.
+ After this RFC, plan to open [WIP] draft PR within 2 weeks of feedback close, including:
+ Unit tests (already passing)
+ Benchmark scripts: synthetic same-prefix bursts, RAG with shared system prompt, ShareGPT multi-turn, adversarial unique-prompt regression
+ Benchmark numbers from a single H100 / L40S run (Llama-3.1-8B), with multi-seed variance
+ Roadmap (out of scope for v1)
+ Possible follow-up PRs once this lands and the substrate is validated:
+ Thrash-eviction guard — once metric data shows whether it's needed.
+ SLA-tier schema — revival of RFC #30256 (closed as not planned, schema designed but never implemented). Cache-affinity sort key naturally extends to SLA-tier as primary key.
+ Goodput-driven adaptive controller — research-grade extension. Composes with sidikbro's EWSJF (PR PR Title: [Feature] EWSJF: Adaptive Scheduler for Mixed-Workloads (30-50% Throughput Gain) #33392 ) — EWSJF's partition tag as outer key, cache-affinity as inner.
+ Cross-instance cache-aware routing hooks — exposure of cache score for use by external routers (production-stack, llm-d).
+ These are not part of this proposal. They are listed only to clarify that v1's small scope is intentional.
+ Alternatives considered
+ Token-level radix tree (sglang's approach). Rejected: clashes with vLLM's committed block-level cache design. Would require KV manager refactor outside any reasonable PR scope. Block-level captures most of the realistic benefit on production traces (shared prefixes are typically block-aligned).
+ Modify default Scheduler directly with a feature flag. Rejected: violates the pluggable scheduler pattern that PR #14466 introduced. Plugin form is cleaner, opt-in, and stays out of the default code path.
+ In-engine cross-instance routing. Rejected: cross-instance routing is the gateway / production-stack layer's responsibility. This RFC is in-engine waiting-queue ordering only.
+ Wait for RFC #24484 (workload-aware adaptive policy) to land first. Considered but not blocking. EWSJF (PR #33392 ) is the reference implementation for that RFC, scoped to throughput optimization on mixed workloads (SJF + Bayesian meta-optimizer). It does not cover cache-affinity reordering. The two contributions are orthogonal in objective and complementary in deployment.
+ Open questions for the community
+ Default bucket edges — (4, 16, 64, 256) chosen by intuition. Synthetic sweeps in our benchmark harness can tune these before merge if reviewers want a specific methodology.
+ Thrash detection — currently shipped as a metric only, with the actual guard deferred to a follow-up. Reviewers who want the guard in v1 can flag it; we'll fold it in if there's appetite.
+ In-tree vs vllm-contrib — the implementation is small enough to live in-tree under vllm/v1/core/sched/ . If maintainers prefer reference policies live elsewhere (analogous to how some adapters live out of tree), happy to relocate.
+ About the contributor
+ Software engineer at Meta in production ML serving infrastructure (large-scale ranking and inference systems for ad delivery serving hundreds of billions of daily requests). Cache-aware request scheduling is the analog problem in that domain.
+ Targeting feedback period of 2 weeks per vLLM convention, then opening a [WIP] draft PR.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ stale Over 90 days of inactivity Over 90 days of inactivity 
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

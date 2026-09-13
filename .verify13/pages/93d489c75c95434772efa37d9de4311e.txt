@@ -1,0 +1,554 @@
+
+ [Bug]: enable_prefix_caching=True but zero hits for any shared prefix shorter than one attention block on hybrid checkpoints (2096 / 1920 tokens), with nothing in the logs or metrics naming the minimum · Issue #53749 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu Sign in Appearance settings Platform AI CODE CREATION GitHub Copilot Write better code with AI GitHub Copilot app Direct agents from issue to merge MCP Registry Integrate external tools DEVELOPER WORKFLOWS Actions Automate any workflow Codespaces Instant dev environments Issues Plan and track work Code Review Manage code changes Code Quality Enforce quality at merge APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities Code security Secure your code as you build Secret protection Stop leaks before they start EXPLORE Why GitHub Documentation Blog Changelog Marketplace View all features Solutions BY COMPANY SIZE Enterprises Small and medium teams Startups Nonprofits BY USE CASE App Modernization DevSecOps DevOps CI/CD View all use cases BY INDUSTRY Healthcare Financial services Manufacturing Government View all industries View all solutions Resources EXPLORE BY TOPIC AI Software Development DevOps Security View all topics EXPLORE BY TYPE Customer stories Events & webinars Ebooks & reports Business insights GitHub Skills SUPPORT & SERVICES Documentation Customer support Community forum Trust center Partners View all resources Open Source COMMUNITY GitHub Sponsors Fund open source developers PROGRAMS Security Lab Maintainer Community GitHub Stars Archive Program REPOSITORIES Topics Trending Collections Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features Copilot for Business Enterprise-grade AI features Premium Support Enterprise-grade 24/7 support Pricing Search / Sign in Sign up Appearance settings 
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }} 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [Bug]: enable_prefix_caching=True but zero hits for any shared prefix shorter than one attention block on hybrid checkpoints (2096 / 1920 tokens), with nothing in the logs or metrics naming the minimum #53749 New issue Copy link New issue Copy link Open #53759 Open [Bug]: enable_prefix_caching=True but zero hits for any shared prefix shorter than one attention block on hybrid checkpoints (2096 / 1920 tokens), with nothing in the logs or metrics naming the minimum #53749 #53759 Copy link Labels kimi Description Schnitzel opened on Aug 25, 2026 Issue body actions Your current environment 
+ Environment 
+ Two independent single-GPU engines, each on one H200 (SM90) , TP=1, on 2xH200 nodes. 
+ engine A 
+ engine B 
+ checkpoint 
+ nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 
+ inclusionAI/Ling-3.0-flash-int4 
+ architecture 
+ NemotronHForCausalLM — hybrid Mamba2 + attention + MoE 
+ BailingMoeV3ForCausalLM — hybrid KDA (linear attention) + MLA MoE 
+ vLLM 
+ v0.27.1 ( vllm/vllm-openai:v0.27.1 ) 
+ main build reporting 0.26.1rc1.dev1133+gf94666b60 
+ attention backend 
+ FLASH_ATTN 
+ FLASH_ATTN_MLA 
+ graphs 
+ FULL_AND_PIECEWISE 
+ FULL_AND_PIECEWISE 
+ KV pool 
+ 7,035,562 tokens 
+ 4,072,594 tokens 
+ auto-selected attention block size 
+ 2096 
+ 1920 
+ Serve flags — engine A: 
+ vllm serve nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 \
+ --tensor-parallel-size 1 --max-model-len 32768 --gpu-memory-utilization 0.9 \
+ --mamba-backend flashinfer --mamba-cache-mode align \
+ --moe-backend flashinfer_cutlass --max-num-batched-tokens 16384 \
+ --enable-prefix-caching --enable-prompt-tokens-details
+ Engine B: 
+ vllm serve inclusionAI/Ling-3.0-flash-int4 \
+ --tensor-parallel-size 1 --max-model-len 32768 --gpu-memory-utilization 0.9 \
+ --trust-remote-code --dtype bfloat16 --enable-chunked-prefill \
+ --enable-prefix-caching --enable-prompt-tokens-details \
+ --compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE"}'
+ 🐛 Describe the bug 
+ On both engines the config dump says enable_prefix_caching=True , and both are 
+genuinely caching — above a threshold. Below it they return exactly zero 
+cache hits, and nothing anywhere in the startup log, the config dump or 
+ /metrics states what the threshold is. 
+ The threshold is one attention block. On a hybrid checkpoint vLLM raises the 
+attention block size until the attention page is at least as large as the 
+recurrent-state page, which produces blocks two to three orders of magnitude 
+larger than the usual 16 : 
+ INFO [interface.py:911] Setting attention block size to 2096 tokens to ensure
+ that attention page size is >= mamba page size.
+INFO [interface.py:935] Padding mamba page size by 0.58 % to ensure that mamba
+ page size and attention page size are exactly equal.
+ INFO [interface.py:911] Setting attention block size to 1920 tokens to ensure
+ that attention page size is >= mamba page size.
+INFO [interface.py:935] Padding mamba page size by 1.89 % to ensure that mamba
+ page size and attention page size are exactly equal.
+ Prefix caching registers whole blocks only, so a shared prefix shorter than 
+one block is structurally uncacheable. A 1,024-token shared system prompt — a 
+very ordinary size — gets nothing, on an engine that reports prefix caching as 
+enabled and that shows a healthy hit rate on longer conversations. 
+ Measurement 1 — zero hits over 2.5M prompt tokens, both models 
+ Concurrency sweep 1..24. Every request is a 1,024-token shared system prompt 
+plus a per-request user turn (~1.6k-token prompts total), independent seed per 
+point, prefix cache flushed before each point, 200 output tokens: 
+ engine 
+ enable_prefix_caching 
+ prompt tokens over the sweep 
+ prefix-cache hits 
+ A (Nemotron 3.5 Lightning, block 2096) 
+ True 
+ 2,533,016 
+ 0 (0.0 %) 
+ B (Ling-3.0-flash, block 1920) 
+ True 
+ 2,555,748 
+ 0 (0.0 %) 
+ Not "low" — zero, on both, across five million prompt tokens between them. For 
+contrast, a plain-GQA checkpoint measured under the identical protocol on the 
+same rig returns 1.4 % on this shape, and a non-hybrid MoE returns 55 % on a 
+warm run of it. 
+ Measurement 2 — per-request cached_tokens , and the quantum 
+ 8 conversations x 6 turns, 1,024-token shared system prompt, reading 
+ usage.prompt_tokens_details.cached_tokens per request 
+( --enable-prompt-tokens-details ). Median per turn: 
+ Engine A — block size 2096: 
+ turn 
+ prompt tokens p50 
+ cached tokens p50 
+ TTFT p50 s 
+ 1 
+ 1,692 
+ 0 
+ 0.380 
+ 2 
+ 2,024 
+ 0 
+ 0.098 
+ 3 
+ 2,356 
+ 0 
+ 0.145 
+ 4 
+ 2,687 
+ 2,096 
+ 0.153 
+ 5 
+ 3,020 
+ 2,096 
+ 0.124 
+ 6 
+ 3,352 
+ 2,096 
+ 0.121 
+ Engine B — block size 1920: 
+ turn 
+ prompt tokens p50 
+ cached tokens p50 
+ TTFT p50 s 
+ 1 
+ 1,688 
+ 0 
+ 0.864 
+ 2 
+ 2,022 
+ 0 
+ 0.262 
+ 3 
+ 2,357 
+ 1,920 
+ 0.136 
+ 4 
+ 2,689 
+ 1,920 
+ 0.178 
+ 5 
+ 3,025 
+ 1,920 
+ 0.238 
+ 6 
+ 3,357 
+ 1,920 
+ 0.210 
+ Two different hybrid families, two different block sizes, the same shape: 
+ cached_tokens is precisely 0 below one block and precisely one block 
+above it . It crosses at exactly the block boundary in both cases. 
+ (The turn-1 → turn-2 TTFT drop on engine A is not a cache effect — both turns 
+cache zero tokens. It is first-request-of-a-shape JIT warm-up. Reading it as a 
+"3.1x cache win" would have been wrong, and cached_tokens is what proves it.) 
+ Measurement 3 — the boundary, directly 
+ The two measurements above are multi-turn traces, where the shared prefix is 
+whatever the conversation happens to make it. To test the boundary directly I 
+wrote a probe that controls the shared prefix to the token : build a system 
+prompt of exactly X tokens (generate prose, tokenize, truncate the id list to X, 
+decode back, re-tokenize to confirm), send 2 unmeasured warm-up requests to pay 
+the first-request-of-a-shape JIT cost, POST /reset_prefix_cache , then 4 
+strictly sequential requests with the same system prompt and a different user 
+turn each. One request in flight at a time, so nothing co-batches. 
+ Every point also carries a control : one request with a different system 
+prompt of the same length. If the effect were length-driven rather than 
+prefix-driven, the control would cache too. It cached exactly 0 on all 33 
+points. 
+ predicted below is floor(X / block) * block . 
+ Engine A — block 2096: 
+ shared prefix X 
+ first-seen 
+ repeat cached 
+ x block 
+ predicted 
+ TTFT first-seen 
+ TTFT repeat 
+ control 
+ 1,024 
+ 0 
+ 0 
+ 0 
+ 0 
+ 0.140 
+ 0.095 
+ 0 
+ 1,900 
+ 0 
+ 0 
+ 0 
+ 0 
+ 0.136 
+ 0.106 
+ 0 
+ 1,920 
+ 0 
+ 0 
+ 0 
+ 0 
+ 0.140 
+ 0.102 
+ 0 
+ 2,048 
+ 0 
+ 0 
+ 0 
+ 0 
+ 0.163 
+ 0.122 
+ 0 
+ 2,096 
+ 0 
+ 2,096 
+ 1x 
+ 2,096 
+ 0.168 
+ 0.070 
+ 0 
+ 2,200 
+ 0 
+ 2,096 
+ 1x 
+ 2,096 
+ 0.164 
+ 0.072 
+ 0 
+ 3,840 
+ 0 
+ 2,096 
+ 1x 
+ 2,096 
+ 0.218 
+ 0.130 
+ 0 
+ 4,096 
+ 0 
+ 2,096 
+ 1x 
+ 2,096 
+ 0.162 
+ 0.119 
+ 0 
+ 4,192 
+ 0 
+ 4,192 
+ 2x 
+ 4,192 
+ 0.185 
+ 0.090 
+ 0 
+ 6,288 
+ 0 
+ 6,288 
+ 3x 
+ 6,288 
+ 0.207 
+ 0.110 
+ 0 
+ 7,680 
+ 0 
+ 6,288 
+ 3x 
+ 6,288 
+ 0.253 
+ 0.151 
+ 0 
+ 8,192 
+ 0 
+ 6,288 
+ 3x 
+ 6,288 
+ 0.263 
+ 0.142 
+ 0 
+ Engine B — block 1920: 
+ shared prefix X 
+ first-seen 
+ repeat cached 
+ x block 
+ predicted 
+ TTFT first-seen 
+ TTFT repeat 
+ control 
+ 1,024 
+ 0 
+ 0 
+ 0 
+ 0 
+ 0.214 
+ 0.157 
+ 0 
+ 1,900 
+ 0 
+ 0 
+ 0 
+ 0 
+ 0.263 
+ 0.227 
+ 0 
+ 1,920 
+ 0 
+ 1,920 
+ 1x 
+ 1,920 
+ 0.262 
+ 0.109 
+ 0 
+ 2,048 
+ 0 
+ 1,920 
+ 1x 
+ 1,920 
+ 0.271 
+ 0.116 
+ 0 
+ 2,096 
+ 0 
+ 1,920 
+ 1x 
+ 1,920 
+ 0.274 
+ 0.140 
+ 0 
+ 2,200 
+ 0 
+ 1,920 
+ 1x 
+ 1,920 
+ 0.285 
+ 0.124 
+ 0 
+ 3,840 
+ 0 
+ 3,840 
+ 2x 
+ 3,840 
+ 0.372 
+ 0.143 
+ 0 
+ 4,096 
+ 0 
+ 3,840 
+ 2x 
+ 3,840 
+ 0.356 
+ 0.146 
+ 0 
+ 4,192 
+ 0 
+ 3,840 
+ 2x 
+ 3,840 
+ 0.364 
+ 0.154 
+ 0 
+ 5,760 
+ 0 
+ 5,760 
+ 3x 
+ 5,760 
+ 0.418 
+ 0.147 
+ 0 
+ 6,288 
+ 0 
+ 5,760 
+ 3x 
+ 5,760 
+ 0.495 
+ 0.196 
+ 0 
+ 7,680 
+ 0 
+ 7,680 
+ 4x 
+ 7,680 
+ 0.477 
+ 0.170 
+ 0 
+ 8,192 
+ 0 
+ 7,680 
+ 4x 
+ 7,680 
+ 0.566 
+ 0.218 
+ 0 
+ repeat cached equals floor(X / block) * block on all 25 hybrid points. 
+Hits first appear at exactly one block — engine A at X=2,096 (2,048 caches 
+nothing), engine B at X=1,920 (1,900 caches nothing). Blocks then accumulate 
+normally: 3 measured on A, 4 on B. prefix_cache_hits_total in /metrics 
+advances by exactly 3x the per-request cached_tokens at every point, so the 
+per-request number and the engine's own counter agree. 
+ A non-hybrid control engine (plain GQA, default block 16, same probe, same 
+hardware) caches essentially the whole prefix at every length, including the 
+1,024 the hybrids cache nothing of: 
+ shared prefix X 
+ repeat cached 
+ x block 
+ TTFT first-seen 
+ TTFT repeat 
+ 1,024 
+ 1,024 
+ 64x 
+ 0.172 
+ 0.057 
+ 1,900 
+ 1,904 
+ 119x 
+ 0.250 
+ 0.065 
+ 2,048 
+ 2,048 
+ 128x 
+ 0.256 
+ 0.068 
+ 4,096 
+ 4,096 
+ 256x 
+ 0.461 
+ 0.086 
+ 8,192 
+ 8,192 
+ 512x 
+ 0.914 
+ 0.124 
+ That control also calibrates the constant: at X=1,900 it caches 1,904 and at 
+X=2,200 it caches 2,208 — slightly above X, both exact multiples of 16. So 
+the shared prefix is not X but X + ~8-19 chat-template tokens, floored to the 
+block. That is why engine A hits at exactly X=2,096 (common ~2,106 >= 2,096) but 
+not at X=2,048 (common ~2,058 < 2,096). 
+ The cost of the remainder is not small and it is permanent. At a 4,096-token 
+shared system prompt, engine A caches 2,096 of it and re-prefills the other 
+2,000 tokens on every request forever — a 1.36x TTFT saving where the non-hybrid 
+control gets 5.4x. Rounding the same prompt up to 4,192 tokens makes it 
+strictly faster on every repeat (2.06x) despite being 96 tokens longer, which is 
+not a trade-off any operator would think to look for. 
+ What I expected 
+ That an engine reporting enable_prefix_caching=True would, somewhere, state 
+the smallest prefix it can actually cache — or that the number would be 
+derivable from something an operator reads at startup without knowing the 
+hybrid KV internals. 
+ What actually happens 
+ The only surface that exposes it is prompt_tokens_details.cached_tokens on an 
+individual response, and only if --enable-prompt-tokens-details is on. The 
+startup log prints Setting attention block size to N tokens , which is the 
+number — but it is phrased as an internal page-alignment detail, sits far from 
+anything about caching, and nothing connects the two. /metrics gives 
+ vllm:prefix_cache_queries_total and vllm:prefix_cache_hits_total , which 
+report the symptom (0 / N) and not the cause; a zero there is indistinguishable 
+from "this workload has no shared prefixes". 
+ Why this matters operationally 
+ Sizing a shared system prompt at 1-2k tokens is the single most common 
+enterprise prefix shape there is. On these checkpoints it yields no caching at 
+all , silently: 
+ prefix caching is worth nothing, 
+ cache-affinity routing in front of the engine is worth nothing (there is no 
+cache to be affine to), 
+ capacity planning that assumed a warm prefix is wrong by the full prefill 
+cost of the system prompt on every request, 
+ and the only way to find out is to instrument per-request cached_tokens . We 
+found it by accident. Two of the last five checkpoints we deployed are affected, 
+and the affected fraction grows as Mamba/GDN/KDA hybrids do. 
+ The earlier generation of this trap was at least visible: on one hybrid we 
+deployed, vLLM logged enable_prefix_caching=False outright and disabled it. 
+Here the log says True and the counter says zero, which is worse. 
+ Ask 
+ Either of these would have saved the investigation; both would be better: 
+ A startup log line naming the minimum cacheable prefix , emitted next to 
+the prefix-caching config when the effective block size is unusually large — 
+e.g. Prefix caching enabled: minimum cacheable prefix is 2096 tokens (attention block size); shared prefixes shorter than this will never hit. 
+The value is already computed at that point; this is a logging-only change. 
+ A metric or /v1/models -adjacent field exposing it , e.g. a gauge 
+ vllm:prefix_cache_block_size_tokens , so a fleet can be audited without 
+reading every engine's boot log. 
+ A third, cheaper option: mention the whole-block quantum in the prefix-caching 
+docs and state explicitly that hybrid checkpoints raise the block size into the 
+thousands. Right now the docs' 16-token mental model is what most operators are 
+carrying. 
+ I am happy to send the PR for (1) and/or (2) if maintainers say which shape they 
+want. 
+ Related 
+ [Bug]: Prefix caching silently inert on hybrid Mamba2 models when max_model_len < auto-selected block size #48401 — prefix caching silently inert on hybrid Mamba2 models when 
+ max_model_len < the auto-selected block size , and [Bugfix] Warn when prefix caching is inert on hybrid models (block_size > max_model_len) #48402 , the warning PR 
+for it. Closely related but distinct: there, no request can ever fill one 
+block, so nothing caches at all. Here max_model_len (32768) is comfortably 
+larger than the block, requests above one block do cache normally, and the 
+gap is specifically that the shared prefix is below the quantum. A warning 
+gated on block_size > max_model_len would not fire on this. 
+ [Bug]: Hybrid-model prefix caching silently drops to 0% when the align-mode Mamba checkpoint lands in request-unique tokens #45238 — hybrid prefix caching dropping to 0 % when the align-mode Mamba 
+checkpoint lands in request-unique tokens. Different mechanism (checkpoint 
+ placement , not block quantum), and it also notes block sizes up to 2096. The 
+observation in Measurement 2 that cached_tokens is capped at exactly one 
+block may well be that issue's single-checkpoint retention; see the note in 
+Measurement 3. 
+ [Misc] Warn when --block-size is silently discarded by backend alignment #50486 — warn when --block-size is silently discarded by backend alignment. 
+Same family of ask: a derived block size that changes cache behaviour with 
+nothing in the log explaining it. 
+ [Bug]: Kimi-K3 prefix cache miss when prompt length is exactly a 1536-token boundary #50235 — Kimi-K3 prefix cache miss at exactly a 1536-token boundary. 
+ [Bug]: vllm==0.23.0 Qwen3.6-27B, system prompt same in multi requests, But prefix cache failure. #47430 — "same system prompt in multiple requests, but prefix cache always 
+0.0 %" on a hybrid checkpoint. No diagnosis on that issue; this may be it. 
+ v1/engine: emit prefix-cache KV-events at hash_block_size granularity for hybrid Mamba+Attention models #43258 — emit prefix-cache KV events at hash_block_size granularity for 
+hybrid Mamba+attention models. 
+ Before submitting a new issue... 
+ Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page , which can answer lots of frequently asked questions. 
+ Findings measured on my own hardware; issue text drafted with AI assistance and reviewed by me. Reactions are currently unavailable Activity Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment Metadata Metadata Assignees No one assigned Labels kimi Type No type Projects No projects Milestone No milestone Relationships None yet Development No branches or pull requests Issue actions Open in GitHub Copilot app 
+ Footer 
+ © 2026 GitHub, Inc.
+ Footer navigation 
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

@@ -1,0 +1,284 @@
+
+ [Bug] GLM-5.x NoPE MLA (qk_rope_head_dim=0) cannot run on SM120: every DSA sparse-MLA backend is unavailable · Issue #39302 · sgl-project/sglang · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ sgl-project
+ / 
+ sglang 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 8.8k 
+ Star
+ 35.9k 
+ Code 
+ Issues 
+ 890 
+ Pull requests 
+ 4.4k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ [Bug] GLM-5.x NoPE MLA (qk_rope_head_dim=0) cannot run on SM120: every DSA sparse-MLA backend is unavailable #39302 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Open 
+ Open 
+ [Bug] GLM-5.x NoPE MLA (qk_rope_head_dim=0) cannot run on SM120: every DSA sparse-MLA backend is unavailable #39302 
+ Copy link 
+ Description
+ fsadj 
+ opened on Sep 13, 2026 
+ Issue body actions 
+ Summary
+ GLM-5.x uses NoPE MLA : qk_rope_head_dim = 0 , so the absorbed query head dim is
+ kv_lora_rank (512) rather than the DeepSeek 512 + 64 = 576 .
+ On SM120 (RTX PRO 6000 Blackwell, compute capability 12.0) this model cannot be served at
+all. Every --dsa-prefill-backend / --dsa-decode-backend choice fails, each for a distinct
+reason, and the one backend the code forces for GLM + fp8 KV + SM120 is the one whose
+FlashInfer kernel rejects NoPE. So with --kv-cache-dtype fp8_e4m3 the model is unrunnable by
+construction; with bf16 KV the remaining backends are each blocked as documented below.
+ This is not specific to any quantized/pruned repack — the geometry below comes from the model
+config and applies to the full model too.
+ Environment
+ GPU 
+ NVIDIA RTX PRO 6000 Blackwell Workstation Edition, SM120 (cc 12.0), 96 GB 
+ Driver 
+ 596.72 
+ OS 
+ Windows 11 + WSL2 Ubuntu 24.04 
+ torch 
+ 2.13.0+cu130 (CUDA 13.0) 
+ sglang 
+ 0.5.19 
+ flashinfer 
+ 0.6.18 
+ tilelang 
+ 0.1.12 
+ nvcc 
+ 13.4.59 
+ Model (same geometry as the official GLM-5.3-Flash; observed on
+ Asilarkness/GLM-5.3-Flash-Uncensored-NVFP4-Pruning-62GB , a fingerprint-preserving repack):
+ "architectures" : [ " Glm5NextForConditionalGeneration " ],
+ "num_attention_heads" : 64 , "kv_lora_rank" : 512 ,
+ "qk_nope_head_dim" : 256 , "qk_rope_head_dim" : 0 , "v_head_dim" : 256 ,
+ "mla_use_nope" : true , "index_topk" : 2048 
+ Note this matches flashinfer's own nope_mla_dimensions preset
+( qk_nope_head_dim=256, qk_rope_head_dim=0, v_head_dim=256, kv_lora_rank=512 ) exactly, so NoPE
+MLA is a first-class geometry upstream — just not on SM120.
+ Device constraint (verified)
+ cudaDevAttrMaxSharedMemoryPerBlockOptin on this part is 101376 B (99 KB) 
+( sharedMemPerMultiprocessor = 102400). Verified with a minimal CUDA program:
+ cudaFuncSetAttribute(k, cudaFuncAttributeMaxDynamicSharedMemorySize, n) returns
+ invalid argument for n ∈ {131072, 163840, 202752, 206848} and succeeds at 101376.
+Hopper/B200 expose ~228 KB, which is the budget the kernels below are written against.
+ Failure 1 — --dsa-prefill-backend tilelang (bf16 KV): needs 202 KB, device allows 99 KB
+ --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16
+ File ".../sglang/kernels/ops/attention/dsa/tilelang_kernel.py", line 1397, in tilelang_sparse_fwd
+ out = kernel(q.unsqueeze(0), kv.unsqueeze(0), indices.unsqueeze(0))
+ ...
+tvm.error.InternalError: Failed to set the allowed dynamic shared memory size to 206848
+ tail_dim == 0 for NoPE, so this routes to sparse_attention_fwd_kernel_v1 . Its shared
+footprint with num_heads=64, dim=512, block_I=64, bf16 is:
+ Q_shared [64, 512] * 2 = 65536
+KV_shared [64, 512] * 2 = 65536
+O_shared [64, 512] * 2 = 65536
+S_shared [64, 64] * 2 = 8192
+ ------
+ 204800 (+ padding -> the reported 206848)
+ Two observations:
+ O_shared is dead. It is written by T.copy(acc_o, O_shared) and never read — the very
+next line copies acc_o straight to Output . That is 64 KB allocated for nothing, and on
+SM120 it is fatal on its own (Q + O = 128 KB already exceeds the 99 KB opt-in ceiling).
+ Even without it, the default tile does not fit. The only remaining lever is the KV tile:
+ block_I=16 brings it to ~84 KB, but at that tile size tilelang's LayoutInference fails —
+the acc_s -derived reduction layouts ( m_i , sumexp_i ) can no longer be unified with the
+layouts of the scalars consumed by the acc_o loops ( alpha , sumexp ):
+ tvm.error.InternalError: Layout infer conflict between m_i and alpha in T.Parallel loop
+tvm.error.InternalError: Layout infer conflict between sumexp_i and sumexp in T.Parallel loop
+ (The same file's sparse_attention_fwd_kernel_v2 sidesteps this class of conflict by keeping
+per-head scalars in shared memory — so v1 appears to rely on the default tile size to make
+the layouts line up.)
+ We stopped at this point; shrinking the tile is a workaround, not a fix.
+ Failure 2 — --dsa-prefill-backend flashinfer_sparse_mla (fp8 KV): kernel rejects NoPE
+ --kv-cache-dtype fp8_e4m3 --dsa-prefill-backend flashinfer_sparse_mla --dsa-decode-backend flashinfer_sparse_mla
+ ValueError: SM120 sparse MLA v32/GLM expects kv_lora_rank=512, qk_rope_head_dim=64, and query
+head dim 576; got kv_lora_rank=512, qk_rope_head_dim=0, query dim=512
+ ( flashinfer/mla/_core.py:584-590 , in _trtllm_batch_decode_sparse_mla_v32_sm120 )
+ This is the important one, because _validate_flashinfer_sparse_mla_backend 
+( sglang/kernels/ops/attention/flash_mla_sm120.py , raised from
+ sglang/srt/layers/attention/dsa_backend.py:519 ) requires this backend for GLM DSA:
+ is_glm_sm12_fp8 = ( model_arch in _GLM_DSA_MODEL_ARCHS 
+ and device_sm_major == 12 
+ and kv_cache_dtype == torch . float8_e4m3fn )
+...
+ if is_glm_sm12_fp8 :
+ unsupported = selected - { "flashinfer_sparse_mla" }
+ if unsupported :
+ raise ValueError ( "GLM DSA with FP8 KV cache on NVIDIA SM120/SM121 supports only " 
+ "flashinfer_sparse_mla, but got {...}" )
+ Glm5NextForConditionalGeneration is in _GLM_DSA_MODEL_ARCHS . So for GLM + fp8 on SM120 the
+user is locked to the single backend whose FlashInfer kernel requires the DeepSeek 576-wide
+(nope 512 + rope 64) layout, while GLM-5.x is NoPE (512). The error text says "v32/ GLM ",
+so this path is clearly intended to serve GLM — it just cannot serve a NoPE GLM.
+ Failure 3 — --dsa-*-backend trtllm : the native NoPE path has no SM120 kernel
+ FlashInfer 0.6.18 does have a purpose-built NoPE sparse path — _core.py:3786-3797 :
+ is_nope_mla = ( kv_lora_rank == nope_mla_dimensions . kv_lora_rank 
+ and qk_rope_head_dim == nope_mla_dimensions . qk_rope_head_dim )
+ if is_nope_mla and sparse_mla_top_k <= 0 :
+ raise ValueError ( "Native qk_rope_head_dim=0 TRTLLM-GEN MLA requires sparse_mla_top_k > 0" )
+ if is_nope_mla and sparse_mla_top_k_lens is None :
+ raise ValueError ( "Native qk_rope_head_dim=0 TRTLLM-GEN MLA requires sparse_mla_top_k_lens" )
+ sglang feeds it correctly — _forward_trtllm comments "The BF16 no-RoPE path passes a
+zero-width q_rope tensor" ( dsa_backend.py:3437 ) and builds sparse_mla_top_k_lens via
+ prepare_trtllm_nope_sparse_metadata exactly when qk_rope_head_dim == 0 . But the kernel:
+ RuntimeError: Error in function 'TllmGenFmhaRunner' at
+.../flashinfer/data/include/flashinfer/trtllm/fmha/fmhaRunner.cuh:37: Unsupported architecture
+ backend="auto" is no way out either: _core.py:3833-3838 routes SM120 + sparse_mla_top_k > 0 
+to backend="sparse" , i.e. straight back to Failure 2.
+ Failure 4 — remaining backends
+ flashmla_kv / flashmla_sparse — sglang/kernels/ops/attention/flash_mla_sm120.py 
+states it directly: "On SM120 (Blackwell Desktop / RTX PRO 6000) the flash_mla CUDA kernel is
+not available" .
+ triton — _triton_sparse_mla_fwd_single / _triton_sparse_mla_fwd_splitk 
+( sglang/kernels/ops/attention/dsa/triton_sparse_mla.py ) take the rope part as a
+ D_TAIL: tl.constexpr and index it with dt = tl.arange(0, D_TAIL) ; with NoPE the rope is
+zero-width, so this cannot be specialized. (This kernel is otherwise a good citizen here — it
+is the only one that adapts its BLOCK_K to the device's shared-memory limit.)
+ Dense MHA one-shot — set_dsa_prefill_impl ( dsa_backend.py:3628-3642 ) gates
+ MHA_ONE_SHOT on device_sm == 90 or (100 <= device_sm < 110) or _IS_GFX95 , so SM120 is
+excluded by design; and _forward_standard_mha 's device_sm_major >= 10 branch calls
+ flashinfer.prefill.trtllm_ragged_attention_deepseek , another trtllm-gen kernel.
+ What we'd like
+ Any one of these would unblock SM120 serving for NoPE GLM:
+ Support qk_rope_head_dim == 0 in the SM120 sparse MLA kernel
+( sparse_mla_sm120_{prefill,decode}.cu / _sparse_mla_sm120.py ) — i.e. a 512-wide
+(nope-only) page layout. The Python gate at _core.py:584 currently rejects it before the
+kernel is even reached, and nope_mla_dimensions already exists as a supported geometry.
+ Or let the flashinfer_sparse_mla validator fall back to the trtllm-gen NoPE path when
+available (and give that path an SM120 build — Failure 3).
+ Or make the tilelang v1 kernel SM120-safe: drop the dead O_shared , and size the tile from
+the device's actual sharedMemPerBlockOptin instead of assuming a ~228 KB budget (the
+triton kernel already does exactly this for BLOCK_K ).
+ Happy to test any of these on the hardware above, and to run whatever diagnostic builds would
+help — this GPU is available and the model is local.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

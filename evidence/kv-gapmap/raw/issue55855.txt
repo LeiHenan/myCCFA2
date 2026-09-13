@@ -1,0 +1,211 @@
+
+ [Feature]: Add RDMA-capable NIXL OBJ support for KV offload secondary tier · Issue #55855 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [Feature]: Add RDMA-capable NIXL OBJ support for KV offload secondary tier #55855 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Open 
+ #56192 
+ Open 
+ [Feature]: Add RDMA-capable NIXL OBJ support for KV offload secondary tier #55855 
+ #56192 
+ Copy link 
+ Labels
+ feature request New feature or request New feature or request kv-connector 
+ Description
+ tverma-ps 
+ opened on Sep 8, 2026 
+ Issue body actions 
+ 🚀 The feature, motivation and pitch
+ vLLM already supports an object-store secondary tier for KV offloading through the NIXL OBJ backend and OffloadingConnector (RFC for this: #38260 ). The existing JSON shape should remain the same: users configure an OBJ secondary tier with type: "obj" and provide object-store parameters through store_config .
+ I would like vLLM to extend this existing OBJ tier so it can use accelerated NIXL OBJ backends that support CPU DRAM registration and RDMA-capable object transfers.
+ Existing shape:
+ {
+ "type" : " obj " ,
+ "store_config" : {
+ "bucket" : " kv-cache " ,
+ "endpoint_override" : " http://object-store.example:9000/ " ,
+ "scheme" : " http " 
+ },
+ "prefix" : " " ,
+ "io_threads" : 4 
+}
+ Proposed extended shape:
+ {
+ "type" : " obj " ,
+ "store_config" : {
+ "bucket" : " kv-cache " ,
+ "endpoint_override" : " http://object-store.example:9000/ " ,
+ "scheme" : " http " ,
+ "accelerated" : true ,
+ "type" : " <accelerated_backend_type> " ,
+ "use_virtual_addressing" : true ,
+ "req_checksum" : " supported " ,
+ "resp_checksum" : " supported " ,
+ "backend_params" : {
+ "custom_param" : " custom_value " 
+ }
+ },
+ "prefix" : " " ,
+ "io_threads" : 4 ,
+ "max_dram_registration_bytes" : 1073741824 
+}
+ Credentials and region should not be required in the JSON. They should be allowed to come from the AWS SDK default credential/config provider chain, including environment variables, AWS profiles, credential files, IAM roles, or workload identity.
+ Explicit access_key, secret_key, session_token, and region fields can remain supported for compatibility, but the expected production path should be environment/profile/workload-identity based configuration.
+ The vLLM-side changes should include:
+ Pass accelerated, accelerated backend type, checksum options, virtual addressing, and generic backend_params through to NIXL OBJ.
+ Preserve the existing OBJ tier behavior and object key layout.
+ Register the CPU primary-tier memory with NIXL for accelerated object transfers.
+ Support splitting CPU DRAM registration into multiple block-aligned descriptors using max_dram_registration_bytes, because accelerated NIXL OBJ backends may reject descriptors larger than CUOBJ_MAX_MEMORY_REG_SIZE.
+ Keep RDMA token handling, backend-specific memory registration, and object PUT/GET implementation inside NIXL.
+ This enables RDMA-capable object-store paths for KV chunks moving between vLLM's CPU primary tier and object-store secondary tier, without adding backend-specific transfer logic to vLLM.
+ Alternatives
+ Continue using the existing non-accelerated NIXL OBJ path. This keeps the current behavior but cannot use RDMA-capable object transfers.
+ Add backend-specific RDMA/object-transfer logic directly in vLLM. This is less desirable because memory registration, RDMA token handling, and object transfer mechanics belong in NIXL.
+ Additional context
+ This should be an extension of the existing OBJ secondary tier, not a new tier type.
+ The main implementation caveat is CPU DRAM registration size: vLLM currently has enough context to split the CPU primary-tier pool on KV block boundaries, while NIXL accelerated OBJ backends may enforce CUOBJ_MAX_MEMORY_REG_SIZE per registered descriptor.
+ Before submitting a new issue...
+ Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page , which can answer lots of frequently asked questions.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ feature request New feature or request New feature or request kv-connector 
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

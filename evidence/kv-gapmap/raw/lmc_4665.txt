@@ -1,0 +1,301 @@
+
+ [CacheBlend] [blocker enhancement] Blend store cannot be disabled - the MP connector ignores `kv_role=kv_consumer` / `skip_save`, blocking warm-then-read-only serving · Issue #4665 · LMCache/LMCache · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ LMCache
+ / 
+ LMCache 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 1.9k 
+ Star
+ 11.8k 
+ Code 
+ Issues 
+ 211 
+ Pull requests 
+ 480 
+ Discussions 
+ Actions 
+ Projects 
+ Wiki 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Wiki
+ Security and quality
+ Insights
+ [CacheBlend] [blocker enhancement] Blend store cannot be disabled - the MP connector ignores kv_role=kv_consumer / skip_save , blocking warm-then-read-only serving #4665 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Closed as not planned 
+ Closed as not planned 
+ [CacheBlend] [blocker enhancement] Blend store cannot be disabled - the MP connector ignores kv_role=kv_consumer / skip_save , blocking warm-then-read-only serving #4665 
+ Copy link 
+ Description
+ shawnguyen-tensormesh 
+ opened on Aug 20, 2026 
+ Issue body actions 
+ [CacheBlend] [blocker enhancement] Blend store cannot be disabled - the MP connector ignores kv_role=kv_consumer / skip_save , blocking warm-then-read-only serving
+ Date: 2026-08-20
+ Verdict: CONFIRMED 
+ Confidence: High - proven directly from source at the pinned commits; the disable path exists in the single-process connector and is entirely absent from both MP-connector implementations. No run required (structural absence).
+ Severity: Blocker for warm-then-read-only serving topologies; otherwise medium (correctness/throughput are unaffected - the connector over-stores rather than mis-stores).
+ Problem at a glance
+ flowchart TD
+ A1["kv_role=kv_consumer"] --> G1{"skip-save gate"}
+ A2["lmcache.skip_save"] --> G1
+ A3["LMCACHE_FORCE_SKIP_SAVE"] --> G1
+ G1 -->|honored| NS1["single-process connector: no store"]
+ B1["kv_role=kv_consumer"] --> X["MP connector: ignored"]
+ B2["skip_save"] --> X
+ X --> STO["GetStoreMetadata stores unconditionally"]
+ STO --> RES["warm-then-read-only serving impossible"]
+ Loading 
+ 1. Versioning
+ Component 
+ Value 
+ LMCache git HEAD 
+ 9fc6e1afe83335a1c41b31662470fa115b2b6ac8 ( v0.5.3-cu129-12-g9fc6e1af ), committed 2026-08-09 
+ vLLM git HEAD 
+ 436be94e135fd07fc94e4c165a1b6870af72bf31 ( v0.26.1rc0-557-g436be94e13 ), committed 2026-08-10 
+ Image concerned 
+ lmcache/vllm-openai:v0.5.3 
+ MP connector (LMCache side) 
+ lmcache/integration/vllm/lmcache_mp_connector.py , lmcache_mp_connector_0201.py , lmcache_mp_metadata.py , vllm_multi_process_adapter.py 
+ MP connector (vLLM side) 
+ vllm/distributed/kv_transfer/kv_connector/v1/lmcache_mp_connector.py 
+ Single-process connector (the comparator that HAS the gate) 
+ lmcache/integration/vllm/vllm_v1_adapter.py (registered as LMCacheConnectorV1 via lmcache_connector_v1.py ) 
+ Relevant config keys 
+ kv_transfer_config.kv_role (vLLM), request_configs["lmcache.skip_save"] (per-request), LMCACHE_FORCE_SKIP_SAVE (env), enable_blending + save_unfull_chunk (LMCache v1/config.py ) 
+ Both connector families are registered in vLLM's factory ( vllm/distributed/kv_transfer/kv_connector/factory.py ): LMCacheConnectorV1 (single-process) and LMCacheMPConnector (multi-process). The MP connector is the one used for the co-located/cross-pod shared-cache and CacheBlend topologies.
+ 2. Claim restated (hypothesis under test)
+ Mechanism claimed: The MP KV connector's store path builds and submits STORE operations for every request unconditionally, with no code path that reads a store-disable signal.
+ Component: LMCacheMPConnector and its store-metadata builder ( LMCacheMPRequestMetadata.GetStoreMetadata ).
+ Expected symptom: Setting kv_role=kv_consumer , request_configs["lmcache.skip_save"] , or any other store-disable flag has no effect under the MP connector - the engine keeps writing KV to the cache. Warm-then-read-only serving (warm the cache once, then run read-only replicas that never mutate/thrash it) is therefore impossible with the MP connector.
+ CONFIRMS the claim: the MP store path takes no kv_role / skip_save / request_configs input and has no early-return keyed on a role/disable signal.
+ REFUTES the claim: any per-request or per-engine gate in the MP store path that suppresses STORE ops.
+ 3. Issue description - why "no store-disable knob" blocks warm-then-read-only serving
+ A common production pattern for a shared KV tier is: warm once, then serve read-only. One writer (or an offline warming pass) populates the L1/L2 cache with the working set; a fleet of serving replicas then reads from that cache but must not write back - because each replica's writes (a) thrash a bounded L1 with per-request/per-ordering artifacts, evicting the carefully-warmed hot set, and (b) waste store bandwidth and CPU on data that already exists or will never be reused. The kv_consumer role and lmcache.skip_save exist precisely to express "this engine/request loads but never stores."
+ The single-process connector honors all three levers (per-request, per-engine-role, global env). The MP connector honors none of them. Because CacheBlend and the shared-cache/cross-pod topologies run on the MP connector, there is currently no supported way to stand up a read-only serving replica against a warmed cache: every replica keeps storing, so a read-only fleet still mutates and thrashes the shared tier. That is the blocker - it removes an entire deployment topology, not just a tuning knob.
+ Aggravating factor: enabling blending forces an additional save-related config ON ( save_unfull_chunk=True , see §5d), so the blend path stores more , not less, and offers no counterbalancing off-switch on the connector it runs on.
+ 4. How verified (file:line + quotes)
+ All line numbers are at the pinned commits above.
+ 4a. The single-process connector HAS the disable gate (the comparator)
+ lmcache/integration/vllm/vllm_v1_adapter.py :
+ Reads the per-engine role from vLLM config - line 469 :
+ self . kv_role = vllm_config . kv_transfer_config . kv_role 
+ Global env kill-switch - line 580 :
+ self . force_skip_save = bool ( os . environ . get ( "LMCACHE_FORCE_SKIP_SAVE" , False ))
+ Per-engine consumer role suppresses save - lines 1023-1024 (and again 1113-1114):
+ if self . kv_role == "kv_consumer" :
+ # Don't do save if the role is kv_consumer 
+ return 
+ Combined role/env gate feeding every request tracker - lines 1630, 1657-1667 :
+ force_skip_save = self . kv_role == "kv_consumer" or self . force_skip_save 
+...
+ skip_save = force_skip_save or (
+ self . config . priority_limit is not None 
+ and request_priority > self . config . priority_limit 
+)
+ request_tracker = RequestTracker . from_new_request (..., skip_save )
+ Per-request override - lines 339-346 :
+ # Check if request_configs has lmcache.skip_save set to True 
+ request_skip = ( tracker . request_configs or {}). get ( "lmcache.skip_save" , False )
+ skip_save = tracker . disagg_spec is None and (
+ tracker . skip_save 
+ ...
+ or request_skip 
+)
+ 4b. The MP connector store-metadata builder has NO such input
+ lmcache/integration/vllm/lmcache_mp_metadata.py , GetStoreMetadata - lines 176-267 . Its full signature is:
+ @ staticmethod 
+ def GetStoreMetadata (
+ tracker : LMCacheMPRequestTracker ,
+ lmcache_tokens_per_chunk : int ,
+ group_tokens_per_block : list [ int ],
+) -> "LMCacheMPRequestMetadata | None" :
+ There is no kv_role , skip_save , or request_configs parameter. The decision to emit a STORE op is based only on how many new whole chunks are available ( lines 236-267 ):
+ num_staging_tokens = min_available_tokens - tracker . num_stored_tokens 
+ num_chunks = num_staging_tokens // lmcache_tokens_per_chunk 
+ if num_chunks >= 1 :
+ ...
+ ret = LMCacheMPRequestMetadata (
+ request_id = tracker . request_id ,
+ direction = "STORE" ,
+ op = op ,
+ cache_salt = tracker . cache_salt ,
+ )
+ tracker . increase_num_stored_tokens ( end_token_idx - start_token_idx )
+ return ret 
+ return None 
+ The only way it returns None (no store) is num_chunks < 1 , i.e. "nothing new to store" - never "told not to store." ( lmcache_mp_connector_0201.py 's GetStoreMetadata , lines 278-346, is block-indexed but structurally identical: same three params, same chunk-count-only gate.)
+ 4c. The MP connector calls that builder unconditionally, for every request
+ lmcache/integration/vllm/lmcache_mp_connector.py :
+ New requests - lines 1014-1026 :
+ for new_request in scheduler_output . scheduled_new_reqs :
+ request_tracker = self . _get_request_tracker ( new_request . req_id )
+ ...
+ r_meta = LMCacheMPRequestMetadata . GetStoreMetadata (
+ request_tracker , lmcache_tokens_per_chunk , self . _group_tokens_per_block )
+ if r_meta is not None :
+ metadata . add_request_metadata ( r_meta )
+ Cached/continuing requests - lines 1049-1056 : identical unconditional call.
+ No if self.kv_role == ... / if skip_save guard surrounds either call site. The resulting STORE metadata is handed to batched_submit_store_requests (line 589) and committed.
+ 5. Clues / evidence (the decisive absences + the forced-on save)
+ 5a. Grep: store-disable keys are entirely absent from the MP path
+ $ grep -rniE 'kv_role|kv_consumer|skip_save|read_only|load_only|request_config' \
+ lmcache/integration/vllm/lmcache_mp_connector.py \
+ lmcache/integration/vllm/lmcache_mp_connector_0201.py \
+ lmcache/integration/vllm/lmcache_mp_metadata.py \
+ lmcache/integration/vllm/vllm_multi_process_adapter.py
+ <no matches>
+ The only occurrence of kv_role anywhere in the MP files is a docstring config example - vllm_multi_process_adapter.py:228 shows '"kv_role":"kv_both",' - i.e. the string is printed as sample YAML, never read.
+ 5b. Same absence in the vLLM-side MP connector
+ $ grep -niE 'kv_role|kv_consumer|kv_producer|skip_save|read_only|load_only|request_config' \
+ vllm/distributed/kv_transfer/kv_connector/v1/lmcache_mp_connector.py
+ <no matches> (exit 1)
+ So the gap is not an artifact of one implementation - both MP connector implementations (the LMCache-shipped adapter and vLLM's self-contained LMCacheMPConnectorUpstream ) lack any store-disable signal.
+ 5c. kv_role is a vLLM-only field the MP connector never plumbs through
+ kv_role does not exist in LMCache's own config ( grep -niE 'kv_role' lmcache/v1/config.py lmcache/v1/multiprocess/ → no matches). In the single-process path it is pulled from vllm_config.kv_transfer_config.kv_role (adapter line 469). The MP connector simply never reads that field, so kv_role=kv_consumer in the --kv-transfer-config is silently inert under the MP connector.
+ 5d. Forced-on save config when blending is enabled
+ lmcache/v1/config.py , lines 709-715 :
+ if self . enable_blending :
+ if not self . save_unfull_chunk :
+ logger . warning (
+ "Automatically setting save_unfull_chunk=True because " 
+ "enable_blending=True" 
+ )
+ self . save_unfull_chunk = True 
+ Enabling blending forces save_unfull_chunk=True - a save- widening setting - on the very path that runs on the store-disable-less MP connector. Blend therefore stores more aggressively (including partial chunks), with no off-switch on its connector.
+ 6. Chart
+ None. This is a structural code claim proven from source; no run was performed and none is needed (see §8). No benchmark data applies.
+ 7. Root-cause analysis
+ The store-suppression logic lives entirely in the single-process connector's request-tracker construction ( vllm_v1_adapter.py ): kv_role , LMCACHE_FORCE_SKIP_SAVE , and per-request lmcache.skip_save all converge on the skip_save flag threaded into RequestTracker / SaveSpec . When the MP connector was built as a parallel implementation (scheduler/worker split with its own LMCacheMPRequestTracker and GetStoreMetadata metadata builder), that gate was not carried over : the MP metadata builder's contract ( GetStoreMetadata(tracker, tokens_per_chunk, tokens_per_block) ) has no place to express "don't store," and the two scheduler call sites ( _process_new_requests , _process_cached_requests ) invoke it for every scheduled request. The vLLM-side LMCacheMPConnectorUpstream inherited the same omission.
+ In short: this is a feature-parity gap introduced by the second (MP) connector implementation , not a bug in a single line. The MP connector never wired kv_transfer_config.kv_role into its store decision, never reads request_configs , and honors no equivalent env switch - so the store path is unconditional by construction.
+ 8. Caveats & the single cleanest next check
+ Caveats 
+ CODE-VERIFIED , not MEASURED: I proved the absence of any store-disable input by reading source at the pinned commits; I did not deploy an engine. Nothing about correctness or throughput is claimed here.
+ Scope is the store (save) path of the MP connector. The MP retrieve/load path is unaffected - loads still work, which is exactly why "read-only" is the desired-but-unreachable mode.
+ The single-process LMCacheConnectorV1 remains a valid workaround for topologies that don't require the MP connector, but it is not an option for CacheBlend / shared-cache / cross-pod, which mandate the MP connector.
+ I did not exhaustively audit every alternate MP entry point (e.g. TRT-LLM/SGLang adapters); the finding is specific to the vLLM MP connector named in the ticket.
+ Single cleanest next check (positive confirmation, if wanted): deploy one MP-connector engine (TP=1, on a test cluster) with --kv-transfer-config '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_consumer"}' , send one request against an empty cache, and scrape the engine's LMCache metrics - a nonzero store/ num_stored_tokens (or a growing L1) with kv_role=kv_consumer set is the runtime confirmation that the role is ignored. This is optional; the code structure already settles it.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

@@ -1,0 +1,475 @@
+
+ fix(router): reject an unrecognized KV event source mode in transfer hints by ayaangazali · Pull Request #13913 · ai-dynamo/dynamo · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ai-dynamo
+ / 
+ dynamo 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 1.6k 
+ Star
+ 8k 
+ Code 
+ Issues 
+ 401 
+ Pull requests 
+ 1.1k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ fix(router): reject an unrecognized KV event source mode in transfer hints - # 13913 
+ # 13913 
+ Open 
+ ayaangazali wants to merge 1 commit into ai-dynamo:main ai-dynamo/dynamo:main from ayaangazali:fix/router-hint-unknown-source-mode ayaangazali/dynamo:fix/router-hint-unknown-source-mode Copy head branch name to clipboard 
+ Conversation Commits 1 ( 1 ) Checks Files changed 
+ Open 
+ fix(router): reject an unrecognized KV event source mode in transfer hints # 13913 ayaangazali wants to merge 1 commit into ai-dynamo:main ai-dynamo/dynamo:main from ayaangazali:fix/router-hint-unknown-source-mode ayaangazali/dynamo:fix/router-hint-unknown-source-mode Copy head branch name to clipboard 
+ Conversation
+ ayaangazali 
+ commented
+ Aug 27, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ Summary
+ ModelRuntimeConfig::kv_event_source_mode states its own contract:
+ Accepted values are framework_v1 and state_agent_v2 . Missing means the legacy Worker-only source. Unknown explicit values must disable KV-aware routing rather than falling back within the same worker lifecycle.
+ Two consumers read that field and disagreed on what satisfies it:
+ Site 
+ Test 
+ Unrecognized mode 
+ state_agent.rs source_mode_suppressed_workers 
+ allowlist None | Some("framework_v1") 
+ suppressed (correct) 
+ kv_router.rs transfer_hint_for_selection 
+ denylist != Some("state_agent_v2") 
+ still eligible 
+ So a worker advertising a mode this router does not recognize -- a newer engine rolled out ahead of the router, or a typo in the field -- gets suppressed from the state-agent indexer while still being picked as a KV transfer hint source. The router hands a client the source_control_endpoint of a worker whose KV state it has deliberately stopped tracking, and nothing logs it.
+ The fix routes both consumers through one predicate defined next to the field, so the contract has a single definition rather than two that can drift. That also deletes the duplicated matches! in state_agent.rs .
+ This replaces the original version of this PR. That one predated #13134 , which reshaped this code into the typed KV hint contract and removed router_hint_metadata_for_dp_rank entirely; the denylist above is where the same defect now lives, so the fix was rewritten against current main rather than rebased.
+ Validation
+ Rebased onto 61c37bc33c . cargo test -p dynamo-llm --no-default-features --lib : 2424 passed, 0 failed, 3 ignored . cargo clippy -p dynamo-llm --no-default-features --lib clean on the touched files (the one remaining warning is pre-existing in lib/mocker/src/common/utils.rs:114 ).
+ The new test fails on the unfixed code. Reverting only the one-line predicate swap at the fix site and keeping the test:
+ test kv_router::tests::kv_transfer_ignores_worker_source_with_unrecognized_event_source_mode ... FAILED
+assertion `left == right` failed
+ left: Some(KvSourceLocationsPayload { source_control_endpoint: "tcp://stale-worker-endpoint:23280", ... })
+ right: Some(KvSourceLocationsPayload { source_control_endpoint: "tcp://persistent-owner:23280", ... })
+ That is the bug stated as output: the worker with the unrecognized mode wins the hint over the eligible persistent owner. The test mirrors the existing kv_transfer_resolves_persistent_owner_without_state_agent_fallback and changes one literal, so it covers the unrecognized-mode case beside the known-mode case it was modeled on.
+ GPU, multi-node, and live-engine paths were not exercised; this is a CPU-only unit-level change.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ 👀 
+ 1 
+ datadog-official[bot] reacted with eyes emoji 
+ All reactions 
+ 👀 
+ 1 reaction 
+ ayaangazali 
+ requested a review
+ from a team 
+ as a code owner 
+ August 27, 2026 17:46 
+ Copilot 
+ AI 
+ lite review requested due to automatic review settings
+ August 27, 2026 17:46 
+ copy-pr-bot 
+ Bot 
+ commented
+ Aug 27, 2026 
+ Copy link
+ Copy Markdown
+ This pull request requires additional validation before any workflows can run on NVIDIA's runners.
+ Pull request vetters can view their responsibilities here .
+ Contributors can view more details about this message here .
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ pull-request-size 
+ Bot 
+ added
+ the 
+ size/M
+ label
+ Aug 27, 2026 
+ Copilot 
+ AI 
+ reviewed
+ Aug 27, 2026 
+ Copilot 
+ AI 
+ left a comment
+ Copy link
+ Copy Markdown
+ Contributor 
+ There was a problem hiding this comment.
+ Choose a reason for hiding this comment
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Copilot was unable to review this pull request because the user who requested the review has reached their quota limit.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ All reactions 
+ ayaangazali 
+ temporarily deployed 
+ to
+ external_collaborator
+ August 27, 2026 17:46 — with 
+ GitHub Actions 
+ Inactive
+ ayaangazali 
+ temporarily deployed 
+ to
+ external_collaborator
+ August 27, 2026 17:46 — with 
+ GitHub Actions 
+ Inactive
+ github-actions 
+ Bot 
+ commented
+ Aug 27, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ 👋 Hi ayaangazali! Thank you for contributing to ai-dynamo/dynamo.
+ Just a reminder: The NVIDIA Test Github Validation CI runs an essential subset of the testing framework to quickly catch errors.Your PR reviewers may elect to test the changes comprehensively before approving your changes.
+ 🚀
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ github-actions 
+ Bot 
+ added
+ external-contribution
+ Pull request is from an external contributor 
+ fix
+ labels
+ Aug 27, 2026 
+ coderabbitai 
+ Bot 
+ commented
+ Aug 27, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Contributor 
+ No actionable comments were generated in the recent review. 🎉
+ ℹ️ Recent review info 
+ ⚙️ Run configuration 
+ Configuration used : Path: .coderabbit.yaml
+ Review profile : CHILL
+ Plan : Enterprise
+ Run ID : c86c2980-3332-4b0e-b3be-a70b47ed0f8d 
+ 📥 Commits 
+ Reviewing files that changed from the base of the PR and between 0718004 and cf4145a .
+ 📒 Files selected for processing (1) 
+ lib/llm/src/kv_router.rs 
+ Included review availability: Your plan provides up to 12 included reviews per hour; 11 remain after this review.
+ Walkthrough
+ The router now accepts worker candidates only for unset or "framework_v1" KV event source modes. It rejects "state_agent_v2" and unknown explicit modes. Cache-owner candidates remain eligible. A regression test covers the unknown-mode case.
+ Changes
+ KV router filtering 
+ Layer / File(s) 
+ Summary 
+ Validate router-hint sources 
+ lib/llm/src/kv_router.rs 
+ router_hint_for_selection filters worker candidates by KV event source mode while retaining existing metadata, worker-type, and endpoint checks. The regression test rejects an unknown-mode worker and selects the matching persistent cache owner. 
+ Estimated code review effort: 2 (Simple) | ~10 minutes
+ Merge Risk: ⚪ Minimal · up to cf414 
+ This change prevents unrecognized KV source modes from being treated as eligible router-hint sources. No actionable merge-blocking risk remains beyond normal checks and review.
+ 🚥 Pre-merge checks | ✅ 3 | ❌ 2 
+ ❌ Failed checks (2 warnings)
+ Check name 
+ Status 
+ Explanation 
+ Resolution 
+ Docstring Coverage 
+ ⚠️ Warning 
+ Docstring coverage is 75.00% which is insufficient. The required threshold is 80.00%. Docstring coverage is scoped to functions touched by this diff. Analyzed 4 functions across 1 files. 
+ Write docstrings for the functions missing them to satisfy the coverage threshold. 
+ Description check 
+ ⚠️ Warning 
+ The description explains the bug, implementation, and validation in sufficient technical detail. However, it does not follow the required template headings, omits the required Related Issues section, … 
+ Add the required Overview, Details, Where should the reviewer start?, and Related Issues sections. In Related Issues, either link the applicable issue or confirm that no related issue exists. 
+ ✅ Passed checks (3 passed) 
+ Check name 
+ Status 
+ Explanation 
+ Linked Issues check 
+ ✅ Passed 
+ Check skipped because no linked issues were found for this pull request. 
+ Out of Scope Changes check 
+ ✅ Passed 
+ Check skipped because no linked issues were found for this pull request. 
+ Title check 
+ ✅ Passed 
+ The title clearly and concisely describes the main change: rejecting unrecognized KV event source modes in transfer hints. 
+ Full details: Description check 
+ Explanation 
+ The description explains the bug, implementation, and validation in sufficient technical detail. However, it does not follow the required template headings, omits the required Related Issues section, and does not identify where the reviewer should start.
+ Fix all pre-merge checks with AI
+ Comment @coderabbitai help to get the list of available commands. 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ dynamo-review-agent 
+ Bot 
+ approved these changes
+ Aug 27, 2026 
+ View reviewed changes 
+ fix(router): reject an unrecognized KV event source mode in transfer … 
+ …
+ 7322dcc 
+ …hints
+`kv_event_source_mode` documents that "unknown explicit values must disable
+KV-aware routing rather than falling back within the same worker lifecycle".
+Two consumers read that field and disagreed on what satisfies it:
+- `source_mode_suppressed_workers` allowlists `None | Some("framework_v1")`,
+ so an unrecognized mode is suppressed. This honors the contract.
+- `transfer_hint_for_selection` denylisted only `Some("state_agent_v2")`, so
+ an unrecognized mode stayed eligible and fell back to the legacy Worker
+ path. This violates it.
+A worker that advertises a mode this router does not know -- a newer engine
+rolled out ahead of the router, or a typo in the field -- is therefore
+suppressed from the state-agent indexer while still being selected as a KV
+transfer hint source. The router hands out a source_control_endpoint for a
+worker whose KV state it has deliberately stopped tracking, and it does so
+silently.
+Route both consumers through one predicate next to the field it describes, so
+the contract has a single definition instead of two that can drift apart.
+Signed-off-by: ayaangazali <ayaangazali@users.noreply.github.com>
+Signed-off-by: ayaangazali <ayaangazali.work@gmail.com>
+ ayaangazali 
+ force-pushed 
+ the
+ fix/router-hint-unknown-source-mode 
+ branch
+ from
+ cf4145a to
+ 7322dcc 
+ Compare 
+ September 8, 2026 19:48 
+ ayaangazali 
+ requested a review
+ from a team 
+ as a code owner 
+ September 8, 2026 19:48 
+ ayaangazali 
+ temporarily deployed 
+ to
+ external_collaborator
+ September 8, 2026 19:49 — with 
+ GitHub Actions 
+ Inactive
+ ayaangazali 
+ changed the title
+ fix(router): stop an unknown KV source mode falling back to hint eligibility 
+ fix(router): reject an unrecognized KV event source mode in transfer hints 
+ Sep 8, 2026 
+ github-actions 
+ Bot 
+ added
+ the 
+ router
+ Relates to routing, KV-aware routing, etc. 
+ label
+ Sep 8, 2026 
+ ayaangazali 
+ commented
+ Sep 8, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Author 
+ Rewritten against current main rather than rebased, because #13134 landed in the meantime and removed router_hint_metadata_for_dp_rank , which the original patch was built on.
+ The defect did not go away with that refactor, it changed shape. transfer_hint_for_selection now tests kv_event_source_mode.as_deref() != Some("state_agent_v2") , a denylist, while source_mode_suppressed_workers in state_agent.rs tests matches!(mode, None | Some("framework_v1")) , an allowlist. Same field, opposite answers for any mode neither site recognizes. The field's own doc comment says unknown values must disable KV-aware routing, so the allowlist is the correct reading and the denylist is the bug.
+ Rather than fix the one site, both now call a single predicate defined next to the field, so there is one definition of the contract instead of two. Details and the failing-before output are in the updated description.
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ Copilot code review 
+ Copilot 
+ Copilot review effort, defaults to Lite 
+ Lite 
+ Lite
+ Efficient review, low cost 
+ Balanced
+ Deep analysis, moderate cost 
+ Max
+ Most thorough, high cost 
+ Coming soon 
+ Applies to this pull request for everyone. Learn more about Copilot code review. 
+ Copilot left review comments 
+ +1 more reviewer
+ dynamo-review-agent[bot] 
+ dynamo-review-agent[bot] approved these changes 
+ Reviewers whose approvals may not affect merge requirements 
+ At least 1 approving review is required to merge this pull request.
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ external-contribution 
+ Pull request is from an external contributor 
+ fix 
+ router 
+ Relates to routing, KV-aware routing, etc. 
+ size/M 
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 2 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

@@ -1,0 +1,221 @@
+
+ [RFC]: P/D transfer contract across different parallel layouts with cp interleave size · Issue #56123 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [RFC]: P/D transfer contract across different parallel layouts with cp interleave size #56123 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Open 
+ Open 
+ [RFC]: P/D transfer contract across different parallel layouts with cp interleave size #56123 
+ Copy link 
+ Labels
+ kv-connector quantization 
+ Description
+ GirasoleY 
+ opened on Sep 9, 2026 
+ Issue body actions 
+ Motivation.
+ The immediate motivation is P/D transfer involving DCP with token-level KV interleave ( cp_kv_cache_interleave_size=1 ). A block-oriented transport can require whole-block interleave, while an attention backend may require or prefer a finer supported interleave. These are separate constraints: the connector should translate compatible layouts rather than force the attention layout to match its transfer unit.
+ #54803 gates the existing interleave adjustment on NIXL. #54734 explored connector capabilities for adjustment/validation. Neither defines a general direct-copy plan between different token/head/layer placements. This RFC asks for that design discussion, not another configuration-only fix.
+ The scope should be broader than one model or DCP pair:
+ Producer → consumer 
+ Placement problem 
+ TP → DCP/I1 
+ Scatter the required tokens/heads into each consumer's local pages 
+ DCP/I1 → TP 
+ Gather distributed tokens into the consumer's required layout, including required replicas 
+ DCP(D1, I1) → DCP(D2, I2) 
+ Compose different token ownership and interleave mappings 
+ PCP → DCP 
+ Describe actual persistent KV ownership after prefill, then map it to decode ownership 
+ PP → another PP/TP/DCP layout 
+ Match layers independently of token/head ownership 
+ DEP → DCP 
+ Use the attention KV placement; expert parallelism is not itself a KV layout 
+ These are design targets, not claims that all combinations are currently supported. Only interleave values and cache formats supported by the endpoint backends are in scope.
+ Proposed Change.
+ The proposed principle is:
+ Backend/allocator adapters describe how local KV bytes map to parallelism-neutral logical coordinates. A shared planner composes those mappings. Connectors execute the resulting byte-copy plans.
+ The canonical representation is virtual : it identifies corresponding bytes, not an intermediate buffer that must be materialized.
+ 1. Reuse the existing mapping foundation, with a small shared contract
+ The offloading path already has CopyRun and CanonicalPageMapping from #48408 in vllm/v1/kv_offload/base.py , with derivation in offloading/canonical_mapping.py . Can we share the byte-correspondence abstraction without making all connectors inherit offload storage policy?
+ An endpoint contract would distinguish:
+ Semantic format: model/cache compatibility, layer and KV-component identity, KV dtype, quantization/scale encoding, and token/head geometry. Allocator group numbers and grouping remain endpoint-local.
+ Placement: local tensor layout, token/head/layer ownership, replication, and local page geometry. DCP interleave belongs here. PCP adapters must describe stored KV ownership, not infer it solely from prefill compute partitioning.
+ Transport capabilities: supported operations, registered memory, descriptor/submission limits, and completion semantics.
+ Topology-specific validation belongs in the vLLM adapter. The composition algorithm should consume validated ownership mappings rather than a growing matrix of TP/DCP/PCP/PP special cases. Source-replica selection should be a policy separate from byte identity.
+ 2. Compose mappings and bind explicit request coverage
+ Conceptually:
+ source local bytes → logical layer/component/token/head coordinates
+ ∩
+destination local bytes → the same logical coordinates
+ ↓
+direct source/destination byte-copy runs
+ An affine run can describe source/destination offsets, fragment size/count, and strides. It must not assume the transport can submit an affine run as one native descriptor; the NIXL adapter may need to expand it into contiguous descriptors.
+ Request metadata should bind explicit logical token ranges to each endpoint's local page IDs, including prefix-cache hits, partial tails, and different page sizes. Alignment should not be inferred from block-list lengths alone. The abstraction should leave room for disjoint ranges and independently allocated stages rather than encoding a universal token-zero prefix assumption.
+ 3. Make segmented direct copy the default, including high fragmentation
+ The preferred path is direct transfer into the final destination KV pages. High fragment counts should result in bounded batches and pipelined submissions, not automatically switch to GPU packing/unpacking or a local TP AllGather . Avoiding extra GPU work competing with model forward is a primary motivation.
+ Optimizations to explore first:
+ Compile/cache compatible layout-pair templates and validation results; bind addresses and clip ranges per request.
+ Coalesce adjacent runs, generate descriptors efficiently, and reuse safe registration-dependent state.
+ Bound queued descriptors and in-flight batches, with fairness across requests.
+ Choose among equivalent source replicas using locality/load policy where useful.
+ Direct fanout may require sending the same semantic bytes to multiple consumers. This proposal does not claim to remove those bytes or that small transfers are free. We should measure CPU preparation, descriptor rate, IB throughput, and serving interference before deciding on additional execution strategies. An identical-layout contiguous fast path should remain available.
+ 4. Keep transfer lifetime separate from placement mathematics
+ We still need attempt identity, endpoint-generation checks, deduplicated completion, and a rule that a worker reports completion only after all its submitted fragments finish. Simplifying the interface must not weaken those guarantees.
+ However, byte mapping should not require the router to enumerate every destination process before prefill starts. Can existing connector handshakes and leases bind a producer transfer attempt to a destination session after the router selects decode, with membership cached once and compact per-request completions?
+ Lease expiry, aborts, retries, endpoint restarts, and outstanding remote reads need an explicit lifetime contract. A completion roster alone is not a proof that source pages cannot be reused while a remote read is outstanding. This is an open design question, not a proposal to replace the existing lease mechanism wholesale.
+ Scope and validation
+ Start with certified byte-compatible MLA/MHA layouts and NIXL, keeping the contract reusable by other connectors. Recurrent state, sliding/ring caches, incompatible quantization, and unknown layouts require explicit semantic adapters or rejection; they must not silently use attention-token mapping.
+ A staged implementation could separate shared mapping/composition, NIXL descriptor execution, and any necessary handshake/lifetime extensions into independently reviewable changes.
+ Validation should cover byte coverage and bounds, partial prefix/tail cases, interleave/page-size asymmetry, replicated destinations, PCP/PP ownership, and retry/abort/restart behavior. Hardware evaluation should measure cold versus warm planning, time to first submission, descriptor preparation, transfer latency/bytes, and model correctness plus P99 TPOT while transfers overlap decode. This RFC makes no hardware performance claim.
+ Open Questions
+ Is a connector-independent placement contract the right abstraction, and which parts of the offloading mapping should be reused?
+ Should semantic identity be per layer/component, independent of allocator grouping?
+ What is the minimal request-range and session contract that fits existing P/D routing and leases?
+ Which topology/layout pair should be the first end-to-end milestone, while keeping the broader use cases representable?
+ What performance gates should we use for highly fragmented direct transfers?
+ Related Work
+ #33702 (NIXL roadmap), #54803 and #54734 (interleave adjustment/capabilities), #54496 (matching DCP layouts with PCP producers), #45340 (aligned PCP/DCP block accounting), #40674 (PP with NIXL), #48408 (canonical page mappings), and #38260 (multi-tier KV offloading). This RFC is about shared placement/composition and its execution contract, not replacing those efforts or claiming existing topology-specific work is unnecessary.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ kv-connector quantization 
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

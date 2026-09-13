@@ -1,0 +1,185 @@
+
+ Fix hybrid session references after an empty terminal cache insert by AranKomat · Pull Request #39263 · sgl-project/sglang · GitHub 
+ Skip to content 
+ Navigation Menu Sign in Appearance settings Platform AI CODE CREATION GitHub Copilot Write better code with AI GitHub Copilot app Direct agents from issue to merge MCP Registry Integrate external tools DEVELOPER WORKFLOWS Actions Automate any workflow Codespaces Instant dev environments Issues Plan and track work Code Review Manage code changes Code Quality Enforce quality at merge APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities Code security Secure your code as you build Secret protection Stop leaks before they start EXPLORE Why GitHub Documentation Blog Changelog Marketplace View all features Solutions BY COMPANY SIZE Enterprises Small and medium teams Startups Nonprofits BY USE CASE App Modernization DevSecOps DevOps CI/CD View all use cases BY INDUSTRY Healthcare Financial services Manufacturing Government View all industries View all solutions Resources EXPLORE BY TOPIC AI Software Development DevOps Security View all topics EXPLORE BY TYPE Customer stories Events & webinars Ebooks & reports Business insights GitHub Skills SUPPORT & SERVICES Documentation Customer support Community forum Trust center Partners View all resources Open Source COMMUNITY GitHub Sponsors Fund open source developers PROGRAMS Security Lab Maintainer Community GitHub Stars Archive Program REPOSITORIES Topics Trending Collections Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features Copilot for Business Enterprise-grade AI features Premium Support Enterprise-grade 24/7 support Pricing Search / Sign in Sign up Appearance settings 
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }} 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ sgl-project
+ / 
+ sglang 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 8.8k 
+ Star
+ 35.9k 
+ Code 
+ Issues 
+ 890 
+ Pull requests 
+ 4.4k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ Fix hybrid session references after an empty terminal cache insert - # 39263 # 39263 Draft AranKomat wants to merge 1 commit into sgl-project:main sgl-project/sglang:main from AranKomat:session-terminal-leaf-20260913 AranKomat/sglang:session-terminal-leaf-20260913 Copy head branch name to clipboard Conversation Commits 1 ( 1 ) Checks Files changed Draft Fix hybrid session references after an empty terminal cache insert # 39263 AranKomat wants to merge 1 commit into sgl-project:main sgl-project/sglang:main from AranKomat:session-terminal-leaf-20260913 AranKomat/sglang:session-terminal-leaf-20260913 Copy head branch name to clipboard Conversation 
+ AranKomat 
+ commented
+ Sep 13, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ Copy link
+ Copy Markdown
+ Motivation 
+ Follow-up correctness fix for the session-reference support in #29173 , not a new retention policy. 
+ When a hybrid FULL+MAMBA request reuses an existing prefix but finishes without a new usable Mamba checkpoint ( None or zero), terminal insertion can return the root. cache_finished_req replaces the request's prior reusable leaf with that root before session registration. Registration excludes the root, so the valid earlier prefix receives no FULL or MAMBA session reference and loses its session-aware eviction protection. 
+ Modifications 
+ Only replace req.last_node when terminal insertion supplies a non-root device leaf. Existing request locks, stale-generation rejection, abort handling, session close and ordinary eviction are unchanged. This does not pin KV or add a new memory-allocation policy. 
+ Extend the existing registered session-cache unit module with a native FULL+MAMBA allocator/tree fixture covering missing/zero/new checkpoints, no prior prefix, abort, no-insert and stale-generation cases. The new regression explicitly tests the Python tree implementation; it does not claim independent Rust-tree qualification. 
+ Accuracy Tests 
+ No kernel/model arithmetic changes. The following tests cover cache ownership 
+and allocator correctness; no new task-accuracy measurement is claimed. 
+ Base: 7763f666f348d99e28a3dc839e99adf5cd7e1861 ; candidate: 5299ea2035488f82dbfcf87764bf6f6cc46ec76d . 
+ Actual registered module: 5 tests pass , including seven new subcases and recovery of all 2,048 allocated KV slots after session close/eviction. 
+ Negative control removing only this production guard: exactly the missing-checkpoint and zero-checkpoint subcases fail; no test errors. Restoring the patch makes the entire module pass. 
+ Repository pre-commit and git diff --check pass. 
+ PYTHONPATH=python:test/registered/unit/mem_cache \
+SGLANG_UNIFIED_RADIX_TREE_CORE_BACKEND=python \
+python -m unittest test_session_unified_radix_cache -v 
+ The tests ran against the actual native cache/pool implementations in an isolated ROCm environment; no model was loaded. Maintainer CPU CI and cache-owner review remain welcome; keeping this draft while those reviews are pending. 
+ Speed Tests and Profiling 
+ No new serving speedup is claimed. This is a correctness repair to existing 
+session-reference registration, not a new retention or eviction algorithm. 
+ Checklist 
+ Narrow production change with native regression coverage. 
+ Negative control demonstrates the defect on the tested main revision. 
+ Existing session-ref feature credited rather than claimed as new. 
+ AI assistance disclosed: implementation and tests developed with Codex; human maintainer review requested. 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ --> 
+ All reactions 
+ Preserve prior hybrid session leaf after an empty terminal insert 
+ 5299ea2 
+ github-actions 
+ Bot 
+ added
+ the 
+ unified-radix-cache
+ label
+ Sep 13, 2026 
+ AranKomat 
+ commented
+ Sep 13, 2026 
+ Copy link
+ Copy Markdown
+ Author 
+ @Zhangmj0621 this is a narrow follow-up to #29173 : a terminal insert with no usable hybrid checkpoint can replace a valid prior leaf with root before session registration. The native regression fails exactly the missing/zero cases without the guard and passes with it. Could you review the intended leaf/reference contract and advise whether Rust-tree-specific coverage is also needed before this leaves draft? No new retention-policy or throughput claim is attached. 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ merrymercy 
+ Awaiting requested review from merrymercy 
+ merrymercy will be requested when the pull request is marked ready for review 
+ merrymercy is a code owner 
+ Ying1123 
+ Awaiting requested review from Ying1123 
+ Ying1123 will be requested when the pull request is marked ready for review 
+ Ying1123 is a code owner 
+ hnyls2002 
+ Awaiting requested review from hnyls2002 
+ hnyls2002 will be requested when the pull request is marked ready for review 
+ hnyls2002 is a code owner 
+ xiezhq-hermann 
+ Awaiting requested review from xiezhq-hermann 
+ xiezhq-hermann will be requested when the pull request is marked ready for review 
+ xiezhq-hermann is a code owner 
+ hanming-lu 
+ Awaiting requested review from hanming-lu 
+ hanming-lu will be requested when the pull request is marked ready for review 
+ hanming-lu is a code owner 
+ yizhang2077 
+ Awaiting requested review from yizhang2077 
+ yizhang2077 will be requested when the pull request is marked ready for review 
+ yizhang2077 is a code owner 
+ hzh0425 
+ Awaiting requested review from hzh0425 
+ hzh0425 will be requested when the pull request is marked ready for review 
+ hzh0425 is a code owner 
+ ispobock 
+ Awaiting requested review from ispobock 
+ ispobock will be requested when the pull request is marked ready for review 
+ ispobock is a code owner 
+ alphabetc1 
+ Awaiting requested review from alphabetc1 
+ alphabetc1 will be requested when the pull request is marked ready for review 
+ alphabetc1 is a code owner 
+ huangtingwei9988 
+ Awaiting requested review from huangtingwei9988 
+ huangtingwei9988 will be requested when the pull request is marked ready for review 
+ huangtingwei9988 is a code owner 
+ At least 1 approving review is required to merge this pull request.
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ unified-radix-cache 
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues. 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ 1 participant
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer 
+ © 2026 GitHub, Inc.
+ Footer navigation 
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

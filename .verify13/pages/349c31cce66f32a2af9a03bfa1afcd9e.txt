@@ -1,0 +1,243 @@
+
+ [srt] Batchable context forwards over cached prefix KV by rwang5203 · Pull Request #33315 · sgl-project/sglang · GitHub 
+ Skip to content 
+ Navigation Menu Sign in Appearance settings Platform AI CODE CREATION GitHub Copilot Write better code with AI GitHub Copilot app Direct agents from issue to merge MCP Registry Integrate external tools DEVELOPER WORKFLOWS Actions Automate any workflow Codespaces Instant dev environments Issues Plan and track work Code Review Manage code changes Code Quality Enforce quality at merge APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities Code security Secure your code as you build Secret protection Stop leaks before they start EXPLORE Why GitHub Documentation Blog Changelog Marketplace View all features Solutions BY COMPANY SIZE Enterprises Small and medium teams Startups Nonprofits BY USE CASE App Modernization DevSecOps DevOps CI/CD View all use cases BY INDUSTRY Healthcare Financial services Manufacturing Government View all industries View all solutions Resources EXPLORE BY TOPIC AI Software Development DevOps Security View all topics EXPLORE BY TYPE Customer stories Events & webinars Ebooks & reports Business insights GitHub Skills SUPPORT & SERVICES Documentation Customer support Community forum Trust center Partners View all resources Open Source COMMUNITY GitHub Sponsors Fund open source developers PROGRAMS Security Lab Maintainer Community GitHub Stars Archive Program REPOSITORIES Topics Trending Collections Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features Copilot for Business Enterprise-grade AI features Premium Support Enterprise-grade 24/7 support Pricing Search / Sign in Sign up Appearance settings 
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }} 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ sgl-project
+ / 
+ sglang 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 8.8k 
+ Star
+ 35.9k 
+ Code 
+ Issues 
+ 890 
+ Pull requests 
+ 4.4k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ [srt] Batchable context forwards over cached prefix KV - # 33315 # 33315 Closed rwang5203 wants to merge 6 commits into sgl-project:main sgl-project/sglang:main from rwang5203:srt-session-context-forward rwang5203/sglang:srt-session-context-forward Copy head branch name to clipboard Conversation Commits 6 ( 6 ) Checks Files changed Closed [srt] Batchable context forwards over cached prefix KV # 33315 rwang5203 wants to merge 6 commits into sgl-project:main sgl-project/sglang:main from rwang5203:srt-session-context-forward rwang5203/sglang:srt-session-context-forward Copy head branch name to clipboard Conversation 
+ rwang5203 
+ commented
+ Aug 3, 2026 
+ • 
+ edited by github-actions
+ Bot 
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Motivation 
+ Interleaved generation and MoT denoise need many short guest forwards that attend to an already cached text prefix. Exporting KV for every forward is impractical. 
+ This PR makes each guest forward an ordinary prefill-only /generate request. It radix-matches the cached prefix by token IDs and batches through the existing SRT scheduler without model-specific scheduler code. The request is sessionless. A higher-level client owns logical sessions and recovery. 
+ Request contract 
+ input_ids carries the cached prefix and guest-span placeholder IDs. 
+ input_embeds carries the guest rows inline or in caller-owned shared memory. 
+ query_attention: "bidirectional" lets every guest row attend the full prefix and every row in its guest span. 
+ token_positions supplies explicit [rows] or [dims][rows] non-negative signed 64-bit positions strictly below the active model context length. 
+ sampling_params.max_new_tokens: 0 and return_hidden_states: true request a prefill-only forward with last-layer hidden states. 
+ Optional hidden_states_buffer metadata describes an exact float32 [rows, model_hidden_size] caller-owned shared-memory segment. 
+ When hidden_states_buffer is present, SRT validates the segment, attaches to it, writes the guest rows, closes its attachment, and echoes the same reference in meta_info.hidden_states . SRT never creates or unlinks the segment. Without a buffer, hidden states use the existing inline response. 
+ A late attach or write failure returns HTTP 400. It does not fall back to a large inline response or crash the scheduler. The obsolete hidden_states_transport field is rejected with migration guidance. 
+ Inline and shared-memory inputs are validated before model execution for shape, width, dtype, finite values, float32 range, and position bounds. 
+ Scheduler behavior 
+ Requests use the ordinary waiting queue and batch only with the same attention mode and position dimensionality. 
+ Internal requests without optional query_attention metadata retain causal attention. Explicit mixed modes still reject. 
+ Prefix matching stops before the guest embeddings, so guest rows never enter radix cache. 
+ If the full required prefix is no longer cached, the request releases staged resources and returns HTTP 400 with guidance to re-prefill and resubmit. 
+ A bidirectional guest span is never chunk-split. Oversized spans reject at the API. A batch-boundary split waits until the whole span fits. 
+ Batched hidden states are sliced by each request's actual extend width. 
+ Validation 
+ PYTHONPATH=python python -m pytest \
+ test/registered/unit/managers/test_context_forward_helpers.py \
+ test/registered/unit/utils/test_shm_transport_utils.py -q 
+ Focused unit matrix: 39 passed and 40 subtests passed . 
+ Adjacent schema, IPC, hidden-state, output, and scheduling matrix: 46 passed and 23 subtests passed . 
+ The complete registered manager unit directory exited successfully. 
+ Black, isort, Ruff, AST, and diff checks passed on all 13 changed files. 
+ The registered FA3 GPU matrix on Qwen3-0.6B passed all 6 tests on the submitted head in 46.00 seconds. The validation-only follow-up did not rerun the GPU matrix. 
+ Inline and shared-memory outputs had maximum difference 0. Embedding injection reached cosine similarity 1.0. The future-neighbor counterfactual produced a first-row delta of 5.5, proving within-span bidirectionality. 
+ All 12 prefix tokens were cached, guest rows were not inserted, eviction and reseed recovery passed, and 25 shared-memory lifecycle cycles left no residual caller segments. 
+ For the audited 256 x 1024 payload, paired shared memory measured 23.267 ms compared with 371.296 ms inline, a 15.958x ratio. Concurrency 1, 2, 4, and 8 reached 57.178, 62.829, 105.371, and 153.255 requests per second with no failures. 
+ CI States 
+ Latest PR Test (Base): ❌ Run #31760064016 
+Latest PR Test (Extra): ❌ Run #31760063855 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ --> 
+ All reactions 
+ rwang5203 
+ and others 
+ added 4 commits
+ August 3, 2026 01:08 
+ [srt] session context forward: batchable guest forwards over pinned p… 
+ …
+ d0b4a6d 
+ …refix KV
+Co-authored-by: Cursor <cursoragent@cursor.com> 
+ [srt] fix context-forward FA bidirectional on extend; drop U1 eager-m… 
+ …
+ 792ec55 
+ …m leak
+Move query_attention=bidirectional into forward_extend (prefill path) and
+strip EAGER_MM_DECODE / decode CUDA-graph gating that belongs to U1, not
+this primitive.
+Co-authored-by: Cursor <cursoragent@cursor.com> 
+ [srt] trim context-forward PR comment noise 
+ …
+ 9b45e27 
+ Shorten field and invariant comments to one line where possible and drop
+redundant prose that restates the surrounding code.
+Co-authored-by: Cursor <cursoragent@cursor.com> 
+ [srt] drop semicolons from context-forward comments and docstrings 
+ …
+ 0f59f10 
+ Co-authored-by: Cursor <cursoragent@cursor.com> 
+ rwang5203 
+ requested review from
+ Fridge003 , 
+ HaiShaw , 
+ Qiaolin-Yu , 
+ Ying1123 , 
+ alphabetc1 , 
+ hanming-lu , 
+ hebiao064 , 
+ hnyls2002 , 
+ hzh0425 , 
+ ispobock , 
+ merrymercy , 
+ xiezhq-hermann and 
+ yizhang2077 
+ as code owners 
+ August 3, 2026 02:32 
+ gemini-code-assist 
+ Bot 
+ commented
+ Aug 3, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Caution The consumer version of Gemini Code Assist on GitHub has been sunset. All code review activity has officially ceased. 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ [srt] harden context forwards and caller-owned shm output 
+ …
+ 50a1918 
+ Validate context-forward envelopes, tensor references, topology, and prefix coverage before model execution. Keep guest spans sessionless and out of radix cache, and abort evicted prefixes without leaving waiting-queue or allocator state behind.
+Make hidden-state shared-memory output caller-owned: validate exact layout and capacity, attach/write/close without create or unlink, and surface late write failures as typed bad requests. Preserve batched hidden-state alignment and extend lifecycle, eviction, invalid-input, and bidirectional regressions.
+Tests: focused 38 passed + 37 subtests; expanded 66 passed, 2 skipped + 37 subtests; repository-pinned pre-commit on all 13 final PR files. 
+ rwang5203 
+ changed the title
+ [srt] Session context forward: batchable guest forwards over pinned prefix KV 
+ [srt] Batchable context forwards over cached prefix KV 
+ Aug 8, 2026 
+ [srt] harden context-forward validation 
+ 983c672 
+ rwang5203 
+ closed this
+ Aug 26, 2026 
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ merrymercy 
+ Awaiting requested review from merrymercy 
+ merrymercy is a code owner 
+ Ying1123 
+ Awaiting requested review from Ying1123 
+ Ying1123 is a code owner 
+ hnyls2002 
+ Awaiting requested review from hnyls2002 
+ hnyls2002 is a code owner 
+ Fridge003 
+ Awaiting requested review from Fridge003 
+ Fridge003 is a code owner 
+ ispobock 
+ Awaiting requested review from ispobock 
+ ispobock is a code owner 
+ xiezhq-hermann 
+ Awaiting requested review from xiezhq-hermann 
+ xiezhq-hermann is a code owner 
+ hanming-lu 
+ Awaiting requested review from hanming-lu 
+ yizhang2077 
+ Awaiting requested review from yizhang2077 
+ hzh0425 
+ Awaiting requested review from hzh0425 
+ alphabetc1 
+ Awaiting requested review from alphabetc1 
+ Qiaolin-Yu 
+ Awaiting requested review from Qiaolin-Yu 
+ Qiaolin-Yu is a code owner 
+ hebiao064 
+ Awaiting requested review from hebiao064 
+ hebiao064 is a code owner 
+ HaiShaw 
+ Awaiting requested review from HaiShaw 
+ HaiShaw is a code owner 
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ None yet
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues. 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ 1 participant
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer 
+ © 2026 GitHub, Inc.
+ Footer navigation 
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

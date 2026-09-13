@@ -1,0 +1,862 @@
+
+ [TRTLLM-13617][feat] Inclusive host KV-cache tier (shadow reuse) for KVCacheManager V2 by reasonsolo · Pull Request #15828 · NVIDIA/TensorRT-LLM · GitHub 
+ Skip to content 
+ Navigation Menu Sign in Appearance settings Platform AI CODE CREATION GitHub Copilot Write better code with AI GitHub Copilot app Direct agents from issue to merge MCP Registry Integrate external tools DEVELOPER WORKFLOWS Actions Automate any workflow Codespaces Instant dev environments Issues Plan and track work Code Review Manage code changes Code Quality Enforce quality at merge APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities Code security Secure your code as you build Secret protection Stop leaks before they start EXPLORE Why GitHub Documentation Blog Changelog Marketplace View all features Solutions BY COMPANY SIZE Enterprises Small and medium teams Startups Nonprofits BY USE CASE App Modernization DevSecOps DevOps CI/CD View all use cases BY INDUSTRY Healthcare Financial services Manufacturing Government View all industries View all solutions Resources EXPLORE BY TOPIC AI Software Development DevOps Security View all topics EXPLORE BY TYPE Customer stories Events & webinars Ebooks & reports Business insights GitHub Skills SUPPORT & SERVICES Documentation Customer support Community forum Trust center Partners View all resources Open Source COMMUNITY GitHub Sponsors Fund open source developers PROGRAMS Security Lab Maintainer Community GitHub Stars Archive Program REPOSITORIES Topics Trending Collections Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features Copilot for Business Enterprise-grade AI features Premium Support Enterprise-grade 24/7 support Pricing Search / Sign in Sign up Appearance settings 
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }} 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ NVIDIA
+ / 
+ TensorRT-LLM 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 2.7k 
+ Star
+ 14.6k 
+ Code 
+ Issues 
+ 587 
+ Pull requests 
+ 878 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [TRTLLM-13617][feat] Inclusive host KV-cache tier (shadow reuse) for KVCacheManager V2 - # 15828 # 15828 Closed reasonsolo wants to merge 1 commit into NVIDIA:main NVIDIA/TensorRT-LLM:main from reasonsolo:feat/kvcm-v2-inclusive-host-cache reasonsolo/TensorRT-LLM:feat/kvcm-v2-inclusive-host-cache Copy head branch name to clipboard Conversation Commits 1 ( 1 ) Checks Files changed Closed [TRTLLM-13617][feat] Inclusive host KV-cache tier (shadow reuse) for KVCacheManager V2 # 15828 reasonsolo wants to merge 1 commit into NVIDIA:main NVIDIA/TensorRT-LLM:main from reasonsolo:feat/kvcm-v2-inclusive-host-cache reasonsolo/TensorRT-LLM:feat/kvcm-v2-inclusive-host-cache Copy head branch name to clipboard Conversation 
+ reasonsolo 
+ commented
+ Jul 1, 2026 
+ • 
+ edited by coderabbitai
+ Bot 
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ Add an optional inclusive host cache tier to KVCacheManager V2. When a full, immutable committed page is recalled host->GPU, its clean host copy is retained as a "shadow" instead of being freed; a later eviction of that page back to host reuses the shadow and skips the redundant device-to-host (D2H) copy. This eliminates redundant D2H rewrites of hot prefixes that repeatedly bounce GPU<->host, which dominate host-tier write traffic on agentic multi-turn workloads. Gated by a new KvCacheConfig flag enable_inclusive_host_cache (default False; exclusive paging unchanged). 
+ _config.py / llm_args.py / kv_cache_manager_v2.py / _kv_cache_manager.py: plumb enable_inclusive_host_cache into StorageManager. 
+ _page.py: add shadow_slot/shadow_level/shadow_node to CommittedPage; release the shadow on drop/rebase. 
+ _storage_manager.py: retain a shadow on inclusive recall, reuse it copy-free on eviction, and reclaim shadows oldest-first under host memory pressure (per-(level,pool-group) FIFO), on shrink, and on destroy. Also fix take_finish_event() to run after the TemporaryCudaStream with block so the offload path does not raise on an empty copy batch. 
+ test: behavioral test asserting a shadow is attached on recall and reused on re-eviction (host free-slot count and shadow FIFO tracked via _num_shadow_slots), on top of the existing StorageManager suspend/resume harness. 
+ This feature is able to reduce offloaded KvCache, but no E2E perf gain was observed: 
+ KV-Cache Offloaded Size (D2H) _ OFF vs ON
+ ┌─────────────_───────────_──────────_───────────┐
+ │ Concurrency │ OFF (GiB) │ ON (GiB) │ Reduction │
+ ├─────────────┼───────────┼──────────┼───────────┤
+ │ 8 │ 435.54 │ 221.69 │ 49.1% │
+ ├─────────────┼───────────┼──────────┼───────────┤
+ │ 16 │ 1,559.96 │ 549.85 │ 64.8% │
+ ├─────────────┼───────────┼──────────┼───────────┤
+ │ 32 │ 4,243.05 │ 960.75 │ 77.4% │
+ └─────────────┴───────────┴──────────┴───────────┘
+E2E perf
+ ┌──────_───────────────────────────_───────────────_───────────────_───────────────_─────────────┐
+ │ Conc │ Throughput (tok/s) OFF_ON │ Avg Lat (s) │ TTFT (ms) │ TPOT (ms) │ KV Hit % │
+ ├──────┼───────────────────────────┼───────────────┼───────────────┼───────────────┼─────────────┤
+ │ 8 │ 47,182 _ 46,716 │ 8.59 _ 8.75 │ 1,957 _ 2,103 │ 13.28 _ 13.31 │ 77.0 _ 76.4 │
+ ├──────┼───────────────────────────┼───────────────┼───────────────┼───────────────┼─────────────┤
+ │ 16 │ 77,675 _ 76,958 │ 10.44 _ 10.60 │ 2,567 _ 2,754 │ 15.78 _ 15.72 │ 80.4 _ 80.5 │
+ ├──────┼───────────────────────────┼───────────────┼───────────────┼───────────────┼─────────────┤
+ │ 32 │ 106,038 _ 106,294 │ 15.14 _ 15.16 │ 5,740 _ 5,792 │ 18.84 _ 18.76 │ 81.6 _ 82.0 │
+ └──────┴───────────────────────────┴───────────────┴───────────────┴───────────────┴─────────────┘
+ Summary by CodeRabbit 
+ New Features 
+ Added an optional inclusive host-cache mode for KV cache management. 
+ When enabled, recalled data can keep a reusable host copy to reduce repeated transfers and improve reuse under memory pressure. 
+ The new setting is available in KV cache configuration and is supported by the latest cache manager path. 
+ Description 
+ Test Coverage 
+ PR Checklist 
+ Please review the following before submitting your PR: 
+ PR description clearly explains what and why. If using CodeRabbit's summary, please make sure it makes sense. 
+ PR Follows TRT-LLM CODING GUIDELINES to the best of your knowledge. 
+ Test cases are provided for new code paths (see test instructions ) 
+ If PR introduces API changes, an appropriate PR label is added - either api-compatible or api-breaking . For api-breaking , include BREAKING in the PR title. 
+ Any new dependencies have been scanned for license and vulnerabilities 
+ CODEOWNERS updated if ownership changes 
+ Documentation updated as needed 
+ Update tava architecture diagram if there is a significant design change in PR. 
+ The reviewers assigned automatically/manually are appropriate for the PR. 
+ Please check this after reviewing the above items as appropriate for this PR. 
+ GitHub Bot Help 
+ To see a list of available CI bot commands, please comment /bot help . 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ --> 
+ All reactions 
+ github-actions 
+ Bot 
+ assigned 
+ reasonsolo 
+ Jul 1, 2026 
+ reasonsolo 
+ force-pushed 
+ the
+ feat/kvcm-v2-inclusive-host-cache 
+ branch
+ 2 times, most recently
+ from
+ de63646 to
+ b75c19e 
+ Compare 
+ July 1, 2026 10:11 
+ [None][feat] Inclusive host KV-cache tier (shadow reuse) for KVCacheM… 
+ …
+ 873e7e0 
+ …anager V2
+Add an optional inclusive host cache tier to KVCacheManager V2. When a full,
+immutable committed page is recalled host->GPU, its clean host copy is retained
+as a "shadow" instead of being freed; a later eviction of that page back to host
+reuses the shadow and skips the redundant device-to-host (D2H) copy. This
+eliminates redundant D2H rewrites of hot prefixes that repeatedly bounce
+GPU<->host, which dominate host-tier write traffic on agentic multi-turn
+workloads. Gated by a new KvCacheConfig flag enable_inclusive_host_cache
+(default False; exclusive paging unchanged).
+- _config.py / llm_args.py / kv_cache_manager_v2.py / _kv_cache_manager.py:
+ plumb enable_inclusive_host_cache into StorageManager.
+- _page.py: add shadow_slot/shadow_level/shadow_node to CommittedPage; release
+ the shadow on drop/rebase.
+- _storage_manager.py: retain a shadow on inclusive recall, reuse it copy-free
+ on eviction, and reclaim shadows oldest-first under host memory pressure
+ (per-(level,pool-group) FIFO), on shrink, and on destroy. Also fix
+ take_finish_event() to run after the TemporaryCudaStream `with` block so the
+ offload path does not raise on an empty copy batch.
+- test: behavioral test asserting a shadow is attached on recall and reused on
+ re-eviction (host free-slot count and shadow FIFO tracked via
+ _num_shadow_slots), on top of the existing StorageManager suspend/resume
+ harness.
+Signed-off-by: Lizhi Zhou <1432185+reasonsolo@users.noreply.github.com> 
+ reasonsolo 
+ force-pushed 
+ the
+ feat/kvcm-v2-inclusive-host-cache 
+ branch
+ from
+ b75c19e to
+ 873e7e0 
+ Compare 
+ July 1, 2026 10:21 
+ reasonsolo 
+ changed the title
+ [None][feat] Inclusive host KV-cache tier (shadow reuse) for KVCacheManager V2 
+ [TRTLLM-13617][feat] Inclusive host KV-cache tier (shadow reuse) for KVCacheManager V2 
+ Jul 2, 2026 
+ reasonsolo 
+ marked this pull request as ready for review
+ July 2, 2026 09:26 
+ reasonsolo 
+ requested review from
+ a team 
+ as code owners 
+ July 2, 2026 09:26 
+ reasonsolo 
+ requested review from
+ lowsfer and 
+ zhenhuaw-me 
+ July 2, 2026 09:26 
+ coderabbitai 
+ Bot 
+ commented
+ Jul 2, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ 📝 Walkthrough 
+ Walkthrough 
+ This PR adds an enable_inclusive_host_cache configuration flag propagated from KvCacheConfig through KV cache manager v2 configuration layers into StorageManager . It implements shadow-slot retention on CommittedPage and reuse/reclamation logic during migration and eviction, with new unit tests validating the behavior. 
+ Changes 
+ Inclusive host cache feature 
+ Layer / File(s) 
+ Summary 
+ Configuration flag plumbing tensorrt_llm/llmapi/llm_args.py , tensorrt_llm/runtime/kv_cache_manager_v2/_config.py , tensorrt_llm/_torch/pyexecutor/kv_cache_manager_v2.py , tensorrt_llm/runtime/kv_cache_manager_v2/_core/_kv_cache_manager.py 
+ Adds enable_inclusive_host_cache boolean field (prototype) to KvCacheConfig and KVCacheManagerConfig , and forwards it through _build_cache_config and KVCacheManager.__init__ into StorageManager . 
+ Committed page shadow state tensorrt_llm/runtime/kv_cache_manager_v2/_page.py 
+ Adds shadow_slot , shadow_level , shadow_node fields to CommittedPage , initializes defaults in __init__ , and refactors __del__ to conditionally drop shadows via nested try/finally. 
+ Storage manager shadow bookkeeping tensorrt_llm/runtime/kv_cache_manager_v2/_storage_manager.py 
+ Adds dllist -based per-(level, pool-group) shadow FIFO state, an enable_inclusive_host_cache constructor parameter, and reclamation of outstanding shadows during destroy() . 
+ Shadow reuse in slot preparation and migration tensorrt_llm/runtime/kv_cache_manager_v2/_storage_manager.py 
+ Extends _prepare_free_slots and _batched_migrate to reclaim/reuse shadows, adds _is_inclusive_recall , _shadow_reuse_slot , _attach_shadow , _detach_shadow , drop_shadow , _reclaim_shadows , _num_shadow_slots , and integrates shadow reclamation into shrink_pool_group . 
+ Test coverage for shadow reuse tests/unittest/kv_cache_manager_v2_tests/test_kv_cache_manager_v2.py 
+ Adds enable_inclusive_host_cache parameter to create_config / prepare helpers and a new test validating shadow creation and reuse across suspend/resume cycles under memory pressure. 
+ Estimated code review effort: 4 (Complex) | ~60 minutes 
+ Sequence Diagram(s) 
+ sequenceDiagram
+ participant Test as Caller
+ participant SM as StorageManager
+ participant Page as CommittedPage
+ Test->>SM: _prepare_free_slots(level, pool group)
+ SM->>SM: _reclaim_shadows(deficit)
+ Test->>SM: _batched_migrate(pages)
+ SM->>SM: _is_inclusive_recall(page)
+ SM->>SM: _shadow_reuse_slot(page)
+ alt shadow reused
+ SM->>Page: rebind to retained shadow slot
+ else copy required
+ SM->>SM: batched_copy(copy_pages)
+ SM->>Page: _attach_shadow(page, slot)
+ end
+ Page->>SM: drop_shadow(page) on __del__
+ Loading 
+ Suggested reviewers: QiJune , PerkzZheng 
+ 🚥 Pre-merge checks | ✅ 5 
+ ✅ Passed checks (5 passed) 
+ Check name 
+ Status 
+ Explanation 
+ Title check 
+ ✅ Passed 
+ The title is concise, specific, and accurately reflects the new inclusive host KV-cache tier feature. 
+ Description check 
+ ✅ Passed 
+ The description explains the feature, implementation areas, and test coverage, with benchmark context; only the exact template formatting is missing. 
+ Docstring Coverage 
+ ✅ Passed 
+ No functions found in the changed files to evaluate docstring coverage. Skipping docstring coverage check. 
+ Linked Issues check 
+ ✅ Passed 
+ Check skipped because no linked issues were found for this pull request. 
+ Out of Scope Changes check 
+ ✅ Passed 
+ Check skipped because no linked issues were found for this pull request. 
+ ✨ Finishing Touches 
+ 🧪 Generate unit tests (beta) 
+ Create PR with unit tests 
+ Comment @coderabbitai help to get the list of available commands. 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ coderabbitai 
+ Bot 
+ reviewed
+ Jul 2, 2026 
+ View reviewed changes 
+ coderabbitai 
+ Bot 
+ left a comment
+ Copy link
+ Copy Markdown
+ Contributor 
+ There was a problem hiding this comment. 
+ Choose a reason for hiding this comment 
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ Actionable comments posted: 4 
+ 🤖 Prompt for all review comments with AI agents 
+ Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+Inline comments:
+In `@tensorrt_llm/runtime/kv_cache_manager_v2/_storage_manager.py`:
+- Around line 697-723: The exception cleanup in the shadow-slot rebinding path
+is releasing slots that have already been rebound to src in the update_src and
+not defrag branch of the storage manager logic. Update the try/except handling
+in _storage_manager.py so the cleanup only releases shadow slots that are still
+detached and not yet reassigned, and skips any reused_shadow entry that has
+already been attached back to a src page. Use the existing src.set_slot,
+reused_shadow, and _levels[dst_level].storage.release flow to distinguish live
+rebound slots from still-detached ones before releasing.
+- Around line 560-573: The _is_inclusive_recall predicate in _storage_manager.py
+is too broad because it matches any migration to a warmer tier, which lets
+disk→host prefetch attach a shadow and blocks the intended host→GPU reuse path.
+Tighten the condition so it only returns true for host→GPU recalls (not
+disk→host), while keeping the existing checks for enablement, CommittedPage, and
+missing shadow_slot; update the logic around _is_inclusive_recall and any
+callers in the migration flow accordingly.
+- Around line 465-472: The reclaim logic in _storage_manager.py currently only
+calls _reclaim_shadows inside the deficit path, which can cause real evictable
+pages to be chosen before cheaper shadow slots are freed. Update the allocation
+flow in the storage manager method that computes
+shadow_count/old_free_cnt/evictable_cnt so shadow slots are reclaimed first to
+cover the free-slot shortfall, then recompute the available counts and only
+after that calculate num_to_evict for real pages.
+In `@tests/unittest/kv_cache_manager_v2_tests/test_kv_cache_manager_v2.py`:
+- Around line 550-563: The shadow reuse test is asserting the wrong host
+free-space behavior after recall: since the suspended request already holds the
+host slots and they are retained as shadows, `host_free()` should remain
+unchanged rather than drop. Update the assertion in
+`test_kv_cache_manager_v2.py` around `host_free_before`, `total_shadows()`, and
+`hot.kv_cache.resume(stream)` so it checks for no change in free host slots
+after recall while keeping the existing shadow count verification.
+ 🪄 Autofix (Beta) 
+ Fix all unresolved CodeRabbit comments on this PR: 
+ Push a commit to this branch (recommended) 
+ Create a new PR with the fixes 
+ ℹ️ Review info 
+ ⚙️ Run configuration 
+ Configuration used : Path: .coderabbit.yaml 
+ Review profile : CHILL 
+ Plan : Enterprise 
+ Run ID : a523a39e-6552-40d4-9162-ce0b2cdcb388 
+ 📥 Commits 
+ Reviewing files that changed from the base of the PR and between cd66b84 and 873e7e0 . 
+ 📒 Files selected for processing (7) 
+ tensorrt_llm/_torch/pyexecutor/kv_cache_manager_v2.py 
+ tensorrt_llm/llmapi/llm_args.py 
+ tensorrt_llm/runtime/kv_cache_manager_v2/_config.py 
+ tensorrt_llm/runtime/kv_cache_manager_v2/_core/_kv_cache_manager.py 
+ tensorrt_llm/runtime/kv_cache_manager_v2/_page.py 
+ tensorrt_llm/runtime/kv_cache_manager_v2/_storage_manager.py 
+ tests/unittest/kv_cache_manager_v2_tests/test_kv_cache_manager_v2.py 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ --> 
+ All reactions 
+ Comment thread 
+ tensorrt_llm/runtime/kv_cache_manager_v2/_storage_manager.py 
+ Comment on lines
+ +465
+ to 
+ +472
+ # Shadows are reclaimable for free (GPU holds the real copy), so reclaim them oldest 
+ # -first to cover any shortfall before evicting real pages or raising. 
+ shadow_cnt = self._num_shadow_slots(lvl_id, pg_idx) 
+ if shadow_cnt > 0: 
+ deficit = (goal + fallen) - (old_free_cnt + evictable_cnt) 
+ if deficit > 0: 
+ self._reclaim_shadows(lvl_id, pg_idx, min(deficit, shadow_cnt)) 
+ old_free_cnt = storage.get_num_free_slots(pg_idx) 
+ coderabbitai 
+ Bot 
+ Jul 2, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ There was a problem hiding this comment. 
+ Choose a reason for hiding this comment 
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ 🚀 Performance & Scalability | 🟠 Major | ⚡ Quick win 
+ Reclaim shadow slots before evicting real pages. 
+ Line 469 only reclaims shadows when free + evictable cannot satisfy the request, so real evictable pages can be evicted while cheaper shadow slots remain occupied. Reclaim against the free-slot shortfall first, then compute num_to_evict . 
+ Proposed fix 
+ - shadow_cnt = self._num_shadow_slots(lvl_id, pg_idx) 
+ - if shadow_cnt > 0: 
+ - deficit = (goal + fallen) - (old_free_cnt + evictable_cnt) 
+ - if deficit > 0: 
+ - self._reclaim_shadows(lvl_id, pg_idx, min(deficit, shadow_cnt)) 
+ - old_free_cnt = storage.get_num_free_slots(pg_idx) 
+ + shadow_cnt = self._num_shadow_slots(lvl_id, pg_idx) 
+ + if shadow_cnt > 0: 
+ + deficit = (goal + fallen) - old_free_cnt 
+ + if deficit > 0: 
+ + self._reclaim_shadows(lvl_id, pg_idx, min(deficit, shadow_cnt)) 
+ + old_free_cnt = storage.get_num_free_slots(pg_idx) 
+ 📝 Committable suggestion 
+ ‼️ IMPORTANT 
+Carefully review the code before committing. Ensure that it accurately replaces the highlighted code, contains no missing lines, and has no issues with indentation. Thoroughly test & benchmark the code to ensure it meets the requirements. 
+ Suggested change
+ # Shadows are reclaimable for free (GPU holds the real copy), so reclaim them oldest 
+ # -first to cover any shortfall before evicting real pages or raising. 
+ shadow_cnt = self . _num_shadow_slots ( lvl_id , pg_idx ) 
+ if shadow_cnt > 0 : 
+ deficit = ( goal + fallen ) - ( old_free_cnt + evictable_cnt ) 
+ if deficit > 0 : 
+ self . _reclaim_shadows ( lvl_id , pg_idx , min ( deficit , shadow_cnt )) 
+ old_free_cnt = storage . get_num_free_slots ( pg_idx ) 
+ # Shadows are reclaimable for free (GPU holds the real copy), so reclaim them oldest 
+ # -first to cover any shortfall before evicting real pages or raising. 
+ shadow_cnt = self . _num_shadow_slots ( lvl_id , pg_idx ) 
+ if shadow_cnt > 0 : 
+ deficit = ( goal + fallen ) - old_free_cnt 
+ if deficit > 0 : 
+ self . _reclaim_shadows ( lvl_id , pg_idx , min ( deficit , shadow_cnt )) 
+ old_free_cnt = storage . get_num_free_slots ( pg_idx ) 
+ 🤖 Prompt for AI Agents 
+ Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+In `@tensorrt_llm/runtime/kv_cache_manager_v2/_storage_manager.py` around lines
+465 - 472, The reclaim logic in _storage_manager.py currently only calls
+_reclaim_shadows inside the deficit path, which can cause real evictable pages
+to be chosen before cheaper shadow slots are freed. Update the allocation flow
+in the storage manager method that computes
+shadow_count/old_free_cnt/evictable_cnt so shadow slots are reclaimed first to
+cover the free-slot shortfall, then recompute the available counts and only
+after that calculate num_to_evict for real pages.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ --> 
+ All reactions 
+ Comment thread 
+ tensorrt_llm/runtime/kv_cache_manager_v2/_storage_manager.py 
+ Comment on lines
+ +560
+ to 
+ +573
+ def _is_inclusive_recall( 
+ self, page: Page, src_level: CacheLevel, dst_level: CacheLevel 
+ ) -> bool: 
+ """A migration that should retain the source slot as a clean host shadow. 
+ True only for the inclusive-host-cache fast path: a committed (immutable) page being 
+ recalled from a lower tier toward GPU. The retained source slot becomes the page's shadow. 
+ """ 
+ return ( 
+ self._enable_inclusive_host_cache 
+ and dst_level < src_level 
+ and isinstance(page, CommittedPage) 
+ and page.shadow_slot is None 
+ ) 
+ coderabbitai 
+ Bot 
+ Jul 2, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ There was a problem hiding this comment. 
+ Choose a reason for hiding this comment 
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ 🎯 Functional Correctness | 🟠 Major | ⚡ Quick win 
+ Restrict shadow attachment to host→GPU recalls. 
+ The predicate currently matches any warmer-tier migration. With a disk tier, disk→host prefetch can attach a disk shadow, then page.shadow_slot is not None prevents the later host→GPU recall from retaining the host copy this feature is meant to reuse. 
+ Proposed fix 
+ return (
+ self._enable_inclusive_host_cache
+ - and dst_level < src_level 
+ + and dst_level == GPU_LEVEL 
+ + and self._levels[src_level].cache_tier == CacheTier.HOST_MEM 
+ and isinstance(page, CommittedPage)
+ and page.shadow_slot is None
+ ) 
+ 📝 Committable suggestion 
+ ‼️ IMPORTANT 
+Carefully review the code before committing. Ensure that it accurately replaces the highlighted code, contains no missing lines, and has no issues with indentation. Thoroughly test & benchmark the code to ensure it meets the requirements. 
+ Suggested change
+ def _is_inclusive_recall ( 
+ self , page : Page , src_level : CacheLevel , dst_level : CacheLevel 
+ ) -> bool : 
+ """ A migration that should retain the source slot as a clean host shadow . 
+ True only for the inclusive - host - cache fast path : a committed ( immutable ) page being 
+ recalled from a lower tier toward GPU . The retained source slot becomes the page ' s shadow . 
+ """ 
+ return ( 
+ self . _enable_inclusive_host_cache 
+ and dst_level < src_level 
+ and isinstance ( page , CommittedPage ) 
+ and page . shadow_slot is None 
+ ) 
+ def _is_inclusive_recall ( 
+ self , page : Page , src_level : CacheLevel , dst_level : CacheLevel 
+ ) -> bool : 
+ """ A migration that should retain the source slot as a clean host shadow . 
+ True only for the inclusive - host - cache fast path : a committed ( immutable ) page being 
+ recalled from a lower tier toward GPU . The retained source slot becomes the page ' s shadow . 
+ """ 
+ return ( 
+ self . _enable_inclusive_host_cache 
+ and dst_level == GPU_LEVEL 
+ and self . _levels [ src_level ]. cache_tier == CacheTier . HOST_MEM 
+ and isinstance ( page , CommittedPage ) 
+ and page . shadow_slot is None 
+ ) 
+ 🤖 Prompt for AI Agents 
+ Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+In `@tensorrt_llm/runtime/kv_cache_manager_v2/_storage_manager.py` around lines
+560 - 573, The _is_inclusive_recall predicate in _storage_manager.py is too
+broad because it matches any migration to a warmer tier, which lets disk→host
+prefetch attach a shadow and blocks the intended host→GPU reuse path. Tighten
+the condition so it only returns true for host→GPU recalls (not disk→host),
+while keeping the existing checks for enablement, CommittedPage, and missing
+shadow_slot; update the logic around _is_inclusive_recall and any callers in the
+migration flow accordingly.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ --> 
+ All reactions 
+ Comment thread 
+ tensorrt_llm/runtime/kv_cache_manager_v2/_storage_manager.py 
+ Comment on lines
+ +697
+ to 
+ 723
+ if update_src and not defrag: 
+ # Rebind shadow-reuse pages to their retained shadow slots (no copy happened). 
+ for i, shadow in enumerate(reused_shadow): 
+ if shadow is None: 
+ continue 
+ src = src_pages[i] 
+ scheduled_for_eviction = src.scheduled_for_eviction 
+ if scheduled_for_eviction: 
+ self.exclude_from_eviction(src) 
+ src_pool_group.release(src) 
+ src.set_slot(shadow) 
+ src.cache_level = dst_level 
+ if emit_cache_level_updates: 
+ self._emit_cache_level_updated_event( 
+ src, src_level, dst_level, emitted_update_keys 
+ ) 
+ if scheduled_for_eviction: 
+ self.schedule_for_eviction(src) 
+ return None if update_src else dst_slots 
+ except Exception: 
+ for s in dst_slots: 
+ dst_pool_group.release(s) 
+ # Release any detached-but-not-yet-rebound shadow slots so they are not leaked. 
+ for shadow in reused_shadow: 
+ if shadow is not None and shadow.has_valid_slot: 
+ self._levels[dst_level].storage.release(pool_group_index, shadow) 
+ raise 
+ coderabbitai 
+ Bot 
+ Jul 2, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ There was a problem hiding this comment. 
+ Choose a reason for hiding this comment 
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ 🗄️ Data Integrity & Integration | 🟠 Major | ⚡ Quick win 
+ Do not release rebound shadow slots during exception cleanup. 
+ After Line 707, the shadow slot is owned by src again, but reused_shadow still points at it. If a later operation in the try-block raises, Lines 720-722 can release that live slot back to storage. 
+ Proposed fix 
+ src_pool_group.release(src)
+ src.set_slot(shadow)
+ + reused_shadow[i] = None 
+ src.cache_level = dst_level 
+ 📝 Committable suggestion 
+ ‼️ IMPORTANT 
+Carefully review the code before committing. Ensure that it accurately replaces the highlighted code, contains no missing lines, and has no issues with indentation. Thoroughly test & benchmark the code to ensure it meets the requirements. 
+ Suggested change
+ if update_src and not defrag : 
+ # Rebind shadow-reuse pages to their retained shadow slots (no copy happened). 
+ for i , shadow in enumerate ( reused_shadow ): 
+ if shadow is None : 
+ continue 
+ src = src_pages [ i ] 
+ scheduled_for_eviction = src . scheduled_for_eviction 
+ if scheduled_for_eviction : 
+ self . exclude_from_eviction ( src ) 
+ src_pool_group . release ( src ) 
+ src . set_slot ( shadow ) 
+ src . cache_level = dst_level 
+ if emit_cache_level_updates : 
+ self . _emit_cache_level_updated_event ( 
+ src , src_level , dst_level , emitted_update_keys 
+ ) 
+ if scheduled_for_eviction : 
+ self . schedule_for_eviction ( src ) 
+ return None if update_src else dst_slots 
+ except Exception : 
+ for s in dst_slots : 
+ dst_pool_group . release ( s ) 
+ # Release any detached-but-not-yet-rebound shadow slots so they are not leaked. 
+ for shadow in reused_shadow : 
+ if shadow is not None and shadow . has_valid_slot : 
+ self . _levels [ dst_level ]. storage . release ( pool_group_index , shadow ) 
+ raise 
+ if update_src and not defrag : 
+ # Rebind shadow-reuse pages to their retained shadow slots (no copy happened). 
+ for i , shadow in enumerate ( reused_shadow ): 
+ if shadow is None : 
+ continue 
+ src = src_pages [ i ] 
+ scheduled_for_eviction = src . scheduled_for_eviction 
+ if scheduled_for_eviction : 
+ self . exclude_from_eviction ( src ) 
+ src_pool_group . release ( src ) 
+ src . set_slot ( shadow ) 
+ reused_shadow [ i ] = None 
+ src . cache_level = dst_level 
+ if emit_cache_level_updates : 
+ self . _emit_cache_level_updated_event ( 
+ src , src_level , dst_level , emitted_update_keys 
+ ) 
+ if scheduled_for_eviction : 
+ self . schedule_for_eviction ( src ) 
+ return None if update_src else dst_slots 
+ except Exception : 
+ for s in dst_slots : 
+ dst_pool_group . release ( s ) 
+ # Release any detached-but-not-yet-rebound shadow slots so they are not leaked. 
+ for shadow in reused_shadow : 
+ if shadow is not None and shadow . has_valid_slot : 
+ self . _levels [ dst_level ]. storage . release ( pool_group_index , shadow ) 
+ raise 
+ 🤖 Prompt for AI Agents 
+ Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+In `@tensorrt_llm/runtime/kv_cache_manager_v2/_storage_manager.py` around lines
+697 - 723, The exception cleanup in the shadow-slot rebinding path is releasing
+slots that have already been rebound to src in the update_src and not defrag
+branch of the storage manager logic. Update the try/except handling in
+_storage_manager.py so the cleanup only releases shadow slots that are still
+detached and not yet reassigned, and skips any reused_shadow entry that has
+already been attached back to a src page. Use the existing src.set_slot,
+reused_shadow, and _levels[dst_level].storage.release flow to distinguish live
+rebound slots from still-detached ones before releasing.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ --> 
+ All reactions 
+ Comment thread 
+ tests/unittest/kv_cache_manager_v2_tests/test_kv_cache_manager_v2.py 
+ Comment on lines
+ +550
+ to 
+ +563
+ host_free_before = host_free() 
+ with TemporaryCudaStream([]) as s: 
+ stream = cast(CudaStream, s.handle) 
+ assert hot.kv_cache.resume(stream) 
+ s.take_finish_event() 
+ # After recall, immutable committed blocks retained their host copy as shadows. 
+ shadows_after_recall = total_shadows() 
+ self.assertGreater(shadows_after_recall, 0) 
+ # Shadows occupy host slots, so free host slots dropped versus before the recall. 
+ self.assertLess(host_free(), host_free_before) 
+ # Suspend again: the hot blocks evict GPU->host and reuse their shadows (no fresh host slot, 
+ # no D2H copy). The shadow FIFO drains as shadows are rebound to the evicted pages. 
+ hot.kv_cache.suspend() 
+ coderabbitai 
+ Bot 
+ Jul 2, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ There was a problem hiding this comment. 
+ Choose a reason for hiding this comment 
+ The reason will be displayed to describe this comment to others. Learn more .
+ --> 
+ Choose a reason
+ Spam 
+ Abuse 
+ Off Topic 
+ Outdated 
+ Duplicate 
+ Resolved 
+ Low Quality 
+ Hide comment 
+ 🎯 Functional Correctness | 🟠 Major | ⚡ Quick win 
+ Fix the host-free assertion in the shadow reuse test. 
+ host_free_before is captured while the suspended request already owns the host slots. Retaining those slots as shadows should keep the free count unchanged after recall, not lower it. Coverage is sufficient with this assertion corrected; no follow-up outside this PR needed. As per path instructions, tests/** feedback should assess coverage and stay actionable. 
+ Proposed fix 
+ - # Shadows occupy host slots, so free host slots dropped versus before the recall. 
+ - self.assertLess(host_free(), host_free_before) 
+ + # The recalled pages retain the same host slots as shadows, so free host slots stay stable. 
+ + self.assertEqual(host_free(), host_free_before) 
+ # Suspend again: the hot blocks evict GPU->host and reuse their shadows (no fresh host slot,
+ # no D2H copy). The shadow FIFO drains as shadows are rebound to the evicted pages.
+ hot.kv_cache.suspend()
+ self.assertLess(total_shadows(), shadows_after_recall)
+ + self.assertEqual(host_free(), host_free_before) 
+ 📝 Committable suggestion 
+ ‼️ IMPORTANT 
+Carefully review the code before committing. Ensure that it accurately replaces the highlighted code, contains no missing lines, and has no issues with indentation. Thoroughly test & benchmark the code to ensure it meets the requirements. 
+ Suggested change
+ host_free_before = host_free () 
+ with TemporaryCudaStream ([]) as s : 
+ stream = cast ( CudaStream , s . handle ) 
+ assert hot . kv_cache . resume ( stream ) 
+ s . take_finish_event () 
+ # After recall, immutable committed blocks retained their host copy as shadows. 
+ shadows_after_recall = total_shadows () 
+ self . assertGreater ( shadows_after_recall , 0 ) 
+ # Shadows occupy host slots, so free host slots dropped versus before the recall. 
+ self . assertLess ( host_free (), host_free_before ) 
+ # Suspend again: the hot blocks evict GPU->host and reuse their shadows (no fresh host slot, 
+ # no D2H copy). The shadow FIFO drains as shadows are rebound to the evicted pages. 
+ hot . kv_cache . suspend () 
+ host_free_before = host_free () 
+ with TemporaryCudaStream ([]) as s : 
+ stream = cast ( CudaStream , s . handle ) 
+ assert hot . kv_cache . resume ( stream ) 
+ s . take_finish_event () 
+ # After recall, immutable committed blocks retained their host copy as shadows. 
+ shadows_after_recall = total_shadows () 
+ self . assertGreater ( shadows_after_recall , 0 ) 
+ # The recalled pages retain the same host slots as shadows, so free host slots stay stable. 
+ self . assertEqual ( host_free (), host_free_before ) 
+ # Suspend again: the hot blocks evict GPU->host and reuse their shadows (no fresh host slot, 
+ # no D2H copy). The shadow FIFO drains as shadows are rebound to the evicted pages. 
+ hot . kv_cache . suspend () 
+ self . assertLess ( total_shadows (), shadows_after_recall ) 
+ self . assertEqual ( host_free (), host_free_before ) 
+ 🤖 Prompt for AI Agents 
+ Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+In `@tests/unittest/kv_cache_manager_v2_tests/test_kv_cache_manager_v2.py` around
+lines 550 - 563, The shadow reuse test is asserting the wrong host free-space
+behavior after recall: since the suspended request already holds the host slots
+and they are retained as shadows, `host_free()` should remain unchanged rather
+than drop. Update the assertion in `test_kv_cache_manager_v2.py` around
+`host_free_before`, `total_shadows()`, and `hot.kv_cache.resume(stream)` so it
+checks for no change in free host slots after recall while keeping the existing
+shadow count verification.
+ Source: Path instructions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ --> 
+ All reactions 
+ lowsfer 
+ commented
+ Jul 2, 2026 
+ Copy link
+ Copy Markdown
+ Member 
+ Please hold on until bug reporter's response. It's a design choice. It uses more D2H bandwidth but D2H bandwidth is under-utilized anyway, and it improves cache hit rate because it avoids duplication and can hold more data. 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ nvpohanh 
+ commented
+ Jul 16, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ [by Codex] @lowsfer Friendly reminder to review this PR as the primary KV-cache-manager reviewer when you have a chance. Thanks! 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ nvpohanh 
+ commented
+ Jul 24, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ [by Codex] @lowsfer Could you please review this PR? Thank you! 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ nvpohanh 
+ commented
+ Jul 30, 2026 
+ Copy link
+ Copy Markdown
+ Collaborator 
+ [by Codex] @lowsfer Friendly review reminder: this PR is awaiting your review. Thanks! 
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ reasonsolo 
+ closed this
+ Jul 31, 2026 
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ coderabbitai[bot] 
+ coderabbitai[bot] left review comments 
+ zhenhuaw-me 
+ Awaiting requested review from zhenhuaw-me 
+ zhenhuaw-me was automatically assigned from NVIDIA/trt-llm-llmapi-devs 
+ lowsfer 
+ Awaiting requested review from lowsfer 
+ --> 
+ Assignees
+ reasonsolo 
+ Labels
+ None yet
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues. 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ 3 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer 
+ © 2026 GitHub, Inc.
+ Footer navigation 
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

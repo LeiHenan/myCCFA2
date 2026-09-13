@@ -1,0 +1,297 @@
+
+ [CacheBlend] [high correctness] No per-model correctness gate - the blend re-RoPE approximation is architecture-fragile and ungated; can garble output on some models (Llama-8B, Gemma mis-RoPE - code-verified fragility; not reproduced on dev) · Issue #4666 · LMCache/LMCache · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ LMCache
+ / 
+ LMCache 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 1.9k 
+ Star
+ 11.8k 
+ Code 
+ Issues 
+ 211 
+ Pull requests 
+ 480 
+ Discussions 
+ Actions 
+ Projects 
+ Wiki 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Wiki
+ Security and quality
+ Insights
+ [CacheBlend] [high correctness] No per-model correctness gate - the blend re-RoPE approximation is architecture-fragile and ungated; can garble output on some models (Llama-8B, Gemma mis-RoPE - code-verified fragility; not reproduced on dev) #4666 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Closed as not planned 
+ Closed as not planned 
+ [CacheBlend] [high correctness] No per-model correctness gate - the blend re-RoPE approximation is architecture-fragile and ungated; can garble output on some models (Llama-8B, Gemma mis-RoPE - code-verified fragility; not reproduced on dev) #4666 
+ Copy link 
+ Description
+ shawnguyen-tensormesh 
+ opened on Aug 20, 2026 
+ Issue body actions 
+ [CacheBlend] [high correctness] No per-model correctness gate - the blend re-RoPE approximation is architecture-fragile and ungated; can garble output on some models (Llama-8B, Gemma mis-RoPE - code-verified fragility; not reproduced on dev)
+ Date: 2026-08-20
+ Verdict: CONFIRMED (both sub-claims verified from source). The mechanism and the missing gate are CODE-VERIFIED; the specific Llama-8B / Gemma garble was NOT REPRODUCED on dev (those models are not staged - see §5).
+ Confidence: High that blend is an ungated lossy approximation whose correctness is architecture-fragile; Medium on the exact per-model garble rate (not re-measured here - no Llama/Gemma weights available on the dev cluster).
+ Severity: High (correctness). An incorrect-but-plausible answer served silently is worse than a slow-but-correct one.
+ Nature of defect: Partly a code fragility (position-fix / re-RoPE logic assumes a narrow, per-model-uniform rotary geometry) and partly a missing process gate (nothing automatically validates blended output against a full-recompute reference before blend is enabled for a given model).
+ Problem at a glance
+ flowchart TD
+ RE["reused KV from other positions"] --> RR["re-RoPE position fixup"]
+ RE --> REC["recompute only ~15 percent of tokens"]
+ RR --> CHK{"rope geometry uniform?"}
+ CHK -->|Llama or Qwen| OK["approximate output"]
+ CHK -->|Gemma dual-rope / MLA / sink| BAD["wrongly-rotated keys: silent garble"]
+ REC --> OK
+ OK --> GATE{"per-model accuracy gate?"}
+ GATE -->|none exists| SERVE["served silently: correctness assumed"]
+ BAD --> SERVE
+ Loading 
+ 2. Versioning / environment
+ Item 
+ Value 
+ LMCache submodule HEAD 
+ 9fc6e1afe83335a1c41b31662470fa115b2b6ac8 (2026-08-09, "[docs] Update docs for adding a new platform backend support #4215 ") 
+ vLLM submodule HEAD 
+ 436be94e135fd07fc94e4c165a1b6870af72bf31 (2026-08-10) 
+ Cluster 
+ a dev Kubernetes cluster 
+ Node 
+ a single node with 8× NVIDIA RTX PRO 6000 Blackwell (97887 MiB/GPU) 
+ Models available (local model store) 
+ openai/gpt-oss-120b and openai/gpt-oss-20b only - no Llama, no Gemma 
+ enable_blending default 
+ False (bool, no accuracy precondition) - lmcache/v1/config.py:137 
+ blend_recompute_ratios default 
+ None (must be supplied) - config.py:142 
+ blend_check_layers default 
+ None (must be supplied) - config.py:152 
+ blend_thresholds default 
+ None - config.py:147 
+ blend_min_tokens default 
+ 256 (length threshold, not an accuracy gate) - config.py:157 
+ chunk_size 
+ not exercised (no run performed) 
+ Images referenced (not deployed) 
+ lmcache/vllm-openai:v0.5.3 , cacheblend-plugin:v0.5.3 
+ 3. Issue description - why an ungated approximation is a production correctness risk
+ CacheBlend accelerates prefill by reusing KV that was computed for a different context/position and then "fixing it up" cheaply, rather than recomputing attention for every token. Two things make this fundamentally approximate:
+ Only a fraction of tokens are recomputed. For the "check" layers, the code selects the top- k tokens whose cached key deviates most from the freshly projected key and recomputes attention for only those ; the remaining tokens keep their reused KV. k = recomp_ratio × total_tokens . With any recomp_ratio < 1.0 the served activations are an approximation of true full-prefill - it can never be bit-exact, and the residual error depends on the workload.
+ Reused KV must be re-positioned via re-RoPE. Because the KV was cached at other absolute positions, its rotary embedding has to be rotated to the new positions. This re-RoPE is only correct if the model's rotary geometry matches a small set of assumptions (single rotary config per model, rotary_dim == head_size , no rope scaling, full rotary factor, one rope theta across layers).
+ The correctness risk: nothing in the enable path compares blended output to a full-recompute reference. The only checks are (a) a numeric self-consistency test that re-RoPE is invertible on random tensors, and (b) geometry/shape sanity checks. Both can pass while the end-to-end output is semantically wrong for a model whose architecture violates the uniform-rope assumption (Gemma's mixed 256/512 dual-rope global/local layers, attention-sink models, MLA, partial-rotary). The result is a plausible-looking but incorrect answer served silently at production quality gates - exactly the failure the ticket describes for Llama-8B and Gemma.
+ 4. How verified (primary sources only)
+ Sub-claim (a): blend is a fractional-recompute approximation - CONFIRMED
+ lmcache/v1/compute/blend/blender.py:89-114 (the engine-side layerwise blender):
+ if layer_id in self . common_metadata . check_layers :
+ diff_k = torch . sum (( k . to ( torch . float32 ) - old_k . to ( torch . float32 )) ** 2 , dim = [ 1 ])
+ total_len = diff_k . shape [ 0 ]
+ ...
+ topk_num = int ( total_len * self . common_metadata . recomp_ratios [ 0 ]) # <-- fraction 
+ topk_num = max ( topk_num , 1 )
+ top_indices = torch . topk ( diff_k , k = topk_num ). indices 
+ top_indices , _ = torch . sort ( top_indices )
+ k , v = k [ top_indices ], v [ top_indices ] # only these tokens recomputed 
+ ...
+ old_k [ self . metadata . imp_indices ] = k # rest keep reused (cached) KV 
+ old_v [ self . metadata . imp_indices ] = v 
+ Only recomp_ratio × total_len tokens (the highest-KV-deviation ones) are recomputed; the rest reuse cached KV. Exact output is impossible unless recomp_ratio == 1.0 . The ratio has no default ( config.py:142 → None ), so it is chosen operationally with no correctness floor.
+ WHAT CONFIRMS (a): the recompute set is a proper subset of tokens → CONFIRMED.
+ WHAT WOULD REFUTE (a): a full-token recompute path or a bit-exactness guarantee - none exists.
+ Sub-claim (b): re-RoPE is architecture-fragile AND there is no per-model correctness gate - CONFIRMED
+ (b1) The position-fix relies on a narrow rotary geometry. lmcache/v1/compute/positional_encoding.py:83-107 :
+ def validate_rope_params ( head_size , rotary_dim , ...):
+ if rotary_dim != head_size :
+ logger . error ( "Currently KV blending only support rotary_dim == head_size." )
+ return False 
+ if rope_scaling is not None :
+ logger . error ( "Currently KV blending do not support rope scaling." )
+ return False 
+ if partial_rotary_factor != 1.0 :
+ logger . error ( "Currently KV blending do not support rotary factor other than 1.0." )
+ return False 
+ return True 
+ This is a guard, but it validates a single, per-model rotary config . Models with per-layer heterogeneous RoPE (Gemma global vs. local layers with different theta / head sizes) are not expressible as one (head_size, rotary_dim, scaling) tuple, so a single pass cannot certify every layer.
+ (b2) The only "correctness" check is a random-tensor self-consistency test, not an output-accuracy gate. positional_encoding.py:110-146,197-202 :
+ def validate_reverse_correctness ( rope , reverse_rope , fused_rope , head_size ) -> bool :
+ ...
+ q1 , k1 = rope ( positions , q1 , k1 )
+ q1 , k1 = reverse_rope ( positions , q1 , k1 )
+ max_q_error = ( dumb_q - q1 ). abs (). max ()
+ ...
+ return max_q_error < 0.1 and max_k_error < 0.1 and max_k_error_fused < 0.1 
+...
+ correct = validate_reverse_correctness ( rope , reverse_rope , fused_rope , head_size )
+ if not correct :
+ logger . error ( "Fused/reverse rotary encoding is not correct! Will disable blending!" )
+ return None 
+ This checks only that rope ∘ reverse ≈ identity on random tensors for a single rope instance. It cannot detect: (i) the recompute-ratio approximation error, (ii) per-layer rope mismatch on dual-rope models, (iii) attention-sink handling, (iv) any semantic drift. It is a math sanity check, not a per-model accuracy gate.
+ (b3) Compute path fails closed on unknown models; the production cross-pod path does not. lmcache/v1/compute/models/utils.py:14-35 :
+ def infer_model_from_vllm ( vllm_model , blender , enable_sparse = False ):
+ model_name = type ( vllm_model ). __name__ 
+ if model_name == "LlamaForCausalLM" : ...
+ elif model_name == "Qwen2ForCausalLM" : ...
+ elif model_name == "Qwen3ForCausalLM" : ...
+ else :
+ raise NotImplementedError ( f"Model type { model_name } is not supported in LMCache." )
+ The engine-side compute blender supports only Llama / Qwen2 / Qwen3 - everything else (gpt-oss, Gemma) hard-errors. But the production cross-pod path lmcache/v1/multiprocess/modules/blend_v3.py has no such model allowlist : model_name is used only as a layout lookup key ( blend_v3.py:917-935 ), and re-RoPE is driven by geometry the plugin declares at registration ( CB_REGISTER_ROPE_V3 , blend_v3.py:666-751 ). Its guards are geometry RuntimeError s (compressed layout, kv_size sanity, MLA window fit - blend_v3.py:472-519 ), not output correctness.
+ (b4) Documented silent-corruption path when geometry is mis-declared. blend_v3.py:454-458 :
+ "…offset > 0 means MLA (rope dims trail the row)… MLA groups must arrive with rot set: undeclared, a 576-wide latent passes the inference checks below as 9 x 64 heads and its content dims get rotated."
+ i.e. an incorrectly-declared model passes the shape checks and silently rotates content dimensions - garbage output, no error. Correctness rests entirely on each per-model plugin declaring rope groups correctly; there is no output-level backstop.
+ (b5) No accuracy gate anywhere. A repo-wide search over the blend paths for accuracy / self-consist / reference output / ground truth / correctness returns only two comments - both about store correctness ( blend_v3.py:1487,1534 ), unrelated to output fidelity. enable_blending ( config.py:137 ) is a plain bool with no accuracy precondition.
+ WHAT CONFIRMS (b): architecture-specific special-casing exists ( validate_rope_params , the 3-model allowlist, per-group MLA/dual-rope geometry) and no end-to-end accuracy gate exists → CONFIRMED.
+ WHAT WOULD REFUTE (b): an automated per-model blend-vs-full-recompute accuracy check that must pass before enable_blending takes effect - not present.
+ Run leg
+ Listed the local model store with a throwaway read-only probe pod - torn down afterward.
+ Staged models: openai/gpt-oss-120b + openai/gpt-oss-20b only. No Llama-8B, no Gemma weights on the dev PVC.
+ Therefore the specific "garbles on Llama-8B / Gemma mis-RoPE" claim cannot be reproduced on dev . gpt-oss-20b/120b are present and could show that blend runs (via the blend_v3 path), but that would not test the garble-on-other-architectures hypothesis, so no serving run was performed (no overclaim).
+ 5. Clues / evidence
+ Fractional recompute: blender.py:98 topk_num = int(total_len * recomp_ratios[0]) .
+ Reused-KV re-positioning is the whole game: blender.py:87 q, k = attn_layer.rotary_emb(self.metadata.positions, q, k) then top-k overwrite of old_k/old_v ( :117-118 ).
+ Rope-geometry guard (single-config, gross cases only): positional_encoding.py:93-107 .
+ Random-tensor self-check (not accuracy): positional_encoding.py:110-146 , disable-on-fail :197-202 .
+ Compute-path hard model allowlist: models/utils.py:16-35 .
+ Production path has NO model allowlist, geometry-only guards: blend_v3.py:917-935 , :472-519 .
+ Documented silent content-dim rotation on mis-declared geometry: blend_v3.py:454-458 .
+ No accuracy gate: grep across lmcache/v1/** blend paths for accuracy/self-consistency/reference/correctness → only unrelated "store correctness" comments.
+ Measured on dev (run gap): only gpt-oss-120b/20b staged → no Llama/Gemma reproduction possible. No accuracy numbers produced this session.
+ 6. Charts
+ Omitted - no run produced comparable accuracy/coherence data (models absent from dev).
+ 7. Root-cause analysis - why some architectures break
+ CacheBlend trades exactness for speed on two axes, and both are architecture-sensitive:
+ Position fix via re-RoPE assumes a uniform, invertible rotary geometry. The code is built for the common case: one rope config per model, rotary_dim == head_size , no rope scaling, full rotary factor. Architectures that violate this silently produce wrongly-rotated keys:
+ Gemma (dual-rope / mixed head sizes, e.g. 256 vs 512 across global/local layers): a single rope config re-rotates layers it doesn't match → corrupted keys on the mismatched layers (the classic "mis-RoPE"). The compute path only special-cases Llama/Qwen; the v3 path relies on the plugin declaring each layer group's rope, and a wrong/missing declaration passes shape checks ( blend_v3.py:454-458 ).
+ Attention-sink / partial-rotary / MLA models: the reused-KV fixup and the top-k "which tokens changed" heuristic don't model sink tokens or trailing-rope latents; MLA specifically must be declared or its content dims get rotated.
+ The top-k recompute heuristic assumes a small set of "important" tokens carry the cross-context change. When more of the attention actually shifts than recomp_ratio captures, the reused KV for the un-recomputed tokens is stale → drift. Llama-8B's observed bimodal garbling is consistent with per-query variation in how much attention actually changes vs. the fixed ratio.
+ The gating is fail- open on the path that matters. The compute path fails closed (NotImplementedError) on unknown models, but the production cross-pod path ( blend_v3 ) will attempt blend for any model whose plugin registers a layout, with only geometry sanity checks. There is no output-level, per-model acceptance test - so a new/edge model is enabled for blend the moment its plugin declares rope, with correctness assumed rather than verified.
+ Net: correctness depends on (a) recomp_ratio being high enough for the workload and (b) each model's rotary geometry being both supported and correctly declared - with no automated check that the blended output actually matches a full-recompute reference before it is served.
+ 8. Caveats & single cleanest next check
+ Caveats 
+ The specific Llama-8B / Gemma garble was not reproduced this session - dev has only gpt-oss-120b/20b. The claim is CODE-VERIFIED (fragile logic + no gate) and consistent with the architecture, not freshly measured.
+ gpt-oss-120b blend is reported elsewhere to be coherent; not re-verified here. gpt-oss runs through the blend_v3 path, not the 3-model compute allowlist, so its coherence does not generalize to models with heterogeneous rope.
+ "No accuracy gate" is a statement about the automated enable path ; humans can of course eyeball output. The defect is the absence of a mechanical per-model gate.
+ Single cleanest next check: stage meta-llama/Llama-3.1-8B-Instruct (and/or a Gemma checkpoint) in the model store, bring up one throwaway TP=1 engine with enable_blending=True , and run a greedy (temperature=0) blend-vs-full-recompute spot-check on ~30 RAG prompts: report exact-match rate and a coherence eyeball. That directly converts this CODE-VERIFIED finding into a MEASURED per-model garble rate and pins whether the failure is dual-rope (Gemma) vs. recompute-ratio (Llama) driven.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

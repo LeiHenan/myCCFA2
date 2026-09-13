@@ -1,0 +1,1586 @@
+ 
+ Cartridges at Scale: Training Modular KV Caches over Large Document Collections 
+ Report GitHub Issue 
+ × 
+ Title: 
+ Content selection saved. Describe the issue below: 
+ Description: 
+ Submit without GitHub 
+ Submit in GitHub 
+ arXiv is now an independent nonprofit! 
+ Learn more 
+ × 
+ Back to arXiv 
+ Why HTML? 
+ Report Issue 
+ Back to Abstract 
+ Download PDF 
+ Abstract 
+ 1 Introduction 
+ 2 Cartridges at Scale (CAS) Training 
+ Background. 
+ 2.1 Training with Multiple Cartridges 
+ Mixed-visibility training. 
+ Budget Manager 
+ Pool rotation. 
+ 2.2 Optimization Dynamics 
+ Optimizer. 
+ Per-cartridge LR warmup. 
+ 2.3 Improved Self-Study Data Synthesis 
+ Proportional-to-length sampling. 
+ Multi-question generation. 
+ Decoupled question generation. 
+ 2.4 Cartridge Initialization 
+ Cart-specific initialization. 
+ 2.5 Inference 
+ 3 Experimental Setup 
+ Models. 
+ Datasets. 
+ Retrieval. 
+ Evaluation 
+ 4 Experimental Results 
+ Training Regime. 
+ Positional Invariance. 
+ Scaling to Hundreds of Cartridges. 
+ Cartridges Granularity. 
+ Cartridge RAG. 
+ 5 Discussion 
+ Cost Analysis. 
+ Document grouping. 
+ 6 Related Work 
+ Soft Prompting. 
+ KV Cache Compression. 
+ 7 Conclusions 
+ Cartridge KV position. 
+ Cartridge-specific retrieval. 
+ Language coverage. 
+ Model scale. 
+ References 
+ A Hyperparameters 
+ Dataset-specific variations. 
+ Model Inference. 
+ B Effective LR per Cartridge 
+ C Impact of Self-Study Data Improvements 
+ D Scoring Metrics 
+ E Cartridge Size Statistics 
+ F RAG Baseline: Indexing and Retrieval Details 
+ Document indexing. 
+ Retrieval. 
+ Hyperparameter selection. 
+ Effective token counts. 
+ Unique cartridges per query. 
+ G Retrieval Quality: Recall and MRR 
+ H Evaluation Prompts 
+ I Self-Study Data Synthesis Details 
+ Question generation model. 
+ Seed prompt types. 
+ Multi-question prompt format. 
+ Sampling rounds and temperatures. 
+ Sampling configuration. 
+ J Self-Study Data Quality Analysis 
+ Synthesizer bias toward narrative over tables. 
+ Does coverage predicts correctness? 
+ Entity confusion. 
+ Hallucination despite self-verification. 
+ K Artifact Licenses and Terms of Use 
+ Licenses and terms for use/distribution of artifacts. 
+ Offensive content and personal data. 
+ L AI use disclosure 
+ License: arXiv.org perpetual non-exclusive license
+arXiv:2606.04557v1 [cs.CL] 03 Jun 2026 
+ Cartridges at Scale: Training Modular 
+ KV Caches over Large Document Collections 
+ Momchil Hardalov
+ Gonzalo Iglesias
+ Adrià de Gispert
+ Affiliation: Amazon AGI
+ Affiliation: {momchilh, gjii, agispert}@amazon.com 
+ Abstract 
+ Large Language Models can reason over long contexts, yet prefilling millions of tokens is wasteful as much of the content remains static across queries. Cartridges ( Eyuboglu et al., 2025 ) address this by distilling document collections into reusable key-value (KV) caches that eliminate prefilling while preserving accuracy. A critical limitation of this approach is that cartridges are monolithic and non-compositional: encoding an entire collection into a single KV block does not scale, and naively mixing cartridges trained in isolation collapses performance to near chance. We introduce Cartridges at Scale (CAS), a training framework for scalable multi-cartridge learning with dynamic distractor mixing and a memory-efficient budget manager that rotates hundreds of per-document cartridges between GPU and persistent storage. Our approach scales to collections exceeding a million tokens, improving over a monolithic cartridge by 10–31 points at comparable token budgets. Oracle cartridge accuracy falls within 2–6 points of full in-context learning even at high compression. When paired with retrieval for cartridge selection, CAS matches or exceeds conventional RAG accuracy while consuming 3–4 × \times fewer prompt tokens. 
+ 1 Introduction 
+ Figure 1: Performance of per-document trained Cartridges on LongHealth ( Adams et al. (2024) , docs: 20 patient notes, ∼ \sim 232K tokens). Oracle – only the patient Cartridge is presented in the prompt; Full – all cartridges are presented. Details in § 4 , Training Regime .
+ Large language models (LLMs) can reason over information in their context window ( Snell et al., 2025 ; OpenAI, 2024 ; OpenAI, 2025 ; DeepSeek-AI, 2025 ; Comanici et al., 2025 ; Anthropic, 2025 ; Agarwal et al., 2025 ) , however this capability comes at a cost that scales with context length—both in latency (prefill time) and memory (KV cache size).
+For applications requiring persistent access to document collections—such as enterprise knowledge bases, patient records, and legal corpora—repeatedly processing the same documents for each query is prohibitively expensive. 
+ Retrieval-augmented generation (RAG, Lewis et al. (2020) ; Guu et al. (2020) ) mitigates this by retrieving only the most relevant text chunks at query time, but each retrieved chunk is a fragment of the original document, forcing the model to reason over incomplete information. 
+ Prior work has proposed reducing KV-cache size via token eviction or merging Zhang et al. (2023) ; Kang et al. (2024) ; Liu et al. (2026) , or compressing text into soft Mu et al. (2023) ; Cheng et al. (2024) ; Louis et al. (2025) or discrete Jiang et al. (2023) ; Pan et al. (2024) token representations. These approaches often require expensive runtime prefills, rely on a separate encoder, or lose information from long documents Łajewska et al. (2025) . 
+ More recently, researchers have explored encoding documents into compact, reusable representations that can be loaded into the model KV cache at inference time without additional computational cost Devoto et al. (2025) ; Kim et al. (2026) ; Zweiger et al. (2026) .
+ Cartridges Eyuboglu et al. (2025) proposed training a small set of key-value vectors per document collection via context distillation, achieving 10 10 – 100 × 100\times compression while preserving the model’s ability to answer questions about the encoded content. However, their approach relies on a single monolithic cartridge per collection, which does not scale to real-world document collections: loading all documents into one cache bloats the prefix with irrelevant tokens, while information-dense content (e.g., financial tables, clinical notes, technical specifications) cannot be highly compressed without loss.
+Moreover, a single monolithic cartridge is inflexible to future changes: updating or adding a single document requires re-encoding the entire KV cache. The natural alternative—one cartridge per document—exposes a more fundamental flaw: as Figure 1 shows, mixing cartridges trained in isolation leads to model collapse —each cartridge performs well in the oracle setting (one correct cartridge loaded), but loading all cartridges simultaneously drops performance to near-chance, as the model never learned to selectively attend across independently trained KV prefixes. 
+ In this work, we introduce CAS, a framework for training and deploying cartridges at scale over collections of hundreds of documents and millions of tokens. CAS proposes a training regime based on dynamic cartridge rotation and mixing that closes the performance gap of isolated training (Fig. 1 ) while remaining feasible within current GPU memory constraints. We further show that CAS integrates naturally with dense retrieval for cartridge selection, enabling a practical deployment path that matches or exceeds text RAG efficiency. Our contributions are as follows: 
+ • 
+ We show that independently trained cartridges suffer catastrophic interference at inference time, collapsing to near-chance performance, and that joint training with distractor cartridges removes this degradation. 
+ • 
+ We propose CAS, a scalable training framework with GPU ↔ \leftrightarrow persistent storage swapping, optimizer offloading, and prioritized rotation, enabling joint training of hundreds of cartridges within a fixed GPU memory budget. 
+ • 
+ We propose improved self-study data generation via proportional-to-length sampling and batched multi-question generation, reducing synthesis cost by up to 20 × 20\times while improving fact coverage. 
+ • 
+ We demonstrate that per-document cartridges consistently outperform a single monolithic cartridge by up to 30 30 points across five diverse benchmarks, with compression tolerance ranging from near-lossless at 100 × 100\times for short technical documents to up to 5% relative performance drop for table-heavy financial filings. 
+ • 
+ We show that Cartridge RAG matches or exceeds Text RAG accuracy at up to 4 × 4\times fewer prompt tokens, combining the efficiency of compressed KV caches with the selectivity of dense retrieval. 
+ (a) Self-Study. 
+For each document d i d_{i} , we sample a list of questions using M Q M_{Q} . Subsequently, the answers along with the logits from the target teacher M A M_{A} are collected.
+ (b) Training. 
+Each document d i d_{i} is assigned a dedicated cartridge. A budget manager keeps only B B cartridges on GPU and rotates the pool every R R steps. 
+ (c) Inference. 
+A selection function activates k k cartridges from the store.
+The selected cartridges are concatenated and prepended to the query tokens before decoding.
+ Figure 2: Cartridges at Scale (CAS) End-to-End Pipeline.
+ 2 Cartridges at Scale (CAS) Training 
+ Background. 
+ Our work builds on the Cartridge framework of Eyuboglu et al. (2025) . A Cartridge Z ∈ ℝ L × p × d × 2 Z\in\mathbb{R}^{L\times p\times d\times 2} is a compact, trainable KV cache that encodes a context of n 𝒞 n_{\mathcal{C}} tokens as a fixed-size prefix of length p ≪ n 𝒞 p\ll n_{\mathcal{C}} that is injected into the model’s attention layers L L (of size d d ), yielding compression ratios of 10 10 – 100 × 100\times while integrating directly into existing inference servers. 
+ The Cartridge
+is trained via a context-distillation objective using training data generated through Self-Study : the corpus is chunked into subcorpora 𝐜 ~ \tilde{\mathbf{c}} , and the LLM generates synthetic question–answer pairs about each chunk using diverse seed prompts ( Eyuboglu et al., 2025 ) . The loss minimizes the KL divergence between a teacher (a model with the subcorpus in context) and a student (the same model augmented with the Cartridge). All model parameters remain frozen—only the key-value vectors in Z Z receive gradients. 
+ 2.1 Training with Multiple Cartridges 
+ Although Eyuboglu et al. (2025) discuss that independently trained Cartridges can be combined by concatenating their KV caches, this composition was never explicitly tested. Figure 1 shows that mixing caches trained in isolation ---independently and without awareness of other Cartridges that may coexist at inference time---leads to model collapse. Additionally, naive scaling to very large Cartridge sizes is not feasible since training over large document collections has high memory requirements. 1 1 
+ 1 
+ A 1K-token Qwen3-8B Cartridge takes ∼ 551 \sim 551  MiB during backprop (500K tokens ∼ 274 {\sim}274  GiB). Gradients and Adam moments increase the Cartridges’ memory footprint 4 × \times . 
+ To address these limitations, we introduce CAS, a training and inference framework that supports the use of N N cartridges simultaneously (Figure 2 ). 
+ Mixed-visibility training. 
+ Mixed-visibility training is key for learning KV representations that allow the frozen model to selectively attend to the relevant cartridge in the presence of distractors, directly optimizing for the multi-cartridge inference setting. To achieve this, we adapt the KL loss as follows: let Z ∗ ∈ { Z 1 , … , Z N Z^{*}\in\{{Z_{1},\ldots,Z_{N}} } be the relevant cartridge for example 𝐱 \mathbf{x} , 𝒵 ​ pool \mathcal{Z}\text{pool} the cartridge pool, 𝒵 ​ dist = 𝒵 ​ pool ∖ Z ∗ \mathcal{Z}\text{dist}=\mathcal{Z}\text{pool}\setminus{Z^{*}} the distractor candidates, and k ∼ 𝒰 ⁡ ( k min , k max ) k\sim\mathcal{U}(k_{\text{min}},k_{\text{max}}) , then the loss becomes: 
+ Z ~ = { Z ∗ w.p. ​ P iso Z ∗ ∪ S , S ∼ 𝒰 ⁡ ( 𝒵 dist , k ) w.p. ​ 1 − P iso \tilde{Z}=\resizebox{16957440}{}{$\begin{cases}Z^{*}&\text{w.p. }P_{\text{iso}}\\
+Z^{*}\cup S,\;S\sim\mathcal{U}(\mathcal{Z}_{\text{dist}},k)&\text{w.p. }1-P_{\text{iso}}\end{cases}$} 
+ (1) 
+ ℒ ( Z ) = ∑ ( 𝐱 , 𝐜 ~ ) ∈ 𝒟 ∑ i = 1 | 𝐱 | D KL ( ℱ ( ⋅ ∣ 𝐜 ~ ⊕ 𝐱 < i ) ∥ ℱ Z ~ ( ⋅ ∣ 𝐱 < i ) ) \mathcal{L}(Z)=\displaystyle\sum_{(\mathbf{x},\tilde{\mathbf{c}})\in\mathcal{D}}\sum_{i=1}^{|\mathbf{x}|}D_{\text{KL}}\!\left(\mathcal{F}(\cdot\mid\tilde{\mathbf{c}}\oplus\mathbf{x}_{<i})\,\|\,\mathcal{F}_{\tilde{Z}}(\cdot\mid\mathbf{x}_{<i})\right) 
+ (2) 
+ Training with packing requires keeping all active cartridges in the prompt, while each packed sample sees a different subset via an attention mask. 
+ Budget Manager 
+ During training, we introduce a budget manager that maintains a fixed GPU pool of B ≤ N B\leq N cartridges, keeping the remaining N − B N-B cartridges offloaded to CPU memory or disk (Figure 2(b) ). At each step, the budget manager selects the active cartridges (i.e., those residing on GPU) and samples data from their training pool. 
+ Pool rotation. 
+ Every R R optimizer steps, we rotate the active cartridges in the GPU pool: a fraction ϕ \phi of the pool is evicted and replaced with new cartridges from persistent storage. Evicted cartridges receive no gradients until they are moved back to GPU. Setting R = 1 R=1 and ϕ = 1 \phi=1 rotates the entire pool at every step, maximizing diversity but incurring the highest data-transfer overhead. Larger R R or smaller ϕ \phi amortize this overhead by increasing the duration for which cartridges remain active, at the cost of slower turnover and reduced exposure to diverse cartridges during training. The rotation policy preferentially swaps in cartridges that have received the fewest optimizer steps, ensuring uniform document coverage. 
+ To ensure the consistency of the RoPE embeddings Su et al. (2024) , query token position IDs must be offset by the total number of active cartridge KV tokens, which occupy the prefix of the sequence. This offset is recomputed at each step based on the actual number of tokens contributed by the active cartridges. 
+ 2.2 Optimization Dynamics 
+ Optimizer. 
+ We use Adam Kingma and Ba (2014) with fp32 precision, while we keep the weights in bfloat16, as this is crucial for numerical stability when scaling up the number of cartridges. 
+ Instead of a fixed learning rate Eyuboglu et al. (2025) , we adopt a slow linear decay schedule with per-cartridge linear warmup to maintain a higher effective LR throughout training (see Appendix B ). 
+ Per-cartridge LR warmup. 
+ When a cartridge is first swapped into the GPU pool, it has received zero optimizer steps and its gradients may be large relative to its current parameter values. Applying the global LR immediately can destabilize training. We therefore apply a per-cartridge linear warmup: a cartridge that has received s s optimizer steps uses an effective LR of η eff = η t ⋅ min ⁡ ( 1 , s W c ) \eta_{\text{eff}}=\eta_{t}\cdot\min(1,\frac{s}{W_{c}}) , where W c W_{c} is the per-cartridge warmup length. To avoid creating one optimizer param group per cartridge (which would prevent fused Adam kernels), we bucket the warmup scale into N b = 4 N_{b}=4 discrete levels, yielding at most N b N_{b} param groups per step. 
+ 2.3 Improved Self-Study Data Synthesis 
+ The quality of synthetic training data is the primary driver of cartridge performance.
+A detailed analysis on FinQA documents (Appendix J ) reveals three key failures of the original procedure: ( i ) uneven fact coverage —since questions are generated without global awareness of the document, the synthesizer focuses on prose commentary rather than details such as figures in tables; ( ii ) unbalanced document sampling —facts are sampled uniformly across chunks, causing facts in longer, denser sections to be under-represented; and ( iii ) low throughput —one question per API call makes synthesis slow and expensive. To mitigate these limitations, we propose proportional-to-length sampling and batched multi-question generation (Figure 2(a) ). 
+ Proportional-to-length sampling. 
+ We replace uniform random chunk sampling with a proportional-to-length strategy ensuring balanced document coverage.
+Each document d i d_{i} in the collection is assigned a sampling weight w i = | d i | min j ⁡ | d j | w_{i}=\frac{|d_{i}|}{\min_{j}|d_{j}|} , so that longer documents—which are assumed to contain more facts—are sampled proportionally more often during synthesis. 
+ Multi-question generation. 
+ We prompt the question-generation model to produce n n questions simultaneously (instead of doing n n LLM calls); we use n = 20 n{=}20 and sample multiple times with temperature 0.6 (Figure 2(a) ).
+The prompt instructs the model to vary the question style (factual recall, comparison, reasoning, detail-oriented) and to cover different facts, details, or aspects of the provided context.
+Responses are returned as an array, parsed into individual questions and answered independently by the student model. 
+ Decoupled question generation. 
+ We decouple the question-generation model M Q M_{Q} from the answer-generation M A M_{A} .
+ M Q M_{Q} is a larger, more capable model ( Agarwal et al., 2025 , GPT-OSS 120B) that generates high-quality, diverse questions given the document context, whereas M A M_{A} remains the target model whose KV cache we want to learn;
+it produces answers conditioned on the document—along with their token-level log-probabilities—as distillation targets for cartridge training (details in Appendix C ). 
+ 2.4 Cartridge Initialization 
+ KV cache initialization quality matters for final Cartridge performance.
+ Eyuboglu et al. (2025) show that initializing the cartridge using the KV cache from the first p p tokens of an arbitrary text outperforms random initialization, as it already projects the KVs within the model’s latent space. 
+ Cart-specific initialization. 
+ We propose a simple yet effective change to this procedure: when training over a collection of N N documents, each cartridge Z i Z_{i} is initialized from its own truncated document d i d_{i} rather than from an arbitrary text. This ensures that the initial KV cache already encodes document-specific content, providing a warm start that significantly reduces the initial loss (over ∼ \sim 50% lower in our experiments), reduces the number of training steps required to reach convergence and leads to ∼ \sim 10% lower final loss. 
+ We experimented with pooling-based compression strategies (mean/max pooling, top- k k norm selection, and sliding-window averaging) as alternatives for capturing more information from the original document, but none outperformed the cart-specific truncation strategy. 
+ Dataset 
+ Docs 
+ Questions 
+ Qs/Doc 
+ Avg. Tok. 
+ Total Tok. 
+ Task Type 
+ Domain 
+ LongHealth 
+ 20 
+ 400 
+ 20.0 
+ 11,700 
+ 236K 
+ Multiple-choice (5-way) 
+ Clinical patient records 
+ QASPER 
+ 407 
+ 1,451 
+ 3.5 
+ 4,751 
+ 665K 
+ Extract./free-form/yes-no 
+ Full research papers 
+ QuALITY 
+ 115 
+ 2,086 
+ 18.1 
+ 5,713 
+ 1.9M 
+ Multiple-choice (4-way) 
+ Fiction & non-fiction narratives 
+ T 2 -RB/FinQA 
+ 380 
+ 1,147 
+ 3.0 
+ 1,026 
+ 392K 
+ Math. Calculation 
+ Corporate earnings reports w/ tables 
+ TechQA 
+ 496 
+ 610 
+ 1.8 
+ 1,509 
+ 748K 
+ Extractive 
+ IBM IT support technotes 
+ Table 1: Dataset statistics. Docs : unique documents (one cartridge per document). Qs/Doc : average questions per document. Avg. Tok. : mean document length in tokens (Qwen3-8B tokenizer). 
+ 2.5 Inference 
+ At inference time, the model has access to a collection of N N trained cartridges { Z 1 , … , Z N } \{Z_{1},\ldots,Z_{N}\} , each encoding a distinct document d i d_{i} . When combining multiple cartridges we prepend their sequentially concatenated KV caches to the formatted prompt and question (Figure 2(c) ), without stripping any special tokens from the processed inputs. 
+ Because loading all N N cartridges simultaneously is both inefficient and infeasible for large collections (prefix length grows as 𝒪 ⁡ ( N ⋅ p ) \mathcal{O}(N\cdot p) ), we select the k k most relevant cartridges for a given query q q before the forward pass. We evaluate two selection strategies: ( i ) Oracle , where the ground-truth cartridge is always loaded (an upper bound, not applicable in practice), and ( ii ) Retrieved , where the top- k k cartridges are selected by a dense retriever. 
+ 3 Experimental Setup 
+ Models. 
+ We use Qwen3-8B ( Yang et al., 2025 ) as the main model in our experiments (see Appendix A for training and inference details).
+Our RAG baseline uses dense retrieval via Amazon Bedrock Knowledge Bases (details in Appendix F ). 
+ Datasets. 
+ We use these 5 datasets (Table 1 ): 2 2 
+ 2 
+ We filter out unanswerable questions and outlier documents that are significantly longer than others in the collection. 
+ • 
+ LongHealth Adams et al. (2024) : A clinical QA benchmark consisting of detailed fictional patient records with multiple-choice questions that test information extraction, negation understanding, and temporal sorting over long medical notes. 
+ • 
+ QASPER Dasigi et al. (2021) : An info-seeking QA dataset over full NLP research papers, where questions are written by readers who only saw the title and abstract. Answers include extractive spans, free-form text, and yes/no responses. 
+ • 
+ QuALITY Pang et al. (2022) : A multiple-choice reading comprehension benchmark over long-form fiction and non-fiction narratives, where questions require careful reading and reasoning rather than surface-level pattern matching. 
+ • 
+ T 2 -RAGBench/FinQA Strich et al. (2026) ; Chen et al. (2021) : A decontextualized variant of FinQA designed for RAG evaluation, where questions about corporate earnings reports have been rewritten to be context-independent. The task requires numerical reasoning by constructing mathematical formulas over tables and text extracted from financial filings. 
+ • 
+ TechQA Castelli et al. (2020) : A technical support QA dataset drawn from IBM’s Technote corpus, where questions require extracting precise solutions from IT documentation covering enterprise software and infrastructure issues. 
+ Method 
+ Comp. 
+ LongHealth (Acc.) 
+ QuALITY (Acc.) 
+ QASPER (F1) 
+ FinQA (EM) 
+ TechQA (LLaaJ) 
+ No Context 
+ – 
+ 37.5 ± \pm 1.1 
+ 43.6 ± \pm 0.4 
+ 19.2 ± \pm 0.6 
+ 2.9 ± \pm 0.0 
+ 21.1 ± \pm 1.1 
+ Oracle Context 
+ 1 × 1\times 
+ 87.4 ± \pm 0.8 
+ 82.5 ± \pm 0.3 
+ 56.7 ± \pm 0.4 
+ 66.8 ± \pm 2.7 
+ 74.7 ± \pm 0.9 
+ CAS Training (Ours) 
+ Single-Cartridge / Doc. 
+ 2 × 2\times 
+ 81.1 ± \pm 1.1 
+ 78.6 ± \pm 0.9 
+ 54.9 ∗ ± \pm 0.3 
+ 62.7 ± \pm 0.2 
+ 75.8 ± \pm 0.7 
+ 5 × 5\times 
+ 79.9 ± \pm 0.8 
+ 78.5 ± \pm 0.9 
+ 54.9 ± \pm 0.6 
+ 57.9 ± \pm 0.4 
+ 75.6 ± \pm 0.7 
+ 10 × 10\times 
+ 80.1 ± \pm 0.8 
+ 77.6 ± \pm 0.5 
+ 54.1 ± \pm 0.3 
+ 50.7 ± \pm 0.8 
+ 75.2 ± \pm 2.0 
+ 20 × 20\times 
+ 78.9 ± \pm 1.0 
+ 77.6 ± \pm 0.6 
+ 53.9 ± \pm 0.6 
+ 45.0 ± \pm 0.9 
+ 75.0 ± \pm 0.4 
+ 50 × 50\times 
+ 76.9 ± \pm 2.2 
+ 76.7 ± \pm 0.5 
+ 53.1 ± \pm 0.4 
+ 30.2 ± \pm 1.8 
+ 74.6 ± \pm 1.5 
+ 100 × 100\times 
+ 77.3 ± \pm 1.4 
+ 76.4 ± \pm 0.8 
+ 53.1 ± \pm 0.3 
+ 23.0 ± \pm 0.3 
+ 74.7 ± \pm 0.9 
+ Table 2: No Context, Oracle Context, and Oracle Cartridge at selected compression ratios on Qwen3-8B. ± \pm denotes std. dev. over 3 runs. Bold marks the best cartridge result per dataset. ∗ Trained with 3 × \times due to memory constraints. 
+ Retrieval. 
+ For our baseline RAG system, we use a chunk-based indexing of the documents, then we retrieve the relevant chunks based on the question, without reformulation (details in Appendix F ). In the cartridge case, we use the RAG results as a proxy to retrieve relevant cartridges (see Figure 2(c) ). In particular, we map each retrieved chunk to a document id, which in turn is associated with a cartridge. The final list contains the unique cartridge ids in the order of their retrieval. With 1,024-token chunks, LongHealth and QuALITY average ∼ 2 {\sim}2 chunks per unique cartridge, while for TechQA and FinQA the ratio is closer to 1:1 (see Table 9 ). 
+ Evaluation 
+ Each dataset uses a task-specific system prompt during generation to elicit answers in the expected format. For FinQA, the model is instructed to produce structured mathematical formulas (e.g., divide(subtract(x, y), y) ). For LongHealth and QuALITY, the model selects from multiple-choice options. For QASPER, the model provides brief extractive or yes/no answers. For TechQA, the model needs to produce concise factual answers.
+The full model prompts that we use are provided in Appendix H . 
+ 4 Experimental Results 
+ Setting 
+ Oracle (1 doc) 
+ Full (20 docs) 
+ Oracle Context 
+ 87.4 ± \pm 0.8 
+ –  † / 65.5 
+ Train in Isolation 
+ 73.6 ± \pm 0.4 
+ 26.0 ± \pm 3.1 
+ Train Jointly (25% ex., 10 act.) 
+ 78.9 ± \pm 1.0 
+ 56.4 ± \pm 0.6 
+ Train Jointly (25% ex., 20 act.) 
+ 79.0 ± \pm 1.4 
+ 77.8 ± \pm 0.6 
+ Table 3: Effects of the training regime on inference. Oracle – only the gold cartridge; Full – all notes simultaneously. ± \pm denotes std. dev. over 3 runs. † All notes exceeds the context; 65.5 uses 10 patients groups. 
+ Training Regime. 
+ We compare cartridge performance for LongHealth in two regimes: ( i ) all cartridges are trained in isolation ( P iso = 1.0 P_{\text{iso}}{=}1.0 ), and ( ii ) they are mixed in 1 out of every 4 examples ( P iso = 0.75 P_{\text{iso}}{=}0.75 ). In both regimes, we train with the same hyper-parameters—compression of 20 × 20\times ( ∼ 585 {\sim}585 tokens/cart.), 80 epochs, and adding k ∼ 𝒰 ⁡ ( 1 , M ) k\sim\mathcal{U}(1,M) additional cartridges as distractors. 
+ First, we focus on the oracle setting, where at inference time each question is given only the relevant cartridge in the KV prefix. In Table 3 ( Oracle ), the two joint training regimes achieve comparable performance— 78.9 78.9 ( M = 10 M=10 active) and 79.0 79.0 ( M = 20 M=20 )—while isolated training remains at 73.6 73.6 . This suggests that single-cartridge quality benefits from exposure to distractors during training. 
+ The gap widens drastically when we decode with all patient cartridges ( Full ): joint training with 10 active cartridges degrades to 56.4 56.4 , while isolated training collapses to 26.0 26.0 . This shows that mixing cartridges trained in isolation leads to catastrophic interference, since the model never learned to distinguish between the distributions encoded in individual cartridges. Crucially, joint training with all 20 cartridges active nearly eliminates this degradation: the Full (20 docs) score reaches 77.8 77.8 , only 1.2 1.2 below its Oracle Cartridge result. 
+ Positional Invariance. 
+ Figure 3 quantifies how the performance changes under different permutations of the cartridges. We see that shuffling the cartridge order has no effect ( 77.8 77.8 both for Ordered and Shuffled ), demonstrating position-invariant attention over the KV prefix. When a random subset of k k cartridges is loaded, accuracy on questions whose cartridge is present remains high ( 78 78 – 87 87 ), while accuracy on questions whose cartridge is absent drops to 27 27 – 31 31 . This confirms that the model attends selectively to the correct cartridge rather than relying on a generic shared memory. Even though we back-propagate through all active cartridges simultaneously, there is a clear knowledge separation: each cartridge encodes document-specific information that the model can retrieve independently of the other cartridges in the prefix. 
+ Figure 3: Accuracy of Train Jointly (25% ex., 20 act.) on LongHealth varying the number of present cartridges. 
+ Scaling to Hundreds of Cartridges. 
+ Next, we scale up training to four additional datasets, each containing several hundred unique documents (Table 1 ). In this setting, we simulate realistic document collections with up to a million tokens. 
+ Table 2 compares the model performance when consuming raw contexts vs. their compressed variants in individual cartridges. The No Context row is the model performance without context, only using the question and the system prompt. We can see that all datasets perform poorly compared to the Oracle Context , showing that the model is not able to solve the tasks parametrically. In the second part of the table, we show the best results at a given target compression ( 2 × 2\times to 100 × 100\times ) 3 3 
+ 3 
+ Each document is compressed to its length divided by the target compression. for each dataset. 
+ Figure 4: Accuracy vs. additional prompt tokens trade-off between text and Cartridge RAG. The red star denotes the text oracle score; t t : compression ratio; k k : number of retrieved chunks. 
+ We see the following patterns across datasets: ( i ) the achievable compression depends strongly on document complexity: factually dense datasets and longer documents (LongHealth) do not tolerate high compression rates, while extraction tasks that do not require reasoning (TechQA) have no loss in performance even at 100 × 100\times compression; ( ii ) the parametric knowledge of the model is stabilizing the compression – QuALITY and QASPER contain books/papers that are included in many pre-training corpora Gao et al. (2020) ; Weber et al. (2024) and have only a low drop at higher compressions, ( iii ) dense structures in the text, such as tables, are hard to compress, i.e., FinQA drops 4-9 points at 2 × 2\times - 5 × 5\times compression, similar to LongHealth. 
+ Token Budget 
+ LongHealth 
+ QuALITY 
+ FinQA 
+ Compr. 
+ Acc. 
+ Compr. 
+ Acc. 
+ Compr. 
+ EM 
+ 4,096 
+ 57 × \times 
+ 67.2 
+ 160 × \times 
+ 62.1 
+ 96 × \times 
+ 6.9 
+ 20,000 
+ 12 × \times 
+ 70.5 
+ 33 × \times 
+ 64.2 
+ 20 × \times 
+ 14.1 
+ 28,672 
+ 8 × \times 
+ 72.6 
+ 23 × \times 
+ 65.2 
+ 14 × \times 
+ 13.0 
+ Multi-cart. 
+ 10 × \times 
+ 80.1 
+ 20 × \times 
+ 77.6 
+ 20 × \times 
+ 45.0 
+ Table 4: Performance of a monolith cartridge trained on all documents under varying budgets. 
+ Cartridges Granularity. 
+ We ablate whether the gains come from compression capacity (the cartridge has ≥ p \geq p KV slots) or from per-document specialization (each document has its own cartridge). We disentangle the two by training a single monolithic cartridge on the concatenation of all documents, with cartridge sizes of 4K, 20K, 28.7K tokens—the latter being roughly the full available KV budget given a 32 32 K context window (no YaRN Peng et al. (2024) ) minus prompt and generation overhead. 
+ Despite allocating up to 28K tokens, the monolith baseline (Table 4 ) achieves only 72.6 72.6 on LongHealth, 65.2 65.2 on QuALITY, and 14.1 14.1 on FinQA. In contrast, per-document cartridges ( Multi-cart. ) reach 80.1 80.1 on LongHealth at 10 × 10\times compression ( ∼ 1.2 {\sim}1.2 K tok./doc, 23.6 23{.}6 K total), 78.6 78.6 on QuALITY at 2 × 2\times ( ∼ 2 , 9 {\sim}2{,}9 K tok./doc), and 62.7 62.7 on FinQA at 2 × 2\times ( ∼ 524 {\sim}524 tok./doc). This large gap confirms that per-document specialization is critical. The FinQA results are particularly striking: 380 financial documents with dense numerical content cannot be meaningfully compressed into a single shared representation, as gradient updates from different documents destructively interfere. Nonetheless, dedicating a separate cartridge to each doc resolves this interference entirely in the oracle setting. 
+ Cartridge RAG. 
+ The Oracle results assume the gold cartridge is always loaded, but in practice we often do not know which document or context is relevant. Moreover, performing inference with hundreds or thousands of cartridges in the prompt is inefficient and even infeasible. Here, we propose a hybrid approach combining standard dense retrieval with cartridge inference: given a query, we retrieve the top- k k document chunks, resolve the corresponding cartridge identifiers, and load only those cartridges into the KV prefix instead of the raw chunk text.
+While Text RAG appends k k chunks of ∼ 1,024 {\sim}1{,}024 tokens each (consuming k × 1 ​ K k{\times}1\text{K} prompt tokens; see Appendix F ), Cartridge RAG loads the corresponding document cartridges at t × t{\times} compression, e.g., at t = 20 t{=}20 , a 12 12 K-token document occupies only ∼ 600 {\sim}600 KV tokens, representing the entire document rather than a single chunk fragment. 
+ Figure 4 reports accuracy as a function of the additional prompt tokens consumed at inference. 4 4 
+ 4 
+ We exclude QASPER from the RAG comparison; the data is not decontextualized (“What datasets do they use?”). On LongHealth and QuALITY, where retrieval recall is high ( ≥ 95 % {\geq}95\% at k = 10 k{=}10 ; Appendix G ), Cartridge RAG clearly dominates Text RAG . On LongHealth, Cartridge RAG at t = 20 t{=}20 , k = 10 k{=}10 matches the best Text RAG ( 75.4 75.4 ) using only 2,673 2{,}673 tokens— 3.7 × 3.7\times fewer than Text RAG’s 9,860 9{,}860 —and at t = 100 t{=}100 , k = 10 k{=}10 still delivers 76.5 76.5 at just 566 566 tokens. On QuALITY, Cartridge RAG with t = 5 t{=}5 , k = 5 k{=}5 reaches 75.3 75.3 , surpassing Text RAG ( 73.9 73.9 ) by 1.4 1.4 at roughly half the token budget ( 2,635 2{,}635 vs. 4,754 4{,}754 ). On FinQA, we observe a clear trend where loading more cartridges hurts : at t = 2 t{=}2 , accuracy peaks at k = 5 k{=}5 ( 52.8 52.8 ) and drops to 50.7 50.7 at k = 10 k{=}10 , consistently across all compression ratios.
+We hypothesize that the model becomes overwhelmed by the dense numerical content encoded in multiple financial-document cartridges, and that increasing the number of active cartridges during training (currently capped at 10) may alleviate this. On TechQA, Text RAG slightly outperforms Cartridge RAG ( 73.2 73.2 vs. 71.0 71.0 ), likely because answers require extracting precise spans from the gold text—a setting where verbatim token access in raw chunks is more effective than compressed KV representations from multiple documents that bring noise. Still, in the TechQA case Cartridge RAG remains more effective until retrieving more than 5 chunks. 
+ 5 Discussion 
+ Cost Analysis. 
+ The main cost of using cartridges lies in the offline training process which includes self-study data generation: sampling 100-200 questions/doc. and doing one inference with the target model to generate the response 5 5 
+ 5 
+ We are modeling the KL divergence which allows for training on partial sequences, unlike in cross-entropy loss. . Depending on the size, complexity, and information density of documents, the training epochs can vary but often around 10 to 20 epochs are enough to reach 95% of the best cartridge performance (Figure 1 ). 
+ Inference costs are limited to loading the cartridges; there are no additional inference costs since we do not need any prefills. At inference, since prefill cost scales as the attention cost ( 𝒪 ⁡ ( n 2 ) \mathcal{O}(n^{2}) ), a 10 × 10\times token reduction yields ∼ 100 × {\sim}100\times fewer prefill FLOPs: Cartridge at r = 10 r{=}10 uses ∼ 1,200 {\sim}1{,}200 tokens vs. ∼ 12,000 {\sim}12{,}000 for the text Oracle and ∼ 9,860 {\sim}9{,}860 for Text RAG ( k = 10 k{=}10 ) on LongHealth. 
+ Storage is another factor to consider. The KV cache footprint in BF16 per 1K tokens scales with model size: ∼ 110 {\sim}110  MiB for Qwen3-0.6B, ∼ 141 {\sim}141  MiB for 4B/8B, and ∼ 250 {\sim}250  MiB for 32B. 
+ Document grouping. 
+ Our proposed CAS framework naturally extends to grouped cartridges encoding multiple related documents (e.g., quarterly reports from the same company, chapters of the same book).
+Grouping exploits shared vocabulary and background knowledge, allowing the token budget to focus on unique information that can help achieve even higher compression.
+It also addresses the retrieval recall ceiling on homogeneous corpora: by clustering co-relevant documents, the retriever operates over a smaller, more discriminative set of groups, and a single retrieved group cartridge provides richer context than any single-document cartridge. We leave the systematic study of grouping strategies to future work. 
+ 6 Related Work 
+ Soft Prompting. 
+ These methods are variants of prefix-tuning methods ( Lester et al., 2021 ) that compress a given text into continuous representations Li et al. (2025a) . Similar to KV cache compression, soft compression encodes long contexts into compact soft representations that can be prepended to queries, allowing for storing and caching. AutoCompressors ( Chevalier et al., 2023 ) recursively generate summary vectors; Gisting ( Bulatov et al., 2022 ; Mu et al., 2023 ) condenses prompts into virtual gist tokens; and other methods encode contexts into compact memory slots via LoRA-adapted or KV-based encoders ( Ge et al., 2024b ; Li et al., 2025b ) . xRAG ( Cheng et al., 2024 ) and PISCO ( Louis et al., 2025 ) take a modular approach, projecting retrieval embeddings or distilled representations into the LLM’s input space while keeping the decoder frozen. These methods differ primarily in their training objectives (KL divergence vs. sequence-level distillation) and in which components remain trainable. 
+ KV Cache Compression. 
+ A natural way to reduce the context is to apply operations to its KV cache. This can happen either after or during the prefill phase by evicting non-impactful key-value pairs Zhang et al. (2023) ; Oren et al. (2024) ; Ge et al. (2024a) ; Tang et al. (2024) ; Chari and Durme (2025) ; Łańcucki et al. (2025) or merging them Wang et al. (2024) ; Zhang et al. (2024) ; Liu et al. (2025) ; Wan et al. (2025) . SnapKV Li et al. (2024) and PyramidKV Cai et al. (2025) evict low-importance KV entries based on attention scores observed during prefill, with PyramidKV additionally allocating non-uniform per-layer budgets. KVzip Kim et al. (2026) selects tokens to retain via a learned context-reconstruction objective.
+Attention Matching Zweiger et al. (2026) optimizes a compacted cache to reproduce the original attention distribution instead of reconstructing individual KV vectors. RetrievalAttention Liu et al. (2026) takes an orthogonal approach, offloading the full KV cache to the CPU and using approximate nearest-neighbor search to fetch the relevant entries. 
+ We view many of these KV cache techniques as complementary to cartridges: compacted caches can serve as a more effective initialization point, which is then fine-tuned to the collection distribution; additionally, compaction can be applied to the trained cartridges because their representation is query-independent and may admit further compression for specific queries. 
+ 7 Conclusions 
+ We present an end-to-end framework for training and serving multiple cartridges at a granularity as small as that of individual documents. Our framework addresses a fundamental flaw in the original monolithic Cartridges design, which prevents mixing independently trained cartridges, leading to collapse in performance at near chance levels. Experiments across five long-context datasets demonstrate that our approach scales to hundreds of cartridges over hundreds of thousands to millions of tokens, outperforming monolithic designs by 10–30 points at comparable computational budgets. We further propose improved initialization strategies and more efficient self-study generation, achieving superior accuracy and efficiency. Compression tolerance varies with document complexity ( 100 × 100\times for TechQA, ≤ 2 × {\leq}2\times for FinQA), reaching within 5% of uncompressed baselines. Finally, we show that cartridges can be combined with retrieval, matching RAG performance while using 3–4 × \times fewer tokens, though for information-dense tasks such as FinQA, text RAG maintains an edge. 
+ Acknowledgments 
+ We want to thank Rexhina Blloshmi, Felix Hieber, Bill Byrne, Hagen Fürstenau and Karan Gill for the time they took to support, discuss and improve this work. 
+ Limitations 
+ Cartridge KV position. 
+ All of our experiments prepend the trained KV cache to the prompt and query tokens, which is the natural setting for single-turn QA: the cartridge occupies the earliest positions and all subsequent tokens attend to it via standard causal masking.
+In multi-turn scenarios, however, a cartridge may need to be loaded mid-conversation—for example, when a user references a new document after several turns of dialogue. Prepending the cartridge at that point would invalidate the previously computed KV entries, requiring a full recomputation of the conversation history. 
+ Cartridge-specific retrieval. 
+ Our Cartridge RAG pipeline reuses a standard text-based dense retriever to select which cartridges to activate.
+This is a pragmatic choice, but it means retrieval quality is bounded by how well the query matches the raw document text rather than the compressed KV representation.
+A dedicated cartridge retriever—one that learns to match queries directly against cartridge embeddings—could improve recall, particularly on corpora where text-based retrieval is unreliable.
+Developing such a retriever is a natural next step, but requires either a learned projection from cartridge KV space to a query-compatible embedding space, or a contrastive training objective that aligns query representations with cartridge representations. 
+ Language coverage. 
+ All five benchmarks used in this work are in English, and the base model (Qwen3-8B) is predominantly trained on English text.
+It is unclear whether the self-study synthesis procedure, which relies on the model’s own generative capabilities to produce training data, transfers equally well to lower-resource languages where the model’s generation quality is weaker.
+We do not evaluate cartridge performance on non-English corpora and cannot make claims about multilingual generalization. 
+ Model scale. 
+ All experiments use a single model size. Larger models may achieve higher compression ratios at the same quality level, since their greater parametric capacity can compensate for more aggressive KV compression. Conversely, smaller models may require lower compression ratios to retain acceptable performance. Nonetheless, previous work Eyuboglu et al. (2025) ; Zweiger et al. (2026) showed that cartridge performance scales across model sizes and model families. 
+ Potential Risks 
+ Cartridges enable efficient, persistent encoding of arbitrary document collections into reusable KV caches. A malicious actor could exploit this to encode and serve disinformation, harmful instructions, or private data at scale. Additionally, documents encoded into cartridges may retain sensitive information in their KV representations in ways that are difficult to audit or redact—unlike raw text retrieval, it is unclear to what extent personal or confidential content can be extracted from a trained cartridge, raising data governance concerns in enterprise or medical deployments. We encourage practitioners to apply the same content-filtering, bias mitigation, and access-control measures to cartridge collections as they would to the underlying documents. 
+ References 
+ Adams et al. (2024) 
+ L. Adams, F. Busch, D. Truhn, and K. K. Bressem 
+ LongHealth: a question answering benchmark with long clinical documents .
+ arXiv preprint arXiv:2401.14490 .
+ Cited by: 1st item ,
+ Figure 1 ,
+ 1st item .
+ Agarwal et al. (2025) 
+ S. Agarwal, L. Ahmad, J. Ai, S. Altman, A. Applebaum, E. Arbus, R. K. Arora, Y. Bai, B. Baker, H. Bao, et al. 
+ Gpt-oss-120b & gpt-oss-20b model card .
+ arXiv preprint arXiv:2508.10925 .
+ Cited by: Appendix I ,
+ §1 ,
+ §2.3 .
+ Anthropic (2025) 
+ Anthropic 
+ System card: Claude opus 4 & Claude sonnet 4 .
+ Technical report 
+ Anthropic .
+ External Links: Link 
+ Cited by: §1 .
+ Bulatov et al. (2022) 
+ A. Bulatov, Y. Kuratov, and M. Burtsev 
+ Recurrent memory transformer .
+ In Advances in Neural Information Processing Systems ,
+ External Links: Link 
+ Cited by: §6 .
+ Cai et al. (2025) 
+ Z. Cai, Y. Zhang, B. Gao, Y. Liu, Y. Li, T. Liu, K. Lu, W. Xiong, Y. Dong, J. Hu, and W. Xiao 
+ PyramidKV: Dynamic KV cache compression based on pyramidal information funneling .
+ In Second Conference on Language Modeling ,
+ External Links: Link 
+ Cited by: §6 .
+ Castelli et al. (2020) 
+ V. Castelli, R. Chakravarti, S. Dana, A. Ferritto, R. Florian, M. Franz, D. Garg, D. Khandelwal, S. McCarley, M. McCawley, M. Nasr, L. Pan, C. Pendus, J. Pitrelli, S. Pujar, S. Roukos, A. Sakrajda, A. Sil, R. Uceda-Sosa, T. Ward, and R. Zhang 
+ The TechQA dataset .
+ In Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics ,
+ Online , pp. 1269–1278 .
+ External Links: Link ,
+ Document 
+ Cited by: 5th item ,
+ 5th item .
+ Chari and Durme (2025) 
+ V. Chari and B. V. Durme 
+ Compactor: Calibrated query-agnostic KV cache compression with approximate leverage scores .
+ External Links: Link ,
+ 2507.08143 
+ Cited by: §6 .
+ Chen et al. (2021) 
+ Z. Chen, W. Chen, C. Smiley, S. Shah, I. Borova, D. Langdon, R. Moussa, M. Beane, T. Huang, B. Routledge, and W. Y. Wang 
+ FinQA: a dataset of numerical reasoning over financial data .
+ In Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing ,
+ Online and Punta Cana, Dominican Republic , pp. 3697–3711 .
+ External Links: Link ,
+ Document 
+ Cited by: 4th item ,
+ 4th item .
+ Cheng et al. (2024) 
+ X. Cheng, X. Wang, X. Zhang, T. Ge, S. Chen, F. Wei, H. Zhang, and D. Zhao 
+ XRAG: extreme context compression for retrieval-augmented generation with one token .
+ Advances in Neural Information Processing Systems 37 , pp. 109487–109516 .
+ Cited by: §1 ,
+ §6 .
+ Chevalier et al. (2023) 
+ A. Chevalier, A. Wettig, A. Ajith, and D. Chen 
+ Adapting language models to compress contexts .
+ In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing ,
+ Singapore , pp. 3829–3846 .
+ External Links: Document ,
+ Link 
+ Cited by: §6 .
+ Comanici et al. (2025) 
+ G. Comanici, E. Bieber, M. Schaekermann, I. Pasupat, N. Sachdeva, I. Dhillon, M. Blistein, O. Ram, D. Zhang, E. Rosen, et al. 
+ Gemini 2.5: pushing the frontier with advanced reasoning, multimodality, long context, and next generation agentic capabilities .
+ arXiv preprint arXiv:2507.06261 .
+ Cited by: §1 .
+ Dasigi et al. (2021) 
+ P. Dasigi, K. Lo, I. Beltagy, A. Cohan, N. A. Smith, and M. Gardner 
+ A dataset of information-seeking questions and answers anchored in research papers .
+ In Proceedings of the 2021 Conference of the North American Chapter of the Association for Computational Linguistics ,
+ pp. 4599–4610 .
+ Cited by: 2nd item ,
+ 2nd item .
+ DeepSeek-AI (2025) 
+ DeepSeek-AI 
+ DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning .
+ arXiv preprint arXiv:2501.12948 .
+ External Links: Link 
+ Cited by: §1 .
+ Devoto et al. (2025) 
+ A. Devoto, M. Jeblick, and S. Jégou 
+ Expected attention: kv cache compression by estimating attention from future queries distribution .
+ arXiv preprint arXiv:2510.00636 .
+ External Links: Link 
+ Cited by: §1 .
+ Eyuboglu et al. (2025) 
+ S. Eyuboglu, R. S. Ehrlich, S. Arora, N. Guha, D. Zinsley, E. R. Liu, A. Rudra, J. Y. Zou, A. Mirhoseini, and C. Re 
+ Cartridges: lightweight and general-purpose long context representations via self-study .
+ In ES-FoMo III: 3rd Workshop on Efficient Systems for Foundation Models ,
+ External Links: Link 
+ Cited by: 1st item ,
+ Appendix H ,
+ §1 ,
+ §2 ,
+ §2 ,
+ §2.1 ,
+ §2.2 ,
+ §2.4 ,
+ Model scale. ,
+ Abstract .
+ Gao et al. (2020) 
+ L. Gao, S. Biderman, S. Black, L. Golding, T. Hoppe, C. Foster, J. Phang, H. He, A. Thite, N. Nabeshima, et al. 
+ The pile: an 800gb dataset of diverse text for language modeling .
+ arXiv preprint arXiv:2101.00027 .
+ Cited by: §4 .
+ Gao et al. (2024) 
+ L. Gao, J. Tow, B. Abbasi, S. Biderman, S. Black, A. DiPofi, C. Foster, L. Golding, J. Hsu, A. Le Noac’h, H. Li, K. McDonell, N. Muennighoff, C. Ociepa, J. Phang, L. Reynolds, H. Schoelkopf, A. Skowron, L. Sutawika, E. Tang, A. Thite, B. Wang, K. Wang, and A. Zou 
+ The language model evaluation harness .
+ External Links: Document ,
+ Link 
+ Cited by: Appendix H .
+ Ge et al. (2024a) 
+ S. Ge, Y. Zhang, L. Liu, M. Zhang, J. Han, and J. Gao 
+ Model tells you what to discard: adaptive KV cache compression for LLMs .
+ In The Twelfth International Conference on Learning Representations ,
+ External Links: Link 
+ Cited by: §6 .
+ Ge et al. (2024b) 
+ T. Ge, H. Jing, L. Wang, X. Wang, S. Chen, and F. Wei 
+ In-context autoencoder for context compression in a large language model .
+ In The Twelfth International Conference on Learning Representations ,
+ ICLR ’24 , Vienna, Austria .
+ External Links: Link 
+ Cited by: §6 .
+ Guu et al. (2020) 
+ K. Guu, K. Lee, Z. Tung, P. Pasupat, and M. Chang 
+ Retrieval augmented language model pre-training .
+ In International conference on machine learning ,
+ pp. 3929–3938 .
+ Cited by: §1 .
+ Jiang et al. (2023) 
+ H. Jiang, Q. Wu, C. Lin, Y. Yang, and L. Qiu 
+ LLMLingua: compressing prompts for accelerated inference of large language models .
+ In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing ,
+ Singapore , pp. 13358–13376 .
+ External Links: Document ,
+ Link 
+ Cited by: §1 .
+ Kang et al. (2024) 
+ H. Kang, Q. Zhang, S. Kundu, G. Jeong, Z. Liu, T. Krishna, and T. Zhao 
+ GEAR: an efficient kv cache compression recipe for near-lossless generative inference of llm .
+ arXiv preprint arXiv:2403.05527 .
+ Cited by: §1 .
+ Kim et al. (2026) 
+ J. Kim, J. Kim, S. Kwon, J. W. Lee, S. Yun, and H. O. Song 
+ KVzip: query-agnostic KV cache compression with context reconstruction .
+ In The Thirty-ninth Annual Conference on Neural Information Processing Systems ,
+ External Links: Link 
+ Cited by: §1 ,
+ §6 .
+ Kingma and Ba (2014) 
+ D. P. Kingma and J. Ba 
+ Adam: a method for stochastic optimization .
+ arXiv preprint arXiv:1412.6980 .
+ Cited by: §2.2 .
+ Lester et al. (2021) 
+ B. Lester, R. Al-Rfou, and N. Constant 
+ The power of scale for parameter-efficient prompt tuning .
+ In Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing ,
+ Online and Punta Cana, Dominican Republic , pp. 3045–3059 .
+ External Links: Document ,
+ Link 
+ Cited by: §6 .
+ Lewis et al. (2020) 
+ P. Lewis, E. Perez, A. Piktus, F. Petroni, V. Karpukhin, N. Goyal, H. Küttler, M. Lewis, W. Yih, T. Rocktäschel, et al. 
+ Retrieval-augmented generation for knowledge-intensive nlp tasks .
+ Advances in neural information processing systems 33 , pp. 9459–9474 .
+ External Links: Link 
+ Cited by: §1 .
+ Li et al. (2024) 
+ Y. Li, Y. Huang, B. Yang, B. Venkitesh, A. Locatelli, H. Ye, T. Cai, P. Lewis, and D. Chen 
+ SnapKV: LLM knows what you are looking for before generation .
+ In Advances in Neural Information Processing Systems ,
+ External Links: Link 
+ Cited by: §6 .
+ Li et al. (2025a) 
+ Z. Li, Y. Liu, Y. Su, and N. Collier 
+ Prompt compression for large language models: a survey .
+ In Proceedings of the 2025 Conference of the Nations of the Americas Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers) ,
+ Albuquerque, New Mexico , pp. 7182–7195 .
+ External Links: Document ,
+ ISBN 979-8-89176-189-6 ,
+ Link 
+ Cited by: §6 .
+ Li et al. (2025b) 
+ Z. Li, Y. Su, and N. Collier 
+ 500xCompressor: generalized prompt compression for large language models .
+ In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) ,
+ pp. 25081–25091 .
+ External Links: Document 
+ Cited by: §6 .
+ Liu et al. (2026) 
+ D. Liu, M. Chen, B. Lu, H. Jiang, Z. Han, Q. Zhang, Q. Chen, C. Zhang, B. Ding, K. Zhang, et al. 
+ Retrievalattention: accelerating long-context llm inference via vector retrieval .
+ Advances in Neural Information Processing Systems 38 , pp. 54358–54385 .
+ Cited by: §1 ,
+ §6 .
+ Liu et al. (2025) 
+ X. Liu, X. Wang, P. Liu, and G. Tang 
+ ZSMerge: zero-shot KV cache compression for memory-efficient long-context LLMs .
+ External Links: Link ,
+ 2503.10714 
+ Cited by: §6 .
+ Louis et al. (2025) 
+ M. Louis, H. Déjean, and S. Clinchant 
+ PISCO: pretty simple compression for retrieval-augmented generation .
+ In Findings of the Association for Computational Linguistics: ACL 2025 ,
+ Vienna, Austria , pp. 15506–15521 .
+ External Links: Document ,
+ ISBN 979-8-89176-256-5 ,
+ Link 
+ Cited by: §1 ,
+ §6 .
+ Mu et al. (2023) 
+ J. Mu, X. Li, and N. Goodman 
+ Learning to compress prompts with gist tokens .
+ In Advances in Neural Information Processing Systems ,
+ External Links: Link 
+ Cited by: §1 ,
+ §6 .
+ OpenAI (2024) 
+ OpenAI 
+ OpenAI o1 System Card .
+ arXiv preprint arXiv:2412.16720 .
+ External Links: Link 
+ Cited by: §1 .
+ OpenAI (2025) 
+ OpenAI 
+ OpenAI o3 and o4-mini System Card .
+ Note: https://cdn.openai.com/pdf/2221c875-02dc-4789-800b-e7758f3722c1/o3-and-o4-mini-system-card.pdf 
+ Cited by: §1 .
+ Oren et al. (2024) 
+ M. Oren, M. Hassid, N. Yarden, Y. Adi, and R. Schwartz 
+ Transformers are multi-state RNNs .
+ In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing ,
+ Miami, Florida, USA , pp. 18724–18741 .
+ External Links: Document ,
+ Link 
+ Cited by: §6 .
+ Pan et al. (2024) 
+ Z. Pan, Q. Wu, H. Jiang, M. Xia, X. Luo, J. Zhang, Q. Lin, V. Rühle, Y. Yang, C. Lin, H. V. Zhao, L. Qiu, and D. Zhang 
+ LLMLingua-2: data distillation for efficient and faithful task-agnostic prompt compression .
+ In Findings of the Association for Computational Linguistics: ACL 2024 ,
+ Bangkok, Thailand , pp. 963–981 .
+ External Links: Document ,
+ Link 
+ Cited by: §1 .
+ Pang et al. (2022) 
+ R. Y. Pang, A. Parrish, N. Joshi, N. Nangia, J. Phang, A. Chen, V. Padmakumar, J. Ma, J. Thompson, H. He, and S. R. Bowman 
+ QuALITY: question answering with long input texts, yes! .
+ Proceedings of the 2022 Conference of the North American Chapter of the Association for Computational Linguistics , pp. 5336–5358 .
+ Cited by: 3rd item ,
+ 3rd item .
+ Peng et al. (2024) 
+ B. Peng, J. Quesnelle, H. Fan, and E. Shippole 
+ YaRN: efficient context window extension of large language models .
+ In International Conference on Learning Representations ,
+ Vol. 2024 , pp. 31932–31951 .
+ Cited by: §4 .
+ Snell et al. (2025) 
+ C. V. Snell, J. Lee, K. Xu, and A. Kumar 
+ Scaling LLM Test-Time Compute Optimally Can be More Effective than Scaling Parameters for Reasoning .
+ In The Thirteenth International Conference on Learning Representations ,
+ ICLR ’25 , Singapore, Singapore .
+ External Links: Link 
+ Cited by: §1 .
+ Strich et al. (2026) 
+ J. Strich, E. K. Isgorur, M. Trescher, C. Biemann, and M. Semmann 
+ T2-RAGBench: text-and-table benchmark for evaluating retrieval-augmented generation .
+ In Proceedings of the 19th Conference of the European Chapter of the Association for Computational Linguistics (Volume 1: Long Papers) ,
+ pp. 165–191 .
+ External Links: Link 
+ Cited by: 4th item ,
+ Appendix H ,
+ 4th item .
+ Su et al. (2024) 
+ J. Su, M. Ahmed, Y. Lu, S. Pan, W. Bo, and Y. Liu 
+ Roformer: enhanced transformer with rotary position embedding .
+ Neurocomputing 568 , pp. 127063 .
+ Cited by: §2.1 .
+ Tang et al. (2024) 
+ J. Tang, Y. Zhao, K. Zhu, G. Xiao, B. Kasikci, and S. Han 
+ QUEST: query-aware sparsity for efficient long-context LLM inference .
+ In Proceedings of the 41st International Conference on Machine Learning ,
+ Cited by: §6 .
+ Wan et al. (2025) 
+ Z. Wan, X. Wu, Y. Zhang, Y. Xin, C. Tao, Z. Zhu, X. Wang, S. Luo, J. Xiong, L. Wang, and M. Zhang 
+ D2O: Dynamic discriminative operations for efficient long-context inference of large language models .
+ In The Thirteenth International Conference on Learning Representations ,
+ External Links: Link 
+ Cited by: §6 .
+ Wang et al. (2024) 
+ Z. Wang, B. Jin, Z. Yu, and M. Zhang 
+ Model tells you where to merge: Adaptive KV cache merging for LLMs on long-context tasks .
+ External Links: Link ,
+ 2407.08454 
+ Cited by: §6 .
+ Weber et al. (2024) 
+ M. Weber, D. Y. Fu, Q. Anthony, Y. Oren, S. Adams, A. Alexandrov, X. Lyu, H. Nguyen, X. Yao, V. Adams, B. Athiwaratkun, R. Chalamala, K. Chen, M. Ryabinin, T. Dao, P. Liang, C. Ré, I. Rish, and C. Zhang 
+ RedPajama: an open dataset for training large language models .
+ In Advances in Neural Information Processing Systems , A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet, J. Tomczak, and C. Zhang (Eds.) ,
+ Vol. 37 , pp. 116462–116492 .
+ External Links: Document ,
+ Link 
+ Cited by: §4 .
+ Yang et al. (2025) 
+ A. Yang, A. Li, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Gao, C. Huang, C. Lv, et al. 
+ Qwen3 Technical Report .
+ arXiv preprint arXiv:2505.09388 .
+ External Links: Link 
+ Cited by: Appendix A ,
+ Appendix K ,
+ §3 .
+ Zhang et al. (2024) 
+ Y. Zhang, Y. Du, G. Luo, Y. Zhong, Z. Zhang, S. Liu, and R. Ji 
+ CaM: cache merging for memory-efficient LLMs inference .
+ In Proceedings of the 41st International Conference on Machine Learning ,
+ External Links: Link 
+ Cited by: §6 .
+ Zhang et al. (2023) 
+ Z. Zhang, Y. Sheng, T. Zhou, T. Chen, L. Zheng, R. Cai, Z. Song, Y. Tian, C. Ré, C. Barrett, et al. 
+ H2o: heavy-hitter oracle for efficient generative inference of large language models .
+ Advances in Neural Information Processing Systems 36 , pp. 34661–34710 .
+ External Links: Link 
+ Cited by: §1 ,
+ §6 .
+ Zweiger et al. (2026) 
+ A. Zweiger, X. Fu, H. Guo, and Y. Kim 
+ Fast KV compaction via attention matching .
+ arXiv preprint arXiv:2602.16284 .
+ Cited by: Appendix H ,
+ §1 ,
+ §6 ,
+ Model scale. .
+ Łajewska et al. (2025) 
+ W. Łajewska, M. Hardalov, L. Aina, N. Anna John, H. Su, and L. Marquez 
+ Understanding and improving information preservation in prompt compression for LLMs .
+ In Findings of the Association for Computational Linguistics: EMNLP 2025 ,
+ Suzhou, China , pp. 17520–17541 .
+ External Links: Document ,
+ ISBN 979-8-89176-335-7 ,
+ Link 
+ Cited by: §1 .
+ Łańcucki et al. (2025) 
+ A. Łańcucki, K. Staniszewski, P. Nawrot, and E. Ponti 
+ Inference-time hyper-scaling with KV cache compression .
+ In The Thirty-ninth Annual Conference on Neural Information Processing Systems ,
+ External Links: Link 
+ Cited by: §6 .
+ Appendix A Hyperparameters 
+ Table 5 summarizes the training hyper-parameters used across all datasets. All experiments use Qwen3-8B 6 6 
+ 6 
+ https://huggingface.co/Qwen/Qwen3-8B as the base model with BF16 weights and FP32 Adam optimizer states. Cartridge parameters are the only trainable parameters; all model weights remain frozen. We train using a cluster with NVidia H200 and B200 cloud GPUs. 
+ We use Qwen3-8B as released on Hugging Face. The model card provided by the Qwen team documents training data, intended use, and limitations Yang et al. (2025) . 
+ Hyperparameter 
+ Value 
+ Notes 
+ Optimization 
+ Optimizer 
+ Adam (FP32) 
+ Moment tensors offloaded to NVMe for CPU-resident carts 
+ Peak learning rate ( η 0 \eta_{0} ) 
+ 0.05–0.1 
+ Dataset-dependent; 0.1 for LongHealth, 0.05 for others 
+ LR schedule 
+ Linear decay with warmup 
+ Warmup steps ( W W ) 
+ 200 
+ Global warmup 
+ Final LR multiplier ( α f \alpha_{f} ) 
+ 0.02 
+ η min = 0.02 ⋅ η 0 \eta_{\text{min}}=0.02\cdot\eta_{0} 
+ Warmup minimum LR 
+ 0.002 
+ Per-cartridge warmup ( W c W_{c} ) 
+ 20 steps 
+ Applied when a cartridge first enters the GPU pool 
+ Training epochs 
+ 80 
+ Global batch size 
+ 128 
+ Packed sequence length 
+ 8,192 tokens 
+ Budget Manager & Rotation 
+ Cartridge budget ( B B ) 
+ 20 
+ Max cartridges on GPU simultaneously 
+ Rotation interval ( R R ) 
+ 10 steps 
+ Steps between pool rotations 
+ Swap fraction ( ϕ \phi ) 
+ 0.5 
+ Fraction of pool replaced per rotation 
+ Prioritize least trained 
+ Yes 
+ Cartridges with fewest steps swapped in first 
+ Empty cache interval 
+ 5 rotations 
+ torch.cuda.empty_cache() frequency 
+ Cartridge Masking 
+ Isolation probability ( P iso P_{\text{iso}} ) 
+ 0.75 
+ Prob. of seeing only the relevant cartridge 
+ Max active cartridges ( k max k_{\text{max}} ) 
+ 10 
+ Max distractors visible per example 
+ Min active cartridges ( k min k_{\text{min}} ) 
+ 1 
+ Initialization & Padding 
+ Init strategy 
+ Cart-specific 
+ Each cartridge initialized from its own document 
+ Cache padding 
+ Repeat 
+ Tiles existing KV vectors if doc < < cart size 
+ Num frozen tokens 
+ 1 
+ BOS token frozen during training 
+ Infrastructure 
+ Hardware 
+ NVIDIA H200 & B200 
+ Precision 
+ BF16 (weights), FP32 (optimizer) 
+ Gradient checkpointing 
+ Disabled 
+ torch.compile 
+ Disabled 
+ Table 5: Training hyperparameters for the CAS framework. Values shown are the defaults used across all five datasets unless noted otherwise. The peak learning rate is the primary dataset-dependent hyperparameter. 
+ Dataset-specific variations. 
+ The total number of optimizer steps varies by dataset due to different corpus sizes: LongHealth (20 docs) trains for ∼ 12,480 {\sim}12{,}480 steps, QuALITY (115 docs) for ∼ 12,400 {\sim}12{,}400 steps, QASPER (407 docs) for ∼ 14,160 {\sim}14{,}160 steps, and FinQA (380 docs) for ∼ 14,160 {\sim}14{,}160 steps. The LR schedule max_steps parameter is set accordingly. For the isolation ablation in Table 3 , we use P iso = 0.75 P_{\text{iso}}{=}0.75 for joint training and P iso = 1.0 P_{\text{iso}}{=}1.0 for isolated training, with all 20 cartridges active simultaneously (no rotation needed for 20 cartridges on a H100 GPU). 
+ Model Inference. 
+ For all experiments we evaluate the models with thinking mode enabled, temperature 0.6, and 2048 maximum completion tokens. We use a separate prompt for each dataset (see Appendix H ), which we pass in the user turn. In the RAG condition, the retrieved context replaces the full document in the prompt; in the Oracle text condition, the full document text is provided. All reported results are averaged across at least 3 runs. 
+ Appendix B Effective LR per Cartridge 
+ Because cartridge rotation means each cartridge is active for only a fraction of total training steps, the effective number of gradient updates per cartridge is much smaller than the global step count.
+A standard short-decay schedule causes the learning rate to reach its minimum long before most cartridges have received sufficient updates, stalling their convergence.
+We ablate this on FinQA by comparing a short-decay schedule ( max_steps = 1600 \texttt{max\_steps}{=}1600 ) against a slow-decay schedule ( max_steps = 5000 \texttt{max\_steps}{=}5000 , α f = 0.02 \alpha_{f}{=}0.02 ) that maintains a higher effective learning rate throughout training (Figure 5 ).
+The short-decay schedule reaches 54.8 % 54.8\% ; switching to slow decay improves this to 59.0 % 59.0\% (+4.2 points).
+Adding per-cartridge warmup and prioritize-least-trained scheduling further pushes accuracy to 60.8 % 60.8\% , as each cartridge receives a proper warmup phase when first loaded into the GPU budget. 
+ Figure 5: LR schedule ablation on FinQA. The slow-decay schedule with max_steps = 5000 \texttt{max\_steps}{=}5000 and per-cartridge warm-up is superior to max_steps = 1600 \texttt{max\_steps}{=}1600 . 
+ Appendix C Impact of Self-Study Data Improvements 
+ We ablate the cumulative effect of our self-study data improvements on FinQA using 10 single-doc cartridges of 512 tokens each. We compare the three data generation strategies: 
+ • 
+ Original : The baseline procedure from Eyuboglu et al. (2025) —one question per LLM call, using the target model (Qwen3-8B) for both question and answer generation, with uniform random chunk sampling. 
+ • 
+ Decoupled M Q M_{Q} , n = 20 n{=}20 : Multi-question generation ( n = 20 n{=}20 questions per call) with a decoupled, more capable question model (GPT-OSS 120B) while keeping the target model as M A M_{A} . Same uniform sampling. 
+ • 
+ Decoupled M Q M_{Q} , n = 20 n{=}20 + prop. to length : Same as above, but replacing uniform sampling with proportional-to-length document sampling, ensuring longer documents receive proportionally more training examples. 
+ Data Strategy 
+ Accuracy (%) 
+ Original 
+ 55.9 
+ Decoupled M Q M_{Q} , n = 20 n{=}20 
+ 62.7 
+ Decoupled M Q M_{Q} , n = 20 n{=}20 + prop. to length 
+ 64.7 
+ Oracle (Text) 
+ 66.8 
+ Table 6: Impact of self-study data improvements on FinQA (10 cartridges, 512 tokens/cart). 
+ The results (Table 6 ) show that decoupling the question model and batching 20 questions per call provides the largest single improvement (+6.8 points over the original), by generating more diverse and higher-quality questions that better cover the document’s factual content. Adding proportional-to-length sampling contributes a further +2.0 points by ensuring that longer, information-dense documents receive training signal commensurate with their expected greater complexity. 
+ Appendix D Scoring Metrics 
+ We use dataset-specific scoring metrics: 
+ • 
+ T 2 -RAGBench/FinQA : Formula execution accuracy. The predicted formula is parsed and executed; the numerical result is compared to the gold answer with a relative tolerance of 1%. 
+ • 
+ LongHealth : Fuzzy option matching. The predicted answer is compared against all five options using string similarity, and the closest match is selected. 
+ • 
+ QASPER : Average token F1 with multi-reference support, following the standard QASPER evaluation protocol. For each question, we compute the token-level F1 against all available reference answers and take the maximum. 
+ • 
+ QuALITY : Exact match on the extracted answer letter (A, B, C, or D). 
+ • 
+ TechQA : LLM-as-a-Judge. A separate judge model (DeepSeek-Distilled-Qwen-32B) evaluates whether the generated answer is factually equivalent to the reference answer. The judge outputs a JSON object with a justification and a binary grade. A score of 1 is assigned when the judge returns "grade": "correct" , and 0 otherwise. Table 7 shows the exact judge prompt. 
+ Role 
+ Prompt 
+ System 
+ You are to act as an impartial judge, evaluating whether an answer to a question matches a provided reference answer. Your task is to determine if the given answer is correct based on its factual equivalence to the reference answer, ignoring differences in punctuation and phrasing. 
+ When evaluating the answer, consider the following criteria: 
+ 1. Factual equivalence: Does the answer convey the same information as the reference answer? 
+ 2. Completeness: Does the answer address all parts of the question that the reference answer addresses? 
+ 3. Accuracy: Is the information in the answer consistent with the reference answer? 
+ 4. Additional information: If the answer contains more information than the reference answer, does it remain consistent and not contradict itself? 
+ Your response should be structured as follows: 
+ 1. A justification for your decision, explaining your reasoning based on the evaluation criteria. 
+ 2. A grade of either "correct" or "incorrect". 
+ Important note on deflections and invalid questions: 
+ - If the answer is a deflection or does not attempt to answer the question, grade it as "incorrect" unless the reference answer is also a deflection. 
+ - If both the answer and the reference answer indicate that the question is invalid or cannot be answered, grade it as "correct". 
+ - If the answer is a placeholder like {{YOUR_ANSWER}}, any generic phrase that does NOT address the question, or an empty answer, then count it as "incorrect". 
+ Your response should be in json format as follows: 
+ {"justification": "...", "grade": "correct" or "incorrect"} 
+ User 
+ Here is the question: 
+ {query} 
+ Here is the answer to be judged: 
+ {answer} 
+ Here is the reference answer: 
+ {expected_answer} 
+ Table 7: LLM-as-a-Judge prompt used for scoring free-form answers on TechQA. The judge model (DeepSeek-Distilled-Qwen-32B) receives the system prompt defining evaluation criteria and a user message containing the question, generated answer, and reference answer. 
+ For all datasets, we report accuracy as the percentage of correctly answered questions. 
+ Appendix E Cartridge Size Statistics 
+ Because each cartridge is sized proportionally to its source document, the actual number of KV tokens per cartridge varies across documents within a dataset.
+Table 8 reports the minimum, mean, and maximum cartridge sizes (in tokens) for each dataset at each target compression ratio used in our experiments. 
+ All cartridge sizes are rounded up to the nearest multiple of 16 tokens.
+This constraint arises from the paged KV-cache implementation in our inference server (tokasaurus 7 7 
+ 7 
+ https://github.com/ScalingIntelligence/tokasaurus ), which manages memory in fixed-size pages of 16 tokens.
+Aligning cartridge sizes to page boundaries avoids internal fragmentation and ensures that each cartridge occupies an integer number of pages, enabling efficient memory allocation and deallocation during both training (pool rotation) and inference (cartridge loading/unloading).
+We additionally enforce a minimum cartridge size of 16 tokens (one page), ensuring that even the shortest documents receive at least one full page of KV representation. 
+ Dataset 
+ Comp. 
+ Min 
+ Mean 
+ Max 
+ Total 
+ LongHealth (20 docs) 
+ 2 × 2\times 
+ 5,040 
+ 5,859 
+ 6,640 
+ 117,184 
+ 5 × 5\times 
+ 2,016 
+ 2,349 
+ 2,656 
+ 46,976 
+ 10 × 10\times 
+ 1,008 
+ 1,178 
+ 1,328 
+ 23,568 
+ 20 × 20\times 
+ 512 
+ 593 
+ 672 
+ 11,856 
+ 50 × 50\times 
+ 208 
+ 242 
+ 272 
+ 4,848 
+ 100 × 100\times 
+ 112 
+ 126 
+ 144 
+ 2,512 
+ QASPER (407 docs) 
+ 2 × 2\times 
+ 464 
+ 2,349 
+ 4,912 
+ 955,968 
+ 3 × 3\times 
+ 304 
+ 1,569 
+ 3,280 
+ 638,400 
+ 5 × 5\times 
+ 192 
+ 944 
+ 1,968 
+ 384,336 
+ 10 × 10\times 
+ 96 
+ 476 
+ 992 
+ 193,904 
+ 20 × 20\times 
+ 64 
+ 242 
+ 496 
+ 98,640 
+ 50 × 50\times 
+ 64 
+ 103 
+ 208 
+ 42,016 
+ 100 × 100\times 
+ 64 
+ 68 
+ 112 
+ 27,568 
+ QuALITY (115 docs) 
+ 2 × 2\times 
+ 1,136 
+ 2,865 
+ 4,208 
+ 329,456 
+ 5 × 5\times 
+ 464 
+ 1,151 
+ 1,696 
+ 132,336 
+ 10 × 10\times 
+ 240 
+ 579 
+ 848 
+ 66,544 
+ 20 × 20\times 
+ 128 
+ 293 
+ 432 
+ 33,744 
+ 50 × 50\times 
+ 64 
+ 123 
+ 176 
+ 14,176 
+ 100 × 100\times 
+ 64 
+ 74 
+ 96 
+ 8,464 
+ FinQA (380 docs) 
+ 2 × 2\times 
+ 112 
+ 524 
+ 1,280 
+ 199,184 
+ 5 × 5\times 
+ 64 
+ 214 
+ 512 
+ 81,456 
+ 10 × 10\times 
+ 64 
+ 112 
+ 256 
+ 42,528 
+ 20 × 20\times 
+ 64 
+ 69 
+ 128 
+ 26,096 
+ 50 × 50\times 
+ 16 
+ 29 
+ 64 
+ 11,088 
+ 100 × 100\times 
+ 16 
+ 17 
+ 32 
+ 6,448 
+ TechQA (471 docs) 
+ 2 × 2\times 
+ 64 
+ 460 
+ 2,048 
+ 216,832 
+ 5 × 5\times 
+ 64 
+ 193 
+ 1,008 
+ 90,784 
+ 10 × 10\times 
+ 64 
+ 109 
+ 512 
+ 51,248 
+ 20 × 20\times 
+ 64 
+ 75 
+ 256 
+ 35,328 
+ 50 × 50\times 
+ 64 
+ 65 
+ 112 
+ 30,496 
+ 100 × 100\times 
+ 16 
+ 19 
+ 64 
+ 8,752 
+ Table 8: Cartridge size statistics (in tokens) per dataset and target compression ratio. Min : smallest cartridge in the collection. Mean : average tokens per cartridge. Max : largest cartridge. Total : sum of all cartridge sizes. All sizes are multiples of 16 (the page size). 
+ At high compression ratios ( 50 × 50\times – 100 × 100\times ), the shortest documents in FinQA and TechQA are clamped to the 16-token minimum.
+For example, a 500-token FinQA document at 100 × 100\times compression would nominally require only 5 tokens, but is rounded up to 16.
+This means the effective compression ratio for short documents is lower than the target—a 500-token document with a 16-token cartridge achieves 31 × 31\times rather than 100 × 100\times .
+Conversely, the longest documents in each collection achieve compression ratios close to the target.
+The wide min–max range within a dataset (e.g., 64–2,048 for TechQA at 2 × 2\times ) reflects the natural variation in document lengths: the proportional sizing ensures that each document receives a KV budget commensurate with its information content. 
+ Appendix F RAG Baseline: Indexing and Retrieval Details 
+ We describe the full RAG pipeline below. 
+ Document indexing. 
+ Each dataset’s documents are indexed with chunk size C ∈ { 128,256,512 , 1024 } C\in\{128,256,512,1024\} tokens.
+Documents are chunked using a fixed-size strategy with a 10% token overlap between adjacent chunks.
+Chunks are embedded using Amazon Titan Embed Text v2 ( amazon.titan-embed-text-v2:0 ) via Amazon Bedrock 8 8 
+ 8 
+ https://aws.amazon.com/bedrock with 1024-dimensional embeddings and retrieved via cosine similarity. 
+ Retrieval. 
+ At evaluation time, each question is issued as a retrieval query against the Knowledge Base.
+We retrieve the top- K K chunks for K ∈ { 1 , 3 , 5 , 10 } K\in\{1,3,5,10\} .
+To avoid redundant API calls, we retrieve K = 10 K=10 once per chunk size and slice for smaller K K values.
+Retrieved chunks are concatenated in score order and prepended to the question as the context for the reader model. 
+ Hyperparameter selection. 
+ We report the best result across all 16 chunk/top- K K combinations ( 4 × 4 4\times 4 ) for each dataset as the “RAG best” entry in Table 2 .
+The optimal configuration varies by dataset: datasets with short, self-contained answers (TechQA, FinQA) benefit from larger chunks and higher K K , while datasets requiring precise span extraction (QASPER) are less sensitive to retrieval configuration. 
+ Effective token counts. 
+ Table 10 reports the average number of context tokens consumed per query for Text RAG at chunk size 1024 across different k k values. Due to the 10% overlap between adjacent chunks and shorter final chunks in some documents, the effective token count is slightly below the nominal k × 1024 k\times 1024 . 
+ Unique cartridges per query. 
+ Because multiple retrieved chunks may originate from the same source document, the number of unique documents loaded in Cartridge RAG is often lower than the number of retrieved chunks k k .
+Table 9 reports the average number of unique documents covered by the top- k k chunks (at chunk size 1024).
+Datasets with short documents (FinQA, TechQA) exhibit high chunk diversity—10 chunks span 8–9 distinct documents—while datasets with longer documents (LongHealth, QuALITY) show more within-document clustering, with 10 chunks covering only 4–5 documents on average. 
+ Dataset 
+ k = 1 k{=}1 
+ k = 3 k{=}3 
+ k = 5 k{=}5 
+ k = 10 k{=}10 
+ LongHealth 
+ 1.0 
+ 1.8 
+ 2.5 
+ 4.4 
+ QuALITY 
+ 1.0 
+ 1.4 
+ 2.2 
+ 4.8 
+ FinQA 
+ 1.0 
+ 3.0 
+ 5.0 
+ 8.7 
+ TechQA 
+ 1.0 
+ 3.0 
+ 4.9 
+ 8.1 
+ Table 9: Average number of unique source documents covered by the top- k k retrieved chunks (chunk size 1024). Datasets with shorter documents (FinQA, TechQA) have higher chunk diversity, while longer-document datasets (LongHealth, QuALITY) exhibit within-document clustering. 
+ Dataset 
+ k = 1 k{=}1 
+ k = 3 k{=}3 
+ k = 5 k{=}5 
+ k = 10 k{=}10 
+ LongHealth 
+ 986 
+ 2,960 
+ 4,944 
+ 9,860 
+ QuALITY 
+ 941 
+ 2,856 
+ 4,733 
+ 9,412 
+ FinQA 
+ ∼ {\sim} 960 
+ ∼ {\sim} 2,880 
+ ∼ {\sim} 4,800 
+ ∼ {\sim} 9,600 
+ TechQA 
+ ∼ {\sim} 960 
+ ∼ {\sim} 2,880 
+ ∼ {\sim} 4,800 
+ ∼ {\sim} 9,600 
+ Table 10: Average context tokens per query for Text RAG (chunk size 1024). 
+ Appendix G Retrieval Quality: Recall and MRR 
+ To contextualize the Cartridge RAG results in § 4 Cartridge RAG , we report document-level retrieval quality of the dense retriever used by both the Text RAG and Cartridge RAG pipelines.
+For each query we retrieve 10 10 chunks, deduplicate to unique source documents, and compute Recall@ K K and MRR@ K K over the resulting ranked document list (so K K counts unique documents, not chunks).
+Tables 11 – 14 report these metrics for the four chunk sizes used in our sweep. 
+ Chunk 
+ R@1 
+ R@3 
+ R@5 
+ R@10 
+ MRR@1 
+ MRR@3 
+ MRR@5 
+ MRR@10 
+ 128 
+ 79.2 
+ 88.5 
+ 91.2 
+ 95.8 
+ 79.2 
+ 83.6 
+ 84.5 
+ 85.5 
+ 256 
+ 76.5 
+ 87.5 
+ 91.2 
+ 95.5 
+ 76.5 
+ 81.5 
+ 82.5 
+ 83.3 
+ 512 
+ 76.0 
+ 89.0 
+ 93.0 
+ 97.0 
+ 76.0 
+ 81.8 
+ 82.8 
+ 83.6 
+ 1024 
+ 76.5 
+ 86.5 
+ 91.2 
+ 96.8 
+ 76.5 
+ 81.0 
+ 82.4 
+ 83.4 
+ Table 11: LongHealth document-level retrieval ( 20 20 docs, 400 400 queries). 
+ Chunk 
+ R@1 
+ R@3 
+ R@5 
+ R@10 
+ MRR@1 
+ MRR@3 
+ MRR@5 
+ MRR@10 
+ 128 
+ 85.3 
+ 91.1 
+ 93.1 
+ 95.2 
+ 85.3 
+ 88.0 
+ 88.5 
+ 88.9 
+ 256 
+ 88.0 
+ 92.6 
+ 94.0 
+ 95.4 
+ 88.0 
+ 90.1 
+ 90.5 
+ 90.8 
+ 512 
+ 88.3 
+ 92.1 
+ 93.2 
+ 95.5 
+ 88.3 
+ 90.1 
+ 90.4 
+ 90.9 
+ 1024 
+ 87.1 
+ 91.4 
+ 93.1 
+ 94.8 
+ 87.1 
+ 89.1 
+ 89.6 
+ 90.0 
+ Table 12: QuALITY document-level retrieval ( 115 115 docs, 2,086 2{,}086 queries). 
+ LongHealth and QuALITY have nearly saturated retrieval ( ≥ 95 % \geq 95\% Recall@10), so any gap between Text RAG and Oracle (Text) on these datasets is attributable to information loss in the chunked text rather than retrieval failures. 
+ Chunk 
+ R@1 
+ R@3 
+ R@5 
+ R@10 
+ MRR@1 
+ MRR@3 
+ MRR@5 
+ MRR@10 
+ 128 
+ 70.4 
+ 85.7 
+ 90.7 
+ 95.9 
+ 70.4 
+ 77.0 
+ 78.0 
+ 79.0 
+ 256 
+ 70.5 
+ 87.3 
+ 91.8 
+ 96.1 
+ 70.5 
+ 78.0 
+ 79.0 
+ 79.0 
+ 512 
+ 69.2 
+ 86.0 
+ 91.5 
+ 95.6 
+ 69.2 
+ 77.0 
+ 78.0 
+ 79.0 
+ 1024 
+ 69.2 
+ 87.0 
+ 91.8 
+ 96.0 
+ 69.2 
+ 77.0 
+ 78.0 
+ 79.0 
+ Table 13: FinQA document-level retrieval ( 380 380 docs, 1,147 1{,}147 queries). 
+ Chunk 
+ R@1 
+ R@3 
+ R@5 
+ R@10 
+ MRR@1 
+ MRR@3 
+ MRR@5 
+ MRR@10 
+ 128 
+ 79.8 
+ 89.0 
+ 91.8 
+ 93.1 
+ 79.8 
+ 83.8 
+ 84.4 
+ 84.6 
+ 256 
+ 80.3 
+ 89.7 
+ 92.6 
+ 93.9 
+ 80.3 
+ 84.5 
+ 85.2 
+ 85.4 
+ 512 
+ 82.3 
+ 90.2 
+ 93.1 
+ 95.2 
+ 82.3 
+ 85.8 
+ 86.5 
+ 86.9 
+ 1024 
+ 83.1 
+ 92.1 
+ 93.8 
+ 95.2 
+ 83.1 
+ 87.3 
+ 87.7 
+ 87.9 
+ Table 14: TechQA document-level retrieval ( 496 496 docs, 610 610 queries). 
+ FinQA and TechQA both exhibit high retrieval quality ( ≥ 95 % \geq 95\% Recall@10), comparable to LongHealth and QuALITY.
+FinQA documents contain distinctive company names and financial terminology that make retrieval effective despite the large corpus (380 docs).
+TechQA’s IBM Technotes cover distinct products and error codes, yielding strong R@1 ( 80 80 – 83 % 83\% ) that improves with larger chunk sizes as more diagnostic context is captured per chunk. 
+ Appendix H Evaluation Prompts 
+ We use task-specific system prompts during evaluation. All prompts instruct the model to wrap its final answer in <answer> tags. In the Cartridge setting, the document context is encoded in the trained KV cache prefix and is not included in the text prompt—the model receives only the system prompt and the user question. In the Oracle (Text) baseline, the full document text is prepended to the user message. Table 15 lists the exact prompts used. 
+ For FinQA, we use the evaluation prompt recommended in the T 2 -RAGBench paper Strich et al. (2026) . 9 9 
+ 9 
+ https://github.com/uhh-hcds/g4kmu-paper/tree/main/src/g4k/prompts/sys_prompts For QASPER 10 10 
+ 10 
+ https://github.com/EleutherAI/lm-evaluation-harness/tree/main/lm_eval/tasks/qasper and QuALITY, we adopt the prompts from previous work Gao et al. (2024) ; Eyuboglu et al. (2025) ; Zweiger et al. (2026) . For LongHealth, we use the prompt format from the original benchmark 11 11 
+ 11 
+ https://github.com/HazyResearch/cartridges/blob/main/examples/benchmarks/longhealth/baseline_longhealth.py . For TechQA, since no standard evaluation prompt exists, we conducted a prompt search over several variants—including a minimal instruction (“Answer concisely”), a domain-specific expert framing, a chain-of-thought variant, and a structured extraction format—and selected the prompt that yielded the highest Oracle (Text) accuracy on the development set. 
+ Benchmark 
+ System Prompt + User Message Format 
+ T 2 -RAGBench / FinQA 
+ System: You are an expert in answering financial questions by constructing mathematical formulas based on a simple syntax. 
+ - Task: Provide a FORMULA ANSWER to the question based on the given context. 
+ Guidelines: 
+ 1. Answer Type: A formula is either a number or one of: add(f1, f2), subtract(f1, f2), multiply(f1, f2), divide(f1, f2), exp(f1, f2), greater(f1, f2) 
+ 2. Reasoning: Carefully analyze the context. Pay special attention to the table. 
+ 3. Final Answer: "<answer> FORMULA </answer>" 
+ User: {context} 
+ Question: {question} 
+ LongHealth 
+ System: Please reference the patient medical records to answer the user’s questions. Choose the single best option and provide your answer exactly as it appears in the options. 
+ Wrap your answer in: <answer> The correct option text here </answer> 
+ User: {question} 
+ A. {option_a} B. {option_b} C. {option_c} D. {option_d} E. {option_e} 
+ QASPER 
+ System: You are a research assistant answering questions about a scientific paper. Answer as briefly as possible. Give only the answer, no explanation. If the question cannot be answered from the paper, say "Unanswerable". For yes/no questions, answer "Yes" or "No". Wrap your answer in: <answer> ... </answer> 
+ User: {question} 
+ QuALITY 
+ System: You are a careful reader answering multiple-choice questions about a long article. Read the article and choose the single best answer option. Provide your answer as the letter (A, B, C, or D) wrapped in answer tags. Example: <answer> B </answer> 
+ User: {question} 
+ A. {option_a} B. {option_b} C. {option_c} D. {option_d} 
+ Answer with the letter of the correct option (A, B, C, or D). 
+ TechQA 
+ System: You are an expert technical support assistant specializing in IT infrastructure, software products, and enterprise systems. Answer the technical question to the best of your ability. Be concise and factual. Wrap your answer in: <answer> YOUR_ANSWER </answer> 
+ User: {question} 
+ Table 15: Evaluation prompts used for each benchmark. Variables in braces are replaced with benchmark data at evaluation time. 
+ Appendix I Self-Study Data Synthesis Details 
+ Question generation model. 
+ We use GPT-OSS 120B Agarwal et al. (2025) as the question generator ( M Q M_{Q} ).
+This model receives the full document context in its system prompt and generates batches of 20 diverse questions per call.
+The answer generator ( M A M_{A} ) is the target model itself (Qwen3-8B), ensuring that the distillation signal reflects the student’s own output distribution. 
+ Seed prompt types. 
+ Each synthesis call randomly selects a seed prompt type from five categories: structuring (requests to organize information into JSON, YAML, or other formats), summarization (requests to summarize specific sections), question (factual recall and reasoning questions), use_case (practical downstream application tasks), and creative (open-ended discussion prompts).
+This diversity ensures the cartridge is trained on varied interaction patterns rather than only factoid QA. 
+ Multi-question prompt format. 
+ In batched mode, the question generator receives the following instruction (shown for the question type): 
+ Generate {n} diverse questions that test knowledge of the information in the corpus above. Each question should cover a different fact, detail, or aspect of the corpus. Vary the style: mix factual recall, comparison, reasoning, and detail-oriented questions. Include specific details (ids, names, titles, dates, numerical values, etc.) in each question so it is clear what you are asking about. 
+ Output ONLY a JSON array of strings, e.g. ["question 1", "question 2", ...]. No other text, no markdown fences, no explanation. 
+ The structured JSON output format enables reliable parsing; responses that fail to parse are discarded (typically < 5 % {<}5\% of calls). 
+ Sampling rounds and temperatures. 
+ For each dataset, we run 4 independent sampling rounds, one per seed prompt type (question, structuring, summarization, use_case), each generating 10,000 samples for a total of 40,000 training examples per dataset. 12 12 
+ 12 
+ We exclude the creative seed type from training data as it produces open-ended prompts less suited for distillation. 
+ M Q M_{Q} (GPT-OSS 120B, the question generator) uses temperature 0.6 0.6 with top- p = 0.95 p{=}0.95 , top- k = 20 k{=}20 , and a maximum of 4,096 completion tokens per call.
+ M A M_{A} (Qwen3-8B, the teacher/answer generator) uses temperature 0.0 0.0 (greedy decoding) with a maximum of 2,048 completion tokens, ensuring deterministic distillation targets.
+Both models operate with thinking mode enabled. 
+ Sampling configuration. 
+ Within each round, we generate 10,000 synthesis samples with a batch size of 4 contexts and up to 128 parallel API calls.
+Documents are sampled using the proportional-to-length strategy described in § 2.3 , with a fixed random seed for reproducibility.
+For multi-note documents (e.g., LongHealth patient records), we sample one note per prompt to ensure fine-grained coverage of individual clinical notes. 
+ Appendix J Self-Study Data Quality Analysis 
+ To understand the failure modes of the original Self-Study procedure, we conduct a detailed analysis on 9 FinQA cartridges (512 tokens each, trained for 80 epochs).
+We measure value coverage : for each unique number in the original document, we count the fraction of training samples that reproduce it. 
+ Synthesizer bias toward narrative over tables. 
+ The synthesizer preferentially generates questions about prose commentary rather than specific table cell values.
+Table 16 shows that across all 9 cartridges, only 41% of unique numbers in the training data are grounded in the original document.
+The remaining 59% are derived calculations (62%), rounded/reformatted values (22%), or pure fabrications (15%). 
+ Category 
+ Count 
+ % 
+ Grounded (in document) 
+ 281 
+ 41% 
+ Derived calculations 
+ 255 
+ 37% 
+ Rounded/reformatted 
+ 90 
+ 13% 
+ Pure fabrications 
+ 62 
+ 9% 
+ Total not in document 
+ 407 
+ 59% 
+ Table 16: Classification of unique numbers appearing in Self-Study training data across 9 FinQA cartridges (688 unique numbers total, excluding years). 
+ For example, in a Lockheed Martin document, the text-derived delta “operating profit decreased $264 million” achieves 87% coverage (80/92 samples), while the underlying table values it was computed from—$6,608M, $6,770M, $7,092M (net sales 2014–2016)—appear at only 3–5% coverage.
+All 4 test questions requiring these table values score 0%. 
+ Does coverage predicts correctness? 
+ Table 17 shows the relationship between minimum value coverage and answer correctness.
+A coverage threshold of ∼ 25 % {\sim}25\% is necessary (87% of correct answers meet it) but not sufficient (46% of incorrect answers also meet it), indicating that additional failure modes—such as entity confusion—contribute to errors even when values are present. 
+ Min coverage 
+ Correct ( n = 15 n{=}15 ) 
+ Incorrect ( n = 13 n{=}13 ) 
+ ≥ \geq 0% 
+ 100% 
+ 100% 
+ ≥ \geq 10% 
+ 100% 
+ 69% 
+ ≥ \geq 25% 
+ 87% 
+ 46% 
+ ≥ \geq 30% 
+ 67% 
+ 23% 
+ ≥ \geq 50% 
+ 27% 
+ 23% 
+ Table 17: Fraction of questions meeting a minimum coverage threshold, split by correctness. Coverage ≥ 25 % \geq 25\% is necessary but not sufficient. 
+ Entity confusion. 
+ The cartridge stores numeric values but loses entity-value associations.
+In a UPS shareowner return document, the model correctly retrieves UPS’s return ($121.46, 100% coverage) but substitutes the S&P 500 value ($108.59, 69% coverage) for the Dow Jones Transportation value ($127.07, 69% coverage) when computing their difference—both distractor values have identical coverage, and the model picks the wrong entity. 
+ Hallucination despite self-verification. 
+ The model fabricates plausible values, attempts chain-of-thought verification, detects inconsistencies, and proceeds anyway.
+In a Hologic acquisition document, the model needs the goodwill value ($6,900, 28% coverage) but produces three different hallucinated values across 3 runs (4,200, 6,000, 3,000).
+In each run, it sums the allocation components, notices the total does not match $31,300, yet outputs the wrong formula regardless. 
+ Appendix K Artifact Licenses and Terms of Use 
+ Licenses and terms for use/distribution of artifacts. 
+ The five benchmarks used in this work are publicly available under the following licenses: 
+ • 
+ LongHealth Adams et al. (2024) : Released under the Apache-2.0 License. 13 13 
+ 13 
+ https://github.com/kbressem/LongHealth/blob/main/LICENSE The dataset consists of entirely fictional patient records created by the authors; no real patient data is included. 
+ • 
+ QASPER Dasigi et al. (2021) : Released under the CC BY 4.0 License. 14 14 
+ 14 
+ https://huggingface.co/datasets/allenai/qasper The dataset consists of questions and answers over NLP research papers; the dataset itself is distributed under CC BY 4.0. 
+ • 
+ QuALITY Pang et al. (2022) : Released under the CC BY 4.0 License. 15 15 
+ 15 
+ https://nyu-mll.github.io/quality/ Source texts are drawn from Project Gutenberg (public domain) and other permissively licensed collections, including nonfiction and fiction sources such as Slate articles from the Open American National Corpus, The Long+Short, Freesouls, and Open Access books. These texts are published works and do not contain personal data, though some may include mature themes typical of literary and journalistic content. 
+ • 
+ FinQA Chen et al. (2021) : Released under the MIT License. 16 16 
+ 16 
+ https://github.com/czyssrs/FinQA/blob/main/LICENSE The underlying financial reports are sourced from corporate filings made available via the SEC EDGAR system, including earnings reports and annual/quarterly reports (e.g., 10-K and 10-Q documents). These are publicly accessible financial disclosures prepared by reporting companies. T 2 -RAGBench Strich et al. (2026) is also released under the MIT License. 
+ • 
+ TechQA Castelli et al. (2020) : The NVIDIA TechQA-RAG-Eval variant used in this work is released under the Apache-2.0 License and is explicitly cleared for commercial and non-commercial use. 17 17 
+ 17 
+ https://huggingface.co/datasets/nvidia/TechQA-RAG-Eval It is derived from the original IBM TechQA dataset, whose code repository is also Apache-2.0. 18 18 
+ 18 
+ https://github.com/IBM/techqa/blob/master/LICENSE.md 
+ The base model used in our experiments, Qwen3-8B Yang et al. (2025) , is released under the Apache 2.0 License, which permits research and commercial use. 
+ We do not release new datasets in this work. The trained cartridge artifacts (KV cache parameters) are derivatives of the above datasets and the Qwen3-8B model weights; any release of such artifacts would be subject to the intersection of the applicable licenses above. 
+ Offensive content and personal data. 
+ • 
+ LongHealth : The dataset consists of entirely fictional patient records with no real individuals. No anonymization was required. We verified that no real names, addresses, or identifying information appear in the data. 
+ • 
+ QASPER : Source texts are NLP research papers. No personal data or offensive content is expected; the domain is scientific writing. 
+ • 
+ QuALITY : Source texts are fiction and non-fiction narratives, these are published literary works; no personal data is present. 
+ • 
+ FinQA / T 2 -RAGBench : Source texts are corporate earnings reports from SEC EDGAR. These are formal financial documents; no personal data or offensive content is present. 
+ • 
+ TechQA : Source texts are IBM Technote IT support documents. These are technical documentation; no personal data or offensive content is expected. 
+ No additional anonymization steps were taken beyond those applied by the original dataset creators, as none of the datasets contain personal data about private individuals. 
+ Appendix L AI use disclosure 
+ We used AI to assist with code writing and manuscript typesetting. 
+ Experimental support, please
+ view the build logs 
+ for errors. Generated by
+ L
+ A 
+ T
+ E 
+ xml 
+ .
+ Instructions for reporting errors 
+ We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility and mobile
+ support. To report errors in the HTML that will help us improve conversion and rendering, choose any of the
+ methods listed below: 
+ Click the "Report Issue" ( 
+ ) button, located in the page header. 
+ Tip: You can select the relevant text first, to include it in your report. 
+ Our team has already identified the following issues . We appreciate your time reviewing and reporting rendering errors we
+ may not have found yet. Your efforts will help us improve the HTML versions for all readers, because disability
+ should not be a barrier to accessing research. Thank you for your continued support in championing open access for
+ all. 
+ Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML maintain a list of packages that need conversion , and welcome developer contributions . 
+ We gratefully acknowledge support from
+ our major funders ,
+ member institutions , ,
+ and all contributors.
+ About 
+ · 
+ Help 
+ · 
+ Contact 
+ · 
+ Subscribe 
+ · 
+ Copyright 
+ · 
+ Privacy 
+ · 
+ Accessibility 
+ · 
+ Operational Status (opens in new tab) 
+ Major funding support from 

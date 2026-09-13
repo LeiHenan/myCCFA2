@@ -1,0 +1,188 @@
+
+ [Feature]: KV cache events — bind-time ephemeral port allocation and a discovery API · Issue #55679 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [Feature]: KV cache events — bind-time ephemeral port allocation and a discovery API #55679 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Open 
+ #55707 
+ Open 
+ [Feature]: KV cache events — bind-time ephemeral port allocation and a discovery API #55679 
+ #55707 
+ Copy link 
+ Labels
+ feature request New feature or request New feature or request 
+ Description
+ touch869 
+ opened on Sep 7, 2026 
+ Issue body actions 
+ 🚀 The feature, motivation and pitch
+ Follow-up to #51275 (Race-free port management). KV cache events are currently classified there as "Category IV: static configured endpoints". This proposal applies the RFC's governing rule — the process that binds chooses the port at bind time, and publishes the actual endpoint over an existing control path — to the KV-events publisher, and adds the missing discovery path.
+ Today a consumer of KV events across data-parallel ranks has no race-free way to know where each rank's publisher landed:
+ KVEventsConfig.endpoint requires an explicit port; the DP offset is arithmetic ( base_port + dp_rank , vllm/distributed/kv_events.py::offset_endpoint_port ). This is exactly the Category IV static formula: two deployments launched with the same base collide, and passing tcp://*:0 degenerates to literal ports 0,1,2,... — rank ≥ 1 binds privileged/invalid ports.
+ ZmqEventPublisher._socket_setup() binds the socket but never reads back the assigned port ( zmq.LAST_ENDPOINT ), so with :0 the OS-assigned port is silently discarded and get_publisher_config() still reports the pre-bind wildcard string.
+ EngineCoreReadyResponse.kv_events_config already carries the publisher config to the frontend, but _apply_ready_response() discards it; only the Rust gRPC GetKvEventSources consumes it, and it receives the unbound wildcard string. There is no Python/HTTP query surface.
+ Alternatives
+ Bind-time allocation : when the configured port is 0 , do not apply the DP offset — each rank's publisher binds tcp://*:0 independently and the OS hands out distinct ephemeral ports. Explicit non-zero ports keep the existing base + rank behavior (backward compatible).
+ Endpoint readback : after bind() , read zmq.LAST_ENDPOINT (for pub and replay sockets), resolve * to a reachable host, and update get_publisher_config() to return the real bound endpoint. This is the [RFC]: Race-free port management: pick ports at bind time, publish over an existing channel #51275 "final binder reports its endpoint" pattern; the bind itself is the reservation, so there is no probe-then-bind window.
+ Discovery API : stop discarding kv_events_config in _apply_ready_response() (keyed by data_parallel_rank ), and expose a read-only GET /kv_event_sources route (mounted unconditionally, like the lora/tokenize routers — not behind VLLM_SERVER_DEV_MODE ) plus an AsyncLLM.get_kv_event_sources() method returning [{data_parallel_rank, endpoint, replay_endpoint, topic}] .
+ Consumer workflow after this change
+ # no port to guess or pre-partition: 
+ kv_events_config = { "enable_kv_cache_events" : True , "publisher" : "zmq" ,
+ "endpoint" : "tcp://*:0" , "replay_endpoint" : "tcp://*:0" }
+ # after startup, discover actual per-rank endpoints: 
+curl http:// < replica > /kv_event_sources
+ # -> [{"data_parallel_rank": 0, "endpoint": "tcp://10.0.0.1:41233", ...}, ...] 
+ Additional context
+ Compatibility considerations
+ Default endpoint unchanged : KVEventsConfig.endpoint keeps its current default tcp://*:5557 . Ephemeral allocation is opt-in by passing port 0 — no existing deployment changes behavior after upgrade.
+ Explicit ports unchanged : the base_port + dp_rank offset arithmetic remains exactly as-is for non-zero ports, including the wildcard * bind form and the inproc:// suffix form. Existing multi-rank deployments that pin ports keep working; tests/distributed/test_events.py offset expectations are locked by a regression test.
+ Config schema unchanged : no new field is added to KVEventsConfig ; port 0 gains defined semantics (alloc-and-report) where it previously misbehaved (rank ≥ 1 binding ports 1,2,...). Users who (incorrectly) relied on that degenerate behavior — the only possible case is single-rank with port 0 — actually get fixed : their rank-0 port now round-trips through the discovery API instead of being silently discarded.
+ Alignment with #51275 
+ No new get_open_port() call sites are introduced (the RFC's allowlist does not grow; it shrinks conceptually — KV events move from "static config" toward the governed pattern).
+ Publication uses the existing control path: the ready-response channel that already carries kv_events_config .
+ Category IV remains out of scope across independent deployments; this only fixes allocation within one deployment (its ranks share one allocator: the OS).
+ Before submitting a new issue...
+ Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page , which can answer lots of frequently asked questions.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ feature request New feature or request New feature or request 
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

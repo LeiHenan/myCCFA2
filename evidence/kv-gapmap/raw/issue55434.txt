@@ -1,0 +1,308 @@
+
+ [Performance]: GLM-5.3 P/D on GB200 — NIXL issues up to ~112k KV descriptors per rank-transfer, making MNNVL/cuda_ipc slower than RDMA on this workload · Issue #55434 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [Performance]: GLM-5.3 P/D on GB200 — NIXL issues up to ~112k KV descriptors per rank-transfer, making MNNVL/cuda_ipc slower than RDMA on this workload #55434 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Open 
+ Open 
+ [Performance]: GLM-5.3 P/D on GB200 — NIXL issues up to ~112k KV descriptors per rank-transfer, making MNNVL/cuda_ipc slower than RDMA on this workload #55434 
+ Copy link 
+ Labels
+ glm kv-connector 
+ Description
+ stu-cao 
+ opened on Sep 5, 2026 
+ Issue body actions 
+ Proposal to improve performance
+ Serving GLM-5.3 (DeepSeek-V3.2 architecture: MLA + DSA indexer) with P/D disaggregation on GB200, NIXL KV transfer is dominated by descriptor submission, not fabric bandwidth . Under agentic load we observe 91,000–120,000 descriptors per TP-rank transfer for a ~4.9 GB payload, and cuda_ipc spends 56.9% of transfer time posting them .
+ The consequence: for this workload shape, the documented GB-series MNNVL configuration is slower end to end than plain RDMA on the same hardware , because cuda_ipc submission costs ~20× more per descriptor than rc_x . This is a statement about fragmented, descriptor-heavy transfers, not about the fabrics in general — with few descriptors we would expect MNNVL to win, and its post-submission movement rate is already the equal of IB's.
+ Descriptor count is not fixed by the model — it is the product of an architectural amplifier and workload-driven fragmentation. Measured below.
+ Measurements
+ GLM-5.3 (NVFP4), DEP8 prefill + TP4 decode, AgentX C64. Deltas from vLLM's NIXL Prometheus histograms over each profile window. postDuration is synchronous submission; xferDuration is posting plus asynchronous movement/completion.
+ Transport 
+ Descriptors / transfer 
+ Post mean 
+ Total mean 
+ Movement remainder 
+ Payload / remainder 
+ Post share 
+ RoCE rc_x , 1 rail 
+ 91,262 
+ 32.1 ms 
+ 517.4 ms 
+ 485.2 ms 
+ 6.45 GB/s 
+ 6.2% 
+ MNNVL cuda_ipc 
+ 112,092 
+ 455.9 ms 
+ 800.8 ms 
+ 345.0 ms 
+ 14.16 GB/s 
+ 56.9% 
+ Native IB rc_x , 4 rails 
+ 119,984 
+ 24.4 ms 
+ 350.8 ms 
+ 326.4 ms 
+ 15.11 GB/s 
+ 7.0% 
+ Amortized submission cost per descriptor: rc_x IB 0.204 µs , rc_x RoCE 0.352 µs , cuda_ipc 4.067 µs .
+ Two things to note:
+ IB posted more descriptors than MNNVL and did it 18.7× faster . The descriptor geometry was comparable , not identical (119,984 vs 112,092, within 7%), so the difference is in the submission path rather than in what was submitted.
+ Their post-submission movement rates are comparable, 15.11 vs 14.16 GB/s. The NVLink data plane is healthy once the work is issued.
+ End-to-end, matched topology, budget, cache pool, concurrency and near-identical payload:
+ Metric 
+ MNNVL cuda_ipc 
+ IB4 rc_x 
+ Change 
+ TTFT mean / p50 / p95 / p99 
+ 5.240 / 3.079 / 14.412 / 37.930 s 
+ 3.113 / 2.063 / 6.102 / 23.726 s 
+ −41% / −33% / −58% / −37% 
+ TPOT mean / p50 / p95 
+ 15.476 / 10.977 / 28.733 ms 
+ 8.752 / 7.748 / 10.745 ms 
+ −43% / −29% / −63% 
+ Output tok/s/user mean / p50 
+ 102.68 / 91.10 
+ 136.77 / 129.06 
+ +33% / +42% 
+ Decode output TPS 
+ 1,444 
+ 2,093 
+ +45% 
+ We separately measured the same swap on a 6-decoder deployment: moving NIXL from RoCE onto MNNVL cut per-transfer wall time roughly in half and still made TTFT and ITL worse end to end, at both C48 and C64.
+ The sensitivity is granularity, not bandwidth
+ A direct PyTorch device-to-device peer-copy microbenchmark between two GB200s on the same NVLink fabric — torch.Tensor.copy_ on peer tensors, no NIXL or UCX involved — same total bytes, varying only how the copy is split:
+ Transfer shape 
+ Copies 
+ Rate 
+ Per-copy 
+ One contiguous 4.29 GB 
+ 1 
+ 778.6 GB/s 
+ — 
+ 45 KiB chunks 
+ 93,206 
+ 2.4 GB/s 
+ 19.31 µs 
+ 180 KiB chunks 
+ 23,301 
+ 9.5 GB/s 
+ 19.36 µs 
+ 1 MiB chunks 
+ 4,096 
+ 53.1 GB/s 
+ 19.74 µs 
+ 16 MiB chunks 
+ 256 
+ 416.8 GB/s 
+ 40.25 µs 
+ 256 MiB chunks 
+ 16 
+ 740.9 GB/s 
+ 362.31 µs 
+ Per-copy cost is flat from 45 KiB to 1 MiB and only becomes bandwidth-bound above ~16 MiB. At 45 KB granularity NVLink delivers 0.3% of what it does contiguously. Note this measures per-operation cost on the CUDA copy path, so the absolute 19.3 µs is not UCX's submission cost (measured separately above at 4.067 µs per descriptor); it is included to show that fine granularity, not fabric bandwidth, is what NVLink is sensitive to. An RDMA NIC is far more tolerant of the same shape: with these identical descriptors, RoCE sustained 43 GB/s, 86% of a 400 Gb/s link, because the NIC pipelines scatter-gather in hardware.
+ Where the descriptor count comes from (measured)
+ register_kv_caches creates one NIXL region per distinct KV allocation. With a layer-outermost KV layout each layer owns its own allocation, so this model registers 101 regions :
+ Registered KV caches: num_groups=1, num_segments=101, num_blocks=20307
+ Descriptors are coalesced spans, so a request whose blocks are contiguous needs only one descriptor per region. We measured the scaling directly on an otherwise idle deployment, reading vllm:nixl_num_descriptors_sum / vllm:nixl_xfer_time_seconds_count deltas:
+ Condition 
+ Prompt tokens 
+ Payload / rank-transfer 
+ Descriptors / rank-transfer 
+ Idle pool, 2 sequential requests 
+ 10.3k 
+ 502 MB 
+ 101 
+ Idle pool, 2 sequential requests 
+ 41.1k 
+ 1,990 MB 
+ 101 
+ Concurrency 12, unique prompts 
+ ~30.8k 
+ 1,492 MB 
+ 168 
+ AgentX C64 agentic load 
+ ~90k, 88–92% prefix hit 
+ 4.9 GB 
+ 112,092 
+ Two things follow:
+ Context length alone does not drive it. Quadrupling the prompt from 10.3k to 41.1k tokens quadrupled the payload and left the descriptor count at exactly 101 — one per region, because freshly allocated blocks are contiguous and coalesce.
+ Block-pool fragmentation drives it, and 101 amplifies it. Every non-contiguous run in a request's block list costs one descriptor per region . Under agentic load — long contexts assembled largely from prefix-cache hits scattered across the pool from many earlier requests — the block list is highly fragmented and the count rises three orders of magnitude.
+ So the architecture sets the multiplier (101 regions, from 78 layers of MLA plus the DSA indexer) and the workload sets how many spans that multiplier is applied to. Long-context, high-prefix-reuse serving is the worst case, and it is exactly the case P/D disaggregation exists for.
+ Candidate directions
+ We are not attached to any particular one; the problem is the descriptor count.
+ Packed region registration — removes the 101× amplifier. vLLM already has _register_packed_kv_cache , which registers the whole cache as one region with one descriptor per block. It fires only when every layer view shares one backing storage, which needs a block-outermost KV layout. With one region, even a fully fragmented request costs one descriptor per block rather than 101, taking our worst case from ~112,000 to roughly 1,100 — a ~100× reduction that does not depend on fixing fragmentation. Applying the measured submission costs, cuda_ipc posting would fall from 455.9 ms to roughly 4.5 ms. We could not test this: VLLM_KV_CACHE_LAYOUT=BLHNC asserts at engine init for sparse MLA, filed separately as [Bug]: VLLM_KV_CACHE_LAYOUT=BLHNC asserts in MLAAttention.bind_kv_cache for DeepSeek-V3.2 sparse MLA #55431 .
+ Reduce fragmentation, or coalesce better. Coalescing clearly already happens (101 at idle proves it). Allocation policy that keeps a sequence's blocks contiguous, or a smarter merge when assembling prefix-cache-matched block lists, attacks the other factor. Related work appears on the feat/nixl-per-region-geometry branch.
+ Investigate the cuda_ipc submission path with NIXL/UCX. 4.067 µs per descriptor against 0.204 µs for rc_x , with comparable movement afterwards, suggests per-span submission rather than batched.
+ Things we ruled out, to save others the time:
+ --block-size is already 64, and the DEEPSEEK_V32_INDEXER backend pins it there.
+ A CUDA 13 rebuild is not the answer. We diffed the nixl_cu12 and nixl_cu13 UCX builds shipped inside nixl 1.3.2: their cuda_ipc symbol sets are identical (21 symbols, zero diff), both exporting uct_cuda_ipc_ep_get_zcopy and uct_cuda_ipc_iface_get_max_get_zcopy .
+ Documentation note
+ docs/features/nixl_connector_usage.md recommends --enable-cumem-allocator + UCX_CUDA_IPC_ENABLE_MNNVL=y + cuda_ipc in UCX_TLS for GB-series GPUs. Until descriptor counts come down, that configuration is slower end to end than leaving cuda_ipc out, which is worth a caveat. NVIDIA's own GB200 vLLM recipe sets UCX_TLS: '^cuda_ipc' .
+ Your current environment
+ vLLM 
+ 0.28.0+cu129 (transport measurements); 0.28.1rc1.dev388+g8a728663c (layout attempt) 
+ Model 
+ DeepSeek-V3.2-architecture MoE (GLM-5.3, NVFP4), 78 layers, kv_lora_rank 512, qk_rope_head_dim 64, index_head_dim 128 
+ Backends 
+ DEEPSEEK_V32_INDEXER , FLASHINFER_MLA_SPARSE 
+ KV registration 
+ num_groups=1, num_segments=101, num_blocks=20307 , block size 64 
+ Hardware 
+ NVIDIA GB200 (aarch64), NVL72; 4 IB rails + RoCE 
+ Serving 
+ P/D disaggregation, NixlConnector pull, TP4 decode, nixl 1.3.2 
+ Percentile caveats: NIXL latency percentiles are Prometheus histogram estimates with a 5 s top finite bucket; the descriptor histogram tops out at 50,000 while observed means are 91k–120k, so only descriptor means are valid. Metrics are per TP-rank transfer, and a TP4 decode request waits on the slowest of four.
+ Related
+ [Bug]: VLLM_KV_CACHE_LAYOUT=BLHNC asserts in MLAAttention.bind_kv_cache for DeepSeek-V3.2 sparse MLA #55431 — VLLM_KV_CACHE_LAYOUT=BLHNC asserts for sparse MLA. Blocks direction 1 above.
+ [RFC]: Cutting P/D-disaggregation TTFT: first-token seeding, fast KV side channels, and concurrent router dispatch (NixlConnector) #50913 — P/D TTFT RFC touching NIXL descriptor overhead; its --block-size 16→64 advice does not apply here.
+ [Bug]: pd disaggregation on the same host with nixl connector can not use nvlink to transfer kv cache #34054 / [bugfix] fix nvlink for nixl/ucx #36475 — same descriptor signature, different cause (CUDA context so UCX could select NVLink). MNNVL is already active for us.
+ [RFC]: Standardize KV-cache Layouts #42082 — Standardize KV-cache Layouts. [Bug]: NixlConnector rejects packed hybrid KV cache after HMA rewrites block size #50714 / [Bugfix][NIXL] Preserve block geometry for packed MLA caches #50717 — packed cache, num_regions=1 .
+ Before submitting a new issue...
+ I searched existing issues and did not find this specific report.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ glm kv-connector 
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

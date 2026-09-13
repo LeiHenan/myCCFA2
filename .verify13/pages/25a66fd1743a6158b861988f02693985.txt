@@ -1,0 +1,156 @@
+
+ Revert "[Mamba] enable prefix cache by default" (#50991) by vllm-agent · Pull Request #51098 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu Sign in Appearance settings Platform AI CODE CREATION GitHub Copilot Write better code with AI GitHub Copilot app Direct agents from issue to merge MCP Registry Integrate external tools DEVELOPER WORKFLOWS Actions Automate any workflow Codespaces Instant dev environments Issues Plan and track work Code Review Manage code changes Code Quality Enforce quality at merge APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities Code security Secure your code as you build Secret protection Stop leaks before they start EXPLORE Why GitHub Documentation Blog Changelog Marketplace View all features Solutions BY COMPANY SIZE Enterprises Small and medium teams Startups Nonprofits BY USE CASE App Modernization DevSecOps DevOps CI/CD View all use cases BY INDUSTRY Healthcare Financial services Manufacturing Government View all industries View all solutions Resources EXPLORE BY TOPIC AI Software Development DevOps Security View all topics EXPLORE BY TYPE Customer stories Events & webinars Ebooks & reports Business insights GitHub Skills SUPPORT & SERVICES Documentation Customer support Community forum Trust center Partners View all resources Open Source COMMUNITY GitHub Sponsors Fund open source developers PROGRAMS Security Lab Maintainer Community GitHub Stars Archive Program REPOSITORIES Topics Trending Collections Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features Copilot for Business Enterprise-grade AI features Premium Support Enterprise-grade 24/7 support Pricing Search / Sign in Sign up Appearance settings 
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }} 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ Revert "[Mamba] enable prefix cache by default" (#50991) - # 51098 # 51098 Closed vllm-agent wants to merge 1 commit into vllm-project:main vllm-project/vllm:main from vllm-agent:auto-revert/pr-50991 vllm-agent/vllm:auto-revert/pr-50991 Copy head branch name to clipboard Conversation Commits 1 ( 1 ) Checks Files changed Closed Revert "[Mamba] enable prefix cache by default" (#50991) # 51098 vllm-agent wants to merge 1 commit into vllm-project:main vllm-project/vllm:main from vllm-agent:auto-revert/pr-50991 vllm-agent/vllm:auto-revert/pr-50991 Copy head branch name to clipboard Conversation 
+ vllm-agent 
+ commented
+ Aug 5, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Purpose 
+ Auto-revert of #50991 ("[Mamba] enable prefix cache by default", commit f9c74b4 ). 
+ Nightly CI build #82382 (commit 05b7876 ) has 3 newly failing jobs that all trace to this PR. All three passed at the previous analyzed nightly (#82083). 
+ Failures linked to this PR 
+ Job 
+ Failure 
+ Language Models Test (PPL) 
+ test_qwen.py::test_ppl[model_info2] ( Qwen/Qwen3.5-0.8B ) — ValidationError: Chunked prefill is required for mamba cache mode 'align' 
+ Quantization 
+ test_experts_int8.py::test_model_experts_int8_startup[4-bfloat16-ai21labs/Jamba-tiny-random] — same ValidationError 
+ Extract Hidden States Integration 
+ test_extract_hidden_states_qwen35_hybrid_smoke — AssertionError: Each KV cache group's real block_size must be divisible by hash_block_size. block_sizes=[544, 544, 544, 544, 181], hash_block_size=98464 in HybridKVCacheCoordinator.__init__ 
+ Root cause 
+ The PR removed the and not model_config.is_hybrid guard in 
+ _set_default_chunked_prefill_and_prefix_caching_args ( vllm/engine/arg_utils.py ), so prefix caching now 
+defaults to on for hybrid/Mamba models, and vllm/model_executor/models/config.py now unconditionally 
+defaults mamba_cache_mode to "align" instead of "all" . 
+ Two consequences: 
+ "align" mode asserts scheduler_config.enable_chunked_prefill . Any hybrid-model configuration that 
+explicitly passes enable_chunked_prefill=False — previously valid, since prefix caching was off — now 
+fails hard at VllmConfig validation. This is user-facing, not test-only: the two failing jobs above 
+simply exercise that configuration. Logs confirm the new default firing: 
+ config.py:599 Mamba cache mode is set to 'align' for Qwen3_5ForConditionalGeneration by default when prefix caching is enabled . 
+ Turning prefix caching on by default routes hybrid models through HybridKVCacheCoordinator , which then 
+trips its own block-size divisibility assertion — a pre-existing defect that was unreachable while the 
+feature stayed opt-in. 
+ The PR updated tests/models/language/generation/test_hybrid.py to pass enable_chunked_prefill=True , but 
+other suites and real user configs were not covered. 
+ Reverting restores the opt-in default. It touches only the 4 files the original PR touched and is an exact 
+inverse of f9c74b4 (no conflicts, no manual resolution). 
+ Opened as a draft so the author can instead land a forward fix if preferred. 
+ Auto-generated by CI failure analyzer. 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ --> 
+ All reactions 
+ Revert "[Mamba] enable prefix cache by default" ( vllm-project#50991 ) 
+ …
+ 60feee4 
+ This reverts commit f9c74b4 . 
+ noooop 
+ closed this
+ Aug 5, 2026 
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ tdoublep 
+ Awaiting requested review from tdoublep 
+ tdoublep will be requested when the pull request is marked ready for review 
+ tdoublep is a code owner 
+ tomeras91 
+ Awaiting requested review from tomeras91 
+ tomeras91 will be requested when the pull request is marked ready for review 
+ tomeras91 is a code owner 
+ hmellor 
+ Awaiting requested review from hmellor 
+ hmellor will be requested when the pull request is marked ready for review 
+ hmellor is a code owner 
+ heheda12345 
+ Awaiting requested review from heheda12345 
+ heheda12345 will be requested when the pull request is marked ready for review 
+ heheda12345 is a code owner 
+ ivanium 
+ Awaiting requested review from ivanium 
+ ivanium will be requested when the pull request is marked ready for review 
+ ivanium is a code owner 
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ None yet
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues. 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ 2 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer 
+ © 2026 GitHub, Inc.
+ Footer navigation 
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

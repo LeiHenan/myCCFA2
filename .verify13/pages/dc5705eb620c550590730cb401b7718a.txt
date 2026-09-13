@@ -1,0 +1,116 @@
+
+ [RFC] Tail-Optimized LRU (T-LRU): Reducing Tail Latency via Conversation-Aware KV Cache Eviction · Issue #37823 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu Sign in Appearance settings Platform AI CODE CREATION GitHub Copilot Write better code with AI GitHub Copilot app Direct agents from issue to merge MCP Registry Integrate external tools DEVELOPER WORKFLOWS Actions Automate any workflow Codespaces Instant dev environments Issues Plan and track work Code Review Manage code changes Code Quality Enforce quality at merge APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities Code security Secure your code as you build Secret protection Stop leaks before they start EXPLORE Why GitHub Documentation Blog Changelog Marketplace View all features Solutions BY COMPANY SIZE Enterprises Small and medium teams Startups Nonprofits BY USE CASE App Modernization DevSecOps DevOps CI/CD View all use cases BY INDUSTRY Healthcare Financial services Manufacturing Government View all industries View all solutions Resources EXPLORE BY TOPIC AI Software Development DevOps Security View all topics EXPLORE BY TYPE Customer stories Events & webinars Ebooks & reports Business insights GitHub Skills SUPPORT & SERVICES Documentation Customer support Community forum Trust center Partners View all resources Open Source COMMUNITY GitHub Sponsors Fund open source developers PROGRAMS Security Lab Maintainer Community GitHub Stars Archive Program REPOSITORIES Topics Trending Collections Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features Copilot for Business Enterprise-grade AI features Premium Support Enterprise-grade 24/7 support Pricing Search / Sign in Sign up Appearance settings 
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }} 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [RFC] Tail-Optimized LRU (T-LRU): Reducing Tail Latency via Conversation-Aware KV Cache Eviction #37823 New issue Copy link New issue Copy link Closed as not planned Closed as not planned [RFC] Tail-Optimized LRU (T-LRU): Reducing Tail Latency via Conversation-Aware KV Cache Eviction #37823 Copy link Labels RFC stale Over 90 days of inactivity Over 90 days of inactivity Description wenxinzhang0 opened on Mar 22, 2026 Issue body actions Motivation. 
+ Summary 
+ We propose Tail-Optimized LRU (T-LRU) , a lightweight modification to vLLM's existing LRU prefix-cache eviction policy that reduces P95 tail Time-to-First-Token (TTFT) by up to 27.4% on real conversation workloads, with no overhead during normal (cache-hit) operation and no change to API surface. 
+ The idea and full analysis appear in our paper: 
+ Tail-Optimized Caching for LLM Inference 
+Wenxin Zhang, Yueying Li, Ciamac C. Moallemi, Tianyi Peng 
+ NeurIPS 2025. arXiv: https://arxiv.org/abs/2510.15152 
+ Motivation 
+ vLLM's current eviction policy is LRU. LRU maximizes cache-hit rate but is conversation-length blind : it treats a block from a 5-turn, 10 000-token conversation identically to a block from a 1-turn, 100-token conversation. This creates an avoidable source of tail latency. 
+ Key Insight 
+ T-LRU is not “keep everything from long conversations.” It asks a narrower question: 
+ How much of this conversation’s prefix do we need to keep so that the next turn still meets the TTFT target? 
+ Suppose a conversation has H cached history blocks, the next turn is estimated to add Q_hat blocks, and the TTFT budget is xi blocks of uncached prefill work. If c history blocks remain cached, the next turn must recompute (H - c) + Q_hat blocks. To stay within budget, we need: 
+ (H - c) + Q_hat <= xi 
+which means we should keep at least B = max(0, H + Q_hat - xi) cached history blocks. So B is the minimum prefix worth protecting: 
+ the first B blocks are TEL-unsafe: evicting them can push the next turn over the TTFT target; 
+ the remaining H - B blocks are TEL-safe: evicting them does not further hurt next-turn tail latency. 
+ For example, if xi = 16, H = 20 , and Q_hat = 2 , then B = 6 . In this case, only the first 6 prefix blocks need to be protected; the remaining 14 blocks can be evicted first without changing whether the next turn meets the TTFT target. 
+ Proposed Change. 
+ Algorithm 
+ T-LRU is a two-queue extension of LRU. When a request completes and its blocks are freed: 
+ Compute B = max(0, H + Q_hat - xi) for the request. 
+ The last H - B blocks (suffix/tail) are TEL-safe -> append to tel_safe_queue. 
+ The first B blocks (prefix/head) are TEL-unsafe -> append to the existing LRU free queue as before. 
+When new blocks are needed: 
+ Drain tel_safe_queue first . 
+ Fall back to the normal LRU queue for any remaining demand. 
+ xi and Q_hat are tunable parameters exposed as CLI flags: 
+ vllm serve < model > --enable-prefix-caching --tlru-xi-tokens 4096 --tlru-qhat-tokens 200 
+ Implementation 
+ All changes are confined to the v1 KV cache stack. No changes to the scheduler, attention kernels, or serving API. 
+ vllm/v1/core/kv_cache_utils.py : Added is_tel_safe: bool = False field to KVCacheBlock 
+ vllm/v1/core/block_pool.py : Added tel_safe_queue , free_blocks_tlru() , modified get_new_blocks() 
+ vllm/v1/core/single_type_kv_cache_manager.py : free() routes to free_blocks_tlru() when T-LRU is enabled 
+ vllm/v1/core/kv_cache_coordinator.py : Forwards params to BlockPool 
+ tests/v1/core/test_tlru_eviction.py : 15 unit tests 
+ Experimental Results (WildChat dataset) 
+ T-LRU reduces P95 TTFT by up to 27.4% vs LRU and closes 25-79% of the gap to the clairvoyant offline optimum. Results on ShareGPT are consistent. 
+ Feedback Period. 
+ At least one week. 
+ CC List. 
+ No response 
+ Any Other Things. 
+ Design Decisions & Open Questions 
+ Default for Q_hat (tlru-qhat-tokens) : We default to 200 tokens. 
+ tel_safe_queue vs FreeKVCacheBlockQueue pointer : The current separate-deque approach is simpler. 
+ Interaction with prefix caching : TEL-safe blocks are evicted before LRU pool blocks, which is intentional. 
+ How to Try It 
+ # Branch: feature/tlru-eviction-policy on github.com/wenxinzhang0/vllm 
+vllm serve meta-llama/Llama-3-8B \
+ --enable-prefix-caching \
+ --tlru-xi-tokens 4096 \
+ --tlru-qhat-tokens 200 
+ References 
+ Zhang, Li, Moallemi, Peng. Tail-Optimized Caching for LLM Inference. NeurIPS 2025. https://arxiv.org/abs/2510.15152 
+ Kwon et al. Efficient Memory Management for Large Language Model Serving with PagedAttention. SOSP 2023. 
+ vLLM Prefix Caching documentation: https://docs.vllm.ai/en/stable/design/prefix_caching/ 
+ Before submitting a new issue... 
+ Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page , which can answer lots of frequently asked questions. 
+ Reactions are currently unavailable Activity Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment Metadata Metadata Assignees No one assigned Labels RFC stale Over 90 days of inactivity Over 90 days of inactivity Type No type Projects No projects Milestone No milestone Relationships None yet Development No branches or pull requests Issue actions Open in GitHub Copilot app 
+ Footer 
+ © 2026 GitHub, Inc.
+ Footer navigation 
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

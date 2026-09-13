@@ -1,0 +1,189 @@
+
+ [RFC]: [Tracking] Heterogeneous-TP KV sharing in Mooncake Store Connector · Issue #55598 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [RFC]: [Tracking] Heterogeneous-TP KV sharing in Mooncake Store Connector #55598 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Open 
+ Open 
+ [RFC]: [Tracking] Heterogeneous-TP KV sharing in Mooncake Store Connector #55598 
+ Copy link 
+ Description
+ z-zanez 
+ opened on Sep 6, 2026 
+ Issue body actions 
+ Motivation
+ Mooncake Store originally tied object keys and payload layout to the local TP
+rank. Two vLLM instances using the same model but different TP sizes therefore
+produced different shard counts, KV-head ranges, and namespaces and could not
+reuse each other's persisted KV cache.
+ The long-term goal is a stable Store representation that is independent of an
+endpoint's local TP layout. Compatible Prefill and Decode instances should be
+able to load and extend the same prefix through one Store pool, including
+Decode writeback and deployments with more than one Prefill TP size.
+ This issue tracks heterogeneous-TP sharing in MooncakeStoreConnector , from
+Full Attention to hybrid Attention + Mamba/GDN caches.
+ Progress
+ [KV Connector] Add decode offloading to Mooncake Store consumers #52466 adds Decode-side Store writeback, which is required for a Decode
+instance to extend a prefix in the shared Store namespace.
+ [KV Connector] Support heterogeneous TP sharing in Mooncake Store Connector #53129 adds a common Store TP layout for Full Attention. Local TP ranks
+map to stable Store shards, allowing supported TP4/TP2/TP1 instances and
+multiple Prefill TP sizes to reuse and update the same Store entries.
+ [KV Connector] Support heterogeneous TP sharing for hybrid KV cache in Mooncake Store #54307 extends the Store representation to unified hybrid KV caches.
+Attention uses TP-independent Store chunks, while Mamba/GDN uses complete
+recurrent-state checkpoints.
+ Proposed approach and currently supported Store sharing model
+ All endpoints select the same stable Store TP size and PP size.
+ Store TP is at least the local TP size and divisible by it.
+ Attention head slots map integrally to Store shards; MQA and replicated GQA
+use replication-aware mappings.
+ A common Store TP can be selected for several Prefill TP sizes, allowing one
+Decode service to reuse entries produced by different Prefill deployments.
+ Unsupported configurations fall back to the existing rank-local namespace
+instead of sharing Store objects.
+ Planned follow-ups
+ Land and stabilize hybrid Attention + Mamba/GDN Store sharing in [KV Connector] Support heterogeneous TP sharing for hybrid KV cache in Mooncake Store #54307 .
+ Design a finer canonical Store-shard representation for useful
+non-divisible TP combinations where Store TP % local TP != 0 .
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

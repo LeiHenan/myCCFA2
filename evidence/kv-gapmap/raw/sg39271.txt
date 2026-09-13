@@ -1,0 +1,407 @@
+
+ [Bug] DP scheduler rank can permanently stop processing requests after a near-KV-capacity request is cancelled · Issue #39271 · sgl-project/sglang · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ sgl-project
+ / 
+ sglang 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 8.8k 
+ Star
+ 35.9k 
+ Code 
+ Issues 
+ 890 
+ Pull requests 
+ 4.4k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ [Bug] DP scheduler rank can permanently stop processing requests after a near-KV-capacity request is cancelled #39271 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Open 
+ #39272 
+ Open 
+ [Bug] DP scheduler rank can permanently stop processing requests after a near-KV-capacity request is cancelled #39271 
+ #39272 
+ Copy link 
+ Description
+ Constantine3 
+ opened on Sep 13, 2026 
+ Issue body actions 
+ Checklist
+ I searched related issues but found no solution.
+ The bug persists in the latest version.
+ Issues without environment info and a minimal reproducible demo are hard to resolve and may receive no feedback.
+ If this is not a bug report but a general question, please start a discussion at https://github.com/sgl-project/sglang/discussions . Otherwise, it will be closed.
+ Please use English. Otherwise, it will be closed.
+ Describe the bug
+ A request whose input length is close to the KV cache capacity can pass request validation but can never be admitted by PrefillAdder .
+ This can permanently block the affected scheduler rank after the request is cancelled. The problem is in CPU-side scheduler admission and state management, so it can be reproduced without a GPU or model execution.
+ The production configuration that originally exposed the problem had:
+ KV capacity per DP rank: 190,784 tokens
+ Page size: 64
+ Advertised maximum input threshold: 190,778 tokens
+ Stable triggering input range: 190,720–190,777 tokens
+ For these requests, init_req_max_new_tokens() clips max_new_tokens to zero. However, PrefillAdder additionally reserves one allocator page and requires:
+ input_length + max_new_tokens + page_size < available_kv_tokens 
+ For an input length of 190,720:
+ 190720 + 0 + 64 >= 190784 
+ The request therefore returns NO_TOKEN and is not added to PrefillAdder.can_run_list , even though it passed the public input-length validation.
+ The scheduler then persists running_batch.batch_is_full=True . On later scheduling iterations, _get_new_batch_prefill_raw() checks this flag before traversing the waiting queue and returns early.
+ After the problematic request is cancelled:
+ the waiting request is removed,
+ the running batch is empty,
+ KV usage is zero,
+ but batch_is_full remains True . A short follow-up request routed to the same scheduler rank is never considered, and subsequent requests remain queued indefinitely.
+ Restarting the server is the only observed recovery method.
+ Expected behavior:
+ Requests that can never satisfy PrefillAdder admission should be rejected at request intake.
+ batch_is_full should be invalidated after the running batch becomes empty.
+ Cancelling one request must not permanently block future requests on that scheduler rank.
+ Reproduction
+ The following state-level reproduction uses the real SGLang request validation, PrefillAdder , and scheduler prefill loop. It does not require a GPU or model weights.
+ Checkout the affected revision:
+ git checkout ec5fba577
+ Create an isolated CPU test environment with uv :
+ uv venv --python /usr/bin/python3.12 .venv
+uv pip install --python .venv/bin/python \
+ torch==2.13.0 \
+ torchvision==0.28.0 \
+ numpy \
+ psutil \
+ packaging \
+ requests \
+ pyzmq \
+ setproctitle \
+ msgspec \
+ orjson \
+ fastapi \
+ uvicorn \
+ uvloop \
+ pydantic \
+ python-multipart \
+ aiohttp \
+ anthropic \
+ openai==2.6.1 \
+ tiktoken \
+ pillow \
+ transformers==5.12.1 \
+ tokenizers==0.22.2 \
+ huggingface-hub \
+ interegular \
+ partial-json-parser \
+ sentencepiece \
+ scipy \
+ einops \
+ tqdm \
+ xxhash \
+ zstandard \
+ pybase64 \
+ prometheus-client \
+ IPython \
+ dill \
+ compressed-tensors==0.18.0 \
+ gguf \
+ xgrammar==0.2.1 \
+ setuptools-scm \
+ setuptools-rust \
+ wheel
+SGLANG_BUILD_RUST_EXTS=none uv pip install \
+ --python .venv/bin/python \
+ --no-deps \
+ --no-build-isolation \
+ --editable ./python
+ Save the following as repro_dp_hang_cpu.py :
+ from types import SimpleNamespace 
+ from unittest . mock import MagicMock , patch 
+ from sglang . srt . managers . schedule_batch import Req 
+ from sglang . srt . managers . schedule_policy import AddReqResult , PrefillAdder 
+ from sglang . srt . managers . scheduler import Scheduler 
+ from sglang . srt . managers . utils import validate_input_length 
+ from sglang . srt . mem_cache . base_prefix_cache import (
+ DecLockRefResult ,
+ IncLockRefResult ,
+)
+ capacity = 190_784 
+ page_size = 64 
+ input_len = 190_720 
+ # get_worker_info() previously advertised max_req_len - 5. 
+ public_threshold = capacity - 6 
+ req = MagicMock ( spec = Req )
+ req . rid = "near-capacity" 
+ req . origin_input_ids = list ( range ( input_len ))
+ req . full_untruncated_fill_ids = list ( range ( input_len ))
+ req . prefix_indices = []
+ req . output_ids = []
+ req . sampling_params = SimpleNamespace (
+ max_new_tokens = 0 ,
+ ignore_eos = False ,
+)
+ req . retracted_stain = False 
+ req . host_hit_length = 0 
+ req . storage_hit_length = 0 
+ req . storage_hit_start = None 
+ req . host_hit_is_storage = False 
+ req . host_loaded_length = 0 
+ req . last_node = MagicMock ()
+ req . needs_host_load_back . return_value = False 
+ validation_error = validate_input_length (
+ req ,
+ public_threshold ,
+ allow_auto_truncate = False ,
+)
+ tree_cache = MagicMock ()
+ tree_cache . disable = False 
+ tree_cache . supports_mamba . return_value = False 
+ tree_cache . evictable_size . return_value = 0 
+ tree_cache . full_evictable_size . return_value = 0 
+ tree_cache . inc_lock_ref . return_value = IncLockRefResult ()
+ tree_cache . dec_lock_ref . return_value = DecLockRefResult ()
+ allocator = MagicMock ()
+ allocator . available_size . return_value = capacity 
+ running_for_adder = MagicMock ()
+ running_for_adder . reqs = []
+ adder = PrefillAdder (
+ page_size = page_size ,
+ tree_cache = tree_cache ,
+ token_to_kv_pool_allocator = allocator ,
+ running_batch = running_for_adder ,
+ new_token_ratio = 1.0 ,
+ rem_input_tokens = capacity ,
+ rem_chunk_tokens = None ,
+)
+ result = adder . add_one_req (
+ req ,
+ has_chunked_req = False ,
+ truncation_align_size = None ,
+)
+ # Reproduce the state after NO_TOKEN, cancellation of the long request, 
+ # and arrival of a short follow-up request. 
+ scheduler = object . __new__ ( Scheduler )
+ scheduler . grammar_manager = SimpleNamespace (
+ has_waiting_grammars = lambda : False 
+)
+ scheduler . enable_hierarchical_cache = False 
+ scheduler . enable_unified_cache_external_linker = False 
+ scheduler . enable_priority_preemption = False 
+ scheduler . is_hybrid_swa = False 
+ scheduler . chunked_req = None 
+ scheduler . waiting_queue = [
+ SimpleNamespace ( rid = "short-follow-up" ),
+]
+ empty_running_batch = SimpleNamespace (
+ batch_is_full = ( result == AddReqResult . NO_TOKEN ),
+ is_empty = lambda : True ,
+)
+ with patch (
+ "sglang.srt.managers.scheduler.get_memory" ,
+ return_value = SimpleNamespace ( enable_flexkv = False ),
+):
+ batch_to_run , _ = Scheduler . _get_new_batch_prefill_raw (
+ scheduler ,
+ None ,
+ empty_running_batch ,
+ )
+ print ( f"public_threshold= { public_threshold } " )
+ print (
+ "input_validation=" 
+ f" { 'accepted' if validation_error is None else 'rejected' } " 
+)
+ print ( f"prefill_result= { result . name } " )
+ print ( f"request_admitted= { req in adder . can_run_list } " )
+ print ( f"follow_up_scheduled= { batch_to_run is not None } " )
+ print (
+ "batch_is_full_after_empty_iteration=" 
+ f" { empty_running_batch . batch_is_full } " 
+)
+ assert validation_error is None 
+ assert result == AddReqResult . NO_TOKEN 
+ assert req not in adder . can_run_list 
+ assert batch_to_run is None 
+ assert empty_running_batch . batch_is_full 
+ print ( "BUG_REPRODUCED" )
+ Run it:
+ .venv/bin/python repro_dp_hang_cpu.py
+ Output on main@ec5fba577 :
+ public_threshold=190778
+input_validation=accepted
+prefill_result=NO_TOKEN
+request_admitted=False
+follow_up_scheduled=False
+batch_is_full_after_empty_iteration=True
+BUG_REPRODUCED
+ A sweep of the original triggering interval produced the same admission mismatch for all 58 input lengths from 190,720 through 190,777.
+ For comparison, the proposed fix changes the effective threshold to 190,720 and clears the stale state after the running batch becomes empty:
+ public_threshold=190720
+input_validation=rejected
+prefill_result=NO_TOKEN
+request_admitted=False
+batch_is_full_after_empty_iteration=False
+FIX_CONFIRMED
+ The relevant unit tests also pass in the same CPU-only environment:
+ 43 passed, 17 warnings, 558 subtests passed
+ This state-level reproduction does not load or execute any model. It directly exercises the CPU-side scheduler admission and stale-state logic using mocked KV/cache objects.
+ Environment
+ The reproduction was performed in a uv virtual environment on a CPU-only KVM machine.
+ torch.cuda.is_available() returned False .
+ Output from python3 -m sglang.check_env on the affected revision:
+ Python: 3.12.3 (main, Jan 22 2026, 20:57:42) [GCC 13.3.0]
+CUDA available: False
+PyTorch: 2.13.0+cu130
+sglang: 0.0.0.dev18171+gec5fba577
+sglang-kernel: Module Not Found
+flashinfer_python: Module Not Found
+flashinfer_cubin: Module Not Found
+flashinfer_jit_cache: Module Not Found
+triton: 3.7.1
+transformers: 5.12.1
+torchao: Module Not Found
+numpy: 2.5.3
+aiohttp: 3.14.3
+fastapi: 0.141.1
+huggingface_hub: 1.31.0
+interegular: 0.3.3
+modelscope: Module Not Found
+orjson: 3.12.0
+outlines: Module Not Found
+packaging: 26.3
+psutil: 7.2.2
+pydantic: 2.13.5
+python-multipart: 0.0.32
+pyzmq: 27.2.0
+uvicorn: 0.52.4
+uvloop: 0.22.1
+vllm: Module Not Found
+xgrammar: 0.2.1
+openai: 2.6.1
+tiktoken: 0.14.0
+anthropic: 1.5.0
+litellm: Module Not Found
+torchcodec: Module Not Found
+Hypervisor vendor:: KVM
+ulimit soft: 1024
+ The CUDA-tagged PyTorch wheel reports CUDA available: False ; no GPU, CUDA kernel, SGLang kernel, FlashInfer installation, or model weights were used by the reproduction.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

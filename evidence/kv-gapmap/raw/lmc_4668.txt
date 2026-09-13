@@ -1,0 +1,243 @@
+
+ [CacheBlend] [medium investigation] Cross-pod sibling reuse - does a cold engine reuse a peer's warm blend cache on novel orderings? (measured by timing vs cold) · Issue #4668 · LMCache/LMCache · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ LMCache
+ / 
+ LMCache 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 1.9k 
+ Star
+ 11.8k 
+ Code 
+ Issues 
+ 211 
+ Pull requests 
+ 480 
+ Discussions 
+ Actions 
+ Projects 
+ Wiki 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Wiki
+ Security and quality
+ Insights
+ [CacheBlend] [medium investigation] Cross-pod sibling reuse - does a cold engine reuse a peer's warm blend cache on novel orderings? (measured by timing vs cold) #4668 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Closed as not planned 
+ Closed as not planned 
+ [CacheBlend] [medium investigation] Cross-pod sibling reuse - does a cold engine reuse a peer's warm blend cache on novel orderings? (measured by timing vs cold) #4668 
+ Copy link 
+ Description
+ shawnguyen-tensormesh 
+ opened on Aug 20, 2026 
+ Issue body actions 
+ [CacheBlend] [medium investigation] Cross-pod sibling reuse - does a cold engine reuse a peer's warm blend cache on novel orderings? (measured by timing vs cold)
+ Date: 2026-08-20
+ Verdict: CONFIRMED - cross-pod reuse works, but it is transient. A cold engine B genuinely reuses engine A's warm blend cache on novel orderings (2.21× vs cold on the first batch), then decays to the cold floor within one batch (same store-flood mechanism as the decay ticket).
+ Confidence: High (MEASURED live, two engines sharing one blend server, timing vs a true-cold baseline; CODE-VERIFIED that the store + matcher are shared server-side).
+ Severity: Medium (investigation → answered). The capability is real (elastic scale-out can share one warm cache) but inherits the non-prefix decay, so the shared benefit is a burst, not steady-state.
+ Problem at a glance
+ flowchart LR
+ A["engine A"] -->|warm corpus| BS["shared blend server: warm KV plus matcher"]
+ B["engine B: never warmed"] -->|novel-order query| BS
+ BS -->|content-addressed hit| B
+ B --> R["batch 0: 2.21x vs cold"]
+ R --> DEC["B own stores flood shared L1: decays to ~1x by batch 1"]
+ Loading 
+ 1. Versioning
+ Component 
+ Value 
+ LMCache 
+ commit 9fc6e1af ( v0.5.3-cu129-12-g9fc6e1af ) 
+ vLLM 
+ commit 436be94e ( v0.26.1rc0-557-g436be94e13 ) 
+ Image (both engines + blend server) 
+ lmcache/vllm-openai:v0.5.3 
+ Plugin 
+ cacheblend-plugin:v0.5.3 
+ Model 
+ openai/gpt-oss-20b , TP=1 each engine 
+ Hardware 
+ 2× RTX PRO 6000 Blackwell (96 GB) 
+ Cluster 
+ a dev Kubernetes cluster 
+ Topology 
+ engines A and B both annotated lmcache.ai/cacheblend-engine: <ns>/<blend-server> → one shared blend server ; max_workers=4 (≥ 2 ranks) 
+ Blend config 
+ chunk_size 256, recomp_ratio 0.15, check_layer 1 
+ 2. Issue description (plain terms)
+ The question: in a fleet where several vLLM engines share one CacheBlend server, can an engine that never warmed a document set still reuse the KV that a different engine warmed - for non-prefix (shuffled/novel-order) RAG queries? If yes, you can warm once on any engine and scale out read replicas that all benefit; if no, each engine must warm its own cache and sharing buys nothing for non-prefix reuse. This matters for elastic scale-out economics.
+ 3. How verified
+ Runtime (MEASURED)
+ Two engines A and B pointed at the same blend server. Corpus of 96 docs × 2048 tok built with a unique nonce so it was guaranteed absent from any prior cache. Procedure:
+ B-cold baseline (n=3): query engine B with fresh, never-cached docs → true cold on B.
+ Warm on A only: send the corpus (2 contiguous passes) to engine A exclusively (populates the shared blend server via A's stores).
+ Query B novel: send novel shuffled orderings of the (A-warmed) corpus to engine B , max_tokens=1 , timing vs the B-cold baseline. B never queried these docs itself, so any speedup is reuse of A's warm cache. Batch 0 is the purest cross-pod signal (before B has stored anything of its own).
+ Code (CODE-VERIFIED)
+ The raw KV store and the fingerprint matcher live in the shared blend server , not per-engine - a sibling engine's lookup probes the same index and loads the same stored chunks ( blend_v3.py matcher/index; the server process serves all connected engines). Salt/model/TP are identical across A and B, so their content hashes coincide.
+ 4. Clues / evidence - measured
+ B-cold baseline (n=3): 18,097 tok/s (18,097 / 18,098 / 18,096 - extremely tight).
+ engine-B batch (docs warmed only on A) 
+ throughput (tok/s) 
+ vs B-cold 
+ p50 (ms) 
+ 0 (first novel batch) 
+ 40,020 
+ 2.21× 
+ 692 
+ 1 
+ 18,590 
+ 1.03× 
+ 1,583 
+ 2 
+ 18,067 
+ 1.00× 
+ 1,585 
+ 3 
+ 18,061 
+ 1.00× 
+ 1,586 
+ Batch 0 = 2.21× (p50 692 ms vs cold 1583 ms), 0 failures - a cold engine B reusing engine A's warm blend cache on genuinely novel orderings. This is the definitive "yes, cross-pod reuse works" result. It then decays to ~1.0× by batch 1 - the same unbounded-store flood that erodes single-engine non-prefix reuse (each of B's own queries now stores per-ordering junk into the shared L1, evicting A's warm set).
+ Chart
+ Engine B (warmed only via engine A) speedup vs B-cold (18,097 tok/s):
+ xychart-beta
+ title "Cross-pod reuse: engine B speedup vs cold"
+ x-axis ["b0","b1","b2","b3"]
+ y-axis "x vs cold" 0 --> 2.5
+ bar [2.21, 1.03, 1.00, 1.00]
+ Loading 
+ 5. Root-cause / mechanism
+ Why it works: the blend server holds the raw KV + a content-addressed fingerprint index shared across all connected engines. Engine B's lookup finds engine A's stored chunks by content (position-independent), loads them, copies them into B's own GPU, and does the partial-recompute blend. So the warm set is genuinely shared ; the only per-engine cost is the GPU copy (a real but cheap hit).
+ Why it's transient: identical to the non-prefix decay defect - the store is unbounded and prefix-chained, so once B starts issuing its own novel queries they flood the shared L1 and evict A's warm chunks. The cross-pod benefit therefore exists as a burst on a freshly-warmed shared cache, not a steady state.
+ This also corrects a plausible false-positive: if you warm on B and then re-query B with the same seed, you'd measure B replaying its own stores (prefix reuse), not cross-pod reuse. This test avoids that - B is warmed by A only, and B's test orderings are novel - so the 2.21× is genuinely cross-engine.
+ 6. Regime (never a flat multiplier)
+ Freshly-warmed shared cache, sibling's first novel batch: ~2.2× (measured).
+ Sustained sibling novel traffic: decays to ~1.0× (same store-flood decay).
+ Net: cross-pod sharing is a real capability for a freshly-warmed or recurrence-heavy shared cache; it does not deliver sustained non-prefix reuse without the store fix.
+ 7. Caveats & the single cleanest next check
+ Measured on gpt-oss-20b, TP=1, 96-doc corpus; the burst magnitude is model/L1-dependent (a larger model / larger shared L1 would show a bigger, longer burst before decay).
+ The blend server had ~110 min of prior traffic from an earlier run; I neutralized that by using a unique-nonce corpus (guaranteed cache-absent) and a fresh-nonce cold baseline, so the contamination cannot inflate the result. A blend-server restart before the test would be marginally cleaner but was unnecessary given the nonce isolation.
+ Cleanest next check: apply the store save-skip fix (warm A, then serve B read-only) and re-run - expected result: B's batch-0 2.2× holds across all batches instead of decaying, converting cross-pod sharing from a burst into a durable elastic-scale-out property.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

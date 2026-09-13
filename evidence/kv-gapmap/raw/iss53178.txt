@@ -1,0 +1,216 @@
+
+ [RFC]: Experimental Recirculation for causal decoder models · Issue #53178 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ [RFC]: Experimental Recirculation for causal decoder models #53178 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Closed as not planned 
+ Closed as not planned 
+ [RFC]: Experimental Recirculation for causal decoder models #53178 
+ Copy link 
+ Description
+ mihir-s-05 
+ opened on Aug 21, 2026 
+ Issue body actions 
+ Motivation
+ Recirculation improves a pretrained decoder without changing weights by norm-matching a deep residual-stream activation, mixing it into an earlier residual boundary, and rerunning the upper layers. The first pass supplies the current token's logits; the rerun overwrites its upper-layer KV entries so later tokens attend to the recirculated representation.
+ This RFC proposes experimental vLLM support for that execution pattern. A working implementation is available at mihir-s-05/vllm@ e32222290 .
+ Proposed change
+ Configuration
+ Accept a validated recirculation_config through --hf-overrides :
+ {
+ "source_layer" : 11 ,
+ "destination_layer" : 4 ,
+ "alpha" : 0.15 ,
+ "beta" : null ,
+ "ramp_tokens" : 10 ,
+ "wavefront" : true 
+}
+ The parser is engine-level, validates the full grammar before deciding whether a configuration is an identity, and supports both ordinary [tokens] positions and text-token [dimensions, tokens] MRoPE positions.
+ Model capability boundary
+ The scheduler, pending recurrent-state buffer, KV-slot remapping, and CUDA-graph specialization are shared engine features. Residual-decoder implementations opt in with a capability interface and a common decoder mixin. This prevents an unreviewed model subclass from inheriting support accidentally while allowing family-specific state snapshot/restore logic.
+ The current adapters cover:
+ serial and wavefront: Gemma 3/4, Llama/Llama 4, Mistral/Mixtral, Qwen 2/3/3 MoE, GLM-4 MoE, MiniMax-M2, MiMo-V2, Step-3.5;
+ serial only: DeepSeek V2/V3/V3.2, GLM-4.7-Flash, GPT-OSS, MiniMax-M3, Qwen3-Next, and Qwen 3.5 dense/MoE.
+ DeepSeek-V4 hyperconnections, multimodal wrappers, diffusion/non-causal backbones, pipeline parallelism, and Model Runner V2 are not enabled.
+ Execution semantics
+ Serial execution runs the normal decoder stack, returns its final hidden state for logits, mixes the source and destination residuals, restores family-specific recurrent state where needed, and reruns layers above the destination. The rerun overwrites upper-layer KV state.
+ Wavefront execution preserves the same token dependency while batching the previous token's recurrent upper stack with the current token's normal upper stack. After a one-token warmup, each upper attention layer overwrites the previous token's KV entry before the current token consumes it. The current implementation limits this path to one sequence and one scheduled token, FlashAttention, no prefix caching, and no DP/DCP/SP/PP.
+ Prefill with a one-token threshold is exact tokenwise recurrence. Larger chunks are an explicit blockwise quality/throughput approximation.
+ Recurrent and MoE families
+ MoE routing remains part of each rerun: Recirculation changes the residual entering the upper stack, so experts may be selected differently. No model-specific expert script is required.
+ Qwen3-Next and Qwen 3.5 need an additional rule because their convolution/GDN states update in place. Their adapters snapshot active state slots before the normal upper pass and restore them before the recurrent rerun. They remain serial-only because the current two-token FlashAttention wavefront cannot represent those recurrent state transitions.
+ All speculative configurations, including EAGLE/DFlash auxiliary hidden-state extraction, are rejected initially. Supporting them requires an explicit definition for draft-token recurrence and auxiliary-state ownership.
+ Validation
+ All results below were collected on an RTX 3080 10 GB after rebasing onto current main .
+ Focused regression suites: 76 passed.
+ Repository pre-commit stack passed, including Ruff, formatting, Markdown, mypy 3.10, import rules, SPDX, and CUDA API checks.
+ No-download GPU matrix: all 20 documented families generated with four-layer BF16 dummy models through real attention/MoE/recurrent kernels.
+ MRoPE ramping: Qwen 3.5 dense and MoE passed with ramp_tokens=10 .
+ Compiled Gemma 3 dummy comparison:
+ no-op was bit-identical to baseline;
+ serial and wavefront produced identical token IDs;
+ maximum serial/wavefront selected-token log-probability difference was 1.235e-4 .
+ Real google/gemma-3-1b-pt , compiled BF16, the same 16 fixed C4 windows (16,368 scored tokens):
+ baseline perplexity 19.1576, mean prefill latency 7.9496 s;
+ wavefront perplexity 16.9613, mean prefill latency 8.4007 s;
+ 11.46% lower perplexity and 5.67% higher mean prefill latency on this small sample.
+ The branch contains the commands, harnesses, model/config revisions, window hashes, and a compact RTX 3080 result table. Dummy elapsed times are treated only as compatibility evidence because they include startup and JIT work.
+ Alternatives considered
+ Gemma-only implementation. Simpler initially, but duplicates identical residual-stack logic across families and cannot coordinate scheduling/KV semantics centrally.
+ Automatic support for every decoder subclass. Rejected because recurrent state, hyperconnections, per-layer embeddings, and attention backends require explicit capability review.
+ Serial execution only. Correct but leaves avoidable upper-stack launch/dispatch overhead; retained as the compatibility path while wavefront is opt-in.
+ Speculative decoding with undefined auxiliary semantics. Rejected until recurrence over draft blocks and auxiliary hidden states is designed and tested.
+ Feedback period
+ At least one week. The main questions are:
+ Is a model capability interface plus shared residual-decoder mixin the right abstraction boundary?
+ Should experimental Recirculation remain an hf_overrides feature or gain a first-class engine argument?
+ Are the initial restrictions appropriate for an experimental merge?
+ What additional real-weight model-family evidence should be required before broadening the opt-in list?
+ AI assistance disclosure
+ OpenAI Codex assisted with implementation, review fixes, regression harnesses, and benchmark analysis. The reported results were measured on the stated hardware, and the branch includes reproducible commands and tests.
+ Before submitting a new issue...
+ Searched for relevant issues and pull requests using recirculation , residual stream recurrence , looped transformer , and recurrent depth ; no duplicate proposal was found.
+ Reviewed the project documentation and contribution requirements.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

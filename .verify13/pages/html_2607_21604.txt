@@ -1,0 +1,1709 @@
+ 
+ AgentKVShift: Efficient KV Cache Reuse for Agentic Memory Systems 
+ Report GitHub Issue 
+ × 
+ Title: 
+ Content selection saved. Describe the issue below: 
+ Description: 
+ Submit without GitHub 
+ Submit in GitHub 
+ arXiv is now an independent nonprofit! 
+ Learn more 
+ × 
+ Back to arXiv 
+ Why HTML? 
+ Report Issue 
+ Back to Abstract 
+ Download PDF 
+ Abstract 
+ 1 Introduction 
+ 2 Related Work 
+ 3 Proposed Approach 
+ 3.1 Motivation for KV Reuse 
+ 3.2 Residual Structure via Spectral Analysis 
+ 3.3 Probe-Guided Residual Correction 
+ 3.4 Theoretical Analysis 
+ 4 Experiments 
+ 4.1 Experimental Setup 
+ 4.2 Long-Horizon Memory Benchmarks 
+ 4.2.1 LoCoMo Evaluation 
+ 4.2.2 AMA-Bench-Recall Evaluation 
+ 4.3 Effect of Recompute Ratio 
+ 4.4 Throughput Analysis 
+ 4.5 Orthogonality to KV Quantization 
+ 5 Conclusion 
+ References 
+ A Extended Experimental Results 
+ A.1 Extended Experimental Set-Up and Reproducibility 
+ Models: 
+ Agentic Memory Systems: 
+ Benchmarks: 
+ Hardware: 
+ A.2 Extended AMA-Bench Discussion 
+ A.3 Recompute Ratio Sweeps 
+ A.4 LLM-as-a-Judge Evaluation Protocol 
+ A.5 Extended Results under KV Cache Quantization 
+ B Theoretical Analysis 
+ B.1 Lemma 1: Deterministic Attention Perturbation Bound 
+ B.2 Proposition 1: Attention Error Bound Before Correction 
+ B.3 Proposition 2: Error Bound After Probe-Guided Mean Correction 
+ B.4 Proposition 3: Sufficient condition for a tighter bound under correction 
+ C Empirical Validation of the Modeling Assumptions 
+ C.1 Mean-explained Energy and Change in Top Singular Value of Residual 
+ C.2 Empirical Validation of the Sub-Gaussian Fluctuation Assumption 
+ D Societal Impact 
+ E Limitations and Future Work 
+ Asymmetry between K and V residuals. 
+ Cross-chunk memory reasoning. 
+ License: CC BY 4.0
+arXiv:2607.21604v1 [cs.AI] 15 May 2026 
+ AgentKVShift: Efficient KV Cache Reuse for Agentic Memory Systems 
+ Nilesh Prasad Pandey † 
+ Jason Kong
+ Lanxiang Hu
+ Quanling Zhao
+ Affiliation: Yujie Zhao 
+ Onat Gungor
+ Hao Zhang
+ Tajana Rosing
+ Affiliation: University of California, San Diego
+ Abstract 
+ Memory-augmented LLM agents have gained substantial attention recently for their ability to maintain context across hundreds of interactions through agentic memory systems that actively curate retrieved content with LLM-generated metadata such as summaries, keywords, and tags. However, from an inference cost standpoint, every retrieval triggers a full
+re-encoding of these structured memory units into Key-Value (KV) states, which dominates prefill latency. Existing training-free KV reuse methods mitigate this by selectively recomputing a small fraction of tokens, but were designed for RAG-style raw passages and degrade substantially on structured agentic memories. In this work, we present AgentKVShift, a training-free, probe-guided KV residual correction method that operates per retrieved memory unit. One of the crucial insights we demonstrate is that the per-memory KV reuse residual decomposes into a shared memory-level offset plus small token-wise fluctuations. Estimating this offset from a small probe set allows us to correct every
+reused token in the memory unit by a single weighted correction. Unlike prior reuse methods which decide which tokens to recompute and leave the rest of the cache stale, AgentKVShift also corrects the tokens it does not recompute, turning the refresh budget into useful signal across the entire chunk. Through extensive experiments across four open source LLMs spanning 3B to 32B parameters and two long-horizon agentic memory benchmarks covering long-term dialogue and agentic applications, we show that AgentKVShift achieves near full recompute performance while refreshing only 10–30% of the cache,
+outperforming existing baselines at the same recompute ratio. AgentKVShift requires up to 5 × \times lower recompute to reach this near-full performance, which prior reuse methods only attain at 45–55% refresh. By operating in this lower recompute regime, AgentKVShift delivers prefill speedups of 2–3.5 × \times over no-KV-reuse on a single A100 GPU. Lastly, AgentKVShift orthogonally composes with KV cache quantization, retaining over 2 × \times 
+the F1 of prior reuse methods under aggressive 2- and 4-bit settings, making it a simple, yet effective choice for serving long-horizon agentic memory workloads. 
+ † † 
+ † Corresponding author: nppandey@ucsd.edu 
+ 1 Introduction 
+ Memory-augmented LLM agents, such as personal assistants, coding agents, and
+enterprise knowledge systems, have gained substantial attention recently.
+These agents maintain context across hundreds of interactions through memory
+systems that selectively retain, organize, and retrieve information over
+extended periods [ 17 ] . While initial progress relied on
+Retrieval-Augmented Generation (RAG) [ 10 ] , which retrieves raw
+conversation passages, the field has rapidly shifted toward
+ agentic memory systems [ 25 , 31 , 24 , 27 ] that
+actively curate knowledge through learned or heuristic-driven policies.
+This shift introduces a fundamental change in the nature of the retrieved
+context: rather than raw text, the retrieved representations are enriched
+with LLM-generated metadata such as summaries, keywords, tags, and relational
+annotations. Crucially,
+this metadata is not overhead, it is what the model primarily attends to
+during answer generation. 
+ A key computational challenge for such memory systems is the prefill cost.
+Every time an agent retrieves stored memory, it must encode the text into
+Key-Value (KV) states, a computation that scales linearly with context length
+and dominates inference latency for long-context workloads [ 1 , 7 ] . Considerable
+effort has gone into reducing this cost through KV cache reuse, ranging from
+prefix caching in modern serving frameworks, vLLM [ 8 ] and SGlang [ 29 ] , to more
+targeted approaches that selectively recompute a small fraction of KV states
+under dynamic retrieval [ 26 , 23 ] . These methods have
+proven effective on RAG workloads, where retrieved passages are raw text and
+the dominant source of stale KV states is well-localized to a small subset
+of tokens. 
+ However, agentic memory presents a structurally different setting, and we
+find that existing reuse methods fail to transfer to it. The accuracy
+degradation is substantial and consistent across model scales from 3B to
+32B parameters, across multiple model families (Qwen2.5 [ 21 ] , Qwen3 [ 22 ] , Mistral [ 13 ] ),
+and across different agentic memory systems,
+suggesting that the issue is not an artifact of a particular model or
+a memory type but a generalized failure mode of token-selection-based reuse on
+metadata-rich retrieval. Furthermore, there remains little understanding of
+how the token composition of metadata-rich agentic memory affects KV
+divergence patterns and, consequently, the token-selection strategies that
+underlie current reuse methods. 
+ In view of the above, we seek to address the following key questions: (1) Do existing KV cache reuse methods generalize to agentic memory systems? (2) If they degrade, does the KV reuse error have a shared structure across tokens that current reuse methods cannot fix? (3) Can we fix this failure with a simple, training-free correction? 
+ To this end, we propose AgentKVShift , a training-free, probe-guided KV
+residual correction that operates per retrieved memory unit. The crucial insight
+we demonstrate is that the per memory unit KV reuse residual decomposes into a
+shared chunk-level offset plus small token-wise fluctuations, estimating
+the offset from a small probe set allows us to correct every other token
+in the chunk by a single weighted vector addition, recovering near-fresh
+attention outputs without re-encoding the memory. Unlike prior reuse
+methods [ 26 , 23 ] which decide which tokens to recompute and leave the rest
+of the cache stale, AgentKVShift also corrects the keys and values of
+the tokens it does not recompute, turning the refresh budget into useful
+signal across the entire chunk. 
+ Overall, we make the following key contributions: 
+ 1. 
+ We show that existing training-free KV cache reuse methods
+degrade substantially on agentic memory retrieval, with the
+accuracy gap persisting across three model families, scales
+from 3B to 32B, and both note- and graph-based memory systems. 
+ 2. 
+ Through a per-memory spectral analysis, we identify the
+structural cause: the KV reuse residual is dominated by a
+shared memory-level offset that token-selection methods leave
+intact in unrefreshed tokens. Motivated by this, we propose
+ AgentKVShift , a training-free correction that estimates
+the offset from a small probe set and applies a weighted
+mean-shift to all reused tokens. Under standard sub-Gaussian
+assumptions, AgentKVShift admits a tighter attention-error bound
+than uncorrected reuse when the memory-level bias dominates
+the probe estimation error. 
+ 3. 
+ On diverse long-horizon agentic memory benchmarks [ 12 , 28 ] , AgentKVShift
+narrows the gap to full recompute to within 1.5 − 6 % 1.5-6\% 
+relative F1 while refreshing only 10 % 10\% of the cache,
+attaining prefill speedups of 2 − 3.5 × 2-3.5\times on a single A100
+GPU. Also, under state-of-the-art 2- and 4-bit KV quantization [ 11 , 20 ] ,
+AgentKVShift retains over 2 × 2\times the F1 of existing reuse
+methods at aggressive bit-widths, since the probe estimate
+absorbs both context drift and average quantization error. 
+ 2 Related Work 
+ RAG and Its Limitations for Long-Horizon Agents. 
+Retrieval-Augmented Generation (RAG) [ 10 ] retrieves relevant passages
+from a document store and prepends them to the LLM prompt at inference time,
+relying on the retriever (e.g., BM25 [ 19 ] , dense retrieval [ 6 , 5 ] ) to
+surface relevant content. While effective for single-turn
+knowledge-intensive tasks, RAG has well-documented limitations in
+long-horizon agentic settings [ 17 ] . As conversations grow
+to hundreds of turns, the raw passage store becomes noisy, retrieval
+recall degrades, and the retrieved context lacks the structure needed for
+multi-hop reasoning across sessions. These limitations have motivated the
+shift toward agentic memory systems that actively curate and organize
+knowledge. 
+ Agentic Memory Systems. 
+A growing body of work has developed agentic memory systems that retain
+the retrieve-and-condition paradigm of RAG but replace raw passage stores
+with structured, LLM-curated representations. Although the systems vary
+in their specific organizational primitives, two dominant categories have
+emerged. Note-based systems [ 24 ] generate Zettelkasten-style
+notes enriched with summaries, keywords, and tags, building on a longer
+line of work in dialogue compression and fact-extraction memory that
+distill interactions into compact, self-contained
+units [ 9 , 30 , 16 ] . On the other hand, Graph-based 
+systems [ 4 ] organize memories into hierarchical or relational
+graphs with temporal indexing, drawing on prior work in graph-augmented
+retrieval [ 18 , 2 ] . At inference time, both categories operate by retrieval. The agent’s query
+is matched against the curated memory store, and the retrieved units are
+passed to the LLM as context. The difference from RAG lies in what gets
+retrieved, not raw passages, but LLM-curated representations such as
+notes, summaries, tags, and graph nodes. Despite their diversity, these systems
+share a common property, they excel at determining what to
+remember, but treat the underlying KV computation as a black box,
+requiring full re-encoding on every retrieval and leaving the prefill cost
+unaddressed. 
+ KV Cache Reuse for Dynamic Retrieval. 
+Reducing prefill computation through KV cache reuse has been studied at
+multiple levels. At the serving level, prefix caching in vLLM [ 8 ] 
+and RadixAttention in SGLang [ 29 ] cache KV states for shared
+prompt prefixes using block-level hashing or radix tree structures. These
+methods are effective when prompts share long, stable prefixes (e.g.,
+system prompts, few-shot examples), but offer limited benefit when both
+the content and the ordering of the retrieved context vary per request, as is typical in retrieval- and memory-augmented agents, where each query
+retrieves a different set of memories arranged in a different order,
+breaking the prefix-caching assumptions. For dynamic retrieval settings, more targeted
+training-free methods have been proposed. CacheBlend [ 26 ] 
+identifies high-deviation KV tokens at a check layer and selectively
+recomputes only those, achieving near-baseline accuracy at recompute
+ratios of r = 0.10 r=0.10 – 0.20 0.20 on RAG benchmarks. More recently,
+ProphetKV [ 23 ] addresses a limitation of divergence-based
+selection within RAG by replacing the divergence criterion with a
+query-driven one. Despite this progress, all of
+the selective-recomputation methods above were designed and evaluated on
+RAG or standard generation workloads. Our work shows that the structural properties of the KV reuse error in agentic memory call for a different
+correction strategy, one that adjusts the values of unrefreshed tokens
+rather than only choosing which tokens to refresh [ 26 , 23 ] and adjusting its positional embedding [ 3 ] . 
+ 3 Proposed Approach 
+ 3.1 Motivation for KV Reuse 
+ Figure 1 : AgentKVShift: KV reuse via residual estimation. The mean residuals Δ ​ K avg \Delta K_{\text{avg}} and Δ ​ V avg \Delta V_{\text{avg}} are estimated using probe tokens are applied to non-probe tokens to produce K new K_{\text{new}} and V new V_{\text{new}} , approximating full recomputation. 
+ KV caching is an established technique for accelerating LLM prefill and inference. Precomputed key/value states for repeated context can be loaded directly instead of being recomputed at every step. However, in agentic memory retrieval, this assumption breaks. Specifically, a memory unit is encoded once when the agent first observes it, but is later retrieved under a different query, instruction, or dialogue history. The tokens are the same, but their contextual representations are not. 
+ To formalize this mismatch,
+Let 𝒞 \mathcal{C} denote the set of retrieved memory chunks, and let C ∈ 𝒞 C\in\mathcal{C} denote one retrieved memory chunk with n n 
+tokens with head dimension d d , processed through a transformer with L L layers. At layer ℓ \ell , direct reuse substitutes the cached states K reuse ℓ = K cached ℓ K^{\ell}_{\mathrm{reuse}}=K^{\ell}_{\mathrm{cached}} and V reuse ℓ = V cached ℓ V^{\ell}_{\mathrm{reuse}}=V^{\ell}_{\mathrm{cached}} in place of the fresh states K fresh ℓ , V fresh ℓ ∈ ℝ n × d K^{\ell}_{\mathrm{fresh}},V^{\ell}_{\mathrm{fresh}}\in\mathbb{R}^{n\times d} under the current context, introducing residuals R K ℓ = K fresh ℓ − K reuse ℓ R_{K}^{\ell}=K^{\ell}_{\mathrm{fresh}}-K^{\ell}_{\mathrm{reuse}} and R V ℓ = V fresh ℓ − V reuse ℓ R_{V}^{\ell}=V^{\ell}_{\mathrm{fresh}}-V^{\ell}_{\mathrm{reuse}} that distort attention and degrade generation quality even when the retrieved memory is semantically relevant. Our goal is therefore to approximate K fresh ℓ , V fresh ℓ K^{\ell}_{\mathrm{fresh}},V^{\ell}_{\mathrm{fresh}} while recomputing only a small fraction of tokens per memory. To this end, we first study the structure of R K ℓ , R V ℓ R_{K}^{\ell},R_{V}^{\ell} in section 3.2 and then propose our correction scheme in section 3.3 . 
+ 3.2 Residual Structure via Spectral Analysis 
+ Figure 2 : SVD spectra of R ℓ R^{\ell} for K and V. 
+ To understand the structure of the reuse error, we analyze the memory-wise KV residuals R K ℓ R_{K}^{\ell} and R V ℓ R_{V}^{\ell} at different transformer layers. We compute their singular value spectra and contrast them against the spectra obtained after subtracting the chunk mean from each row (Fig. 2 ). 
+ Sharp spectral concentration. For both R K ℓ R_{K}^{\ell} and R V ℓ R_{V}^{\ell} , the leading singular value dominates the remaining modes across layers, indicating that the reuse error carries structured signal rather than arbitrary token-wise noise. 
+ Mean-centering removes the dominant mode. Subtracting the chunk mean from each token’s KV substantially reduces the leading singular value, especially for K. A large fraction of the reuse error is therefore captured by a single shared chunk-level offset, while the remainder corresponds to smaller token-wise fluctuations. 
+ Together, these observations motivate our method: estimate that offset from a small probe set and shift the reused cache accordingly, enabling KV cache reuse. 
+ 3.3 Probe-Guided Residual Correction 
+ Building on the above analysis, we now describe our correction scheme. For each retrieved memory chunk, we recompute fresh KV states for a small probe set of tokens, use them to estimate the chunk-level offset at every layer, and apply this offset to the remaining tokens via a single weighted vector addition. Algorithm 1 summarizes the full procedure. The method has three steps, which are described below. 
+ Probe selection. For each chunk C C , we compute K- and V-specific divergence scores at the first transformer layer ℓ c = 1 \ell_{c}=1 , following the cross-layer high-deviation observation in CacheBlend [ 26 ] . Concretely, 
+ d K , j ℓ c = ‖ K j , fresh ℓ c − K j , reuse ℓ c ‖ 2 , d V , j ℓ c = ‖ V j , fresh ℓ c − V j , reuse ℓ c ‖ 2 . d_{K,j}^{\ell_{c}}=\|K_{j,\mathrm{fresh}}^{\ell_{c}}-K_{j,\mathrm{reuse}}^{\ell_{c}}\|_{2},\hskip 18.49988ptd_{V,j}^{\ell_{c}}=\|V_{j,\mathrm{fresh}}^{\ell_{c}}-V_{j,\mathrm{reuse}}^{\ell_{c}}\|_{2}. 
+ The top- b b probe sets S C K , S C V S_{C}^{K},S_{C}^{V} and per-token weights w K , j = min ⁡ ( d K , j ℓ c , 1 ) w_{K,j}=\min(d_{K,j}^{\ell_{c}},1) , w V , j = min ⁡ ( d V , j ℓ c , 1 ) w_{V,j}=\min(d_{V,j}^{\ell_{c}},1) are determined once at layer 1 and reused at every subsequent layer. This avoids per-layer probe re-selection and keeps the overhead low. Given recompute ratio r r , we set the per-chunk probe budget to b = ⌈ r ​ n ⌉ b=\lceil rn\rceil . 
+ Mean estimation. At each layer ℓ \ell , the memory-level offset is estimated from the probes as 
+ μ ^ K , C ℓ = 1 | S C K | ​ ∑ j ∈ S C K ( K j , fresh ℓ − K j , reuse ℓ ) , μ ^ V , C ℓ ​ analogously. \hat{\mu}_{K,C}^{\ell}=\tfrac{1}{|S_{C}^{K}|}\!\!\sum_{j\in S_{C}^{K}}\!(K_{j,\mathrm{fresh}}^{\ell}-K_{j,\mathrm{reuse}}^{\ell}),\hskip 18.49988pt\hat{\mu}_{V,C}^{\ell}\text{ analogously.} 
+ Note that although the probe indices are fixed across layers, the estimated offsets μ ^ K , C ℓ \hat{\mu}_{K,C}^{\ell} and μ ^ V , C ℓ \hat{\mu}_{V,C}^{\ell} are layer-specific, since the residual structure itself varies with depth. 
+ Algorithm 1 AgentKVShift: Probe-Guided Residual Correction for KV Reuse 
+ 1: 
+ Chunks 𝒞 \mathcal{C} , reused KV { K j , reuse ℓ , V j , reuse ℓ } \{K^{\ell}_{j,\mathrm{reuse}},V^{\ell}_{j,\mathrm{reuse}}\} , probe budget b b , checkpoint layer ℓ c \ell_{c} 
+ 2: 
+ for all C ∈ 𝒞 C\in\mathcal{C} do 
+ 3: 
+   Compute d K , j ℓ c , d V , j ℓ c d_{K,j}^{\ell_{c}},d_{V,j}^{\ell_{c}} for j ∈ C j\in C , select top- b b probe sets S C K , S C V S_{C}^{K},S_{C}^{V} , set weights w K , j , w V , j w_{K,j},w_{V,j} 
+ 4: 
+    for ℓ = 1 , … , L \ell=1,\dots,L do 
+ 5: 
+    Recompute fresh KV for S C K ∪ S C V S_{C}^{K}\cup S_{C}^{V} at layer ℓ \ell 
+ 6: 
+     μ ^ K , C ℓ ← 1 b ​ ∑ j ∈ S C K ( K j , fresh ℓ − K j , reuse ℓ ) \hat{\mu}_{K,C}^{\ell}\leftarrow\tfrac{1}{b}\sum_{j\in S_{C}^{K}}(K^{\ell}_{j,\mathrm{fresh}}-K^{\ell}_{j,\mathrm{reuse}}) , and μ ^ V , C ℓ \hat{\mu}_{V,C}^{\ell} analogously
+ 7: 
+     for all j ∈ C j\in C do 
+ 8: 
+       K j , corr ℓ ← K j , fresh ℓ K^{\ell}_{j,\mathrm{corr}}\leftarrow K^{\ell}_{j,\mathrm{fresh}} if j ∈ S C K j\in S_{C}^{K} , else K j , reuse ℓ + w K , j ​ μ ^ K , C ℓ K^{\ell}_{j,\mathrm{reuse}}+w_{K,j}\hat{\mu}_{K,C}^{\ell} 
+ 9: 
+       V j , corr ℓ ← V j , fresh ℓ V^{\ell}_{j,\mathrm{corr}}\leftarrow V^{\ell}_{j,\mathrm{fresh}} if j ∈ S C V j\in S_{C}^{V} , else V j , reuse ℓ + w V , j ​ μ ^ V , C ℓ V^{\ell}_{j,\mathrm{reuse}}+w_{V,j}\hat{\mu}_{V,C}^{\ell} 
+ 10: 
+     end for 
+ 11: 
+    end for 
+ 12: 
+ end for 
+ 13: 
+ return { K j , corr ℓ , V j , corr ℓ } \{K^{\ell}_{j,\mathrm{corr}},V^{\ell}_{j,\mathrm{corr}}\} 
+ AgentKVShift correction. Given the estimated offsets, each non-probe token is corrected by a single weighted vector addition K j , corr ℓ = K j , reuse ℓ + w K , j ​ μ ^ K , C ℓ K_{j,\mathrm{corr}}^{\ell}=K_{j,\mathrm{reuse}}^{\ell}+w_{K,j}\hat{\mu}_{K,C}^{\ell} , and analogously for V. Probe tokens use their freshly recomputed states directly. The weights w K , j , w V , j w_{K,j},w_{V,j} ensure that tokens whose cached states already match the fresh states receive a smaller correction, while tokens with high check-layer divergence receive a stronger one. 
+ 3.4 Theoretical Analysis 
+ Our correction method is based on a simple hypothesis about KV reuse error: within a retrieved chunk, the residual is often dominated by a shared chunk-level offset. For clarity, suppress the layer indices. For key and value residuals r i K := k i ⋆ − k i reuse r_{i}^{K}:=k_{i}^{\star}-k_{i}^{\mathrm{reuse}} and r i V := v i ⋆ − v i reuse r_{i}^{V}:=v_{i}^{\star}-v_{i}^{\mathrm{reuse}} ( ∗ * denotes fresh recomputed vector). Thus r i K r_{i}^{K} and r i V r_{i}^{V} correspond to rows of R K ℓ R^{\ell}_{K} and R V ℓ R^{\ell}_{V} , respectively. We write r i K = μ K + ξ i K r_{i}^{K}=\mu_{K}+\xi_{i}^{K} and r i V = μ V + ξ i V r_{i}^{V}=\mu_{V}+\xi_{i}^{V} , where μ K , μ V \mu_{K},\mu_{V} are chunk-level offsets and ξ i K , ξ i V \xi_{i}^{K},\xi_{i}^{V} are token-wise fluctuations with sub-Gaussian scales σ K , σ V \sigma_{K},\sigma_{V} . This motivates estimating the shared offset and applying an AgentKVShift correction. 
+ Consider a fixed query q ∈ ℝ d q\in\mathbb{R}^{d} , and let y ⋆ , y reuse , y corr y^{\star},y^{\mathrm{reuse}},y^{\mathrm{corr}} denote the attention outputs under fresh, reused, and corrected KV with probe set of size b b uniformly sampled with replacement. Let ‖ v i ⋆ ‖ 2 ≤ V max \|v_{i}^{\star}\|_{2}\leq V_{\max} for all i i , and define C K = V max ​ ‖ q ‖ 2 / ( 2 ​ d ) C_{K}=V_{\max}\|q\|_{2}/(2\sqrt{d}) and C V = 1 C_{V}=1 . With this setup, and assuming correcting with the unweighted residual mean for K and V, the following result bounds the attention error before and after correction. 
+ Proposition . 
+ 1 & 2 (Reuse vs. corrected error)
+With probability at least 1 − δ 1-\delta each, 
+ ‖ y reuse − y ⋆ ‖ 2 ≤ C K ​ ‖ μ K ‖ 2 + C V ​ ‖ μ V ‖ 2 ⏟ common bias ​ B + ( C K ​ σ K + C V ​ σ V ) ​ 2 ​ log ⁡ 4 ​ n δ ⏟ N n ​ (Proof in Appendix B.2 ) \|y^{\mathrm{reuse}}-y^{\star}\|_{2}\leq\underbrace{C_{K}\|\mu_{K}\|_{2}+C_{V}\|\mu_{V}\|_{2}}_{\text{common bias }B}+\underbrace{(C_{K}\sigma_{K}+C_{V}\sigma_{V})\sqrt{2\log\tfrac{4n}{\delta}}}_{N_{n}}\hskip 9.24994pt\text{(Proof in Appendix~\ref{prop1})} 
+ ‖ y corr − y ⋆ ‖ 2 ≤ ( C K ​ σ K + C V ​ σ V ) ​ 2 ​ log ⁡ 8 ​ n δ ⏟ N n ′ + ( C K ​ σ K + C V ​ σ V ) ​ 2 ​ log ⁡ ( 8 / δ ) b ⏟ probe error ​ E b ​ (Proof in Appendix B.3 ) \|y^{\mathrm{corr}}-y^{\star}\|_{2}\leq\underbrace{(C_{K}\sigma_{K}+C_{V}\sigma_{V})\sqrt{2\log\tfrac{8n}{\delta}}}_{N_{n}^{\prime}}+\underbrace{(C_{K}\sigma_{K}+C_{V}\sigma_{V})\sqrt{\tfrac{2\log(8/\delta)}{b}}}_{\text{probe error }E_{b}}\hskip 9.24994pt\text{(Proof in Appendix~\ref{prop2})} 
+ Thus, before correction the reuse error behaves like common bias + token-wise fluctuation \text{common bias}+\text{token-wise fluctuation} and after correction, the error behaves like probe estimation error + token-wise fluctuation \text{probe estimation error}+\text{token-wise fluctuation} . To compare the two bounds, let U reuse = B + N n U_{\mathrm{reuse}}=B+N_{n} and U corr = N n ′ + E b U_{\mathrm{corr}}=N_{n}^{\prime}+E_{b} and U reuse − U corr = B − E b − ( N n ′ − N n ) U_{\mathrm{reuse}}-U_{\mathrm{corr}}=B-E_{b}-(N_{n}^{\prime}-N_{n}) . 
+ Proposition . 
+ 3 (Sufficient condition for tighter upper bound)
+On the event where the bounds in Propositions 1 and 2 both hold: 
+ If ​ B > E b + ( N n ′ − N n ) ​ then ​ U corr < U reuse ​ (Proof in Appendix B.4 ) \small\begin{split}\text{If}\hskip 9.24994ptB>E_{b}+(N_{n}^{\prime}-N_{n})\hskip 9.24994pt\text{then}\hskip 9.24994ptU_{\mathrm{corr}}<U_{\mathrm{reuse}}\hskip 9.24994pt\text{(Proof in Appendix~\ref{prop3})}\end{split} 
+ This means correction yields a strictly tighter high-probability upper bound whenever the common-bias term B B exceeds the probe-estimation error term E b E_{b} , up to the lower-order fluctuation-mismatch term N n ′ − N n N_{n}^{\prime}-N_{n} . Overall, the theory says that naive reuse incurs both common bias and token-wise fluctuation, while probe-guided mean correction removes the common bias and replaces it with a smaller probe-estimation term that decreases with b b . For completeness, we also empirically justify our structural modeling of residuals (dominated by a common offset) behind the theory and method, and verify whether ξ i K \xi_{i}^{K} and ξ i V \xi_{i}^{V} behave consistently with the sub-Gaussian-style concentration assumption used here. Those results are deferred to Appendix C.1 and C.2 . 
+ 4 Experiments 
+ 4.1 Experimental Setup 
+ Table 1 : F1, ROUGE and BLEU-1 scores on LoCoMo using recompute ratio, r = 0.1 r{=}0.1 . Best KV-reuse result is bold , 
+ AMem [ 24 ] 
+ LicoMemory [ 4 ] 
+ Model 
+ Method 
+ F1 ( ↑ \uparrow ) 
+ ROUGE-1 ( ↑ \uparrow ) 
+ BLEU-1 ( ↑ \uparrow ) 
+ F1 ( ↑ \uparrow ) 
+ ROUGE-1 ( ↑ \uparrow ) 
+ BLEU-1 ( ↑ \uparrow ) 
+ Full Recompute 
+ 0.339 
+ 0.352 
+ 0.301 
+ 0.390 
+ 0.400 
+ 0.353 
+ Qwen2.5-3B-Instruct 
+ CacheBlend 
+ 0.178 
+ 0.188 
+ 0.144 
+ 0.286 
+ 0.294 
+ 0.265 
+ ProphetKV 
+ 0.125 
+ 0.130 
+ 0.103 
+ 0.329 
+ 0.336 
+ 0.296 
+ AgentKVShift (Ours) 
+ 0.319 
+ 0.330 
+ 0.277 
+ 0.384 
+ 0.394 
+ 0.349 
+ Full Recompute 
+ 0.444 
+ 0.471 
+ 0.407 
+ 0.446 
+ 0.464 
+ 0.414 
+ Qwen3-4B-Instruct 
+ CacheBlend 
+ 0.360 
+ 0.383 
+ 0.327 
+ 0.360 
+ 0.370 
+ 0.334 
+ ProphetKV 
+ 0.315 
+ 0.320 
+ 0.285 
+ 0.385 
+ 0.398 
+ 0.360 
+ AgentKVShift (Ours) 
+ 0.429 
+ 0.463 
+ 0.402 
+ 0.435 
+ 0.450 
+ 0.401 
+ Full Recompute 
+ 0.305 
+ 0.346 
+ 0.295 
+ 0.509 
+ 0.524 
+ 0.456 
+ Mistral-7B-Instruct-v0.3 
+ CacheBlend 
+ 0.208 
+ 0.212 
+ 0.171 
+ 0.290 
+ 0.294 
+ 0.173 
+ ProphetKV 
+ 0.170 
+ 0.169 
+ 0.145 
+ 0.357 
+ 0.369 
+ 0.231 
+ AgentKVShift (Ours) 
+ 0.282 
+ 0.294 
+ 0.243 
+ 0.491 
+ 0.508 
+ 0.441 
+ Agentic memory Systems. We evaluate on two recent agentic memory systems that span the
+dominant design choices in current memory systems. AMem [ 24 ] adopts a Zettelkasten-style organization with
+per-turn notes, summaries, and tags, representing the note-based
+category. LiCoMemory [ 4 ] organizes memory as a
+hierarchical graph with temporal indexing, representing the graph-based
+category. 
+ Benchmarks. We evaluate on two complementary long-horizon memory benchmarks. LoCoMo [ 12 ] is the standard benchmark for long-term memory in dialogue , consisting of 10 10 long, multi-session conversations with QA testing multi-hop, temporal, and reasoning capabilities. AMA-Bench [ 28 ] is a recent benchmark designed for memory in agentic applications , partitioning questions across six domains (Embodied AI, Game, OpenWorld QA, Software, Text2SQL, Web) and four memory capabilities (Recall, Causal Inference, State Updating, and State Abstraction). For our main evaluation on AMA-Bench using AMEM memory, we focus on the AMA-Bench-Recall , which directly probes the chunk-level retrieval fidelity that KV-reuse methods are designed to preserve. For the other three capabilities, which require integrating signals across retrieved chunks and depend more on the agent’s reasoning pipeline than on the cache itself. For completeness, we also discuss the evaluation on these additional capabilities in Appendix A.2 . 
+ Models. We evaluate four open-source instruction-tuned LLMs
+spanning two families and a 10 × 10\times scale range. The 3B–7B models
+(Qwen2.5-3B-Instruct [ 21 ] , Qwen3-4B-Instruct [ 22 ] , Mistral-7B-Instruct-v0.3 [ 13 ] ) are
+evaluated on LoCoMo. For AMA-Bench, we use Qwen3-32B [ 22 ] with the AMem
+agentic memory, as the benchmark’s task complexity demands the reasoning
+capacity of larger-scale models. 
+ Baselines. We compare against two state-of-the-art KV reuse methods. CacheBlend [ 26 ] selectively recomputes high-deviation tokens identified at a check layer, and ProphetKV [ 23 ] replaces divergence-based selection
+with a query-driven criterion. We also report the no-KV-reuse (full recompute) upper
+bound as a reference. 
+ Evaluation metrics. We report token-level F1, ROUGE-1, and BLEU-1 against ground truth answers as our primary metrics. On AMA-Bench, we additionally report LLM-Judge accuracy, where GPT-4o [ 15 ] serves as judge and produces a binary 0 / 1 0/1 grade against the
+ground-truth answer. 
+ Implementation. All experiments are run on a single NVIDIA A100 GPU, except for Qwen3-32B AMA-Bench evaluation and throughput profiling, which use a single NVIDIA H200 GPU due to memory and compute requirements. For all KV-reuse methods, we use a single check layer at ℓ c = 1 \ell_{c}{=}1 and report results at recompute ratios specified per
+experiment. 
+ 4.2 Long-Horizon Memory Benchmarks 
+ 4.2.1 LoCoMo Evaluation 
+ AgentKVShift recovers near full-recompute quality at low recompute budget. As shown in Table 1 , AgentKVShift recovers near full-recompute quality at r = 0.1 r{=}0.1 . We attribute this to our probe-guided mean-shift correcting the ∼ 90 % \sim 90\% of unrefreshed tokens as well, extracting useful signal from cache entries that CacheBlend and ProphetKV leave stale. On AMem with Qwen2.5-3B-Instruct, AgentKVShift reaches 0.319 0.319 F1 against a Full Recompute reference of 0.339 0.339 (a 5.9 % 5.9\% relative drop), whereas CacheBlend and ProphetKV drop by 47.5 % 47.5\% and 63.1 % 63.1\% under the same 10 % 10\% budget. Similarly, on LiCoMemory
+the gap reduces to 1.5 % 1.5\% on Qwen2.5-3B, 2.5 % 2.5\% on Qwen3-4B, and 3.5 % 3.5\% 
+on Mistral-7B. 
+ Gains transfer across metrics. The relative drop to
+Full Recompute stays within 1.5 1.5 – 6 % 6\% across configurations, and the
+same trend carries over to ROUGE-1 and BLEU-1, indicating that our
+correction recovers not only token-level overlap but also longer n-gram
+fidelity. 
+ 4.2.2 AMA-Bench-Recall Evaluation 
+ AgentKVShift gains the most on domains where retrieval fidelity drives accuracy. As shown in Table 2 , AgentKVShift achieves the highest F1 on five of six domains and the highest LLM-Judge accuracy on five of six, yielding the strongest weighted averages on both metrics ( 0.284 0.284 F1, 0.279 0.279 accuracy). Importantly, the largest absolute gains are observed on OpenWorld QA and Text2SQL, where the answer-bearing content is concentrated in a small subset of memory units [ 28 ] . We attribute this to our mean-shift correcting all reused KV entries within a memory unit rather than only the small fraction selected by token-deviation criteria, thus precisely matching what concentrated retrieval rewards. In comparison, CacheBlend lags AgentKVShift by 1.4 1.4 F1 points and 3.9 3.9 accuracy points on weighted average, while ProphetKV trails by 0.7 0.7 F1 points and 4.3 4.3 accuracy points. 
+ AgentKVShift effectively closes the gap to Full Recompute at r = 0.3 r{=}0.3 . As shown in Table 2 , AgentKVShift recovers the majority of the Full Recompute F1 across all six domains, closing the gap to 0.012 0.012 F1 points on weighted average ( 0.284 0.284 vs. 0.296 0.296 ). In comparison, CacheBlend and ProphetKV leave a substantially larger gap, since neither corrects the chunk-level residual on unrefreshed tokens. 
+ Toward state-aware KV reuse. Our extended results on the cross-chunk reasoning capabilities (Appendix A.2 ) show all KV-reuse methods leaving a wider gap to Full Recompute, consistent with these capabilities depending more on the agent’s reasoning pipeline than on the cache itself. This points to KV-reuse mechanisms that are aware of the agent’s reasoning state, as a promising direction for future research. Nonetheless, AgentKVShift remains the strongest KV-reuse strategy across all reasoning categories. 
+ Table 2 : F1 and binary LLM-Judge accuracy by domain on AMA-Bench-Recall using AMEM memory (Qwen3-32B, r = 0.3 r{=}0.3 , judged by GPT-4o [ 15 ] ). Values in parentheses denote the retention ratio relative to Full KV Recompute (no KV-reuse). Best KV-reuse result is bold , second best is underlined . CB = CacheBlend, PKV = ProphetKV, AgentKVShift is our method. 
+ F1( ↑ \uparrow ) 
+ Accuracy( ↑ \uparrow ) 
+ Domain 
+ Full Rec. 
+ CB 
+ PKV 
+ AgentKVShift 
+ Full Rec. 
+ CB 
+ PKV 
+ AgentKVShift 
+ Embodied AI 
+ 0.392 
+ 0.352  (89.8%) 
+ 0.372   (94.9%) 
+ 0.381   (97.2%) 
+ 0.180 
+ 0.148   (82.2%) 
+ 0.164   (91.1%) 
+ 0.148   (82.2%) 
+ Game 
+ 0.400 
+ 0.385   (96.3%) 
+ 0.382  (95.5%) 
+ 0.391   (97.8%) 
+ 0.375 
+ 0.333   (88.8%) 
+ 0.333   (88.8%) 
+ 0.375   (100.0%) 
+ OpenWorld QA 
+ 0.336 
+ 0.205  (61.0%) 
+ 0.276   (82.1%) 
+ 0.280   (83.3%) 
+ 0.357 
+ 0.214  (59.9%) 
+ 0.245   (68.6%) 
+ 0.327   (91.6%) 
+ Software 
+ 0.149 
+ 0.150  (100.7%) 
+ 0.151   (101.3%) 
+ 0.156   (104.7%) 
+ 0.137 
+ 0.160   (116.8%) 
+ 0.156  (113.9%) 
+ 0.170   (124.1%) 
+ Text2SQL 
+ 0.342 
+ 0.324   (94.7%) 
+ 0.318  (93.0%) 
+ 0.335   (98.0%) 
+ 0.372 
+ 0.287   (77.2%) 
+ 0.269  (72.3%) 
+ 0.336   (90.3%) 
+ Web 
+ 0.283 
+ 0.273   (96.5%) 
+ 0.270   (95.4%) 
+ 0.260  (91.9%) 
+ 0.304 
+ 0.264   (86.8%) 
+ 0.248  (81.6%) 
+ 0.296   (97.4%) 
+ Wtd Avg 
+ 0.296 
+ 0.270  (91.2%) 
+ 0.277   (93.6%) 
+ 0.284   (96.0%) 
+ 0.287 
+ 0.240   (83.6%) 
+ 0.236  (82.2%) 
+ 0.279   (97.2%) 
+ 4.3 Effect of Recompute Ratio 
+ Next, we extend our analysis to isolate the effect of the refresh budget. Specifically, we sweep r ∈ { 0.05 , 0.10 , … , 0.95 } r\in\{0.05,0.10,\ldots,0.95\} on LoCoMo with Qwen2.5-3B-Instruct and report F1 in Figure 3 . 
+ As shown, AgentKVShift reaches within ∼ \sim 2 2 points F1 of Full Recompute at r = 0.1 r{=}0.1 and stays close to the reference throughout. CacheBlend and ProphetKV, in contrast, drop sharply at low r r and only match the Full Recompute baseline near r = 0.45 − 0.55 r{=}0.45-0.55 . 
+ Figure 3 : Effect of recompute ratio on F1. 
+ The same ordering holds for ROUGE-1 and BLEU-1 as shown in Appendix A.3 . This reflects a difference in how each method uses the refresh budget. CacheBlend and ProphetKV select which tokens to recompute and leave the rest of the cache
+uncorrected, so their accuracy scales with the fraction of tokens refreshed. AgentKVShift instead corrects the reused keys themselves using a probe-estimated offset, so tokens that are not recomputed still contribute useful signal. As a result, AgentKVShift matches the quality that baselines achieve at r = 0.45 r{=}0.45 – 0.55 0.55 while using 5 × 5\times fewer recomputations ( r = 0.10 r{=}0.10 ), translating directly into lower prefill latency at comparable output quality. 
+ Table 3 : Speedup over Full KV recompute at r = 0.1 r{=}0.1 , by context length. Best per row in bold.
+Qwen2.5-3B-Instruct and Qwen3-32B are profiled on a single A100-40GB and H200 respectively. 
+ 2,048 tok/req 
+ 4,096 tok/req 
+ 8,192 tok/req 
+ 16,384 tok/req 
+ B = 1 B{=}1 
+ 4 
+ 8 
+ 16 
+ B = 1 B{=}1 
+ 4 
+ 8 
+ 16 
+ B = 1 B{=}1 
+ 4 
+ 8 
+ 16 
+ B = 1 B{=}1 
+ 4 
+ 8 
+ 16 
+ 3B 
+ CacheBlend 
+ 1.19 
+ 3.53 
+ 3.73 
+ 4.01 
+ 2.55 
+ 3.41 
+ 3.64 
+ 3.69 
+ 2.74 
+ 3.17 
+ 3.17 
+ 3.19 
+ 2.51 
+ 2.63 
+ 2.66 
+ OOM 
+ ProphetKV 
+ 1.13 
+ 3.18 
+ 3.34 
+ 3.48 
+ 2.28 
+ 2.93 
+ 3.12 
+ 3.21 
+ 2.14 
+ 2.59 
+ 2.65 
+ 2.90 
+ 1.63 
+ 1.94 
+ 2.17 
+ OOM 
+ AgentKVShift 
+ 0.94 
+ 2.97 
+ 3.31 
+ 3.55 
+ 1.88 
+ 3.06 
+ 3.24 
+ 3.33 
+ 2.47 
+ 2.84 
+ 2.87 
+ 2.89 
+ 2.37 
+ 2.38 
+ 2.39 
+ OOM 
+ 32B 
+ CacheBlend 
+ 2.28 
+ 4.26 
+ 4.49 
+ 4.58 
+ 3.64 
+ 3.84 
+ 3.70 
+ 3.85 
+ 2.86 
+ 3.30 
+ 3.23 
+ 3.24 
+ 2.70 
+ 2.67 
+ 2.66 
+ OOM 
+ ProphetKV 
+ 2.03 
+ 3.34 
+ 3.89 
+ 4.59 
+ 2.86 
+ 3.07 
+ 3.59 
+ 3.95 
+ 2.23 
+ 2.64 
+ 2.92 
+ 2.92 
+ 1.74 
+ 2.04 
+ 2.03 
+ OOM 
+ AgentKVShift 
+ 1.53 
+ 3.62 
+ 3.95 
+ 4.13 
+ 3.09 
+ 3.45 
+ 3.70 
+ 3.65 
+ 2.61 
+ 2.88 
+ 3.01 
+ 3.02 
+ 2.49 
+ 2.40 
+ 2.43 
+ OOM 
+ (a) Qwen2.5-3B-Instruct 
+ (b) Qwen3-32B 
+ Figure 4 : Speedup vs. prefill-latency Pareto sweep at 4,096 tok/req × \times B = 16 B{=}16 
+with r ∈ { 0.01 , … , 0.75 } r\in\{0.01,\ldots,0.75\} 
+ 4.4 Throughput Analysis 
+ LLM serving deployments span a wide range of operating points, where prefill latency depends jointly on context length and batch size, and the optimal KV-reuse strategy can shift as either dimension grows. Therefore, we profile prefill throughput across two model scales (Qwen2.5-3B-Instruct and Qwen3-32B), four context lengths ( 2,048 2{,}048 – 16,384 16{,}384 tok/req), and four batch sizes ( B ∈ { 1 , 4 , 8 , 16 } B\in\{1,4,8,16\} ). Figure 4 reports the speedup-vs-recompute-ratio sweep at 4,096 4{,}096 tok/req with B = 16 B{=}16 for r ∈ { 0.01 , … , 0.75 } r\in\{0.01,\ldots,0.75\} . Whereas, Table 3 fixes r = 0.1 r{=}0.1 and sweeps the remaining context-length and batch-size configurations. We focus on r = 0.1 r{=}0.1 and r = 0.3 r{=}0.3 , the operating points at which AgentKVShift preserves answer quality on LoCoMo and AMA-Bench respectively (Section 4.2 ). 
+ AgentKVShift matches the speedup curve of existing methods. As shown in Figure 4 , all three KV-reuse methods trace nearly identical speedup curves on both models. This is expected as at a fixed r r the recomputation work is the comparable across methods, and AgentKVShift’s correction adds only a memory unit-level vector correction per layer, which is negligible compared to per-token recompute. As shown, AgentKVShift sustains a ∼ \sim 3.3 × 3.3\times prefill speedup over full KV recompute at r = 0.1 r{=}0.1 on Qwen2.5-3B and a ∼ \sim 3.6 × 3.6\times speedup on Qwen3-32B, and roughly 1.5 1.5 – 1.6 × 1.6\times at r = 0.3 r{=}0.3 . 
+ Throughput gains scale with context length, batch size, and model size. Next, we study these axes because they govern different deployment regimes. Long-context settings dominate prefill compute relative to per-request fixed costs, large-batch increases the GPU utilization of the correction stage, and larger models increase the per-token recompute cost. As shown in Table 3 , at r = 0.1 r{=}0.1 , AgentKVShift’s speedup over no-KV-reuse grows along all three axes. For Qwen2.5-3B at 4,096 4{,}096 tok/req, the speedup increases from 1.88 × 1.88\times at B = 1 B{=}1 to 3.33 × 3.33\times at B = 16 B{=}16 , while for Qwen3-32B the it increases from 3.09 × 3.09\times to 3.65 × 3.65\times . At longer contexts, AgentKVShift sustains 2.4 × 2.4\times – 3.0 × 3.0\times speedups across batch sizes on both models, demonstrating that the correction preserves benefits into the long-context regime where prefill cost dominates. 
+ 4.5 Orthogonality to KV Quantization 
+ Finally, we show that KV reuse is orthogonal to KV cache quantization. While KV reuse reduces prefill compute by avoiding redundant recomputation, KV quantization methods such as KIVI [ 11 ] and OTT [ 20 ] reduce storage and data-movement cost by storing KV states at lower bit-widths, and accelerate inference through the use of appropriate low-precision compute kernels. To demonstrate this orthogonality, we pair CacheBlend, ProphetKV,
+AgentKVShift with five quantization configurations spanning FP8 (E4M3), KIVI 2/4-bit, and OTT 2/4-bit, and sweep r ∈ { 0.1 , 0.3 } r\in\{0.1,0.3\} on LoCoMo with Qwen2.5-3B-Instruct and using AMem memory. We further show that AgentKVShift consistently outperforms both CacheBlend and ProphetKV when combined with quantization, retaining substantially higher accuracy across all aggressive bit-width settings. 
+ AgentKVShift composes with quantization across all configurations. As shown in Table 4 , AgentKVShift sustains the highest F1 under every quantization scheme at r = 0.1 r{=}0.1 and r = 0.3 r{=}0.3 , while CacheBlend and ProphetKV degrade sharply under aggressive bit-widths (e.g., at KIVI 2-bit, r = 0.1 r{=}0.1 , both baselines collapse
+below 0.08 0.08 F1 whereas AgentKVShift retains 0.203 0.203 ). 
+ Table 4 : F1 under KV cache quantization across recompute ratios r r . CB = CacheBlend, PKV = ProphetKV, AKS = AgentKVShift 
+ 𝐫 = 0.1 \mathbf{r=0.1} 
+ r = 0.3 r=0.3 
+ Method 
+ CB 
+ PKV 
+ AKS 
+ CB 
+ PKV 
+ AKS 
+ No Quant 
+ 0.150 
+ 0.125 
+ 0.319 
+ 0.239 
+ 0.250 
+ 0.324 
+ FP8 (E4M3) 
+ 0.146 
+ 0.006 
+ 0.321 
+ 0.240 
+ 0.256 
+ 0.323 
+ KIVI 2-bit 
+ 0.076 
+ 0.012 
+ 0.203 
+ 0.114 
+ 0.109 
+ 0.184 
+ KIVI 4-bit 
+ 0.190 
+ 0.102 
+ 0.277 
+ 0.277 
+ 0.239 
+ 0.314 
+ OTT 2-bit 
+ 0.080 
+ 0.038 
+ 0.202 
+ 0.113 
+ 0.110 
+ 0.166 
+ OTT 4-bit 
+ 0.196 
+ 0.100 
+ 0.317 
+ 0.237 
+ 0.243 
+ 0.323 
+ The mechanism follows directly from how the correction is computed: the probe estimate μ ^ C ℓ = 1 b ​ ∑ j ∈ S C ( K j , fresh ℓ − K j , reuse ℓ ) \hat{\mu}_{C}^{\ell}=\tfrac{1}{b}\sum_{j\in S_{C}}(K_{j,\mathrm{fresh}}^{\ell}-K_{j,\mathrm{reuse}}^{\ell}) is the gap between fresh and reused keys, so when the cache is quantized, the estimate absorbs both the semantic drift from context changes and the average quantization noise introduced during storage.
+CacheBlend and ProphetKV, by contrast, retain the full quantization error in their reused keys. 
+ 5 Conclusion 
+ In this work, we introduced AgentKVShift, a training-free probe-guided KV residual correction method designed for agentic memory systems for long-horizon LLM agents. Across LoCoMo and AMA-Bench-Recall,
+spanning both note- and graph-based memory systems and model scales from 3B to 32B parameters, AgentKVShift achieves near full-recompute quality, within 1.5–6% relative F1 on LoCoMo and within 3%
+LLM-judge accuracy on AMA-Bench-Recall, while refreshing only 10% and 30% of the cache, respectively, with prefill speedups reaching 2–3.5 × \times over no-KV-reuse within this
+operating range. AgentKVShift also outperforms CacheBlend and ProphetKV across all tested configurations, including under aggressive 2- and 4-bit KV quantization where it retains over
+2 × \times their F1. By estimating a shared memory chunk level offset from a small probe set and applying a single weighted correction to every reused token, AgentKVShift turns the
+refresh budget into useful signal across the entire chunk rather than leaving unrefreshed tokens stale. Overall, AgentKVShift offers a simple, yet effective correction method that couples residual structure
+with retrieval-time KV reuse agentic memory workloads. 
+ Acknowledgements 
+ This work has been funded in part by NSF, with award numbers #2112665, #2112167, #2003279, #2120019, #2211386, #2052809, #1911095 and in part by PRISM and CoCoSys, centers in JUMP 2.0, an SRC program sponsored by DARPA. We also thank Modal for providing compute credits through their compute grant program, which supported the experiments in this work. 
+ References 
+ [1] 
+ A. Agrawal, N. Kedia, A. Panwar, J. Mohan, N. Kwatra, B. Gulavani, A. Tumanov, and R. Ramjee (2024) 
+ Taming { \{ throughput-latency } \} tradeoff in { \{ llm } \} inference with { \{ sarathi-serve } \} .
+ In 18th USENIX symposium on operating systems design and implementation (OSDI 24) ,
+ pp. 117–134 .
+ Cited by: §1 .
+ [2] 
+ P. Chhikara, D. Khant, S. Aryan, T. Singh, and D. Yadav (2025) 
+ Mem0: building production-ready ai agents with scalable long-term memory .
+ arXiv preprint arXiv:2504.19413 .
+ Cited by: §2 .
+ [3] 
+ I. Gim, G. Chen, S. Lee, N. Sarda, A. Khandelwal, and L. Zhong (2024) 
+ Prompt cache: modular attention reuse for low-latency inference .
+ Proceedings of Machine Learning and Systems 6 , pp. 325–338 .
+ Cited by: §2 .
+ [4] 
+ Z. Huang, Z. Tian, Q. Guo, F. Zhang, Y. Zhou, D. Jiang, Z. Xie, and X. Zhou (2025) 
+ Licomemory: lightweight and cognitive agentic memory for efficient long-term reasoning .
+ arXiv preprint arXiv:2511.01448 .
+ Cited by: 2nd item ,
+ §2 ,
+ §4.1 ,
+ Table 1 .
+ [5] 
+ G. Izacard, M. Caron, L. Hosseini, S. Riedel, P. Bojanowski, A. Joulin, and E. Grave (2021) 
+ Unsupervised dense information retrieval with contrastive learning .
+ arXiv preprint arXiv:2112.09118 .
+ Cited by: §2 .
+ [6] 
+ V. Karpukhin, B. Oguz, S. Min, P. Lewis, L. Wu, S. Edunov, D. Chen, and W. Yih (2020) 
+ Dense passage retrieval for open-domain question answering .
+ In Proceedings of the 2020 conference on empirical methods in natural language processing (EMNLP) ,
+ pp. 6769–6781 .
+ Cited by: §2 .
+ [7] 
+ W. Kwon, Z. Li, S. Zhuang, Y. Sheng, L. Zheng, C. H. Yu, J. Gonzalez, H. Zhang, and I. Stoica (2023) 
+ Efficient memory management for large language model serving with pagedattention .
+ In Proceedings of the 29th symposium on operating systems principles ,
+ pp. 611–626 .
+ Cited by: §1 .
+ [8] 
+ W. Kwon (2025) 
+ VLLM: an efficient inference engine for large language models .
+ Ph.D. Thesis , UC Berkeley .
+ Cited by: §1 ,
+ §2 .
+ [9] 
+ K. Lee, X. Chen, H. Furuta, J. Canny, and I. Fischer (2024) 
+ A human-inspired reading agent with gist memory of very long contexts .
+ arXiv preprint arXiv:2402.09727 .
+ Cited by: §2 .
+ [10] 
+ P. Lewis, E. Perez, A. Piktus, F. Petroni, V. Karpukhin, N. Goyal, H. Küttler, M. Lewis, W. Yih, T. Rocktäschel, et al. (2020) 
+ Retrieval-augmented generation for knowledge-intensive nlp tasks .
+ Advances in neural information processing systems 33 , pp. 9459–9474 .
+ Cited by: §1 ,
+ §2 .
+ [11] 
+ Z. Liu, J. Yuan, H. Jin, S. Zhong, Z. Xu, V. Braverman, B. Chen, and X. Hu (2024) 
+ KIVI: a tuning-free asymmetric 2bit quantization for kv cache .
+ arXiv preprint arXiv:2402.02750 .
+ Cited by: item 3 ,
+ §4.5 .
+ [12] 
+ A. Maharana, D. Lee, S. Tulyakov, M. Bansal, F. Barbieri, and Y. Fang (2024) 
+ Evaluating very long-term conversational memory of llm agents .
+ In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) ,
+ pp. 13851–13870 .
+ Cited by: 1st item ,
+ item 3 ,
+ §4.1 .
+ [13] 
+ Mistral AI (2024) 
+ Mistral-7B-Instruct-v0.3 .
+ Hugging Face .
+ Note: https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3 Instruction fine-tuned version of Mistral-7B-v0.3 with extended vocabulary (32,768), v3 tokenizer, and function calling support 
+ Cited by: §1 ,
+ §4.1 .
+ [14] 
+ P. Nair (2025) 
+ Softmax is 1 / 2 1/2 -lipschitz: a tight bound across all l p l_{p} norms .
+ arXiv preprint arXiv:2510.23012 .
+ Cited by: §B.1 .
+ [15] 
+ OpenAI (2024) 
+ GPT-4o .
+ Note: https://platform.openai.com/ OpenAI multimodal large language model 
+ Cited by: §4.1 ,
+ Table 2 ,
+ Table 2 .
+ [16] 
+ C. Packer, V. Fang, S. Patil, K. Lin, S. Wooders, and J. Gonzalez (2023) 
+ MemGPT: towards llms as operating systems. .
+ Cited by: §2 .
+ [17] 
+ M. Pink, Q. Wu, V. A. Vo, J. Turek, J. Mu, A. Huth, and M. Toneva (2025) 
+ Position: episodic memory is the missing piece for long-term llm agents .
+ arXiv preprint arXiv:2502.06975 .
+ Cited by: §1 ,
+ §2 .
+ [18] 
+ P. Rasmussen, P. Paliychuk, T. Beauvais, J. Ryan, and D. Chalef (2025) 
+ Zep: a temporal knowledge graph architecture for agent memory .
+ arXiv preprint arXiv:2501.13956 .
+ Cited by: §2 .
+ [19] 
+ S. Robertson and H. Zaragoza (2009) 
+ The probabilistic relevance framework: bm25 and beyond .
+ Foundations and Trends in Information Retrieval 3 ( 4 ), pp. 333–389 .
+ Cited by: §2 .
+ [20] 
+ Y. Su, Y. Zhou, Q. Qiu, J. Li, Q. Xia, P. Li, X. Duan, Z. Wang, and M. Zhang (2025) 
+ Accurate kv cache quantization with outlier tokens tracing .
+ In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) ,
+ pp. 12895–12915 .
+ Cited by: item 3 ,
+ §4.5 .
+ [21] 
+ Q. Team (2024) 
+ Qwen2.5: a party of foundation models .
+ External Links: Link 
+ Cited by: §1 ,
+ §4.1 .
+ [22] 
+ Q. Team (2025) 
+ Qwen3 technical report .
+ External Links: 2505.09388 ,
+ Link 
+ Cited by: §1 ,
+ §4.1 .
+ [23] 
+ S. Wang, J. Chen, Y. Pan, H. Huang, Y. Hao, X. Zou, W. Xia, W. Zhang, H. Wang, J. Li, et al. (2026) 
+ ProphetKV: user-query-driven selective recomputation for efficient kv cache reuse in retrieval-augmented generation .
+ arXiv preprint arXiv:2602.02579 .
+ Cited by: §1 ,
+ §1 ,
+ §2 ,
+ §4.1 .
+ [24] 
+ W. Xu, Z. Liang, K. Mei, H. Gao, J. Tan, and Y. Zhang (2025) 
+ A-mem: agentic memory for llm agents .
+ arXiv preprint arXiv:2502.12110 .
+ Cited by: 1st item ,
+ §1 ,
+ §2 ,
+ §4.1 ,
+ Table 1 .
+ [25] 
+ S. Yan, X. Yang, X. Ma, E. Nie, Z. Ding, Y. Ma, Z. Li, Z. Huang, H. Schütze, and V. Tresp (2025) 
+ Memory-r1: enhancing large language model agents to manage and utilize memories via reinforcement learning .
+ arXiv preprint arXiv:2508.19828 .
+ Cited by: §1 .
+ [26] 
+ J. Yao, H. Li, Y. Liu, S. Ray, Y. Cheng, Q. Zhang, K. Du, S. Lu, and J. Jiang (2025) 
+ Cacheblend: fast large language model serving for rag with cached knowledge fusion .
+ In Proceedings of the twentieth European conference on computer systems ,
+ pp. 94–109 .
+ Cited by: §1 ,
+ §1 ,
+ §2 ,
+ §3.3 ,
+ §4.1 .
+ [27] 
+ G. Zhang, M. Fu, G. Wan, M. Yu, K. Wang, and S. Yan 
+ G-memory: tracing hierarchical memory for multi-agent systems, 2025 .
+ URL https://arxiv. org/abs/2506.07398 .
+ Cited by: §1 .
+ [28] 
+ Y. Zhao, B. Yuan, J. Huang, H. Yuan, Z. Yu, H. Xu, L. Hu, A. Shankarampeta, Z. Huang, W. Ni, et al. (2026) 
+ AMA-bench: evaluating long-horizon memory for agentic applications .
+ arXiv preprint arXiv:2602.22769 .
+ Cited by: 2nd item ,
+ item 3 ,
+ §4.1 ,
+ §4.2.2 .
+ [29] 
+ L. Zheng, L. Yin, Z. Xie, C. Sun, J. Huang, C. H. Yu, S. Cao, C. Kozyrakis, I. Stoica, J. E. Gonzalez, et al. (2024) 
+ Sglang: efficient execution of structured language model programs .
+ Advances in neural information processing systems 37 , pp. 62557–62583 .
+ Cited by: §1 ,
+ §2 .
+ [30] 
+ W. Zhong, L. Guo, Q. Gao, H. Ye, and Y. Wang (2024) 
+ Memorybank: enhancing large language models with long-term memory .
+ In Proceedings of the AAAI conference on artificial intelligence ,
+ Vol. 38 , pp. 19724–19731 .
+ Cited by: §2 .
+ [31] 
+ Z. Zhou, A. Qu, Z. Wu, S. Kim, A. Prakash, D. Rus, J. Zhao, B. K. H. Low, and P. P. Liang (2025) 
+ Mem1: learning to synergize memory and reasoning for efficient long-horizon agents .
+ arXiv preprint arXiv:2506.15841 .
+ Cited by: §1 .
+ Contents 
+ This appendix provides supplementary results, evaluation details, and
+formal analysis supporting the main paper. It is organized into three
+parts: 
+ • 
+ Appendix A — Extended Experimental Results. 
+Extended experimental setup and reproducibility details
+(§ A.1 ), the full AMA-Bench breakdown across all
+reasoning capabilities (§ A.2 ), recompute
+ratio sweeps on ROUGE-1 and BLEU-1 (§ A.3 ), the
+LLM-as-a-Judge prompt used to produce the accuracy scores
+(§ A.4 ), and results under six KV-cache
+quantization regimes (§ A.5 ). 
+ • 
+ Appendix B — Theoretical Analysis. 
+Discussions and proofs of the deterministic attention
+perturbation bound (§ B.1 ), the error bounds
+before and after probe-guided correction (§ B.2 ,
+§ B.3 ), and the sufficient condition under which
+correction strictly tightens the bound (§ B.4 ). 
+ • 
+ Appendix C — Empirical Validation
+of the Modeling Assumptions. Diagnostics that supports the
+residual decomposition r i = μ + ξ i r_{i}=\mu+\xi_{i} via mean-explained
+energy and top-singular-value suppression
+(§ C.1 ), and the sub-Gaussian fluctuation
+assumption via probe-mean concentration and random-projection
+QQ plots (§ C.2 ). 
+ Appendix A Extended Experimental Results 
+ A.1 Extended Experimental Set-Up and Reproducibility 
+ Models: 
+ We evaluate four open-source instruction-tuned models spanning two families and a
+ ∼ \sim 10 × \times parameter range. All checkpoints are obtained from the HuggingFace Hub
+and listed in Table 5 . 
+ Table 5: Models 
+ Model 
+ HF Identifier 
+ Qwen2.5-3B-Instruct 
+ Qwen/Qwen2.5-3B-Instruct 
+ Qwen3-4B-Instruct 
+ Qwen/Qwen3-4B-Instruct-2507 
+ Mistral-7B-Instruct-v0.3 
+ mistralai/Mistral-7B-Instruct-v0.3 
+ Qwen3-32B 
+ Qwen/Qwen3-32B 
+ Agentic Memory Systems: 
+ We evaluate against two recent memory systems: 
+ • 
+ A-MEM [ 24 ] –
+Source: https://github.com/agiresearch/a-mem 
+ • 
+ LiCoMemory [ 4 ] –
+Source: https://github.com/EverM0re/LiCoMemory 
+ We use each system’s default ingestion pipeline and top- k k retrieval with k = 10 k=10 , and
+run all KV-reuse methods on top of the created memory units without modification to the memory system itself. 
+ Benchmarks: 
+ • 
+ LoCoMo [ 12 ] –
+Source: https://github.com/snap-research/locomo 
+ • 
+ AMA-Bench [ 28 ] –
+Source: https://huggingface.co/datasets/AMA-bench/AMA-bench 
+ Hardware: 
+ LoCoMo accuracy and throughput experiments with the 3B–7B models run on a single
+NVIDIA A100 80GB. AMA-Bench accuracy experiments and throughput profiling with
+Qwen3-32B run on a single NVIDIA H200 due to memory requirements. 
+ A.2 Extended AMA-Bench Discussion 
+ Table 6 : F1 and LLM-judge accuracy by domain on AMA-Bench
+(Qwen3-32B, r = 0.3 r{=}0.3 , judged by GPT-4o). Values in parentheses
+denote the retention ratio relative to Full Rec. Best KV-reuse result
+is bold , second best is underlined .
+CB = CacheBlend, PKV = ProphetKV, AgentKVShift is our method. 
+ F1( ↑ \uparrow ) 
+ Accuracy( ↑ \uparrow ) 
+ Domain 
+ Full Rec. 
+ CB 
+ PKV 
+ AgentKVShift 
+ Full Rec. 
+ CB 
+ PKV 
+ AgentKVShift 
+ Embodied AI 
+ 0.418 
+ 0.334  (79.9%) 
+ 0.354   (84.7%) 
+ 0.376   (89.9%) 
+ 0.122 
+ 0.064  (52.5%) 
+ 0.067   (54.9%) 
+ 0.081   (66.4%) 
+ Game 
+ 0.363 
+ 0.316  (87.1%) 
+ 0.337   (92.8%) 
+ 0.338   (93.1%) 
+ 0.367 
+ 0.281  (76.6%) 
+ 0.308   (83.9%) 
+ 0.322   (87.7%) 
+ OpenWorld QA 
+ 0.311 
+ 0.127  (40.8%) 
+ 0.196   (63.0%) 
+ 0.200   (64.3%) 
+ 0.386 
+ 0.147  (38.1%) 
+ 0.158   (40.9%) 
+ 0.278   (72.0%) 
+ Software 
+ 0.175 
+ 0.176  (100.6%) 
+ 0.179   (102.3%) 
+ 0.183   (104.6%) 
+ 0.141 
+ 0.162   (114.9%) 
+ 0.167   (118.4%) 
+ 0.155  (109.9%) 
+ Text2SQL 
+ 0.298 
+ 0.240  (80.5%) 
+ 0.260   (87.2%) 
+ 0.264   (88.6%) 
+ 0.222 
+ 0.137  (61.7%) 
+ 0.154   (69.4%) 
+ 0.183   (82.4%) 
+ Web 
+ 0.277 
+ 0.199  (71.8%) 
+ 0.245   (88.4%) 
+ 0.231   (83.4%) 
+ 0.349 
+ 0.218  (62.5%) 
+ 0.263   (75.4%) 
+ 0.288   (82.5%) 
+ Wtd. Avg. 
+ 0.302 
+ 0.231  (76.5%) 
+ 0.259   (85.8%) 
+ 0.263   (87.1%) 
+ 0.257 
+ 0.165  (64.2%) 
+ 0.183   (71.2%) 
+ 0.213   (82.9%) 
+ Table 7 : F1 and LLM-judge accuracy by question type on AMA-Bench
+(Qwen3-32B, r = 0.3 r{=}0.3 , judged by GPT-4o). Values in parentheses
+denote the retention ratio relative to Full Rec. Best KV-reuse result
+is bold , second best is underlined .
+CB = CacheBlend, PKV = ProphetKV, AgentKVShift is our method. 
+ F1( ↑ \uparrow ) 
+ Accuracy( ↑ \uparrow ) 
+ Capability 
+ Full Rec. 
+ CB 
+ PKV 
+ AgentKVShift 
+ Full Rec. 
+ CB 
+ PKV 
+ AgentKVShift 
+ A. Recall 
+ 0.296 
+ 0.270  (91.2%) 
+ 0.277   (93.6%) 
+ 0.284   (95.9%) 
+ 0.287 
+ 0.240   (83.6%) 
+ 0.236  (82.2%) 
+ 0.279   (97.2%) 
+ B. Causal Inference 
+ 0.284 
+ 0.213  (75.0%) 
+ 0.244   (85.9%) 
+ 0.252   (88.7%) 
+ 0.277 
+ 0.146  (52.7%) 
+ 0.191   (69.0%) 
+ 0.218   (78.7%) 
+ C. State Updating 
+ 0.320 
+ 0.211  (65.9%) 
+ 0.254   (79.4%) 
+ 0.263   (82.2%) 
+ 0.252 
+ 0.119  (47.2%) 
+ 0.147   (58.3%) 
+ 0.182   (72.2%) 
+ D. State Abstraction 
+ 0.311 
+ 0.211  (67.8%) 
+ 0.254   (81.7%) 
+ 0.235   (75.6%) 
+ 0.176 
+ 0.114  (64.8%) 
+ 0.118   (67.0%) 
+ 0.118   (67.0%) 
+ Wtd. Avg. 
+ 0.302 
+ 0.231  (76.5%) 
+ 0.259   (85.8%) 
+ 0.263   (87.1%) 
+ 0.257 
+ 0.165  (64.2%) 
+ 0.183   (71.2%) 
+ 0.213   (82.9%) 
+ The main text (§ 4.2.2 ) focuses on the Recall subset of
+AMA-Bench because it cleanly isolates the per-chunk retrieval signal that KV
+reuse is designed to preserve. In this appendix, we report the full breakdown
+across all four reasoning capabilities, Recall (A), Causal Inference (B),
+State Updating (C), and State Abstraction (D), reported both by domain
+(Table 6 ) and by capability
+(Table 7 ). Capabilities B–D require integrating
+evidence across retrieved chunks, and therefore stress KV reuse
+beyond chunk-local fidelity. 
+ Across both views, AgentKVShift consistently achieves the best F1 and
+LLM-judge accuracy among KV-reuse baselines on the weighted average,
+narrowing the gap to full recomputation. The advantage is most pronounced
+on capabilities that require cross-chunk integration (Causal Inference and
+State Updating), where competing reuse methods (CB, PKV) degrade sharply
+relative to the full-recompute reference. 
+ A.3 Recompute Ratio Sweeps 
+ To complement the F1 results in the main text, we also report ROUGE-1
+(Figure 5(a) ) and BLEU-1 (Figure 5(b) )
+across recompute ratios r r . Both surface-form metrics track the F1 trend
+closely: our method approaches the no KV reuse baseline ( r = 1.0 r{=}1.0 )
+at substantially lower recompute budgets than competing KV-reuse
+baselines. 
+ (a) ROUGE-1 
+ (b) BLEU-1 
+ Figure 5 : Recompute-ratio sweep on ROUGE-1 (left) and BLEU-1 (right). The dashed line denotes the no KV reuse baseline. 
+ A.4 LLM-as-a-Judge Evaluation Protocol 
+ For the accuracy column reported in Tables 6 and
+ 7 , we use GPT-4o as an LLM judge, prompted to
+compare each model response against a reference answer and emit a
+single binary decision. The exact prompt is shown below; placeholders
+are highlighted in red. 
+ Prompt template for LLM-as-a-Judge (single-reference, binary). 
+ [Instruction] Please act as an impartial judge and evaluate the
+quality of the response provided by an AI assistant to the user question
+below. Your evaluation should consider correctness. You will be given a
+reference (golden) answer and the assistant’s answer. Begin by comparing
+the assistant’s answer with the reference answer. Identify and correct
+any mistakes. Be as objective as possible. 
+ Your task is to determine if the predicted answer is correct based on:
+(1) factual correctness compared to the reference, (2) completeness of
+the answer, and (3) relevance to the question. 
+ [Question]   {question} 
+ [Reference Answer]   {golden_answer} 
+ [The Start of Assistant’s Answer]   {response}   [The End of Assistant’s Answer] 
+ Is the predicted answer correct? Respond with ONLY “yes” or “no”.
+Do not include any explanation. 
+ A.5 Extended Results under KV Cache Quantization 
+ To assess robustness when KV reuse is composed with KV cache
+quantization, Table 8 reports F1, ROUGE-1, and
+BLEU-1 across recompute ratios r ∈ { 0.1 , 0.2 , 0.3 , 0.4 , 0.5 } r\in\{0.1,0.2,0.3,0.4,0.5\} for six
+quantization regimes: no quantization, FP8 (E4M3), KIVI 2- and 4-bit,
+and OTT 2- and 4-bit. We compare three reuse pipelines: CacheBlend
+(CB), our AgentKVShift correction method, and ProphetKV (PKV). 
+ Our method dominates across nearly every (quantization, ratio) cell,
+with two consistent patterns. First, the gap between our method and
+the next-best baseline is largest at low recompute ratios
+( r = 0.1 , 0.2 r=0.1,0.2 ), where competing methods degrade sharply but ours
+remains close to its full-recompute ceiling. Second, our method is
+notably more robust under aggressive quantization: under KIVI 2-bit
+and OTT 2-bit at r = 0.1 r=0.1 , our F1 ( ≈ 0.20 \approx 0.20 ) more than doubles
+that of CacheBlend and is an order of magnitude above ProphetKV,
+indicating that probe-guided mean correction substantially mitigates
+the compounding errors introduced when reuse and low-bit quantization
+are stacked. The only cells where a baseline narrowly edges ours are
+at high recompute ratios ( r = 0.5 r=0.5 ) under 2-/4-bit KIVI, where the
+extra fresh KV tokens dominate the error budget. 
+ Table 8: F1, ROUGE-1, and BLEU-1 across quantization methods,
+recompute ratios, and reuse pipelines on the LoCoMo benchmark.
+Bold denotes the best result per row. 
+ CacheBlend 
+ ProphetKV 
+ AgentKVShift 
+ Quant. 
+ Ratio 
+ F1 
+ R-1 
+ B-1 
+ F1 
+ R-1 
+ B-1 
+ F1 
+ R-1 
+ B-1 
+ No Quant 
+ 0.1 
+ 0.150 
+ 0.159 
+ 0.121 
+ 0.125 
+ 0.130 
+ 0.103 
+ 0.319 
+ 0.330 
+ 0.277 
+ 0.2 
+ 0.198 
+ 0.210 
+ 0.162 
+ 0.215 
+ 0.226 
+ 0.180 
+ 0.326 
+ 0.337 
+ 0.283 
+ 0.3 
+ 0.239 
+ 0.252 
+ 0.201 
+ 0.250 
+ 0.263 
+ 0.213 
+ 0.324 
+ 0.335 
+ 0.281 
+ 0.4 
+ 0.280 
+ 0.291 
+ 0.241 
+ 0.283 
+ 0.296 
+ 0.246 
+ 0.327 
+ 0.339 
+ 0.284 
+ 0.5 
+ 0.326 
+ 0.338 
+ 0.286 
+ 0.305 
+ 0.316 
+ 0.271 
+ 0.329 
+ 0.340 
+ 0.291 
+ FP8 (E4M3) 
+ 0.1 
+ 0.146 
+ 0.154 
+ 0.117 
+ 0.006 
+ 0.006 
+ 0.004 
+ 0.321 
+ 0.333 
+ 0.279 
+ 0.2 
+ 0.196 
+ 0.208 
+ 0.160 
+ 0.199 
+ 0.207 
+ 0.165 
+ 0.328 
+ 0.339 
+ 0.284 
+ 0.3 
+ 0.240 
+ 0.253 
+ 0.202 
+ 0.256 
+ 0.269 
+ 0.220 
+ 0.323 
+ 0.334 
+ 0.279 
+ 0.4 
+ 0.275 
+ 0.287 
+ 0.237 
+ 0.275 
+ 0.287 
+ 0.240 
+ 0.324 
+ 0.336 
+ 0.281 
+ 0.5 
+ 0.325 
+ 0.336 
+ 0.285 
+ 0.297 
+ 0.308 
+ 0.261 
+ 0.328 
+ 0.340 
+ 0.290 
+ KIVI 2-bit 
+ 0.1 
+ 0.076 
+ 0.078 
+ 0.055 
+ 0.012 
+ 0.014 
+ 0.009 
+ 0.203 
+ 0.210 
+ 0.165 
+ 0.2 
+ 0.094 
+ 0.099 
+ 0.072 
+ 0.072 
+ 0.076 
+ 0.055 
+ 0.200 
+ 0.207 
+ 0.166 
+ 0.3 
+ 0.114 
+ 0.119 
+ 0.091 
+ 0.109 
+ 0.114 
+ 0.084 
+ 0.184 
+ 0.190 
+ 0.154 
+ 0.4 
+ 0.144 
+ 0.150 
+ 0.117 
+ 0.137 
+ 0.143 
+ 0.108 
+ 0.188 
+ 0.193 
+ 0.156 
+ 0.5 
+ 0.255 
+ 0.267 
+ 0.217 
+ 0.169 
+ 0.175 
+ 0.138 
+ 0.244 
+ 0.254 
+ 0.206 
+ KIVI 4-bit 
+ 0.1 
+ 0.190 
+ 0.196 
+ 0.154 
+ 0.102 
+ 0.108 
+ 0.084 
+ 0.277 
+ 0.287 
+ 0.237 
+ 0.2 
+ 0.234 
+ 0.247 
+ 0.193 
+ 0.182 
+ 0.191 
+ 0.150 
+ 0.309 
+ 0.321 
+ 0.266 
+ 0.3 
+ 0.277 
+ 0.289 
+ 0.237 
+ 0.239 
+ 0.251 
+ 0.200 
+ 0.314 
+ 0.327 
+ 0.273 
+ 0.4 
+ 0.299 
+ 0.310 
+ 0.260 
+ 0.252 
+ 0.265 
+ 0.216 
+ 0.326 
+ 0.338 
+ 0.284 
+ 0.5 
+ 0.331 
+ 0.343 
+ 0.292 
+ 0.275 
+ 0.286 
+ 0.239 
+ 0.330 
+ 0.341 
+ 0.293 
+ OTT 2-bit 
+ 0.1 
+ 0.080 
+ 0.082 
+ 0.058 
+ 0.038 
+ 0.040 
+ 0.030 
+ 0.202 
+ 0.209 
+ 0.165 
+ 0.2 
+ 0.103 
+ 0.107 
+ 0.078 
+ 0.079 
+ 0.084 
+ 0.061 
+ 0.200 
+ 0.206 
+ 0.165 
+ 0.3 
+ 0.113 
+ 0.118 
+ 0.090 
+ 0.110 
+ 0.116 
+ 0.085 
+ 0.166 
+ 0.171 
+ 0.137 
+ 0.4 
+ 0.145 
+ 0.150 
+ 0.118 
+ 0.138 
+ 0.146 
+ 0.108 
+ 0.180 
+ 0.185 
+ 0.150 
+ 0.5 
+ 0.257 
+ 0.267 
+ 0.220 
+ 0.168 
+ 0.176 
+ 0.136 
+ 0.264 
+ 0.276 
+ 0.228 
+ OTT 4-bit 
+ 0.1 
+ 0.196 
+ 0.204 
+ 0.160 
+ 0.100 
+ 0.106 
+ 0.081 
+ 0.317 
+ 0.329 
+ 0.275 
+ 0.2 
+ 0.202 
+ 0.214 
+ 0.164 
+ 0.182 
+ 0.191 
+ 0.150 
+ 0.325 
+ 0.337 
+ 0.281 
+ 0.3 
+ 0.237 
+ 0.249 
+ 0.199 
+ 0.243 
+ 0.255 
+ 0.204 
+ 0.323 
+ 0.334 
+ 0.279 
+ 0.4 
+ 0.280 
+ 0.291 
+ 0.241 
+ 0.258 
+ 0.270 
+ 0.220 
+ 0.324 
+ 0.336 
+ 0.281 
+ 0.5 
+ 0.327 
+ 0.338 
+ 0.287 
+ 0.274 
+ 0.284 
+ 0.238 
+ 0.328 
+ 0.339 
+ 0.291 
+ Appendix B Theoretical Analysis 
+ This section provides the formal statements and proofs supporting the
+analysis in § 3.4 . We first establish a deterministic
+attention-perturbation bound (§ B.1 ). We then specialize
+it to the KV-reuse setting both before (§ B.2 ) and after
+(§ B.3 ) probe-guided mean correction, and finally give a
+sufficient condition under which correction yields a strictly tighter
+high-probability error bound (§ B.4 ). 
+ B.1 Lemma 1: Deterministic Attention Perturbation Bound 
+ Lemma 1 (Deterministic attention perturbation bound) . 
+ Let q ∈ ℝ d q\in\mathbb{R}^{d} be a fixed query, and let 
+ k i ⋆ , v i ⋆ ∈ ℝ d , i = 1 , … , n k_{i}^{\star},\;v_{i}^{\star}\in\mathbb{R}^{d},\qquad i=1,\dots,n 
+ denote the fresh keys and values for a single attention head. Define 
+ z i ⋆ := q ⊤ ​ k i ⋆ d α i ⋆ := exp ⁡ ( z i ⋆ ) ∑ m = 1 n exp ⁡ ( z m ⋆ ) , y ⋆ := ∑ i = 1 n α i ⋆ ​ v i ⋆ z_{i}^{\star}:=\frac{q^{\top}k_{i}^{\star}}{\sqrt{d}}\qquad\alpha_{i}^{\star}:=\frac{\exp(z_{i}^{\star})}{\sum_{m=1}^{n}\exp(z_{m}^{\star})},\qquad y^{\star}:=\sum_{i=1}^{n}\alpha_{i}^{\star}v_{i}^{\star} 
+ For arbitrary perturbed keys and values k i , v i ∈ ℝ d k_{i},v_{i}\in\mathbb{R}^{d} , define 
+ z i := q ⊤ ​ k i d α i := exp ⁡ ( z i ) ∑ m = 1 n exp ⁡ ( z m ) , y := ∑ i = 1 n α i ​ v i z_{i}:=\frac{q^{\top}k_{i}}{\sqrt{d}}\qquad\alpha_{i}:=\frac{\exp(z_{i})}{\sum_{m=1}^{n}\exp(z_{m})},\qquad y:=\sum_{i=1}^{n}\alpha_{i}v_{i} 
+ Assume that ‖ v i ⋆ ‖ 2 ≤ V max \|v_{i}^{\star}\|_{2}\leq V_{\max} for all i i . Then 
+ ‖ y − y ⋆ ‖ 2 ≤ 2 ​ V max ​ ‖ q ‖ 2 2 ​ d ​ max 1 ≤ i ≤ n ​ ‖ k i − k i ⋆ ‖ 2 + max 1 ≤ i ≤ n ⁡ ‖ v i − v i ⋆ ‖ 2 \|y-y^{\star}\|_{2}\leq\frac{2V_{\max}\|q\|_{2}}{2\sqrt{d}}\max_{1\leq i\leq n}\|k_{i}-k_{i}^{\star}\|_{2}+\max_{1\leq i\leq n}\|v_{i}-v_{i}^{\star}\|_{2} 
+ Proof. 
+Write out the gap between clear attention output and perturbed attention output: 
+ y − y ⋆ = ∑ i = 1 n α i ​ v i − ∑ i = 1 n α i ⋆ ​ v i ⋆ = ∑ i = 1 n ( α i − α i ⋆ ) ​ v i ⋆ + ∑ i = 1 n α i ​ ( v i − v i ⋆ ) y-y^{\star}=\sum_{i=1}^{n}\alpha_{i}v_{i}-\sum_{i=1}^{n}\alpha_{i}^{\star}v_{i}^{\star}=\sum_{i=1}^{n}(\alpha_{i}-\alpha_{i}^{\star})v_{i}^{\star}+\sum_{i=1}^{n}\alpha_{i}(v_{i}-v_{i}^{\star}) 
+ Hence, by the triangle inequality, 
+ ‖ y − y ⋆ ‖ 2 ≤ ‖ ∑ i = 1 n ( α i − α i ⋆ ) ​ v i ⋆ ‖ 2 + ‖ ∑ i = 1 n α i ​ ( v i − v i ⋆ ) ‖ 2 \|y-y^{\star}\|_{2}\leq\left\|\sum_{i=1}^{n}(\alpha_{i}-\alpha_{i}^{\star})v_{i}^{\star}\right\|_{2}+\left\|\sum_{i=1}^{n}\alpha_{i}(v_{i}-v_{i}^{\star})\right\|_{2} 
+ For the first term, using ‖ v i ⋆ ‖ 2 ≤ V max \|v_{i}^{\star}\|_{2}\leq V_{\max} , 
+ ‖ ∑ i = 1 n ( α i − α i ⋆ ) ​ v i ⋆ ‖ 2 ≤ ∑ i = 1 n | α i − α i ⋆ | ​ ‖ v i ⋆ ‖ 2 ≤ V max ​ ‖ α − α ⋆ ‖ 1 \left\|\sum_{i=1}^{n}(\alpha_{i}-\alpha_{i}^{\star})v_{i}^{\star}\right\|_{2}\leq\sum_{i=1}^{n}|\alpha_{i}-\alpha_{i}^{\star}|\,\|v_{i}^{\star}\|_{2}\leq V_{\max}\|\alpha-\alpha^{\star}\|_{1} 
+ For the second term, since α i ≥ 0 \alpha_{i}\geq 0 and ∑ i α i = 1 \sum_{i}\alpha_{i}=1 , 
+ ‖ ∑ i = 1 n α i ​ ( v i − v i ⋆ ) ‖ 2 ≤ ∑ i = 1 n α i ​ ‖ v i − v i ⋆ ‖ 2 ≤ max 1 ≤ i ≤ n ⁡ ‖ v i − v i ⋆ ‖ 2 \left\|\sum_{i=1}^{n}\alpha_{i}(v_{i}-v_{i}^{\star})\right\|_{2}\leq\sum_{i=1}^{n}\alpha_{i}\|v_{i}-v_{i}^{\star}\|_{2}\leq\max_{1\leq i\leq n}\|v_{i}-v_{i}^{\star}\|_{2} 
+ Therefore, 
+ ‖ y − y ⋆ ‖ 2 ≤ V max ​ ‖ α − α ⋆ ‖ 1 + max 1 ≤ i ≤ n ⁡ ‖ v i − v i ⋆ ‖ 2 \|y-y^{\star}\|_{2}\leq V_{\max}\|\alpha-\alpha^{\star}\|_{1}+\max_{1\leq i\leq n}\|v_{i}-v_{i}^{\star}\|_{2} 
+ Next, define the logit perturbations 
+ δ i := z i − z i ⋆ = q ⊤ ​ ( k i − k i ⋆ ) d . \delta_{i}:=z_{i}-z_{i}^{\star}=\frac{q^{\top}(k_{i}-k_{i}^{\star})}{\sqrt{d}}. 
+ Use the fact that softmax is 1 / 2 1/2 -Lipschitz [ 14 ] , 
+ ‖ α − α ⋆ ‖ 1 ≤ 1 2 ​ ‖ δ ‖ ∞ \|\alpha-\alpha^{\star}\|_{1}\leq\frac{1}{2}\|\delta\|_{\infty} 
+ Moreover, 
+ | δ i | = | q ⊤ ​ ( k i − k i ⋆ ) d | ≤ ‖ q ‖ 2 ​ ‖ k i − k i ⋆ ‖ 2 d |\delta_{i}|=\left|\frac{q^{\top}(k_{i}-k_{i}^{\star})}{\sqrt{d}}\right|\leq\frac{\|q\|_{2}\,\|k_{i}-k_{i}^{\star}\|_{2}}{\sqrt{d}} 
+ so 
+ ‖ δ ‖ ∞ ≤ ‖ q ‖ 2 d ​ max 1 ≤ i ≤ n ​ ‖ k i − k i ⋆ ‖ 2 \|\delta\|_{\infty}\leq\frac{\|q\|_{2}}{\sqrt{d}}\max_{1\leq i\leq n}\|k_{i}-k_{i}^{\star}\|_{2} 
+ Combining the above inequalities yields 
+ ‖ y − y ⋆ ‖ 2 ≤ V max ​ ‖ q ‖ 2 2 ​ d ​ max 1 ≤ i ≤ n ​ ‖ k i − k i ⋆ ‖ 2 + max 1 ≤ i ≤ n ⁡ ‖ v i − v i ⋆ ‖ 2 \|y-y^{\star}\|_{2}\leq\frac{V_{\max}\|q\|_{2}}{2\sqrt{d}}\max_{1\leq i\leq n}\|k_{i}-k_{i}^{\star}\|_{2}+\max_{1\leq i\leq n}\|v_{i}-v_{i}^{\star}\|_{2} 
+ ■ \blacksquare 
+ B.2 Proposition 1: Attention Error Bound Before Correction 
+ Proposition 1 (Attention Error Bound Before Correction) . 
+ Again, let q ∈ ℝ d q\in\mathbb{R}^{d} be a fixed query, and define the offsets: 
+ r i K := k i ⋆ − k i reuse , r i V := v i ⋆ − v i reuse r_{i}^{K}:=k_{i}^{\star}-k_{i}^{\mathrm{reuse}},\qquad r_{i}^{V}:=v_{i}^{\star}-v_{i}^{\mathrm{reuse}} 
+ and assume the decomposition 
+ r i K = μ K + ξ i K , r i V = μ V + ξ i V r_{i}^{K}=\mu_{K}+\xi_{i}^{K},\qquad r_{i}^{V}=\mu_{V}+\xi_{i}^{V} 
+ where μ K , μ V ∈ ℝ d \mu_{K},\mu_{V}\in\mathbb{R}^{d} are fixed chunk-level offsets and ξ i K , ξ i V \xi_{i}^{K},\xi_{i}^{V} are mean-zero fluctuations. Define 
+ z i reuse := q ⊤ ​ k i reuse d , α i reuse := exp ⁡ ( z i reuse ) ∑ m = 1 n exp ⁡ ( z m reuse ) , y reuse := ∑ i = 1 n α i reuse ​ v i reuse z_{i}^{\mathrm{reuse}}:=\frac{q^{\top}k_{i}^{\mathrm{reuse}}}{\sqrt{d}},\qquad\alpha_{i}^{\mathrm{reuse}}:=\frac{\exp(z_{i}^{\mathrm{reuse}})}{\sum_{m=1}^{n}\exp(z_{m}^{\mathrm{reuse}})},\qquad y^{\mathrm{reuse}}:=\sum_{i=1}^{n}\alpha_{i}^{\mathrm{reuse}}v_{i}^{\mathrm{reuse}} 
+ We assume boundedness for value vectors ( ‖ v i ⋆ ‖ 2 ≤ V max ) ​ ∀ i (\|v_{i}^{\star}\|_{2}\leq V_{\max})\forall i and centered token-wise residual fluctuations are sub-Gaussian: 
+ Pr ( ∥ ξ i K ∥ 2 ≥ t ) ≤ 2 e − t 2 / ( 2 σ K 2 ) , Pr ( ∥ ξ i V ∥ 2 ≥ t ) ≤ 2 e − t 2 / ( 2 σ V 2 ) \Pr(\|\xi_{i}^{K}\|_{2}\geq t)\leq 2e^{-t^{2}/(2\sigma_{K}^{2})},\qquad\Pr(\|\xi_{i}^{V}\|_{2}\geq t)\leq 2e^{-t^{2}/(2\sigma_{V}^{2})} 
+ Then for any 0 < δ < 1 0<\delta<1 , with probability at least 1 − δ 1-\delta , 
+ ‖ y reuse − y ⋆ ‖ 2 ≤ V max ​ ‖ q ‖ 2 2 ​ d ​ ( ‖ μ K ‖ 2 + σ K ​ 2 ​ log ⁡ 4 ​ n δ ) + ( ‖ μ V ‖ 2 + σ V ​ 2 ​ log ⁡ 4 ​ n δ ) \|y^{\mathrm{reuse}}-y^{\star}\|_{2}\leq\frac{V_{\max}\|q\|_{2}}{2\sqrt{d}}\left(\|\mu_{K}\|_{2}+\sigma_{K}\sqrt{2\log\frac{4n}{\delta}}\right)+\left(\|\mu_{V}\|_{2}+\sigma_{V}\sqrt{2\log\frac{4n}{\delta}}\right) 
+ Proof. 
+Apply Lemma 1 with 
+ k i = k i reuse , v i = v i reuse k_{i}=k_{i}^{\mathrm{reuse}},\qquad v_{i}=v_{i}^{\mathrm{reuse}} 
+ Since 
+ k i − k i ⋆ = − r i K , v i − v i ⋆ = − r i V k_{i}-k_{i}^{\star}=-r_{i}^{K},\qquad v_{i}-v_{i}^{\star}=-r_{i}^{V} 
+ Lemma 1 gives 
+ ‖ y reuse − y ⋆ ‖ 2 ≤ V max ​ ‖ q ‖ 2 2 ​ d ​ max 1 ≤ i ≤ n ​ ‖ r i K ‖ 2 + max 1 ≤ i ≤ n ⁡ ‖ r i V ‖ 2 \|y^{\mathrm{reuse}}-y^{\star}\|_{2}\leq\frac{V_{\max}\|q\|_{2}}{2\sqrt{d}}\max_{1\leq i\leq n}\|r_{i}^{K}\|_{2}+\max_{1\leq i\leq n}\|r_{i}^{V}\|_{2} 
+ Using 
+ r i K = μ K + ξ i K , r i V = μ V + ξ i V r_{i}^{K}=\mu_{K}+\xi_{i}^{K},\qquad r_{i}^{V}=\mu_{V}+\xi_{i}^{V} 
+ The triangle inequality yields 
+ max 1 ≤ i ≤ n ⁡ ‖ r i K ‖ 2 ≤ ‖ μ K ‖ 2 + max 1 ≤ i ≤ n ⁡ ‖ ξ i K ‖ 2 , \max_{1\leq i\leq n}\|r_{i}^{K}\|_{2}\leq\|\mu_{K}\|_{2}+\max_{1\leq i\leq n}\|\xi_{i}^{K}\|_{2}, 
+ max 1 ≤ i ≤ n ⁡ ‖ r i V ‖ 2 ≤ ‖ μ V ‖ 2 + max 1 ≤ i ≤ n ⁡ ‖ ξ i V ‖ 2 \max_{1\leq i\leq n}\|r_{i}^{V}\|_{2}\leq\|\mu_{V}\|_{2}+\max_{1\leq i\leq n}\|\xi_{i}^{V}\|_{2} 
+ By the sub-Gaussian tail bound and a union bound, 
+ Pr ( max 1 ≤ i ≤ n ∥ ξ i K ∥ 2 ≥ t ) ≤ ∑ i = 1 n Pr ( ∥ ξ i K ∥ 2 ≥ t ) ≤ 2 n e − t 2 / ( 2 σ K 2 ) \Pr\!\left(\max_{1\leq i\leq n}\|\xi_{i}^{K}\|_{2}\geq t\right)\leq\sum_{i=1}^{n}\Pr(\|\xi_{i}^{K}\|_{2}\geq t)\leq 2ne^{-t^{2}/(2\sigma_{K}^{2})} 
+ Setting the right-hand side equal to δ / 2 \delta/2 gives 
+ t = σ K ​ 2 ​ log ⁡ 4 ​ n δ t=\sigma_{K}\sqrt{2\log\frac{4n}{\delta}} 
+ so with probability at least 1 − δ / 2 1-\delta/2 , 
+ max 1 ≤ i ≤ n ⁡ ‖ ξ i K ‖ 2 ≤ σ K ​ 2 ​ log ⁡ 4 ​ n δ \max_{1\leq i\leq n}\|\xi_{i}^{K}\|_{2}\leq\sigma_{K}\sqrt{2\log\frac{4n}{\delta}} 
+ Similarly, with probability at least 1 − δ / 2 1-\delta/2 , 
+ max 1 ≤ i ≤ n ⁡ ‖ ξ i V ‖ 2 ≤ σ V ​ 2 ​ log ⁡ 4 ​ n δ \max_{1\leq i\leq n}\|\xi_{i}^{V}\|_{2}\leq\sigma_{V}\sqrt{2\log\frac{4n}{\delta}} 
+ Intersecting these two events gives a probability of at least 1 − δ 1-\delta . Substituting into the previous bound yields 
+ ‖ y reuse − y ⋆ ‖ 2 ≤ V max ​ ‖ q ‖ 2 2 ​ d ​ ( ‖ μ K ‖ 2 + σ K ​ 2 ​ log ⁡ 4 ​ n δ ) + ( ‖ μ V ‖ 2 + σ V ​ 2 ​ log ⁡ 4 ​ n δ ) \|y^{\mathrm{reuse}}-y^{\star}\|_{2}\leq\frac{V_{\max}\|q\|_{2}}{2\sqrt{d}}\left(\|\mu_{K}\|_{2}+\sigma_{K}\sqrt{2\log\frac{4n}{\delta}}\right)+\left(\|\mu_{V}\|_{2}+\sigma_{V}\sqrt{2\log\frac{4n}{\delta}}\right) 
+ ■ \blacksquare 
+ B.3 Proposition 2: Error Bound After Probe-Guided Mean Correction 
+ Proposition 2 (Error Bound After Probe-Guided Mean Correction) . 
+ Let the setup and assumptions of Proposition 1 hold. Let S S denote b b probe samples drawn independently with replacement from the chunk residual population, and define the probe mean estimators 
+ μ ^ K := 1 b ​ ∑ j ∈ S r j K , μ ^ V := 1 b ​ ∑ j ∈ S r j V \hat{\mu}_{K}:=\frac{1}{b}\sum_{j\in S}r_{j}^{K},\qquad\hat{\mu}_{V}:=\frac{1}{b}\sum_{j\in S}r_{j}^{V} 
+ For all tokens, define the corrected keys and values by 
+ k i corr := k i reuse + μ ^ K v i corr := v i reuse + μ ^ V k_{i}^{\mathrm{corr}}:=k_{i}^{\mathrm{reuse}}+\hat{\mu}_{K}\qquad v_{i}^{\mathrm{corr}}:=v_{i}^{\mathrm{reuse}}+\hat{\mu}_{V} 
+ Define the corrected residuals 
+ r i K , corr := k i ⋆ − k i corr r i V , corr := v i ⋆ − v i corr r_{i}^{K,\mathrm{corr}}:=k_{i}^{\star}-k_{i}^{\mathrm{corr}}\qquad r_{i}^{V,\mathrm{corr}}:=v_{i}^{\star}-v_{i}^{\mathrm{corr}} 
+ Let 
+ e K := μ ^ K − μ K , e V := μ ^ V − μ V e_{K}:=\hat{\mu}_{K}-\mu_{K},\qquad e_{V}:=\hat{\mu}_{V}-\mu_{V} 
+ Then for all i i , 
+ r i K , corr = ξ i K − e K , r i V , corr = ξ i V − e V r_{i}^{K,\mathrm{corr}}=\xi_{i}^{K}-e_{K},\qquad r_{i}^{V,\mathrm{corr}}=\xi_{i}^{V}-e_{V} 
+ Define 
+ z i corr := q ⊤ ​ k i corr d , α i corr := exp ⁡ ( z i corr ) ∑ m = 1 n exp ⁡ ( z m corr ) , y corr := ∑ i = 1 n α i corr ​ v i corr z_{i}^{\mathrm{corr}}:=\frac{q^{\top}k_{i}^{\mathrm{corr}}}{\sqrt{d}},\qquad\alpha_{i}^{\mathrm{corr}}:=\frac{\exp(z_{i}^{\mathrm{corr}})}{\sum_{m=1}^{n}\exp(z_{m}^{\mathrm{corr}})},\qquad y^{\mathrm{corr}}:=\sum_{i=1}^{n}\alpha_{i}^{\mathrm{corr}}v_{i}^{\mathrm{corr}} 
+ Then for any 0 < δ < 1 0<\delta<1 , with probability at least 1 − δ 1-\delta , 
+ ‖ y corr − y ⋆ ‖ 2 ≤ V max ​ ‖ q ‖ 2 2 ​ d ​ ( σ K ​ 2 ​ log ⁡ 8 ​ n δ + σ K ​ 2 ​ log ⁡ ( 8 / δ ) b ) + ( σ V ​ 2 ​ log ⁡ 8 ​ n δ + σ V ​ 2 ​ log ⁡ ( 8 / δ ) b ) \|y^{\mathrm{corr}}-y^{\star}\|_{2}\leq\frac{V_{\max}\|q\|_{2}}{2\sqrt{d}}\left(\sigma_{K}\sqrt{2\log\frac{8n}{\delta}}+\sigma_{K}\sqrt{\frac{2\log(8/\delta)}{b}}\right)+\left(\sigma_{V}\sqrt{2\log\frac{8n}{\delta}}+\sigma_{V}\sqrt{\frac{2\log(8/\delta)}{b}}\right) 
+ Proof. 
+For analytical simplicity, the proposition considers the uniform correction applied to all tokens, including probe tokens. The practical algorithm is at least as favorable, since probe tokens can instead use fresh KV directly. 
+ Since the centered token-wise residuals are mean-zero and sub-Gaussian, and the probe tokens are sampled independently with replacement from the chunk residual population, standard concentration of sample means implies that, for all t > 0 t>0 , 
+ Pr ( ∥ e K ∥ 2 ≥ t ) ≤ 2 e − b t 2 / ( 2 σ K 2 ) , Pr ( ∥ e V ∥ 2 ≥ t ) ≤ 2 e − b t 2 / ( 2 σ V 2 ) \Pr(\|e_{K}\|_{2}\geq t)\leq 2e^{-bt^{2}/(2\sigma_{K}^{2})},\qquad\Pr(\|e_{V}\|_{2}\geq t)\leq 2e^{-bt^{2}/(2\sigma_{V}^{2})} 
+ For the corrected keys and values, apply Lemma 1 with 
+ k i = k i corr , v i = v i corr k_{i}=k_{i}^{\mathrm{corr}},\qquad v_{i}=v_{i}^{\mathrm{corr}} 
+ Then 
+ ‖ y corr − y ⋆ ‖ 2 ≤ V max ​ ‖ q ‖ 2 2 ​ d ​ max 1 ≤ i ≤ n ​ ‖ k i − k i ⋆ ‖ 2 + max 1 ≤ i ≤ n ⁡ ‖ v i − v i ⋆ ‖ 2 \|y^{\mathrm{corr}}-y^{\star}\|_{2}\leq\frac{V_{\max}\|q\|_{2}}{2\sqrt{d}}\max_{1\leq i\leq n}\|k_{i}-k_{i}^{\star}\|_{2}+\max_{1\leq i\leq n}\|v_{i}-v_{i}^{\star}\|_{2} 
+ Equivalently, 
+ ‖ y corr − y ⋆ ‖ 2 ≤ V max ​ ‖ q ‖ 2 2 ​ d ​ max 1 ≤ i ≤ n ​ ‖ r i K , corr ‖ 2 + max 1 ≤ i ≤ n ⁡ ‖ r i V , corr ‖ 2 \|y^{\mathrm{corr}}-y^{\star}\|_{2}\leq\frac{V_{\max}\|q\|_{2}}{2\sqrt{d}}\max_{1\leq i\leq n}\|r_{i}^{K,\mathrm{corr}}\|_{2}+\max_{1\leq i\leq n}\|r_{i}^{V,\mathrm{corr}}\|_{2} 
+ For all tokens, 
+ r i K , corr = ξ i K − e K , r i V , corr = ξ i V − e V r_{i}^{K,\mathrm{corr}}=\xi_{i}^{K}-e_{K},\qquad r_{i}^{V,\mathrm{corr}}=\xi_{i}^{V}-e_{V} 
+ Thus, by the triangle inequality, 
+ max 1 ≤ i ≤ n ⁡ ‖ r i K , corr ‖ 2 ≤ max 1 ≤ i ≤ n ⁡ ‖ ξ i K ‖ 2 + ‖ e K ‖ 2 , \max_{1\leq i\leq n}\|r_{i}^{K,\mathrm{corr}}\|_{2}\leq\max_{1\leq i\leq n}\|\xi_{i}^{K}\|_{2}+\|e_{K}\|_{2}, 
+ max 1 ≤ i ≤ n ⁡ ‖ r i V , corr ‖ 2 ≤ max 1 ≤ i ≤ n ⁡ ‖ ξ i V ‖ 2 + ‖ e V ‖ 2 \max_{1\leq i\leq n}\|r_{i}^{V,\mathrm{corr}}\|_{2}\leq\max_{1\leq i\leq n}\|\xi_{i}^{V}\|_{2}+\|e_{V}\|_{2} 
+ By the same union-bound argument as in Proposition 1, with probability at least 1 − δ / 4 1-\delta/4 , 
+ max 1 ≤ i ≤ n ⁡ ‖ ξ i K ‖ 2 ≤ σ K ​ 2 ​ log ⁡ 8 ​ n δ , \max_{1\leq i\leq n}\|\xi_{i}^{K}\|_{2}\leq\sigma_{K}\sqrt{2\log\frac{8n}{\delta}}, 
+ and with probability at least 1 − δ / 4 1-\delta/4 , 
+ max 1 ≤ i ≤ n ⁡ ‖ ξ i V ‖ 2 ≤ σ V ​ 2 ​ log ⁡ 8 ​ n δ \max_{1\leq i\leq n}\|\xi_{i}^{V}\|_{2}\leq\sigma_{V}\sqrt{2\log\frac{8n}{\delta}} 
+ Next, by the above sample-mean concentration bound, with probability at least 1 − δ / 4 1-\delta/4 , 
+ ‖ e K ‖ 2 ≤ σ K ​ 2 ​ log ⁡ ( 8 / δ ) b \|e_{K}\|_{2}\leq\sigma_{K}\sqrt{\frac{2\log(8/\delta)}{b}} 
+ and with probability at least 1 − δ / 4 1-\delta/4 , 
+ ‖ e V ‖ 2 ≤ σ V ​ 2 ​ log ⁡ ( 8 / δ ) b \|e_{V}\|_{2}\leq\sigma_{V}\sqrt{\frac{2\log(8/\delta)}{b}} 
+ Taking the intersection of these four events gives probability at least 1 − δ 1-\delta . On this event, 
+ max 1 ≤ i ≤ n ⁡ ‖ r i K , corr ‖ 2 ≤ σ K ​ 2 ​ log ⁡ 8 ​ n δ + σ K ​ 2 ​ log ⁡ ( 8 / δ ) b \max_{1\leq i\leq n}\|r_{i}^{K,\mathrm{corr}}\|_{2}\leq\sigma_{K}\sqrt{2\log\frac{8n}{\delta}}+\sigma_{K}\sqrt{\frac{2\log(8/\delta)}{b}} 
+ max 1 ≤ i ≤ n ⁡ ‖ r i V , corr ‖ 2 ≤ σ V ​ 2 ​ log ⁡ 8 ​ n δ + σ V ​ 2 ​ log ⁡ ( 8 / δ ) b \max_{1\leq i\leq n}\|r_{i}^{V,\mathrm{corr}}\|_{2}\leq\sigma_{V}\sqrt{2\log\frac{8n}{\delta}}+\sigma_{V}\sqrt{\frac{2\log(8/\delta)}{b}} 
+ Substituting into the deterministic perturbation bound yields 
+ ‖ y corr − y ⋆ ‖ 2 ≤ V max ​ ‖ q ‖ 2 2 ​ d ​ ( σ K ​ 2 ​ log ⁡ 8 ​ n δ + σ K ​ 2 ​ log ⁡ ( 8 / δ ) b ) + ( σ V ​ 2 ​ log ⁡ 8 ​ n δ + σ V ​ 2 ​ log ⁡ ( 8 / δ ) b ) \|y^{\mathrm{corr}}-y^{\star}\|_{2}\leq\frac{V_{\max}\|q\|_{2}}{2\sqrt{d}}\left(\sigma_{K}\sqrt{2\log\frac{8n}{\delta}}+\sigma_{K}\sqrt{\frac{2\log(8/\delta)}{b}}\right)+\left(\sigma_{V}\sqrt{2\log\frac{8n}{\delta}}+\sigma_{V}\sqrt{\frac{2\log(8/\delta)}{b}}\right) 
+ ■ \blacksquare 
+ B.4 Proposition 3: Sufficient condition for a tighter bound under correction 
+ Proposition 3 (Sufficient condition for a tighter bound under correction) . 
+ If proposition 1 and 2 each hold with probability at least 1 − δ 1-\delta , then by a union bound, they hold simultaneously with probability at least 1 − 2 ​ δ 1-2\delta . Define 
+ C K := V max ​ ‖ q ‖ 2 2 ​ d , C V := 1 C_{K}:=\frac{V_{\max}\|q\|_{2}}{2\sqrt{d}},\qquad C_{V}:=1 
+ Also define 
+ B := C K ​ ‖ μ K ‖ 2 + C V ​ ‖ μ V ‖ 2 (common bias) B:=C_{K}\|\mu_{K}\|_{2}+C_{V}\|\mu_{V}\|_{2}\qquad\text{(common bias)} 
+ N n := C K ​ σ K ​ 2 ​ log ⁡ 4 ​ n δ + C V ​ σ V ​ 2 ​ log ⁡ 4 ​ n δ (fluctuation term before correction) N_{n}:=C_{K}\sigma_{K}\sqrt{2\log\frac{4n}{\delta}}+C_{V}\sigma_{V}\sqrt{2\log\frac{4n}{\delta}}\qquad\text{(fluctuation term before correction)} 
+ E b := C K ​ σ K ​ 2 ​ log ⁡ ( 8 / δ ) b + C V ​ σ V ​ 2 ​ log ⁡ ( 8 / δ ) b (probe estimation term) E_{b}:=C_{K}\sigma_{K}\sqrt{\frac{2\log(8/\delta)}{b}}+C_{V}\sigma_{V}\sqrt{\frac{2\log(8/\delta)}{b}}\qquad\text{(probe estimation term)} 
+ and 
+ N n ′ := C K ​ σ K ​ 2 ​ log ⁡ 8 ​ n δ + C V ​ σ V ​ 2 ​ log ⁡ 8 ​ n δ (fluctuation term after correction) N_{n}^{\prime}:=C_{K}\sigma_{K}\sqrt{2\log\frac{8n}{\delta}}+C_{V}\sigma_{V}\sqrt{2\log\frac{8n}{\delta}}\qquad\text{(fluctuation term after correction)} 
+ Define the corresponding high-probability upper bounds 
+ U reuse := B + N n , U corr := N n ′ + E b U_{\mathrm{reuse}}:=B+N_{n},\qquad U_{\mathrm{corr}}:=N_{n}^{\prime}+E_{b} 
+ Then, on the same event of probability at least 1 − 2 ​ δ 1-2\delta , 
+ ‖ y reuse − y ⋆ ‖ 2 ≤ U reuse , ‖ y corr − y ⋆ ‖ 2 ≤ U corr \|y^{\mathrm{reuse}}-y^{\star}\|_{2}\leq U_{\mathrm{reuse}},\qquad\|y^{\mathrm{corr}}-y^{\star}\|_{2}\leq U_{\mathrm{corr}} 
+ Consequently, 
+ U reuse − U corr = B − E b − ( N n ′ − N n ) U_{\mathrm{reuse}}-U_{\mathrm{corr}}=B-E_{b}-(N_{n}^{\prime}-N_{n}) 
+ In particular, if 
+ B > E b + ( N n ′ − N n ) B>E_{b}+(N_{n}^{\prime}-N_{n}) 
+ then 
+ U corr < U reuse . U_{\mathrm{corr}}<U_{\mathrm{reuse}}. 
+ That is, the correction method has a strictly tighter high-probability upper bound than uncorrected reuse. Moreover, the gap between the two upper bounds is 
+ Δ b := U reuse − U corr = B − E b − ( N n ′ − N n ) \Delta_{b}:=U_{\mathrm{reuse}}-U_{\mathrm{corr}}=B-E_{b}-(N_{n}^{\prime}-N_{n}) 
+ Proof. 
+By Proposition 1, 
+ ‖ y reuse − y ⋆ ‖ 2 ≤ C K ​ ‖ μ K ‖ 2 + C V ​ ‖ μ V ‖ 2 + C K ​ σ K ​ 2 ​ log ⁡ 4 ​ n δ + C V ​ σ V ​ 2 ​ log ⁡ 4 ​ n δ \|y^{\mathrm{reuse}}-y^{\star}\|_{2}\leq C_{K}\|\mu_{K}\|_{2}+C_{V}\|\mu_{V}\|_{2}+C_{K}\sigma_{K}\sqrt{2\log\frac{4n}{\delta}}+C_{V}\sigma_{V}\sqrt{2\log\frac{4n}{\delta}} 
+ which is exactly 
+ ‖ y reuse − y ⋆ ‖ 2 ≤ U reuse = B + N n \|y^{\mathrm{reuse}}-y^{\star}\|_{2}\leq U_{\mathrm{reuse}}=B+N_{n} 
+ Similarly, by Proposition 2, 
+ ‖ y corr − y ⋆ ‖ 2 ≤ C K ​ σ K ​ 2 ​ log ⁡ 8 ​ n δ + C V ​ σ V ​ 2 ​ log ⁡ 8 ​ n δ + C K ​ σ K ​ 2 ​ log ⁡ ( 8 / δ ) b + C V ​ σ V ​ 2 ​ log ⁡ ( 8 / δ ) b \|y^{\mathrm{corr}}-y^{\star}\|_{2}\leq C_{K}\sigma_{K}\sqrt{2\log\frac{8n}{\delta}}+C_{V}\sigma_{V}\sqrt{2\log\frac{8n}{\delta}}+C_{K}\sigma_{K}\sqrt{\frac{2\log(8/\delta)}{b}}+C_{V}\sigma_{V}\sqrt{\frac{2\log(8/\delta)}{b}} 
+ which is exactly 
+ ‖ y corr − y ⋆ ‖ 2 ≤ U corr = N n ′ + E b \|y^{\mathrm{corr}}-y^{\star}\|_{2}\leq U_{\mathrm{corr}}=N_{n}^{\prime}+E_{b} 
+ Subtracting the two upper bounds gives 
+ U reuse − U corr = ( B + N n ) − ( N n ′ + E b ) = B − E b − ( N n ′ − N n ) U_{\mathrm{reuse}}-U_{\mathrm{corr}}=(B+N_{n})-(N_{n}^{\prime}+E_{b})=B-E_{b}-(N_{n}^{\prime}-N_{n}) 
+ Therefore, if 
+ B > E b + ( N n ′ − N n ) B>E_{b}+(N_{n}^{\prime}-N_{n}) 
+ then 
+ U corr < U reuse U_{\mathrm{corr}}<U_{\mathrm{reuse}} 
+ Hence the corrected method has a strictly tighter high-probability upper bound than uncorrected reuse. The stated expression for Δ b \Delta_{b} is just the difference between these two upper bounds. 
+ ■ \blacksquare 
+ Intuitively, with high probability, the uncorrected reuse error is bounded by 
+ common bias + token-wise fluctuation , \text{common bias}+\text{token-wise fluctuation}, 
+ while the probe-corrected error is bounded by 
+ probe estimation error + token-wise fluctuation . \text{probe estimation error}+\text{token-wise fluctuation}. 
+ Therefore, probe-guided correction yields a tighter high-probability error bound whenever the shared chunk-level residual bias dominates the error of estimating that bias from the probe set. 
+ Appendix C Empirical Validation of the Modeling Assumptions 
+ C.1 Mean-explained Energy and Change in Top Singular Value of Residual 
+ Figure 6 : Mean-explained residual energy (dark) and remaining top singular value ratio (light) after correction across layers for Key(top) and Value(bottom), comparing oracle( ℰ 1 \mathcal{E}_{1} ), random( ℰ 2 \mathcal{E}_{2} ), and topK L 2 {}_{L_{2}} ( ℰ 3 w \mathcal{E}_{3}^{w} ) correction vectors. We use b = 10 % ​ of tokens b=10\%\text{of tokens} for ℰ 2 \mathcal{E}_{2} and ℰ 3 w \mathcal{E}_{3}^{w} . 
+ Figure 6 empirically supports the residual decomposition r i = μ + ξ i r_{i}=\mu+\xi_{i} underlying our analysis. We compare three correction vectors: ℰ 1 \mathcal{E}_{1} (oracle), which uses the exact chunk residual mean; ℰ 2 \mathcal{E}_{2} (random), which estimates the mean from randomly sampled probe tokens as in our theory; and ℰ 3 w \mathcal{E}_{3}^{w} (topK), our practical heuristic based on the most divergent tokens. Here, mean-explained residual energy measures how much of the total residual energy is removed by the correction vector, while the top singular value ratio after correction measures how much of the dominant structured residual mode remains, with smaller values indicating stronger suppression. Across layers, the oracle and random estimators behave very similarly: for both K and V, they explain a large fraction of residual energy ( 86 % − 64 % 86\%\!-\!64\% ) and reduce the top singular value after correction to only about 24 % − 45 % 24\%\!-\!45\% of its original magnitude. This indicates that the dominant residual structure is largely a shared chunk-level offset, and that the probe-based estimator used in our theory is already sufficient to recover it in practice. The topK heuristic often explains slightly more residual energy ( 96 % − 67 % 96\%\!-\!67\% ), which is better from a KV reuse perspective, while leaving a somewhat larger remaining leading singular mode after correction, suggesting that it captures not only the shared mean offset but also additional structured variation that is beneficial in practice. 
+ C.2 Empirical Validation of the Sub-Gaussian Fluctuation Assumption 
+ The analysis in Section 3.4 models each residual block as a sum of a shared chunk-level offset and a centered token-wise fluctuation term, r i = μ + ξ i r_{i}=\mu+\xi_{i} . While Appendix section C.1 empirically validates the shared-mean component, propositions 1 to 3 additionally rely on the assumption that the centered fluctuation term is sub-gaussian (sufficiently light-tailed) so that probe-mean estimation error concentrates as the probe budget increases. This appendix subsection evaluates whether the residual blocks observed in practice behave consistently with that concentration-based picture. 
+ Our goal is to test whether the token-wise fluctuations behave in a way consistent with the theory. For our correction analysis, the most important implication is that the probe-mean estimator should become more accurate as the number of probes b b increases, ideally at the standard sample-mean rate. A second implication is that, after removing the chunk mean, the remaining token-wise fluctuations should look reasonably light-tailed in one-dimensional projections. To examine these properties, we use the saved per-block residual tensors, where each row corresponds to the residual of one token. We analyze K and V separately. For each block, we first compute the block mean r ¯ \bar{r} and define the centered fluctuation block R − 𝟏 ​ r ¯ ⊤ R-\mathbf{1}\bar{r}^{\top} . We then perform two diagnostics. 
+ First, we study probe-mean error versus probe budget. For each block and each probe budget b b , we repeatedly sample b b tokens with replacement, compute the sample mean μ ^ b \hat{\mu}_{b} , and measure the estimation error ‖ μ ^ b − r ¯ ‖ 2 \|\hat{\mu}_{b}-\bar{r}\|_{2} . Aggregating these errors across blocks gives an empirical view of how quickly the probe-estimated correction vector approaches the full block mean as b b increases. This directly tests the concentration behavior used in the propositions. Second, we study the distribution of the centered fluctuations through random projection to 1D. For each residual block, we draw random unit directions u u and compute the projected fluctuations u ⊤ ​ ( r i − r ¯ ) u^{\top}(r_{i}-\bar{r}) . Pooling these projections across blocks yields a one-dimensional view of the fluctuation distribution. We summarize this distribution with QQ plots against a standard normal reference and with tail plots of log ⁡ Pr ⁡ ( | Z | > t ) \log\Pr(|Z|>t) versus t 2 t^{2} . These diagnostics do not establish exact sub-Gaussianity, but they reveal whether the centered fluctuations are at least consistent with a light-tailed, approximately sub-Gaussian concentration model. For both experiments and both K and V, the results are shown in Figure 7 . 
+ Figure 7 : Empirical diagnostics of the token-wise fluctuation term for K (left) and V (right) across Layers 1, 15, and 25. For each layer, the left panel shows probe-mean estimation error versus probe budget b b . The right panel shows QQ plots of random projections of the centered residuals against a Gaussian reference, where closer alignment with the diagonal indicates behavior more consistent with a light-tailed concentration model. 
+ For K residuals, the empirical diagnostics are strongly consistent with the concentration-based picture underlying propositions 1 to 3. Across Layers 1, 15, and 25, the probe-mean estimation error ‖ μ ^ b − r ¯ ‖ 2 \|\hat{\mu}_{b}-\bar{r}\|_{2} decreases smoothly as the probe budget b b increases and is close to linear on log–log axes, indicating behavior near the standard b − 1 / 2 b^{-1/2} sample-mean rate. In parallel, the QQ plots of centered random projections remain close to the Gaussian reference line, with only moderate deviations in the extreme tails. Taken together, these results suggest that the token-wise fluctuation for K approximates well by a light-tailed concentration model, and they provide strong empirical support for the probe-estimation and token-wise fluctuation assumptions used in our Key side analysis. 
+ For V residuals, the empirical evidence is more mixed than for K, but still broadly supportive of the theory. Across Layers 1, 15, and 25, the probe-mean estimation error decreases monotonically with probe budget b b , indicating that the probe-estimated correction vector becomes increasingly accurate as more probes are used. Moreover, the QQ plots show a clear depth-wise trend: although Layer 1 exhibits non-Gaussian behavior, the distributions in Layers 15 and 25 move progressively closer to the Gaussian reference line. Thus, while the sub-Gaussian-style assumption is less accurate for V than for K, it becomes increasingly reasonable in deeper layers, where the empirical behavior is more consistent with the concentration-based picture used in the analysis. 
+ Overall, the empirical results here largely validate the modeling assumptions and correction mechanism underlying our analysis, especially for K. At the same time, we note that the residual characteristics of K and V can be different under KV reuse: K is more cleanly aligned with the concentration-based model, while V exhibits a more structured and layer-dependent behavior. This suggests that K and V may benefit from different reuse or correction mechanisms, and points to a promising direction for future work on asymmetric KV correction strategies tailored separately to keys and values. 
+ Appendix D Societal Impact 
+ AgentKVShift reduces the prefill cost of memory-augmented LLM agents, which has both positive and neutral societal implications. On the positive side, lower inference latency and compute reduce the energy footprint of long-horizon
+LLM serving and broaden access to memory-augmented agents in resource-constrained environments. On the other hand, like other efficient LLM serving research, our work is subject to the dual-use risk that reducing inference cost may lower the barrier to deploying LLM-based agents at scale, including in
+applications that raise privacy, fairness, or misuse concerns. We do not anticipate any direct negative societal impact unique to this work beyond those already present in the systems it accelerates. 
+ Appendix E Limitations and Future Work 
+ While AgentKVShift offers an effective method for KV reuse in agentic memory systems, our work has point to promising directions for future research. 
+ Asymmetry between K and V residuals. 
+ As discussed in our empirical analysis (Appendix C.2 ), we show that the sub-Gaussian fluctuation assumption used in our theoretical bounds fits keys more cleanly than values, especially in shallow transformer layers. This suggests that asymmetric correction strategies, applying different reuse
+mechanisms to K and V or using layer-dependent probe budgets, could further improve quality. We leave a careful study of K-V asymmetric KV correction to future work. 
+ Cross-chunk memory reasoning. 
+ Our extended results on AMA-Bench (Appendix A.2 ) highlight that
+all KV reuse methods, including AgentKVShift, leave a wider gap to full recompute on cross-chunk reasoning capabilities such as Causal Inference and State Updating. Since these capabilities depend more on the agent’s reasoning
+pipeline than on chunk-local fidelity, they are not fully addressed by per-memory correction. A promising direction is state-aware KV reuse, where the correction is conditioned on the agent’s current reasoning state rather than treated as purely memory-local. 
+ Experimental support, please
+ view the build logs 
+ for errors. Generated by
+ L
+ A 
+ T
+ E 
+ xml 
+ .
+ Instructions for reporting errors 
+ We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility and mobile
+ support. To report errors in the HTML that will help us improve conversion and rendering, choose any of the
+ methods listed below: 
+ Click the "Report Issue" ( 
+ ) button, located in the page header. 
+ Tip: You can select the relevant text first, to include it in your report. 
+ Our team has already identified the following issues . We appreciate your time reviewing and reporting rendering errors we
+ may not have found yet. Your efforts will help us improve the HTML versions for all readers, because disability
+ should not be a barrier to accessing research. Thank you for your continued support in championing open access for
+ all. 
+ Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML maintain a list of packages that need conversion , and welcome developer contributions . 
+ We gratefully acknowledge support from
+ our major funders ,
+ member institutions , ,
+ and all contributors.
+ About 
+ · 
+ Help 
+ · 
+ Contact 
+ · 
+ Subscribe 
+ · 
+ Copyright 
+ · 
+ Privacy 
+ · 
+ Accessibility 
+ · 
+ Operational Status (opens in new tab) 
+ Major funding support from 

@@ -1,0 +1,323 @@
+
+ [CacheBlend] [blocker perf] Non-prefix reuse decays to ~1× under sustained novel RAG - the blend store is prefix-chained and unbounded while the lookup is content-addressed · Issue #4663 · LMCache/LMCache · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ LMCache
+ / 
+ LMCache 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 1.9k 
+ Star
+ 11.8k 
+ Code 
+ Issues 
+ 211 
+ Pull requests 
+ 479 
+ Discussions 
+ Actions 
+ Projects 
+ Wiki 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Wiki
+ Security and quality
+ Insights
+ [CacheBlend] [blocker perf] Non-prefix reuse decays to ~1× under sustained novel RAG - the blend store is prefix-chained and unbounded while the lookup is content-addressed #4663 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Closed as not planned 
+ Closed as not planned 
+ [CacheBlend] [blocker perf] Non-prefix reuse decays to ~1× under sustained novel RAG - the blend store is prefix-chained and unbounded while the lookup is content-addressed #4663 
+ Copy link 
+ Description
+ shawnguyen-tensormesh 
+ opened on Aug 20, 2026 
+ Issue body actions 
+ [CacheBlend] [blocker perf] Non-prefix reuse decays to ~1× under sustained novel RAG - the blend store is prefix-chained and unbounded while the lookup is content-addressed
+ Date: 2026-08-20
+ Verdict: CONFIRMED - reproduced live and grounded in source.
+ Confidence: High (MEASURED decay curve on dev + CODE-VERIFIED mechanism at the pinned commit).
+ Severity: blocker (perf) - CacheBlend fails to sustain its value under exactly the workload it exists for (non-prefix RAG recombination); the win is a freshly-warmed burst, not steady state.
+ Problem at a glance
+ flowchart TD
+ Q["Novel RAG query: 14 docs, shuffled order"]
+ Q --> LK["LOOKUP: content-addressed hash, offset-tolerant"]
+ Q --> ST["STORE: prefix-chained hash, unconditional"]
+ LK --> HIT["finds each doc KV at any position"]
+ ST --> NEW["about 112 brand-new keys per novel query"]
+ HIT --> BURST["warm burst 2-4x"]
+ NEW --> FLOOD["unbounded store floods L1"]
+ FLOOD --> EVICT["LRU evicts the warm doc chunks"]
+ EVICT --> DECAY["reuse decays to ~1x within ~60-90 queries"]
+ BURST -.->|eroded by| DECAY
+ Loading 
+ 1. Versioning
+ Component 
+ Value 
+ LMCache 
+ commit 9fc6e1af ( v0.5.3-cu129-12-g9fc6e1af ) 
+ vLLM (bundles the MP KV connector) 
+ commit 436be94e ( v0.26.1rc0-557-g436be94e13 ) 
+ Serving/engine + blend-server image 
+ lmcache/vllm-openai:v0.5.3 
+ CacheBlend plugin (webhook-injected) 
+ cacheblend-plugin:v0.5.3 
+ Model 
+ openai/gpt-oss-20b (MoE, MXFP4, hybrid sliding+full attention → forces the MP connector) 
+ Hardware 
+ 1× NVIDIA RTX PRO 6000 Blackwell (96 GB), TP=1 
+ Cluster 
+ a dev Kubernetes cluster 
+ Blend config 
+ chunk_size=256 , recomp_ratio=0.15 , check_layer=1 , eviction LRU, max_workers=4 
+ Blend L1 (DRAM) 
+ two runs: 100 GB and 20 GB 
+ Connector 
+ CBKVConnector over the MP connector ( kv_role=kv_both ), CUSTOM attention backend, hostIPC (webhook-injected) 
+ The model is gpt-oss-20b (not 120b); it shares gpt-oss's hybrid-SWA architecture, so it exercises the same MP-connector store path the defect lives in. The absolute burst magnitude is smaller than a 120B would show, but the decay behavior is architecture-general.
+ 2. Issue description (plain terms)
+ CacheBlend's job is to reuse each retrieved document's KV regardless of the document's position in a RAG prompt, so that re-ordered / re-combined documents skip most of prefill. Its lookup does exactly that - it is content-addressed and position-independent. But its store reuses the ordinary prefix-cache write: it persists position-dependent KV keyed by a rolling, prefix-chained hash , unconditionally, on every request. Under sustained novel-ordering RAG traffic (the normal production pattern for RAG: each query retrieves a different combination/order of documents), every request mints a fresh batch of brand-new, un-dedupable keys. Those keys can only ever serve a future contiguous-prefix hit - which never happens on novel RAG - and they are useless to the content-addressed blend matcher, yet they pile into the shared L1 without bound. Once L1 saturates, LRU evicts the warm document chunks (the only thing the matcher can actually reuse), so the speedup decays from a post-warm burst down to the cold baseline within a few dozen queries. Nothing is functionally wrong; the store/lookup asymmetry is the defect. Production impact: any benchmark that re-warms before each measurement reports the burst (e.g. 4–6×) and completely misses that steady-state throughput under real sustained novel traffic falls back to ~1×.
+ 3. How verified
+ Runtime (MEASURED, dev)
+ Deployed a CacheBlendEngine blend server + a webhook-injected gpt-oss-20b vLLM engine (config above).
+ Built a corpus of 112 docs × 2048 tokens (2048 = 8 × 256, so docs are chunk-aligned - this isolates the decay from any chunk-seam effect). Each query = 14 docs concatenated in a fresh shuffled order that never repeats (never-reset RNG). max_tokens=1 (prefill/TTFT only), concurrency 1.
+ Metric = prefill throughput vs a true-COLD baseline (fresh, never-cached documents) - the only trustworthy signal (the built-in hit-counters mislabel blend reuse). Cold baseline measured n=3.
+ Ran the full corpus warm pass once, then sustained novel-ordering batches (32 queries/batch), scraping the blend server's store/eviction counters per batch.
+ Code (CODE-VERIFIED, commit 9fc6e1af / 436be94e )
+ Lookup is content-addressed and offset-tolerant; store is prefix-chained; the MP connector stores unconditionally. Decisive lines quoted in §5.
+ 4. Clues / evidence - measured decay
+ COLD baseline (n=3): 17,033 tok/s (14,912 / 18,096 / 18,092) - tight.
+ Run A - blend L1 = 100 GB (full burst→decay): 
+ novel batch 
+ throughput (tok/s) 
+ vs COLD 
+ p50 (ms) 
+ eviction Δ (chunks) 
+ 0 (warm burst) 
+ 76,265 
+ 4.48× 
+ 300 
+ 8,443 
+ 1 
+ 39,678 
+ 2.33× 
+ 715 
+ 9,409 
+ 2 
+ 22,436 
+ 1.32× 
+ 1,123 
+ 10,924 
+ 3 
+ 18,249 
+ 1.07× 
+ 1,585 
+ 11,639 
+ 4 
+ 18,450 
+ 1.08× 
+ 1,585 
+ 11,829 
+ 5 
+ 18,069 
+ 1.06× 
+ 1,586 
+ 21,013 
+ 6 
+ 18,245 
+ 1.07× 
+ 1,585 
+ 23,200 
+ 7 
+ 23,815 
+ 1.40× 
+ 1,585 
+ 32,586 
+ 8 
+ 77,273 
+ 4.54× 
+ 317 
+ 24,583 
+ 9 
+ 30,780 
+ 1.81× 
+ 957 
+ 14,663 
+ Clean monotonic collapse 4.48× → 2.33× → 1.32× → 1.07× over 3 batches, then a noisy cold-floor. Eviction Δ climbs monotonically (8.4k → 32.6k) while per-batch store Δ stays roughly constant (~1,500–1,700) - i.e. the store keeps adding fresh un-dedup'd chunks every batch and the cache churns them against the warm set. (Batches 7–9 spike back up: stochastic recurrence - some random 14-doc draws happen to land on docs still resident from a recent batch. This is not monotonic-to-zero; it's a noisy cold-floor with occasional transient re-hits, consistent with the mechanism.)
+ Run B - blend L1 = 20 GB (smaller cache saturates in one batch): 
+ novel batch 
+ vs COLD 
+ eviction Δ 
+ 0 
+ 1.49× 
+ 8,919 
+ 1 
+ 1.08× 
+ 9,721 
+ 2 
+ 1.07× 
+ 13,608 
+ 3 
+ 1.07× 
+ 18,562 
+ 4 
+ 1.12× 
+ 17,944 
+ 5 
+ 1.06× 
+ 19,682 
+ A smaller L1 both lowers the burst (less warm headroom) and decays in a single batch (saturates immediately) - exactly what an unbounded store flooding a fixed cache predicts. The L1-size dependence is itself confirmation of the root cause.
+ Chart
+ Prefill throughput vs COLD per novel-ordering batch (L1=100GB; COLD baseline 17,033 tok/s):
+ xychart-beta
+ title "Non-prefix reuse decays: speedup vs cold per novel batch"
+ x-axis ["b0","b1","b2","b3","b4","b5","b6","b7","b8","b9"]
+ y-axis "x vs cold" 0 --> 5
+ line [4.48, 2.33, 1.32, 1.07, 1.08, 1.06, 1.07, 1.40, 4.54, 1.81]
+ Loading 
+ 5. Decisive code lines (commit 9fc6e1af )
+ Lookup is content-addressed + offset-tolerant. lmcache/v1/multiprocess/modules/blend_v3.py , match_sub_sequence :
+ rolling = rolling_hash_windows_numba ( arr , self . chunk_size , self . _BASE ) # stride-1 window at EVERY position 
+... # direct-address probe over all positions → a chunk matches wherever its content appears 
+ The index is populated by on_new_token_hashes via chunk_hash_windows_numba(arr, self.chunk_size, ...) - non-overlapping 256-token chunks keyed by content.
+ Store is prefix-chained (position-dependent). lmcache/v1/multiprocess/session.py (~L116-122):
+ prefix = self . last_prefix_hash if self . last_prefix_hash is not None else self . hasher . none_hash 
+ h = self . hasher . hash_tokens ( chunk , prefix ) # chunk key hashes the chunk PLUS all preceding tokens 
+ self . last_prefix_hash = h 
+ The MP connector stores every request unconditionally. lmcache/integration/vllm/lmcache_mp_metadata.py - GetStoreMetadata (def ~L176) takes only (tracker, tokens_per_chunk, tokens_per_block) and gates solely on new-chunk count (no dedup, no skip gate); both call sites in the connector ( _process_new_requests , _process_cached_requests ) invoke it and add the STORE op whenever chunks exist. A novel 14-doc ordering therefore mints ~112 brand-new prefix-chained keys/query (×object-groups ×ranks), none of which dedup.
+ Consequence: the store set is unbounded (unique per preceding-context → effectively C(112,14)·14! distinct keys), it floods L1, and LRU evicts the warm document chunks the matcher needs.
+ 6. Root-cause analysis
+ One defect: the store key-space and the lookup key-space are asymmetric. 
+ Lookup keys are content-only → bounded by corpus size, reusable at any position. Correct.
+ Store keys are prefix-chained → unbounded (one new set per novel ordering), and useful only for a contiguous-prefix hit that never occurs in RAG.
+ Every novel query writes junk that (a) never serves a future novel query and (b) evicts the genuinely reusable warm chunks. So the reuse the matcher could deliver is continuously destroyed by the store path feeding the same L1. The burst exists only while the warm set is still resident; sustained novel traffic without continuous re-warm drives it to the cold floor. Larger L1 delays the collapse; it does not prevent it (the store set is unbounded).
+ 7. Regime (never a flat multiplier)
+ Post-warm burst: ~2–4.5× (here 4.48× at L1=100 GB, 1.49× at L1=20 GB) - transient.
+ Sustained uniform-novel: decays to ~1.0–1.1× (cold floor) within ~1–3 batches (~30–90 queries).
+ Sustained with recurrence: partial - batches that happen to re-draw resident docs spike (up to 4.5× here), so skewed/popularity-heavy RAG sustains some reuse; uniform-novel is the worst case.
+ Report the regime; do not quote the burst as the headline number.
+ 8. Caveats & the single cleanest next check
+ Model: measured on gpt-oss-20b, not 120b - the decay mechanism is architecture-general (same MP store path), but absolute burst magnitudes differ. INFERRED that 120b shows a larger burst with the same decay shape.
+ Docs were chunk-aligned (2048 tok): this deliberately removes any 256-chunk seam effect so the decay reflects only the store flood. Real unpadded RAG would show additional reuse loss on top.
+ Cleanest next check: apply a save-skip gate to the MP connector (mirroring the single-process lmcache.skip_save path), warm once, then serve read-only, and re-run this exact driver. Expected pass = store Δ → 0 after warm, eviction Δ flat, and the burst holding across all batches instead of decaying. That both proves the root cause and validates the fix.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

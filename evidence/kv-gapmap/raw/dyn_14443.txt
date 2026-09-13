@@ -1,0 +1,396 @@
+
+ feat(router): yield decode affinity under KV pressure by anish-shanbhag · Pull Request #14443 · ai-dynamo/dynamo · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ai-dynamo
+ / 
+ dynamo 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 1.6k 
+ Star
+ 8k 
+ Code 
+ Issues 
+ 401 
+ Pull requests 
+ 1.1k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ feat(router): yield decode affinity under KV pressure - # 14443 
+ # 14443 
+ Closed 
+ anish-shanbhag wants to merge 1 commit into ai-dynamo:main ai-dynamo/dynamo:main from anish-shanbhag:feat/decode-affinity-high-watermark-20260907 anish-shanbhag/dynamo:feat/decode-affinity-high-watermark-20260907 Copy head branch name to clipboard 
+ Conversation Commits 1 ( 1 ) Checks Files changed 
+ Closed 
+ feat(router): yield decode affinity under KV pressure # 14443 anish-shanbhag wants to merge 1 commit into ai-dynamo:main ai-dynamo/dynamo:main from anish-shanbhag:feat/decode-affinity-high-watermark-20260907 anish-shanbhag/dynamo:feat/decode-affinity-high-watermark-20260907 Copy head branch name to clipboard 
+ Conversation
+ anish-shanbhag 
+ commented
+ Sep 8, 2026 
+ • 
+ edited
+ Loading 
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ Copy link
+ Copy Markdown
+ Problem this solves
+ Hard session affinity preserves KV locality for multi-turn requests, but today an implicitly bound decode request remains pinned even when that data-parallel rank's projected active KV footprint is near capacity. The normal KV-aware selector cannot relieve the hot rank because the affinity binding is presented as a strict placement constraint. Long-lived sessions can therefore concentrate decode work on one rank while other eligible ranks retain headroom.
+ This change adds an opt-in pressure escape hatch for implicit decode affinity only . It keeps hard affinity as the default behavior and leaves explicit request pins strict.
+ Summary
+ Add the experimental --router-decode-affinity-high-watermark option and DYN_ROUTER_DECODE_AFFINITY_HIGH_WATERMARK environment variable.
+ Before admitting a hard-affinity decode request, preview the bound rank's projected active blocks against its advertised KV capacity.
+ When the projected fraction is strictly above the configured watermark, release only the current affinity lease and rerun normal unpinned KV selection.
+ Preserve the stored session binding so later turns can reuse the original locality once pressure falls.
+ Export dynamo_component_router_decode_affinity_yields_total to make the behavior observable.
+ The feature is disabled by default ( None ), and the accepted range is 0.0 through 1.0 .
+ Workload evidence and motivation
+ The motivating case was GLM-5.2 NVFP4 serving a disaggregated, multi-turn coding workload across 32 backend GB200 GPUs. At concurrency 160, a matched end-to-end A/B changed only the pressure-aware affinity behavior and measured:
+ Metric 
+ Existing hard affinity 
+ Watermark 0.70 
+ Change 
+ Throughput per GPU 
+ 19,748.50 tokens/s/GPU 
+ 22,389.05 tokens/s/GPU 
+ +13.37% 
+ p90 per-user throughput 
+ 90.933 tokens/s/user 
+ 90.038 tokens/s/user 
+ -0.98% 
+ The optimized configuration also retained a GSM8K score of 0.9682. This is evidence for the motivating topology, not a claim that 0.70 is a universal threshold: the appropriate watermark depends on model memory use, DP layout, request lengths, and the value of session locality.
+ Behavior and safety
+ The pressure check runs only when all of the following are true:
+ the request is in the decode phase;
+ session affinity is in hard mode;
+ the affinity target came from the stored session binding, not an explicit request pin;
+ the request is not a query-only route preview; and
+ a watermark was explicitly configured.
+ Explicit decode worker/rank pins, prefill routing, aggregated routing, soft affinity, and the default configuration are unchanged.
+ The check fails safe toward existing behavior:
+ missing worker capacity or a below-threshold projection honors the pin;
+ failure to inspect pressure logs a warning and honors the pin;
+ cancellation remains cancellation rather than being swallowed;
+ yielding drops the current lease without invalidating or rewriting the stored affinity binding; and
+ reselection uses the existing KV scheduler, including its eligibility, allowlist, taint, and admission logic.
+ Implementation notes
+ The pressure probe uses the scheduler's advisory no-admission path, so it does not reserve capacity or mutate active-request state. The compared load is the request-inclusive potential_decode_blocks projection already produced by the scheduler, divided by the selected worker rank's advertised total_kv_blocks . Selection is then performed exactly once through the normal admission path.
+ Configuration is wired consistently through the shared frontend/router CLI layer, Rust environment parsing and serialization, and the Python binding. The optional field is omitted from default serialization to preserve the existing default wire shape.
+ Validation
+ cargo fmt --all -- --check 
+ (cd lib/bindings/python && cargo fmt -- --check) 
+ cargo check -p dynamo-llm --no-default-features 
+ cargo test -p dynamo-llm --no-default-features decode_affinity -- --nocapture (3 passed)
+ cargo test -p dynamo-kv-router dynamo_env_config_parses_canonical_settings -- --nocapture 
+ cargo test -p dynamo-kv-router kv_router_config_preserves_v1_3_wire_compatibility -- --nocapture 
+ python3 -m compileall -q for the touched Python configuration and test modules
+ Added unit coverage for above-watermark reselection, below-watermark pin retention, explicit-pin preservation, CLI/environment propagation, binding validation, and default serialization compatibility.
+ Limitations
+ Enabling the feature adds one advisory selection pass for decode requests that already have an implicit hard-affinity target.
+ It depends on active-block tracking and advertised KV capacity being representative of the decode rank. Missing capacity deliberately disables yielding for that request.
+ It handles rank-local pressure; it cannot create capacity when every eligible rank is saturated.
+ It does not permanently migrate the session binding. A later turn reevaluates the original binding and may yield again while pressure remains high.
+ Threshold selection remains workload- and topology-specific; this PR intentionally provides no non-disabled default.
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ --> 
+ 👀 
+ 1 
+ datadog-official[bot] reacted with eyes emoji 
+ All reactions 
+ 👀 
+ 1 reaction 
+ copy-pr-bot 
+ Bot 
+ commented
+ Sep 8, 2026 
+ Copy link
+ Copy Markdown
+ This pull request requires additional validation before any workflows can run on NVIDIA's runners.
+ Pull request vetters can view their responsibilities here .
+ Contributors can view more details about this message here .
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ anish-shanbhag 
+ temporarily deployed 
+ to
+ external_collaborator
+ September 8, 2026 05:37 — with 
+ GitHub Actions 
+ Inactive
+ anish-shanbhag 
+ temporarily deployed 
+ to
+ external_collaborator
+ September 8, 2026 05:37 — with 
+ GitHub Actions 
+ Inactive
+ pull-request-size 
+ Bot 
+ added
+ the 
+ size/L
+ label
+ Sep 8, 2026 
+ github-actions 
+ Bot 
+ commented
+ Sep 8, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ 👋 Hi anish-shanbhag! Thank you for contributing to ai-dynamo/dynamo.
+ Just a reminder: The NVIDIA Test Github Validation CI runs an essential subset of the testing framework to quickly catch errors.Your PR reviewers may elect to test the changes comprehensively before approving your changes.
+ 🚀
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ github-actions 
+ Bot 
+ added
+ feat
+ external-contribution
+ Pull request is from an external contributor 
+ frontend
+ `python -m dynamo.frontend` and `dynamo-run in=http|text|grpc` 
+ router
+ Relates to routing, KV-aware routing, etc. 
+ labels
+ Sep 8, 2026 
+ anish-shanbhag 
+ force-pushed 
+ the
+ feat/decode-affinity-high-watermark-20260907 
+ branch
+ from
+ 39a4589 to
+ d094abf 
+ Compare 
+ September 8, 2026 05:40 
+ anish-shanbhag 
+ temporarily deployed 
+ to
+ external_collaborator
+ September 8, 2026 05:40 — with 
+ GitHub Actions 
+ Inactive
+ feat(router): yield decode affinity under KV pressure 
+ …
+ fd58862 
+ Signed-off-by: Anish Shanbhag <ashanbhag@nvidia.com>
+ anish-shanbhag 
+ force-pushed 
+ the
+ feat/decode-affinity-high-watermark-20260907 
+ branch
+ from
+ d094abf to
+ fd58862 
+ Compare 
+ September 8, 2026 05:47 
+ anish-shanbhag 
+ temporarily deployed 
+ to
+ external_collaborator
+ September 8, 2026 05:47 — with 
+ GitHub Actions 
+ Inactive
+ dynamo-ops 
+ commented
+ Sep 8, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ Unsigned Commits Detected
+ The following commits are not GPG-signed and must be signed before CI can run:
+ Commit 
+ Reason 
+ fd58862 
+ unsigned 
+ Please sign your commits and push again. See the GitHub docs on commit signature verification for help.
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ ishandhanani 
+ commented
+ Sep 8, 2026 
+ Copy link
+ Copy Markdown
+ Contributor 
+ We added a concept of hard/soft affinity in #13907 . Please leverage this and see if you can implement this PR as a custom policy
+ --> 
+ 👀 
+ 1 
+ anish-shanbhag reacted with eyes emoji 
+ All reactions 
+ 👀 
+ 1 reaction 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ anish-shanbhag 
+ commented
+ Sep 8, 2026 
+ Copy link
+ Copy Markdown
+ Author 
+ We added a concept of hard/soft affinity in #13907 . Please leverage this and see if you can implement this PR as a custom policy
+ Thanks for flagging @ishandhanani , after some testing it looks like the same perf improvement can be achieved just by using soft affinity which is already supported, so am closing this PR
+ --> 
+ All reactions 
+ --> 
+ Sorry, something went wrong.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ anish-shanbhag 
+ closed this
+ Sep 8, 2026 
+ --> 
+ This file contains hidden or bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.
+ Learn more about bidirectional Unicode characters 
+ Show hidden characters
+ Sign up for free 
+ to join this conversation on GitHub .
+ Already have an account?
+ Sign in to comment 
+ --> 
+ Reviewers
+ No reviews
+ --> 
+ Assignees
+ No one assigned
+ Labels
+ external-contribution 
+ Pull request is from an external contributor 
+ feat 
+ frontend 
+ `python -m dynamo.frontend` and `dynamo-run in=http|text|grpc` 
+ router 
+ Relates to routing, KV-aware routing, etc. 
+ size/L 
+ --> 
+ Projects
+ None yet
+ --> 
+ Milestone
+ No milestone
+ --> 
+ Development
+ Successfully merging this pull request may close these issues.
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ 3 participants
+ Add this suggestion to a batch that can be applied as a single commit. This suggestion is invalid because no changes were made to the code. Suggestions cannot be applied while the pull request is closed. Suggestions cannot be applied while viewing a subset of changes. Only one suggestion per line can be applied in a batch. Add this suggestion to a batch that can be applied as a single commit. Applying suggestions on deleted lines is not supported. You must change the existing code in this line in order to create a valid suggestion. Outdated suggestions cannot be applied. This suggestion has been applied or marked resolved. Suggestions cannot be applied from pending reviews. Suggestions cannot be applied on multi-line comments. Suggestions cannot be applied while the pull request is queued to merge. Suggestion cannot be applied right now. Please check back later. 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+

@@ -1,0 +1,161 @@
+
+ EAGLE/MTP prefix-cache last-block drop causes a 1,648-token recompute per hit on one hybrid Qwen3.8 GDN layout — ~30-40% batch throughput loss on prefix-reusing workloads with speculative decoding · Issue #53670 · vllm-project/vllm · GitHub 
+ Skip to content 
+ Navigation Menu Sign in Appearance settings Platform AI CODE CREATION GitHub Copilot Write better code with AI GitHub Copilot app Direct agents from issue to merge MCP Registry Integrate external tools DEVELOPER WORKFLOWS Actions Automate any workflow Codespaces Instant dev environments Issues Plan and track work Code Review Manage code changes Code Quality Enforce quality at merge APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities Code security Secure your code as you build Secret protection Stop leaks before they start EXPLORE Why GitHub Documentation Blog Changelog Marketplace View all features Solutions BY COMPANY SIZE Enterprises Small and medium teams Startups Nonprofits BY USE CASE App Modernization DevSecOps DevOps CI/CD View all use cases BY INDUSTRY Healthcare Financial services Manufacturing Government View all industries View all solutions Resources EXPLORE BY TOPIC AI Software Development DevOps Security View all topics EXPLORE BY TYPE Customer stories Events & webinars Ebooks & reports Business insights GitHub Skills SUPPORT & SERVICES Documentation Customer support Community forum Trust center Partners View all resources Open Source COMMUNITY GitHub Sponsors Fund open source developers PROGRAMS Security Lab Maintainer Community GitHub Stars Archive Program REPOSITORIES Topics Trending Collections Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features Copilot for Business Enterprise-grade AI features Premium Support Enterprise-grade 24/7 support Pricing Search / Sign in Sign up Appearance settings 
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }} 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ vllm-project
+ / 
+ vllm 
+ Public 
+ Uh oh!
+ There was an error while loading. Please reload this page . 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 22.1k 
+ Star
+ 91.6k 
+ Code 
+ Issues 
+ 2.4k 
+ Pull requests 
+ 5k+ 
+ Discussions 
+ Actions 
+ Projects 
+ Security and quality 
+ 76 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Security and quality
+ Insights
+ EAGLE/MTP prefix-cache last-block drop causes a 1,648-token recompute per hit on one hybrid Qwen3.8 GDN layout — ~30-40% batch throughput loss on prefix-reusing workloads with speculative decoding #53670 New issue Copy link New issue Copy link Open Open EAGLE/MTP prefix-cache last-block drop causes a 1,648-token recompute per hit on one hybrid Qwen3.8 GDN layout — ~30-40% batch throughput loss on prefix-reusing workloads with speculative decoding #53670 Copy link Labels speculative-decoding Description Suppressor72 opened on Aug 25, 2026 Issue body actions EAGLE/MTP prefix-cache last-block drop causes a 1,648-token recompute per 
+hit on one hybrid Qwen3.8 GDN layout — ~30-40% batch throughput loss on 
+prefix-reusing workloads with speculative decoding enabled 
+ Environment 
+ vLLM 0.26.1rc1.dev926+gb05ae5dc0 , V1/V2 model runner, async scheduling 
+ Dual RTX 5090 TP=2, FP8 weights + FP8 KV, prefix caching on 
+ Model: Qwen3.8-27B (hybrid: GDN/Mamba layers + full attention → 15 
+MambaSpec KV groups + full-attention group; scheduler/hash block = 1648 
+tokens); other hybrid layouts should be evaluated by their own scheduler 
+alignment 
+ Speculative: dflash (DFlash2, K=7) and mtp — both reproduce; also 
+reproduces with an always-K=0 tiered config [[1,16,0]] + 
+ skip_draft_when_k0: true (drafter provably never runs at c ≥ 3; without 
+ skip_draft_when_k0 , K=0 draft-state sync may still run) 
+ Summary 
+ With any EAGLE-family speculative_config set, multi-round / repeated-prompt 
+workloads lose ~6-10 points of prefix-cache hit rate versus an identical 
+no-spec boot (97.5% → 86.9-91.7% in our harness). The cause is the EAGLE 
+last-block drop ( drop_eagle_block ) in the prefix-cache hit path: 
+ kv_cache_coordinator.py flags all KV groups as eagle when the model 
+has no is_eagle_group annotation (conservative fallback). 
+ The EAGLE-marked dense/full-attention group drops one alignment unit from 
+its hit (protecting against (a) draft-layer KV for the last block depending 
+on the writer's continuation and (b) prefill-lookahead pollution at chunk 
+boundaries); hybrid reconciliation then limits the combined hit to that 
+shorter boundary, so the request recomputes one 1,648-token scheduler- 
+aligned unit. 
+ On dense-attention models that alignment unit is a 16-token block. On this 
+hybrid GDN/Mamba layout it is 1,648 tokens . The same protection 
+therefore costs ~100× more cache hit here; other hybrid layouts should be 
+evaluated by their own scheduler alignment. 
+ Measured per-request-per-round (32k identical prompt re-sent, cache trace of 
+ get_computed_blocks ): 
+ Config 
+ warm lookup hit 
+ tail recompute 
+ c=8 tok/s (vs no-spec 327) 
+ no speculative_config 
+ 31360 (20×1568) 
+ 640 tok 
+ 327 
+ dflash K=7 + tiers 
+ 29664 (18×1648) 
+ 2336 tok 
+ 206 (−37%) 
+ dflash + drop disabled (ablation) 
+ 31312 (19×1648) 
+ 688 tok 
+ 322 (−1.6%) 
+ Disabling the drop recovers essentially the entire warm prefix-reuse gap 
+(+56% at c=8) on this workload — the last-block rule, not spec-decode step 
+machinery, accounts for it (a separate cold-prefill drafter cost exists on 
+unique-prompt traffic; see below) (we profiled the 
+engine loop: per-step decode time is within 0.6% of no-spec at resolved K=0). 
+ The regression is easy to miss: single-request benchmarks with unique prompts 
+don't reuse prefixes, and aggregate token/s hides where the time goes. Watch 
+ vllm:prefix_cache_hits_total and the re-prefill chunk census instead. 
+ Why the drop is still needed (and why "just disable it" is not the answer) 
+ The drop is load-bearing for consumers that draft: draft-layer KV in the last 
+matched block depends on tokens past the matched prefix (the writer's 
+continuation), and chunked prefill with drafting combines a lookahead token 
+into boundary KV. Serving such a block to a request that will draft from that 
+boundary gives it stale/foreign draft KV. Speculative decoding stays 
+lossless (the target verifies every token), so the damage is acceptance 
+degradation rather than wrong outputs — but for K>0 consumers the recompute 
+the drop forces is the correct behavior. 
+ The asymmetry is that a consumer running at resolved K=0 (dynamic 
+speculation tiers with skip_draft_when_k0 , or any K=0 tier) never executes 
+the drafter at all, so it never reads draft-layer KV: the drop protects a 
+consumer that does not exist. Our proposed fix makes the drop conditional on 
+exactly that (reference implementation on our fork — over our open-PR limit 
+on main right now, will open the PR when a slot frees: 
+ https://github.com/Suppressor72/vllm/tree/feat/eagle-k0-consumer-drop @ 
+ dfb6eea ): skip it when the admission's projected 
+resolved K is 0 under skip_draft_when_k0 . Result on the same harness: 
+c=8 206 → 304 tok/s (no-spec 327, hard-disable ceiling 322), prefix-cache hit 
+rate 91.7% → 95.4%, zero change at c=1/c=2 where K>0 still drafts. 
+ Repro 
+ Measured on nightly 0.26.1rc1.dev926+gb05ae5dc0 + local patches (DFlash2 
+backport #52816 , skip_draft_when_k0 #53420 / #53426 lineage, dflash tier 
+validation) — the cache-path code under discussion is upstream code; config: 
+ { "method" : " dflash " ,
+ "model" : " <DFlash2 drafter for the target> " ,
+ "num_speculative_tokens" : 7 ,
+ "num_speculative_tokens_per_batch_size" : [[ 1 , 2 , 7 ], [ 3 , 16 , 0 ]],
+ "skip_draft_when_k0" : true } 
+ The causal comparison stays within one 1,648-token geometry: stock hit 
+29,664 (18 blocks) → drop-disabled 31,312 (19 blocks), same boot layout. The 
+no-spec arm (31,360 at a different 1,568-token layout) is context, not the 
+proof. 
+ Any hybrid-GDN target with dflash/mtp/eagle speculative_config , 
+ enable_prefix_caching=true . 
+ Client: re-send the same ~32k prompt (chat completions), 4 rounds × 8 
+concurrent sessions, 256 tokens each. 
+ Compare against the same boot without speculative_config : 
+aggregate tok/s, vllm:prefix_cache_hits_total , and (instrumented) 
+ KVCacheManager.get_computed_blocks hit lengths — hits land exactly on 
+block-size multiples and are one block shorter under spec. 
+ Additional observation (separate, not addressed by the PR) 
+ With fully unique prompts ( --salt auto : no reuse possible) the spec boot 
+still runs at ~0.59× no-spec on this target (150.7 vs 255.8 tok/s at c=8, 
+prefill-dominated legs) — a cold-prefill drafter-context cost that is 
+inherent to running the drafter, distinct from the cache issue above. We have 
+not yet decomposed it; happy to file separately if maintainers prefer. 
+ Measurement and instrumentation for this report were produced with AI assistance; all numbers were generated from the instrumented runs described above and the changed lines were human-reviewed. Reactions are currently unavailable Activity Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment Metadata Metadata Assignees No one assigned Labels speculative-decoding Type No type Projects No projects Milestone No milestone Relationships None yet Development No branches or pull requests Issue actions Open in GitHub Copilot app 
+ Footer 
+ © 2026 GitHub, Inc.
+ Footer navigation 
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.

@@ -1,0 +1,304 @@
+
+ [CacheBlend] [medium perf] No inter-document padding - unpadded variable-length RAG docs lose ~1 chunk of KV reuse per document seam (seam/tail, not total; ~11% measured) · Issue #4667 · LMCache/LMCache · GitHub 
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ LMCache
+ / 
+ LMCache 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 1.9k 
+ Star
+ 11.8k 
+ Code 
+ Issues 
+ 211 
+ Pull requests 
+ 480 
+ Discussions 
+ Actions 
+ Projects 
+ Wiki 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Projects
+ Wiki
+ Security and quality
+ Insights
+ [CacheBlend] [medium perf] No inter-document padding - unpadded variable-length RAG docs lose ~1 chunk of KV reuse per document seam (seam/tail, not total; ~11% measured) #4667 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Closed as not planned 
+ Closed as not planned 
+ [CacheBlend] [medium perf] No inter-document padding - unpadded variable-length RAG docs lose ~1 chunk of KV reuse per document seam (seam/tail, not total; ~11% measured) #4667 
+ Copy link 
+ Description
+ shawnguyen-tensormesh 
+ opened on Aug 20, 2026 
+ Issue body actions 
+ [CacheBlend] [medium perf] No inter-document padding - unpadded variable-length RAG docs lose ~1 chunk of KV reuse per document seam (seam/tail, not total; ~11% measured)
+ Date: 2026-08-20
+ Verdict: CONFIRMED (with one important refinement - see below)
+ Confidence: High (code-verified from primary source + deterministic algorithmic reproduction using the real LMCache hashers). Live-serving timing run was skipped (see §8); it is not needed to settle this claim.
+ Severity: Medium (perf). Bounded, regime-dependent reuse loss - not a correctness bug, not a total-reuse loss.
+ Refinement in one line: The blend match is stride-1 offset-tolerant , so a document's grid-aligned interior chunks DO reuse across arbitrary concatenation orderings. The loss is confined to seam/tail fragments - the sub-chunk head and tail of each document that never fill a fixed-grid 256-token window, plus cross-document straddle chunks - i.e. roughly one chunk_size worth of tokens per document boundary .
+ Problem at a glance
+ flowchart TD
+ A["doc A: length multiple of 256"] --> AC["all 256-token chunks reuse at any position"]
+ B["doc B: length NOT multiple of 256"] --> BC["interior chunks reuse"]
+ B --> BT["head, tail and seam chunks lost"]
+ AC --> R1["100 percent reuse"]
+ BC --> R2["about 89 percent reuse"]
+ BT --> R2
+ Loading 
+ 1. Summary
+ The CacheBlend fragment store chops each stored token sequence on a fixed chunk_size (256) grid anchored at the start of the concatenated request , with no document-boundary awareness and no inter-document padding . Only complete 256-token chunks are stored/indexed; the trailing partial chunk is dropped. When variable-length (not 256-multiple) RAG documents are concatenated in different orders, each document's offset-mod-256 shifts, so its head fragment, tail remainder, and the seams between documents fall on different token boundaries each time and never become reusable full chunks. Only the grid-aligned interior of each document reuses.
+ Because the matcher uses a stride-1 rolling window (full recall), the interior chunks are found wherever the document appears intact, regardless of position - so this is seam/tail loss, not total loss .
+ Measured seam tax on a representative RAG working set (12 docs, 1500–2600 tokens): ~11.2% of query tokens lose reuse relative to a chunk-aligned control (100% → 88.75%).
+ 2. Versioning / environment
+ Item 
+ Value 
+ LMCache commit 
+ 9fc6e1afe83335a1c41b31662470fa115b2b6ac8 (2026-08-09) 
+ vLLM commit 
+ 436be94e135fd07fc94e4c165a1b6870af72bf31 (2026-08-10) 
+ chunk_size (default) 
+ 256 ( lmcache/v1/config.py:90 ) 
+ blend_probe_stride (default) 
+ 1 = full recall ( lmcache/v1/mp_coordinator/config.py:76 ) 
+ blend_special_str (default, segment DB only) 
+ " # # " ( lmcache/v1/config.py:158 ) 
+ Model context (claim is model-independent) 
+ gpt-oss-20b/120b class; the defect is pure index geometry 
+ Hardware / cluster 
+ N/A - reproduced GPU-free in a local venv (numpy 2.5.2, numba 0.67.0); nothing was deployed to any cluster. 
+ The two hasher kernels used in the reproduction ( rolling_hash_windows_numba , chunk_hash_windows_numba ) were loaded directly from the submodule source - the actual production code, not a rewrite.
+ 3. Issue description - why unpadded RAG loses reuse at seams, and why it matters
+ CacheBlend's value in RAG is that the same document, retrieved into different prompts in different positions, should reuse its cached KV (non-prefix reuse). That requires the store to key document content in a position-independent way.
+ The multiprocess blend store (the path used in the cross-pod / co-located production deploy) does this by fingerprinting fixed 256-token windows of the stored sequence and matching them into new queries with a rolling window. The catch is how the windows are cut on store :
+ The grid is anchored at the start of the whole concatenated request ( key.start ), not at each document's boundary. There is no separator handling and no padding inserted between documents.
+ A document of length L placed at concatenation offset o is therefore cut at grid lines o + (256 − o mod 256) , ... + 256 , … Its head fragment [o, first_grid_line) shares a 256-window with the previous document's tail (a straddle/seam chunk), and its tail fragment shares a window with the next document's head (or is the dropped trailing partial).
+ Change the ordering → o mod 256 changes → the grid cuts the document at different points → different straddle chunks, different fragments. The straddle chunks are adjacency-specific (only reused if that exact document pair recurs adjacently), and the fragments are never captured as standalone chunks.
+ Net effect: per document you reliably reuse only the grid-aligned interior (which the offset-tolerant matcher does find anywhere), and you lose up to 2 × (chunk_size − 1) tokens of head+tail per document - on average ≈ one chunk_size per document boundary.
+ Why it matters: RAG documents are essentially never exact multiples of 256 tokens. With realistic 1500–2600-token chunks that is ~10–12% of prompt tokens that must be recomputed on every request despite being cached - a standing prefill tax that grows with the number of documents per prompt (more seams) and shrinks with document length (seam amortized over more interior).
+ 4. How verified
+ 4a. Code leg (primary - decisive)
+ Store-side chopping - fixed grid, drop trailing partial, no doc-boundary awareness 
+ lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py:1456-1463 :
+ chunk_size = self . _ctx . chunk_size 
+ token_ids = list ( key . token_ids )
+ effective_len = min ( len ( token_ids ), key . end )
+ num_complete = effective_len - effective_len % chunk_size # drop partial tail 
+ token_offsets = list ( range ( key . start , num_complete , chunk_size )) # FIXED grid @ key.start 
+ token_chunks = [
+ token_ids [ offset : offset + chunk_size ] for offset in token_offsets 
+]
+ The comment at :1454-1455 confirms intent: "A trailing partial chunk has no stored KV to bind to." No separator, no per-document reset, no padding.
+ Index side - only full-chunk content is discoverable; partials silently dropped 
+ lmcache/v1/mp_coordinator/blend_index.py:124-132 ( BlendIndex.add ):
+ if token_ids . shape [ 0 ] != self . _chunk_size :
+ logger . warning ( "Not indexing chunk content of %d tokens: ... only full-chunk " 
+ "content is discoverable ..." , token_ids . shape [ 0 ], self . _chunk_size )
+ return 
+ Match side - stride-1 rolling window = offset-tolerant (the refinement) 
+ lmcache/v1/mp_coordinator/blend_index.py:193-211 :
+ query = np . asarray ( tokens , dtype = np . uint64 )
+ if query . shape [ 0 ] < self . _chunk_size :
+ return []
+ rolling = rolling_hash_windows_numba ( query , self . _chunk_size , POLY_BASE )
+ probe = rolling [:: self . _probe_stride ] # probe_stride default = 1 -> full recall 
+...
+ if not np . array_equal ( query [ cur_st : cur_st + window ], entry . token_ids ):
+ continue # token-exact verify (no false reuse) 
+ So a stored 256-token content window is found at any query offset - the interior reuses regardless of ordering. This is what makes the defect a seam tax, not a total loss.
+ The engine-side matcher in lmcache/v1/multiprocess/modules/blend_v3.py uses the identical pattern - non-overlapping grid on store ( chunk_hash_windows_numba , :255 ) and stride-1 rolling on match ( rolling_hash_windows_numba , :328 ).
+ No inter-document padding / separator handling anywhere in this path. (A separate, older in-process path - SegmentTokenDatabase , token_database.py:452 , selected only when enable_blending uses the lookup-client DB - DOES split on the " # # " separator and hash each segment independently; but the production multiprocess/v3 blend store does not use it. So the "no document-boundary awareness" claim is true for the path the ticket targets.)
+ 4b. Reproduction leg (deterministic, GPU-free, real hashers)
+ Rather than a confounded serving-timing run, I reproduced the exact index geometry: the store chopping ( lmcache_driven_transfer.py:1456-1463 ) and BlendIndex.add / match ( blend_index.py ) driven by the actual rolling_hash_windows_numba / chunk_hash_windows_numba kernels loaded from the submodule. Content identity is token-exact in the real code, so this integer geometry reproduces real reuse coverage exactly.
+ 12 documents, chunk_size=256 , probe_stride=1 .
+ A (control): every doc length a multiple of 256.
+ B (defect): variable lengths 1500–2600, not multiples of 256.
+ Warm the index from 1 concatenation ordering, then measure mean reuse coverage over 8 novel random orderings (fraction of query tokens covered by an accepted match).
+ Repro script + chart script: kept in scratchpad ( seam_repro.py , make_chart.py ); self-contained, re-runnable in a numpy+numba venv.
+ 5. Clues / evidence
+ Decisive code lines:
+ Concern 
+ Location 
+ What it shows 
+ Fixed grid on store, drop partial 
+ lmcache_driven_transfer.py:1459-1463 
+ num_complete = len - len%256 ; range(key.start, num_complete, 256) - grid anchored at sequence start, no doc boundaries 
+ Partial chunk has no KV bound 
+ lmcache_driven_transfer.py:1454-1455 
+ trailing < 256 tokens are never stored 
+ Only full chunks indexed 
+ blend_index.py:124-132 
+ content ≠ 256 tokens is not discoverable 
+ Match needs ≥ chunk_size 
+ blend_index.py:194-195 
+ queries/fragments < 256 tokens never match 
+ Offset-tolerant match 
+ blend_index.py:196-197 
+ stride-1 rolling → interior reuses at any position 
+ Token-exact verify 
+ blend_index.py:211 
+ no false reuse; reuse loss is real, not a hash artifact 
+ Same pattern engine-side 
+ blend_v3.py:255, :328 
+ store=non-overlapping grid, match=rolling 
+ No padding config exists 
+ config.py (grep) 
+ no inter-doc padding / alignment knob anywhere 
+ Reproduction results (mean ± sd over 8 novel orderings):
+ Scenario 
+ Doc lengths 
+ Reuse coverage 
+ A - aligned (len % 256 == 0) 
+ 1536, 2048, 1792, 2304, … 
+ 1.0000 ± 0.0000 
+ B - unaligned (1500–2600) 
+ 2577, 2574, 2586, 1918, 1688, … 
+ 0.8875 ± 0.0063 
+ B - unaligned, warm ×3 orderings 
+ same as B 
+ 0.9447 ± 0.0055 
+ Seam tax (A − B) = 0.1125 → ~11.2% relative reuse loss. The loss ≈ 0.9 × chunk_size per document boundary (12 docs, ~24.5k tokens total, ~2.7k tokens lost), matching the "one chunk_size per seam" prediction. Warming from multiple orderings partially recovers B (88.75% → 94.5%) because each ordering captures a different set of grid-aligned windows - direct evidence that the loss is grid-alignment-driven, exactly as the code predicts.
+ 6. Chart
+ Reuse coverage - chunk-aligned docs vs unpadded variable-length docs (mean over novel orderings):
+ xychart-beta
+ title "Seam tax: reuse coverage by doc alignment"
+ x-axis ["aligned","unpadded","unpadded-warm-x3"]
+ y-axis "reuse percent" 0 --> 100
+ bar [100, 88.75, 94.47]
+ Loading 
+ 7. Root-cause analysis
+ The store fingerprints content on a fixed grid anchored to the concatenated request , not to document boundaries, and inserts no padding to realign each document to the grid. Consequently the stored set of 256-token content windows is a function of each document's arbitrary offset-mod-256 in whatever concatenation warmed it. The rolling matcher recovers only those windows that recur contiguously and identically in a query:
+ Interior windows (wholly inside a document) recur wherever the document appears intact → reused (this is why it is not a total loss).
+ Head/tail fragments (< 256 tokens, the document's edges relative to the warming grid) are never stored as standalone chunks → permanently lost.
+ Straddle/seam chunks (256-window mixing doc-A tail + doc-B head) are adjacency-specific → only reused if that exact pair recurs adjacently, which is the case CacheBlend is meant to avoid depending on.
+ There is no code that (a) resets the chunk grid at a document boundary, (b) pads a document up to the next 256 multiple, or (c) stores sub-chunk remainders. The fix space is exactly those three: document-boundary-aware chunking (reset the grid per retrieved document), inter-document padding to a chunk_size multiple, or storing/matching partial tail chunks.
+ 8. Caveats & the single cleanest next check
+ Caveats / what is NOT claimed: 
+ This is a perf defect, not correctness - the token-exact verify ( blend_index.py:211 ) guarantees no wrong KV is ever reused.
+ The live-serving timing run was skipped. The claim is about which chunks get indexed/matched - pure deterministic geometry - so a serving run would add TTFT numbers but cannot change the verdict, and it would cost a full CacheBlend GPU deploy. Nothing was deployed to any cluster; no teardown needed.
+ The ~11.2% figure is workload-specific (12 docs, 1500–2600 tokens). Seam tax scales with docs-per-prompt (more seams) and inversely with document length (seam amortized over more interior). Short docs (< ~2×chunk_size) suffer proportionally far more; a doc shorter than 256 tokens is invisible to the store entirely ( blend_index.py:194 ).
+ Applies to the multiprocess / v3 blend path (production cross-pod / co-located). The in-process SegmentTokenDatabase path is separator-aware and not subject to this; confirm which path a given deployment uses before quoting the number.
+ Single cleanest next check: Add a document-boundary-aware store variant - reset the chunk grid (and/or right-pad to a chunk_size multiple) at each retrieved-document boundary on store - and re-run the §4b reproduction. Expectation: unaligned reuse rises from ~0.89 toward ~1.0, converting the seam tax directly into recovered prefill. This isolates the fix's ceiling before any serving-timing work.
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ No labels No labels
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+
