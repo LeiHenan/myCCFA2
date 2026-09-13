@@ -1,0 +1,290 @@
+
+ Skip to content 
+ Navigation Menu
+ Sign in Appearance settings
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+ View all features 
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+ View all solutions 
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+ View all resources 
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+ Pricing 
+ Search / 
+ Sign in 
+ Sign up Appearance settings
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+ Dismiss alert 
+ {{ message }}
+ Uh oh!
+ There was an error while loading. Please reload this page .
+ sgl-project
+ / 
+ sglang 
+ Public 
+ Notifications
+ You must be signed in to change notification settings 
+ Fork
+ 8.8k 
+ Star
+ 35.9k 
+ Code 
+ Issues 
+ 890 
+ Pull requests 
+ 4.4k 
+ Discussions 
+ Actions 
+ Security and quality 
+ 0 
+ Insights 
+ Additional navigation options 
+ Code
+ Issues
+ Pull requests
+ Discussions
+ Actions
+ Security and quality
+ Insights
+ [Bug] [NPU] Hybrid-GDN MTP speculative decoding is not lossless on Ascend NPU #25587 
+ New issue 
+ Copy link 
+ New issue 
+ Copy link 
+ Closed 
+ Closed 
+ [Bug] [NPU] Hybrid-GDN MTP speculative decoding is not lossless on Ascend NPU #25587 
+ Copy link 
+ Labels
+ inactive 
+ Description
+ EanWang211123 
+ opened on May 18, 2026 
+ Issue body actions 
+ Checklist
+ I searched related issues but found no solution.
+ The bug persists in the latest version.
+ Issues without environment info and a minimal reproducible demo are hard to resolve and may receive no feedback.
+ If this is not a bug report but a general question, please start a discussion at https://github.com/sgl-project/sglang/discussions . Otherwise, it will be closed.
+ Please use English. Otherwise, it will be closed.
+ Describe the bug
+ Bug Description
+ When running Qwen3.5 (or any hybrid-GDN model) with MTP speculative decoding on Ascend NPU, the generated output diverges from non-speculative decoding at temperature=0.0 . This violates the lossless guarantee that is fundamental to any correct speculative decoding implementation.
+ Observed: 
+ With MTP enabled, output tokens begin to diverge from non-spec after ~100 tokens
+ The divergence accumulates with generation length
+ Expected: 
+At temperature=0.0 , MTP speculative decoding output must be bitwise-identical to non-speculative decoding. This is guaranteed on NVIDIA and is the standard correctness criterion for speculative decoding.
+ Reproduction
+ # Launch with MTP 
+ASCEND_RT_VISIBLE_DEVICES=0 python -m sglang.launch_server \
+ --attention-backend ascend \
+ --model-path /path/to/Qwen3.5-4B \
+ --tp-size 1 --disable-radix-cache \
+ --host 0.0.0.0 --port 30000 \
+ --dtype bfloat16 --mamba-ssm-dtype bfloat16 \
+ --speculative-num-steps 3 \
+ --speculative-eagle-topk 1 \
+ --speculative-num-draft-tokens 4 \
+ --speculative-algorithm EAGLE \
+ --cuda-graph-max-bs 4
+ Compare output at temperature=0.0 between non-spec (no --speculative-* flags) and spec (above). On NVIDIA the two are identical. On NPU they diverge.
+ Root Cause
+ The issue is in conv state restoration after partial acceptance during MTP verify.
+ What the verify forward does
+ The target model runs verify forward with all N draft tokens. causal_conv1d_update_v2 updates conv_states with num_accepted_tokens=N , assuming all N tokens are accepted. After verification, only k ≤ N tokens are actually accepted.
+ Why conv_state_rollback cannot fix this
+ The current code calls conv_state_rollback to right-shift conv_states by (N - k) positions, intending to undo the effect of rejected tokens. This is mathematically incorrect :
+ Conv1d with SiLU activation at each step is:
+ out[t] = silu( sum_{i=0}^{K-1} weight[i] * x[t-i] )
+col_window = [x[t], x[t-1], ..., x[t-K+2]] # updated each step
+ After processing all N draft tokens, the K-1 history window has been updated N times with the rejected tokens folded in. A pure position-shift cannot undo these updates because:
+ SiLU is non-linear and non-invertible
+ The correct K-1 history after accepting k tokens is the window state that existed after step k and before step k+1 — this intermediate state is not preserved anywhere in the current NPU implementation
+ Right-shifting only moves existing (already-corrupted) values around; it does not restore what the window would have contained had only k tokens been processed. The result is a conv state that drifts further from ground truth on every verify call.
+ The correct approach (NVIDIA reference)
+ On NVIDIA, this is solved with per-step snapshots ( sgl-project/sglang#10335 ):
+ During verify forward, causal_conv1d_update saves the K-1 window state after consuming each draft token into intermediate_conv_window[batch, step, dim, K-1] 
+ After acceptance of k tokens, the snapshot at step = k-1 is scattered back into conv_states via fused_mamba_state_scatter_with_mask 
+ This restores exactly the K-1 history after processing k tokens sequentially — bitwise identical to non-spec
+ The NPU gap
+ causal_conv1d_update_v2 (introduced in PR #445 ) does not implement the snapshot path. The SAVE_INTERMEDIATE logic and intermediate_conv_window parameter exist in the older causal_conv1d_update_npu (v1) but were never ported to v2 during the performance-oriented rewrite. Consequently:
+ NPU cannot record per-step conv snapshots during verify
+ conv_state_rollback is used as a workaround but introduces conv state drift on every partial acceptance
+ This drift accumulates across decoding steps, producing outputs that diverge from non-spec
+ This is also the underlying cause of the acceptance length gap reported in #408 (NPU acceptance rate 15–20% lower than H100): a corrupted conv state leads the draft model to generate tokens that are less consistent with what the target model expects, reducing the acceptance rate.
+ Proposed Fix
+ Two coordinated changes are needed:
+ 1. Add SAVE_INTERMEDIATE to causal_conv1d_update_v2 
+ Add intermediate_conv_window pointer, four stride parameters, and SAVE_INTERMEDIATE: tl.constexpr to _causal_conv1d_update_kernel_npu_tiled . After writing output in the STEP 5 loop body, store col0..col_{K-2} to intermediate_conv_window[mamba_slot, idx_token, dim, win] .
+ Note: v2 uses tl.range(seqlen_run) (a runtime loop ), so the K-1 additional stores per iteration do not trigger static unrolling. This avoids the UB overflow that would occur in v1 (which uses tl.static_range(seqlen) , statically unrolling the stores seqlen times). When SAVE_INTERMEDIATE=True , cap BLOCK_N to 256 (from default 512) to keep UB usage within the 192 KB limit with --enable-auto-multi-buffer=True .
+ 2. Replace conv_state_rollback with snapshot scatter 
+ Add a Triton kernel move_intermediate_conv_cache that after verification writes:
+ intermediate_conv_window[L, mamba_slot, accept_len-1, :, 0..K-2]
+ → conv_states[L, mamba_slot, state_len-K+1 : state_len, :]
+ Pass num_accepted_tokens = N_max (the physical buffer size, not the runtime draft count) during verify so the kernel always reads from the fixed offset state_len - K + 1 , which is also where the scatter writes. This keeps reads and writes aligned regardless of batch composition.
+ Related Issues
+ sgl-project/sglang#10335 — NVIDIA reference: snapshot-based lossless MTP
+ Reproduction
+ ASCEND_RT_VISIBLE_DEVICES=0 python -m sglang.launch_server 
+--attention-backend ascend 
+--model-path /path/to/Qwen3.5-4B 
+--tp-size 1 --disable-radix-cache 
+--host 0.0.0.0 --port 30000 
+--dtype bfloat16 --mamba-ssm-dtype bfloat16 
+--speculative-num-steps 3 
+--speculative-eagle-topk 1 
+--speculative-num-draft-tokens 4 
+--speculative-algorithm EAGLE 
+--cuda-graph-max-bs 4
+ Environment
+ Python: 3.11.14 (main, Jan 19 2026, 07:36:53) [GCC 11.4.0]
+NPU available: True
+NPU 0,1,2,3,4,5,6,7: Ascend910B3
+CANN_HOME: /usr/local/Ascend/cann-8.5.0
+CANN: Not Available
+BiSheng: 2026-01-13T09:46:36+08:00 clang version 15.0.5 (clang-5c68a1cb1231 flang-5c68a1cb1231)
+Ascend Driver Version: 25.5.1
+PyTorch: 2.8.0+cpu
+sglang: 0.0.0.dev12614+gc701a0876.d20260514
+sglang-kernel: Module Not Found
+flashinfer_python: Module Not Found
+flashinfer_cubin: Module Not Found
+flashinfer_jit_cache: Module Not Found
+triton: Module Not Found
+transformers: 5.6.0
+torchao: 0.9.0
+numpy: 2.3.5
+aiohttp: 3.13.5
+fastapi: 0.135.3
+huggingface_hub: 1.14.0
+interegular: 0.3.3
+modelscope: 1.35.3
+orjson: 3.11.8
+outlines: 0.1.11
+packaging: 26.0
+psutil: 7.2.2
+pydantic: 2.12.5
+python-multipart: 0.0.22
+pyzmq: 27.1.0
+uvicorn: 0.43.0
+uvloop: 0.22.1
+vllm: Module Not Found
+xgrammar: 0.2.0
+openai: 2.6.1
+tiktoken: 0.12.0
+anthropic: 0.89.0
+litellm: Module Not Found
+torchcodec: Module Not Found
+torch_npu: 2.8.0.post2
+sgl-kernel-npu: 2026.5.1
+deep_ep: 1.0.0+775c4204.cann.8.5.0.b232
+Ascend Topology:
+NPU0 NPU1 NPU2 NPU3 NPU4 NPU5 NPU6 NPU7 CPU Affinity
+NPU0 X HCCS HCCS HCCS HCCS HCCS HCCS HCCS 144-167
+NPU1 HCCS X HCCS HCCS HCCS HCCS HCCS HCCS 144-167
+NPU2 HCCS HCCS X HCCS HCCS HCCS HCCS HCCS 96-119
+NPU3 HCCS HCCS HCCS X HCCS HCCS HCCS HCCS 96-119
+NPU4 HCCS HCCS HCCS HCCS X HCCS HCCS HCCS 0-23
+NPU5 HCCS HCCS HCCS HCCS HCCS X HCCS HCCS 0-23
+NPU6 HCCS HCCS HCCS HCCS HCCS HCCS X HCCS 48-71
+NPU7 HCCS HCCS HCCS HCCS HCCS HCCS HCCS X 48-71
+ Legend:
+ X = Self
+SYS = Path traversing PCIe and NUMA nodes. Nodes are connected through SMP, such as QPI, UPI.
+PHB = Path traversing PCIe and the PCIe host bridge of a CPU.
+PIX = Path traversing a single PCIe switch
+PXB = Path traversing multipul PCIe switches
+HCCS = Connection traversing HCCS.
+NA = Unknown relationship.
+ ulimit soft: 1024
+ Reactions are currently unavailable 
+ Activity
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+ Metadata
+ Metadata
+ Assignees
+ No one assigned 
+ Labels
+ inactive 
+ Type
+ No type 
+ Projects
+ No projects 
+ Milestone
+ No milestone 
+ Relationships
+ None yet 
+ Development
+ No branches or pull requests 
+ Issue actions
+ Open in GitHub Copilot app 
+ Footer
+ © 2026 GitHub, Inc.
+ Footer navigation
+ Terms 
+ Privacy 
+ Security 
+ Status 
+ Community 
+ Docs 
+ Contact 
+ Manage cookies
+ Do not share my personal information
+ You can’t perform that action at this time.
+
