@@ -32,6 +32,9 @@
 - **量级**：**L2** —— 18/18 格实测 `tpot ≈ itl / accept_len`（误差 <1%）；A1 `bs=32/γ=7` 实测 `mean_itl=34.9 ms`、`accept_len=2.83`、`tpot=12.3 ms` ⇒ **2.83×**；`p99_itl=48.5 ms` vs `mean_tpot=12.45 ms` ⇒ **3.9×**。
 - **证据（可复现）**：`python probes/p06-frontier/analyze_mechanism.py --dir results/p06-frontier/2026-09-13/A1_4k`（脚本 docstring 记录了恒等式与"初版写错、被自测抓到"的过程）。
 - **反证**：若各引擎文档已写清且无人误用 ⇒ 价值下降。**反证存在**：vLLM 需专门发文档 PR **[#55283](https://app.semanticdiff.com/gh/vllm-project/vllm/pull/55283/overview)**「Clarify ITL vs TPOT Prometheus metrics」⇒ 混淆是官方承认的普遍问题。
+- **🔺 2026-09-13 新增直接证据（比"文档混淆"强得多）**：vLLM issue **[#19776](https://github.com/vllm-project/vllm/issues/19776)**「**[Bug][Spec Decode]: TPOT in prometheus is ITL in vllm serve**」—— **引擎自己在 `/metrics` 里导出的 TPOT，在投机解码下实际是 ITL**，即恰好等于我们的恒等式 I1（`tpot ≈ itl / accept_len`）被**在公开指标里违反**；官方目前的处置是一份**文档 PR #55283**。
+  ⇒ 这把本方向从"可能有人会用错"升级为"**引擎的公开指标在投机解码下就是错的**"，且**修法只是改文档**（自检器本可自动发现这类不一致）。
+  另两条配套证据：vLLM PR **[#31739](https://github.com/vllm-project/vllm/pull/31739)**「[Spec Decode][UX] **Add acceptance stats to `vllm bench serve` report**」（接受率统计是**后加的**，说明此前报告里没有）＋ vLLM 文档新增「[Per-Request Acceptance Metrics](https://docs.vllm.ai/en/latest/features/speculative_decoding/acceptance_metrics/)」页。
 
 ### P4 基准客户端单进程 ⇒ 高并发下 TTFT/TPOT 被系统性抬高
 

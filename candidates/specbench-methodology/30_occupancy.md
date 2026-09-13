@@ -31,6 +31,7 @@
 | `bench.json` 的 `spec_decode_acceptance_length` / `_rate` / `per_position_acceptance_rates` / `mean_itl_ms` / `mean_tpot_ms` | ✅ 已 ship | **原料齐备**：所有恒等式所需字段都在，但**引擎不做任何一致性检查** |
 | `/metrics` 的 `vllm:spec_decode_num_{draft,accepted}_tokens_total`（**计数器**） | ✅ 已 ship | 提供**第二条独立路径** ⇒ 可交叉核对 `bench.json`（这是自检器的基础） |
 | ITL vs TPOT 的语义文档 | ⚠️ 需专门 PR **#55283** 才澄清 | 官方承认易混 ⇒ **文档修法无法阻止错误分析**（这正是我们的空隙） |
+| **`/metrics` 的 TPOT 在投机解码下实为 ITL** | ❌ **已知 bug：[issue #19776](https://github.com/vllm-project/vllm/issues/19776)**，处置 = 文档 PR #55283 | **这是"引擎公开指标本身不自洽"的实证** ⇒ 自检器的存在理由从"学术"变成"工程必需"；**也意味着我们不能只做工具，必须给出可判定判据**（否则等于替上游修 bug） |
 | `--dataset-name random` | ✅ 已 ship（默认随示例出现） | 数据集选择直接改变接受率 ⇒ 我们的 P2 |
 | 温度/采样参数 | ✅ 已 ship | 已被 2605 §4.3 量化 ⇒ **我们不重复打** |
 
