@@ -107,7 +107,9 @@ recovery              = (accept_treat_first − accept_control_first) / (accept_
 
 | 日期 | 变更 | 时点（数据采集前/后） |
 |---|---|---|
-| 2026-09-13 | 首次登记：H1/H2、C0–C4、A/B/C 网格、杀判据、噪声预算、E1–E5 | **数据采集前** |
+| 2026-09-13 | 首次登记：H1/H2、C0–C4、A/B/C 网格、杀判据、噪声预算、E1–E5 | **数据采集前**（commit `207de66`） |
+| 2026-09-13 | **登记一处设计缺口（如实记录，不静默改写）**：§网格的"固定量"清单**漏写了 `--speculative-ngram-external-sam-budget`**。该参数默认 **0**，而 `kernels/jit/csrc/ngram_corpus/ngram.cpp:173` 为 `num_sams > 0 ? std::min(param_.external_sam_budget, total_draft_token_num) : 0` ⇒ **默认值会让外置 SAM 路径完全不参与**。主实验（A/B/C）因此是在 `sam_budget = 0` 下跑的 ⇒ **B 臂的干预实际上被引擎静默禁用了**，该轮 `recovery = 0.0%` **不能**作为"H2 被否证"的证据（命中 §可采纳前置条件 第 4 条的同类情形：干预未生效）。 | **数据采集后**（发现于实验结束、看数时） |
+| 2026-09-13 | **按扩展条款补测（同一预登记内）**：把 `sam_budget` 作为**唯一自变量**在其**合法极值** {0, 7} 上各跑一臂（`probes/p12-draft-corpus/run_budget_contrast.sh`），两臂都装入同一份 131103-token 语料。判别式（不是性能主张）：若 `B0 ≈ 1.836`（对照水平）而 `B7 ≈ 7.65` ⇒ 收益确实走**外置 SAM 路径**，H2 需按 `sam_budget=7` 重判；若 `B0 ≈ B7` ⇒ 该参数在预置场景下无效，机制解释须改写。 | **数据采集后**（新增臂，明确标注为事后追加） |
 
 ## 完成清单
 
