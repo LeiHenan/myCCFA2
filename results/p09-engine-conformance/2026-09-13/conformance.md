@@ -1,10 +1,11 @@
 # p09 跨引擎一致性判定（C1–C4）
 
-**C3 @bs=1**：SGLang 侧**取不到** `spec_accept_length`（gauge 可能未采到）⇒ 不可判定
-**C3 @bs=32**：SGLang 侧**取不到** `spec_accept_length`（gauge 可能未采到）⇒ 不可判定
+**C3 @bs=1**：vLLM 接受长度 **1.516**（由 `1+accepted/drafts` 增量推出） vs SGLang `spec_accept_length` **1.600** ⇒ 相对差 **-5.2%** ⇒ 视为可比（<8%）
+**C3 @bs=32**：vLLM 接受长度 **1.479**（由 `1+accepted/drafts` 增量推出） vs SGLang `spec_accept_length` **2.194** ⇒ 相对差 **-32.6%** ⇒ **定义不同（判据成立，≥8%）**
 **C2** vllm/off：`itl/tpot` = **1.00×**（无接受长度对照）
 **C2** vllm/ngram：`itl/tpot` = **1.07×**，同格接受长度 = 1.50 ⇒ **itl 是「每步」**（与 accept_len 同量级 ⇒ 与 TPOT 不可直接并列）
 **C2** sglang/off：`itl/tpot` = **1.00×**（无接受长度对照）
+**C2** sglang/ngram：`itl/tpot` = **1.98×**，同格接受长度 = 1.90 ⇒ **itl 是「每步」**（与 accept_len 同量级 ⇒ 与 TPOT 不可直接并列）
 **C1** 客户端读数 `in_tok` @bs32/off：vLLM 131328 vs SGLang 131328 ⇒ **+0.00%** ⇒ ✅ 一致（<1%）
 **C1** 客户端读数 `out_tok` @bs32/off：vLLM 4096 vs SGLang 4096 ⇒ **+0.00%** ⇒ ✅ 一致（<1%）
 **C1** 客户端读数 `completed` @bs32/off：vLLM 32 vs SGLang 32 ⇒ **+0.00%** ⇒ ✅ 一致（<1%）
@@ -12,6 +13,12 @@
 
 | 引擎 | 投机 | bs | rep | 输入tok | 输出tok | tok/s | TTFT | ITL | TPOT | 客户端accept | 引擎侧accept |
 |---|---|---|---|---|---|---|---|---|---|---|---|
+| sglang | ngram | 1 | 1 | 131328 | 4096 | 139.3 | 139.8 | 9.04 | 6.13 | None | 1.2 |
+| sglang | ngram | 1 | 2 | 131328 | 4096 | 198.9 | 37.6 | 9.04 | 4.77 | None | 1.25 |
+| sglang | ngram | 1 | 3 | 131328 | 4096 | 214.9 | 36.1 | 9.04 | 4.4 | None | 2.35 |
+| sglang | ngram | 32 | 1 | 131328 | 4096 | 444.0 | 331.5 | 117.22 | 54.77 | None | 1.968 |
+| sglang | ngram | 32 | 2 | 131328 | 4096 | 1633.5 | 212.8 | 33.32 | 14.86 | None | 1.968 |
+| sglang | ngram | 32 | 3 | 131328 | 4096 | 1606.6 | 194.0 | 32.68 | 15.54 | None | 2.647 |
 | sglang | off | 1 | 1 | 131328 | 4096 | 104.8 | 296.9 | 7.27 | 7.27 | None | 0.0 |
 | sglang | off | 1 | 2 | 131328 | 4096 | 133.4 | 35.3 | 7.27 | 7.27 | None | 0.0 |
 | sglang | off | 1 | 3 | 131328 | 4096 | 133.4 | 35.7 | 7.27 | 7.27 | None | 0.0 |

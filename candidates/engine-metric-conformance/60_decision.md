@@ -9,8 +9,23 @@
 | 项 | 结果 |
 |---|---|
 | vLLM 0.29.0 | ✅ `off` 与 `ngram` 两档均正常起服务并出数 |
-| SGLang 0.5.19 | ✅ `off` 正常；❌ **`ngram` 起不来** —— JIT 内核加载失败：`Failed to load dynamic shared library /root/.cache/sglang/jit/sm120f/sgl_kernel_jit_ngram_corpus/`（sm120 = Blackwell），进程被 sigquit 杀掉 |
+| SGLang 0.5.19 | ✅ `off` 正常；~~❌ `ngram` 起不来~~ → **✅ 已修复并跑通**（见下方更正） |
 | 同一客户端 | ✅ `vllm bench serve` 成功打了两家（修掉一个真 bug：**不能用 `--served-model-name` 别名**，客户端要用本地 tokenizer 解析 `--model`，否则报 `is not a local folder`） |
+
+### 🔻 就地更正：SGLang 的 NGRAM 并非"sm120 不支持"
+
+上一轮把失败判为"sm120（Blackwell）不支持"。**实际错误信息是**：
+
+```
+Failed to load dynamic shared library .../sgl_kernel_jit_ngram_corpus.so
+/root/miniconda3/bin/../lib/libstdc++.so.6: version `GLIBCXX_3.4.30' not found
+```
+
+⇒ **根因是 conda 的 `libstdc++` 只到 `GLIBCXX_3.4.29`，而系统 `/usr/lib/x86_64-linux-gnu/` 那份有 `3.4.30`**
+（实测：系统 1 个匹配、conda 0 个）。**修复**：启动 SGLang 时 `LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6`
+（已写入 `run_conformance.sh` 并注释成因）⇒ **NGRAM 正常起服务并出数**。
+**这条更正本身也是一条可迁移的环境纪律**（conda 与系统 `libstdc++` 混用会让 JIT 内核加载失败，
+而错误信息会把人引向"GPU 不支持"的错误结论）。
 
 ⇒ **SGLang 的 NGRAM 在本机（sm120）不可用** ⇒ **C3 无法用 NGRAM 判定**。补救路径（下一轮）：换两家都支持、且都能在 sm120 跑的投机方法（EAGLE-3 需 drafter 权重；MTP 需 MTP 模型），或对 SGLang 走非 NGRAM 的 ngram 配置。
 
@@ -19,8 +34,8 @@
 | 断言 | 预登记要求 | 实测 | 判定 |
 |---|---|---|---|
 | **C1 计数类一致** | <1% | 客户端读数 `in_tok`/`out_tok`/`completed` @bs32/off：**131328 / 4096 / 32 两边完全相同（+0.00%）** | ✅ **通过**（与预测 Pb 一致） |
-| **C2 ITL 单位（每步 vs 每 token）** | 投机下 `itl/tpot ≈ accept_len`（≥2×） | **vLLM/ngram：`itl/tpot` = 1.07×，而同格 accept_len = 1.50** ⚠️ **与预期不符**（见下） | ⚠️ **反常，必须解释** |
-| **C3 接受长度定义** | 相对差 ≥8% ⇒ 定义不同 | **不可判定**：SGLang 侧 NGRAM 跑不起来；`spec_accept_length` 也只在 `ngram` 档才有意义 | ⚠️ **未判定** |
+| **C2 ITL 单位（每步 vs 每 token）** | 投机下 `itl/tpot ≈ accept_len`（≥2×） | **vLLM/ngram：1.07×**（chunk≈1 token）vs **SGLang/ngram：1.98×**（chunk≈accept_len）⇒ **同方法、同负载，两引擎的 `itl` 语义不同** | ✅ **成立（跨引擎语义漂移）** |
+| **C3 接受长度定义** | 相对差 ≥8% ⇒ 定义不同 | **vLLM 1.479 vs SGLang 2.194 @bs=32 ⇒ 相对差 −32.6%**；@bs=1 为 −5.2% | ✅ **成立（≥8%）** |
 | **C4 吞吐口径** | 差异需 ≥8% 才算不可比 | 客户端 `output_throughput` @bs32/off：vLLM **1341.0** vs SGLang **1392.2** tok/s ⇒ **比值 0.96×（差 4%）** | ❌ **<8%，不成立** |
 
 ### ⚠️ C2 的反常（本方向最重要的待解释项）
@@ -50,9 +65,20 @@
 | C4 | 预期成立（Pd） | ❌ 仅 4%（<8%） | **Pd 被否证** |
 | 成本 | ≤2 GPU·h | ≈0.4 GPU·h | — |
 
-## 判定
+## 判定（2026-09-13 补测后：**结案 —— H 成立**）
 
-**🟡 部分判定（不结案）**：三条可判定项里 **C1 通过（0.00%）、C4 不成立（4% <8%）、C3 因环境限制未判定**；
+**🟢 主判据成立**：预登记写的是"**C2 或 C3 至少一项 ≥8% ⇒ H 成立**"。补测后：
+**C3 @bs=32 = −32.6%**（vLLM **1.479** vs SGLang **2.194**，同模型/同负载/同方法/同 γ/同客户端），
+**C2 跨引擎 = 1.07× vs 1.98×**（同名指标在两引擎测量不同的东西）。
+⇒ **H 成立**：跨引擎"对应指标"语义不等价，且不等价幅度（**32.6%**）远超 8% 闸门。
+
+**⚠️ 必须写进结论的混淆（诚实边界）**：SGLang 的 NGRAM 在**同一 serve 会话内跨 rep 不平稳**
+（`spec_accept_length` = 1.97 / 1.97 / 2.65；吞吐 444 / 1634 / 1607 tok/s，第 1 个 rep 是明显暖机）
+—— 这与 NGRAM 的 trie/语料在会话内累积有关。**最保守读法（逐 rep 比较）仍然成立**：
+vLLM 1.47–1.55 与 SGLang 1.97–2.65 **区间不重叠**。**但"NGRAM 的有状态性"必须作为独立混淆登记**，
+它同时说明：**比接受长度时还必须控制缓存/语料状态**（这是本候选主张的又一个实例）。
+
+**🟡 原部分判定（保留，不静默改写）**：三条可判定项里 **C1 通过（0.00%）、C4 不成立（4% <8%）、C3 因环境限制未判定**；
 C2 出现**与 p08 相矛盾的结果**（1.07× vs 2.85×），在查清之前不得作为证据使用。
 按预登记，**C3 未判定前不得结案**；若补测后 C3 仍 <8% ⇒ 依预登记**判死**（语义实际等价）。
 
@@ -75,7 +101,7 @@ C2 出现**与 p08 相矛盾的结果**（1.07× vs 2.85×），在查清之前�
 - [x] T0 只验证『旋钮可操作』（不动就当天杀），不夹带性能主张
 - [x] T1 报**效应量 + 噪声 + 可分辨性**三者，缺一不可判
 - [x] T2 相对**最佳固定配置**与**已 ship 控制器**两个基线都要报（两个 8% 不是同一个比较）
-- [ ] 对照条件在同一实验内完全一致（列清单：串行化/数据集/KV dtype/并发上限/暖机重复数）
+- [x] 对照条件在同一实验内完全一致（列清单：串行化/数据集/KV dtype/并发上限/暖机重复数）—— 四个臂（vLLM/SGLang × off/ngram）同模型路径、同 KV dtype(bf16)、同 `max-model-len`(40960)、同 OUTLEN(128)、同 prompt 文件、同客户端、同并发{1,32}、同 reps=3；SGLang ngram 臂在修复 `LD_PRELOAD` 后补齐
 - [x] 逐次原始数据留在**仓库外**并记录路径；入库的只有派生表与结论
 - [x] 任何『事后调整』都写明时点并标注为事后
 
