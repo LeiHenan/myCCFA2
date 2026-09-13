@@ -333,3 +333,69 @@ issue #48494 写 *"**The presence of the batch-size table is the trigger**; K=0 
 **merged** 修复（#46972，KV-offload × MTP/Eagle 的命中修复）说明这条路径**上游是认的**。
 ⚠️ **但已知一个必须先处理的混淆**：#47930 的 DFlash × 前缀缓存缺陷会让"带 dflash 的卸载命中率"读数失真
 ⇒ 该簇的**任何测量都必须先跑 `eagle3`/`nospec` 作对照**（这正是 p21 建立的方法）。
+
+---
+
+## 五、按 rev8 候选池 ①（C 段中"失败理由可能已过期"）对 **KV 地图 185 条被放弃格**的完整过筛（2026-09-14，0 GPU·h）
+
+**为什么做这一步**：rev8 把候选池①（`notes/FILTER_3AXIS.md` §1a）定为**第一优先级**，而我此前一直没执行它
+（附录 A.1 已承认这个偏差）。KV 地图的 C 段有 **185 条**带引文的放弃记录 —— 这是现成的最富矿，但**全文 0 个
+`REASON-MAY-HAVE-EXPIRED` 标签**。本轮把它补上。
+
+**方法（可复现）**：解析 185 条 → 机械旗标（`HW_OLD` 硬件代际 / `ENGINE_OLD` 引擎版本 / `SUPERSEDED` 被取代 /
+`STALE` 陈旧关闭 / `NO_KERNEL` / `FUTURE` / `MEASURED_NEG`）→ 对命中的逐条**读原文理由**并施 §1a。
+旗标计数：`STALE 67 / MEASURED_NEG 50 / FUTURE 37 / SUPERSEDED 22 / HW_OLD 5 / ENGINE_OLD 4`。
+
+### 5.1 关键设计：**"closed in favour of X" 只有在 X 真的落地时才成立**
+
+这是本轮最有价值的一条方法学。22 条放弃记录的理由是"另有 PR/设计在做它" —— **若那个 X 自己也没落地，放弃理由即失效、该方向重新变成无人认领。**
+我据此**逐条查了 X 的真实状态**（HTML 直取，不经 API）：
+
+| 被放弃的格子 | 放弃理由（"由 X 取代/重复"） | **X 的真实状态** | 结论 |
+|---|---|---|---|
+| C5 | closed in favor of **#40835** | **MERGED**（Triton INT4 per-token-head KV quant） | 理由成立 |
+| C6 | "Please close this. See **#38479**" | **MERGED**（TurboQuant 2-bit KV） | 理由成立 |
+| C12 | "closed this in **#50094**" | **MERGED**（CPUOffloadingSpec → SharedOffloadRegion） | 理由成立 |
+| C75 | "duplicates **#41847**" | **MERGED**（HBA/HMA by default for connectors） | 理由成立 |
+| **C44** | "Closing as a duplicate of **#41565**" | **#41565 仍 OPEN**（TurboQuant `_continuation_prefill` workspace 欠分配） | **理由失效** |
+| **C109 / C110**（soft-pin / popular-insert 保护） | "Superseded by **#43302**" | **#43302 CLOSED 未 merge**（multi-storage replication） | **理由失效**：被放弃所"让位"的那个方案自己死了 |
+| C16（39-commit Extensible KV cache 系列） | "Replaced by **#56492**" | **#56492 = Draft**（njhill） | 理由尚未兑现，但**在飞（有人在做）** |
+| C26（SGLang Router 分层树） | "re-split into **#39108/#39109/#39110**" | 三者**均 OPEN** | 理由成立（工作只是搬了地方） |
+| C19 | "duplicates **#55159**" | **#55159 OPEN** | 理由成立（占位者仍在办） |
+
+### 5.2 但"理由失效"≠"可立项"：三条失效项**全部撞在同一个不可达的结构原因上**
+
+C44/C109/C110 的失效看似是好消息，**但把 C109 的理由读全会发现真正的根因**（引文来自 #42948 线程上 @stecasta 的 block-pool 插桩）：
+
+> *"the real bug is **131% pool overflow from the homogeneous `lcm=256` physical block layout vs DSv4-Flash's `{256, 64, 4, 8}`-block-size KV groups**.
+> Under that overflow, some eviction every alloc cycle is mandatory"*
+
+⇒ 那个"级联崩塌"（地图 **B112**：命中率 94.3% @bs1–2 → 1.0% @bs4 → 0.3% @bs8）**是异构 block size 的后果**：
+逐层 page size 取最小公倍数 ⇒ 物理池溢出 131%。**我们目标是 dense Qwen3-4B，逐层 block size 相同 ⇒ lcm 就等于 block size ⇒ 不溢出 ⇒ 该崩塌在原理上不该出现。**
+**这是 `prescreen_map.py` 的 `MODEL_PAT` 把 B112/C44/C109/C110 判为"够不着"的机制解释** —— 之前只是关键词，现在有因果。
+而真正的结构性修法（heterogeneous per-page-size pool）正是 **B113 的 RFC #42082 + WIP #42374（93 commits，均 OPEN）** ⇒ 也已被人占位。
+
+### 5.3 C141 被**一次零卡源码核对**否掉（最干净的一次否证）
+
+C141 曾是本轮最强候选（"llm-d 的文件系统 KV 缓存因**最小 staging 缓冲大于实际所需**，4.4 GB 有用 KV 导致约 10 GB 被搬运 ⇒ ~2.3× 数据放大"），
+且它的放弃理由（*"deprecated while our experiments were ongoing, in favour of the secondary filesystem disk tier introduced directly into vLLM"*）**确实已过期**：产物已上游进 vLLM。
+**于是去读 vLLM 0.29 的实际实现**（`v1/kv_offload/tiering/fs/manager.py`）：块大小取自 `primary_kv_view.strides[0]`（:167），
+偏移是 `int(bid) * self._block_size`（:226/:240），传输是**精确的** `view[offset : offset + block_size]`（`io.py:110/:146`）。
+**⇒ 上游版本里没有"按最小值超量分配的 staging 缓冲"这个东西**；那个 2.3× 是 `llm-d==0.23`（final release）自身的实现细节，
+**没有随代码一起上游**。⇒ **C141 死**（0 GPU·h）。
+
+### 5.4 池① 的结论
+
+| 类别 | 条数（本类中已核） | 处置 |
+|---|---|---|
+| 理由成立（后继 X 已 merge / 工作搬到仍 OPEN 的地方 / 实测负结果且边界对本机更紧） | C5, C6, C12, C75, C26, C19, C16, C125, C132, C137, C94, C118, C152, C163 | 丢弃（理由仍成立） |
+| 作者自行撤回（无缺陷） | C103, C112 | 丢弃 |
+| **理由失效但不可达**（异构 block size 的 lcm 溢出 ⇒ 需 hybrid 模型；结构性修法已被 RFC #42082/#42374 占位） | **C44, C109, C110** | 丢弃（换轴后仍不可达） |
+| **理由失效且可达** | **C1**（"It is for **V0**… make a new PR for **V1** when the time comes!"） | ⚠️ 唯一残留：但其残余范围（**HBM block pool 的驱逐策略**）正是 **B24** —— `gpu_eviction_policy` 不存在、issue #40268 `REOPENED`、维护者 njhill 已回复指向 #40004 等 ⇒ **有活跃请求，占位中** |
+| **理由失效但缺陷未随代码上游** | **C141** | **死**（§5.3 源码核对） |
+
+**⇒ 池① 对 KV 地图：幸存者 0 条。** 这一方面是坏消息（少了一整条来源），
+另一方面它**证明了 rev8 的优先级排序本身是对的**：我此前从 B 段挑的四条全部撞墙，而池①虽然也没出候选，
+但**每一条都在 0 GPU·h 内被判死且给出了机制级理由**（而不是"测得不对"）。
+**⚠️ 一处未取证**：C16 的后继 #56492 只能确认是 **Draft**（HTML 状态字段未渲染出 `state`，我从 `Status: Draft` 徽章判定）——
+若它其实已 merge，则 C16 归入"理由成立"。这一条标**未取证**，不据以下结论。
