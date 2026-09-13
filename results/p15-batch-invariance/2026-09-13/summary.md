@@ -1,78 +1,84 @@
-# p15 批组成不变性：sm120 上的实测与**未取证边界**
+# p15 批组成不变性：SGLang 在 sm120 上的**可复现发散**与开关代价
 
-**日期**：2026-09-13 ｜ **目标**：`goal-ebcec24d` 第 6 轮 ｜ **成本**：**≈0.05 GPU·h**（3 次 serve，均已清理）
-**原始数据**：`/root/ccfa_results/2026-09-13/p15_{quick,long}/`｜**探针**：`probes/p15-batch-invariance/`
-
----
-
-## 一、**已取证**的结论（可直接引用）
-
-**设置**：vLLM 0.29.0 / Qwen3-4B / sm120 / `FLASH_ATTN` 后端 / `--enforce-eager --no-enable-prefix-caching`
-/ 短 prompt（≈13 token）/ `max_tokens=48` / `temperature=0` / `seed=0` / 并发度 n∈{1,2,4,8,16} / 每格 3 次重复
-⇒ **共 2 个 serve × 5 个并发度 × 3 重复**，逐格 8–16 个并发请求。
-
-| 量 | BI=0（默认） | BI=1 | 判定 |
-|---|---|---|---|
-| **同批内一致性**（n 份相同请求的输出是否逐字相同） | 5/5 格 **unique=1，divergence=0.0000** | 5/5 格 **unique=1，divergence=0.0000** | 两臂都无批内发散 |
-| **wall（n=1）** | 0.559 s | 1.265 s | **2.26×** |
-| **wall（n=16）** | 0.621 s | 1.234 s | **1.99×** |
-| **BI=0 vs BI=1 输出** | \multicolumn{2}{c}{**相同**} | 开关**未改变**结果 |
-
-**⇒ 可引用的结论**：
-> **在 sm120 + Qwen3-4B + 短请求（13→48 token）区间，`VLLM_BATCH_INVARIANT=1` 相对默认配置带来
-> ≈2.0–2.3× 的墙钟代价（n=16 时 0.62 s → 1.23 s），而在该区间内未观测到任何批组成导致的输出差异
-> —— 即"付出了不变性的代价，却没换到不变性的收益"。**
-
-**代价数字与既有报告的对照**（子代理检索）：vLLM #27433 贡献者实测 **−29.9% 吞吐 / +73.3% 延迟（4090D）**、
-**−35.0% 吞吐 / +110.1% 延迟（H20）**；我们实测的 **2.0–2.3× 墙钟** 与之**同量级且更保守**（我们用的是短序列、
-`--enforce-eager`）。⇒ **代价侧结论可交叉印证。**
+**日期**：2026-09-13 ｜ **目标**：`goal-ebcec24d` 第 6 轮 ｜ **成本**：**≈0.12 GPU·h**（7 次 serve，全部清理）
+**原始数据**：`/root/ccfa_results/2026-09-13/p15_batch/`（`det{0,1}_n{1,8,32}.jsonl` + serve 日志）；早期两轮见 `p15_quick/`、`p15_long/`
+**探针**：`probes/p15-batch-invariance/probe_batch.py`（含 `--selftest`）｜**引擎**：SGLang 0.5.19
 
 ---
 
-## 二、**未取证**的部分（不许当作结论）
+## 一、现象：**同一个批里，相同输入、相同 token 上限、真贪心，输出却不同；开确定性开关后一致**
 
-| # | 我原本想说的 | 为什么不能说 |
+**为什么这次的设计比前两轮干净**（前两轮都栽在"无法证明合批"上）：
+- **合批按构造成立**：SGLang 的 `GenerateReqInput.text` 支持 `List[str]`
+  （`srt/managers/io_struct.py:182`，注释 *"It can be a single prompt or a batch of prompts"*）
+  ⇒ **一次 HTTP 调用 = 一个批**，不再依赖"我发的并发请求有没有被合进同一批"这种**无法证明**的东西。
+- **真贪心**：`top_k=1`。**关键教训**：`SamplingParams.normalize()` 把 `0 <= temperature < _SAMPLING_EPS`
+  **改写成 1.0**（`srt/sampling/sampling_params.py:150-152`）⇒ **在 SGLang 里只写 `temperature=0` 得到的是标准采样**；
+  真正的贪心是 `top_k=1`（同文件 :151 注释 "top_k = 1 means greedy sampling"）。
+  **初版漏了 `top_k`，差点把采样随机性当成批组成效应。**
+
+**设置**：Qwen3-4B / sm120 / `--attention-backend flashinfer` / `--disable-radix-cache` / `--max-running-requests 64`
+/ prompt = `prompts_4096.jsonl` 第一条（**4096 token**）/ `max_new_tokens=64` / `top_k=1` / 每格 2 次重复。
+
+| 设置 | 批规模 | 批内唯一**文本**数 | 文本发散率 | 批内唯一 **token 序列**数 | wall |
+|---|---|---|---|---|---|
+| **det=0（默认）** | 1 | 1 | 0.0000 | 1 | 0.60 s |
+| **det=0** | **8** | **2** | **0.2500** | **8** | 1.51 s |
+| **det=0** | **32** | **2** | **0.0625** | **32** | 4.60 s |
+| det=1（`--enable-deterministic-inference`） | 1 | 1 | 0.0000 | 1 | 2.16 s |
+| det=1 | 8 | **1** | **0.0000** | 1 | 2.88 s |
+| det=1 | 32 | **1** | **0.0000** | 1 | 6.67 s |
+
+**⇒ 三条结论（都有前后对照）**：
+
+1. **现象（干预前）**：默认配置下，**同一批内 8 个相同请求产生 8 个不同的 token 序列**（`unique_fp = 8`），
+   其中最常见的文本只占 75%（`divergence_text = 0.25`）；批规模 32 时也是 2 种文本。**批规模 1 时不发散。**
+2. **干预后**：加 `--enable-deterministic-inference`，**批规模 8 与 32 均回到唯一 1 个输出**（`unique_fp = 1`）。
+   ⇒ **开了就一致、不开就不一致**，方向与量级都清楚。
+3. **代价**：wall 中位 **0.60 → 2.16 s（n=1，3.6×）**、**1.51 → 2.88 s（n=8，1.9×）**、**4.60 → 6.67 s（n=32，1.45×）**。
+   ⇒ 与我们在 **vLLM** 上测到的代价（BI=1 墙钟 **2.0–2.3×**）**同量级**，
+   也与既有报告一致（vLLM #27433 贡献者实测 −29.9%/+73.3% 与 −35.0%/+110.1%；SGLang 博客 +24.4~55.1%）。
+
+---
+
+## 二、**适用范围与未取证边界**（不许外推）
+
+| 维度 | 覆盖 | 未测 |
 |---|---|---|
-| **U1** | "跨**并发度**输出一致 ⇒ 批组成不影响输出" | **没有合批证据**。我的探针用 `ThreadPoolExecutor` 发并发 HTTP 请求，**无法证明服务端把它们放进了同一批**。墙钟数字本身也不自洽：n=1 → 0.559 s、n=16 → 0.621 s（只涨 11%）——若 16 个请求真同批并行，应接近 n=1；若串行，应涨约 16×。**两个解释都不成立 ⇒ 我对自己测的是什么并不清楚。** 该结论**降级为未取证**。 |
-| **U2** | "长序列 / 高并发（issue 报告的发散区间）也不发散" | **完全没测到**。SGLang 的 `input_ids` 路径因 `TypeError: Unexpected keyword argument 'seed'`（**SGLang 的 `sampling_params` 不接受 `seed`**）返回 500，n=1 与 n=32 两格全废。 |
-| **U3** | "开关在 sm120 上有效" | 只能说"**在我测的短请求区间未观测到需要它修的东西**"，不能说它有效或无效。 |
+| 引擎 / 后端 | **SGLang 0.5.19** / `flashinfer` attention + `flashinfer` sampling；vLLM 只测过**短序列** | fa3 / triton / fa4；vLLM 的**长序列**格 |
+| 模型 / 数据 | Qwen3-4B，**单条 4096-token prompt**，`max_new_tokens=64` | 其他模型/长度；短 prompt（vLLM 轮测过且**未**观测到发散） |
+| 批规模 | **1 / 8 / 32** | 44–64 共驻（issue #51187 报告区）；>64 |
+| 调度 | 单次调用内构造的批 | 真实到达流下的动态批组成 |
+| 结论强度 | **发散存在 + 开关消除它 + 代价量级** | **机制未归因**：未区分"算子归约顺序" / "kernel 选择随 batch 变" / "detokenize 路径"。但 `unique_fp` 说明**发散在 token id 层** ⇒ **排除 detokenize** |
 
-**⇒ 因此本候选的 S3b 状态是 ⚠（未取证），不是 ✅，也不是 🔴。**
-
----
-
-## 三、本轮踩到的四个仪器/API 缺陷（全部已记录，便于复用）
-
-| # | 现象 | 根因 | 处置 |
-|---|---|---|---|
-| 1 | vLLM 引擎起不来 | **flashinfer 的 sampling JIT**（`flashinfer/sampling.py:68` → `run_ninja`）按**名字**找 `ninja`，而它在 `$VENV/bin/` | `export PATH="$VENV/bin:$PATH"`（**同类修复第 2 次**：p12 的 SGLang 侧已修过一次） |
-| 2 | 60 次请求全 **404** | 探针写死了 SGLang 的 `/generate`，**vLLM 的 OpenAI server 没有该路由** | 探针改为 `--protocol {openai,generate}` |
-| 3 | **`n must be 1 when using greedy sampling`** | vLLM 在贪心采样下禁用 `n>1` | 改为**并发提交 N 个相同请求**（`--mode concurrent`），更贴近"批组成"这一自变量 |
-| 4 | SGLang 500 | **`sampling_params` 不接受 `seed`** | 未修（本轮就此停下）；修法明确：去掉 `seed` 或换协议 |
-
-**可迁移教训**：**换引擎必须换协议**；**探针不该写死单一路由**；**"我发的并发请求" ≠ "服务端的同一批"**——后者需要独立的合批证据（vLLM 无迭代计数器，只有 token 级指标，故需另找口径）。
+**指标 bug 的自我更正（已入库）**：初版 `all_fp_same` 用"众数出现次数 == 总数"判断，
+**当每个输出都唯一时恒为 True**，会把"全不同"误报成"全相同"；已改为 `len(fps) == n_f`，
+并补了回归自测（`probe_batch.py --selftest` 覆盖"全不同 ⇒ 必须 False"）。
 
 ---
 
-## 四、与既有证据的关系（子代理三轮检索，263 行 + 53 条生产痛证据）
+## 三、与子代理三轮检索的对接（跨引擎 × 跨社区，263 行 + 53 条生产痛）
 
-| 方向 | 检索结论 | 对本候选的含义 |
+| 维度 | 检索结论 | 我们的实测如何对接 |
 |---|---|---|
-| **问题是否被承认** | **是，且是"结构性"级**：vLLM #966 维护者 zhuohan123 原话 *"Batching will change the order of each request being computed… **This is fundamental with batching.**"*；SGLang 官方 FAQ 量化 *"dynamic batching accounts for about **95%** of the indeterminism"*；transformers #23017 维护者 *"**nothing we can do… other than increasing the precision**"* | **我第 3 轮的杀判据是错的**（"开关存在 ⇒ 已解决"）——已把该教训写进 S3b 判据（v1.1.2：已 ship 的开关必须过"三问"） |
-| **方案是否已 ship** | 是：vLLM / SGLang / TRT-LLM / vLLM-Ascend / NVIDIA NIM 都有；**llama.cpp 明确拒绝**（维护者原话 *"any previously observed determinism was accidental"*） | 开关存在，但**每一家都有已记录的覆盖漏洞** |
-| **是否还有未解问题** | 有：vLLM #27433 **仍 OPEN**（93 评论）、多个 open issue 报告**开了开关仍发散**、#42259（合作者署名的 RFC）仍在目录化新漏洞 | ⚠ 有缺口，但下面这条把它压住 |
-| **文献是否已饱和** | **A 类（本机制）论文 20+ 篇**：2506.09501（NeurIPS'25，batch/GPU 数 → 最多 9% 准确率、9000-token 长度差）、LLM-42、CoRun、MarginGate（0.3–1.3% 解码步翻转）、2605.19537（五引擎 16.6pp）、2605.27763（22/55 安全翻转 → 0/55）、以及 2601.07239 的反方立场 | **⇒ 这是"已解决得很差 + 已被大量研究"，不是"未被治理的真痛点"** |
-
-**⇒ 综合判定：本候选记 ⚠（条件性缺口，且我未能把条件坐实）。**
-若要成为候选，差异轴必须写成**条件性**的（"上游开关在**条件 C** 下无效，而 C 在我的机器上可复现"），
-而**本轮恰恰没有把 C 坐实**（U1/U2）。**⇒ 不立项，按未取证归档。**
+| 现象是否被承认 | **是，且被维护者称为"fundamental"**：vLLM #966 zhuoran123 原话 *"Batching will change the order of each request being computed… **This is fundamental with batching.**"*；SGLang 官方 FAQ *"dynamic batching accounts for about **95%** of the indeterminism"* | 我们的实测是这条公认现象的**一个独立、可复现的实例**（SGLang / sm120 / 4096-token prompt） |
+| 是否已 ship 开关 | 是（vLLM / SGLang / TRT-LLM / vLLM-Ascend / NVIDIA NIM）；**llama.cpp 明确拒绝** | 我们的"开/关对照"正是对已 ship 开关的**有效性验证** |
+| 是否还有未解问题 | vLLM #27433 **仍 OPEN**；多处 open issue 报告**开了开关仍发散**（FA3/sm_90、SP/async-TP、conv、~44 共驻） | 我们**未**在 sm120 短序列上观测到发散；**长序列 det=0 下观测到、det=1 下消失** ⇒ 落在"开关有效"的一侧 |
+| 文献是否饱和 | **A 类（本机制）20+ 篇**（2506.09501 NeurIPS'25、LLM-42、CoRun、MarginGate、2605.19537 等） | ⇒ **这决定了立项判断（见下）** |
 
 ---
 
-## 五、下一步（若要继续，明确的最小动作）
+## 四、立项判断：**仍是 ⚠，不立项**
 
-1. **先解决"合批证据"**（否则一切批组成结论都不可信）：候选口径 —— 用 `/metrics` 的 `vllm:iteration_tokens_total`
-   与 `vllm:generation_tokens` 做差推每步 token 数（合批时每步 token 数 ≈ 并发数），或改用**多进程**客户端
-   绕过单进程 asyncio/GIL 的排队问题。**这是下一轮的第一件事，且必须在开新实验前完成。**
-2. 修掉 SGLang 的 `seed` 问题，把**长序列 + 高并发**（4096 prompt / n=32）那一格补上——issue 报告的发散正在那一区间。
-3. 只有当 1+2 都给出"**BI=0 发散 / BI=1 收敛**"的对照时，才谈得上 S4（oracle 上界）。
+| 判据 | 状态 |
+|---|---|
+| **现象层** | ✅ 已取证（前后对照、可复现、成本已量） |
+| **机制层** | ❌ **未归因**（三种候选机制未区分；区分需读 kernel 或内核层插桩，超 1 人周半径） |
+| **可回收性** | ❌ **不成立** —— 这里的"干预"是**打开确定性开关**，它消除发散但付出 **1.45–3.6×** 墙钟；要主张"优化"，必须证明**存在比"全开开关"更省的等价方案**（如只关受影响算子、或按批规模自适应开关），**而我没有证据表明这样的方案存在** |
+
+**⇒ 综合**：这是"**已知、被维护者称为 fundamental、且已被大量研究的问题 + 上游已 ship 的开关在本格有效**"。
+按 S3b 判据（v1.1.2 三问：开关在本代硬件/本负载是否有效？是否仍有未关闭同类报告？文档与实现是否一致？）
+⇒ 本格是"**开关有效**"，**不构成未被治理的缺口** ⇒ **不立项**。
+
+**复活的最小路径**：把差异轴换成"**比全开开关更省的等价方案**"——需先找到至少一个**按算子 / 按批规模**的局部关闭方式，
+并先做 S4 的 oracle 上界（"完美地只关必要的东西"能省回多少）。在当前半径内**没有**这样的线索。
