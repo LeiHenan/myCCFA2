@@ -22,10 +22,16 @@ P=/root/myCCFA/probes/p20-dsd
 MODE=${MODE:-full}
 
 case "$MODE" in
-  smoke) OUT=/root/ccfa_results/$(date +%F)/p20_smoke_v2; ARMS="A2_static_k3 A4_table_allk0"; REPS=1; NPROMPT=8;  CONC=8 ;;
-  full)  OUT=/root/ccfa_results/$(date +%F)/p20_dsd_v2;   ARMS="A1_nospec A2_static_k3 A3_static_k1 A4_table_allk0 A5_table_switch A6_table_const3"; REPS=3; NPROMPT=24; CONC=8 ;;
+  smoke) OUT=/root/ccfa_results/$(date +%F)/p20_smoke_v3; ARMS="A2_static_k3 A4_table_allk0"; REPS=1; NPROMPT=8;  CONC=8 ;;
+  full)  OUT=/root/ccfa_results/$(date +%F)/p20_dsd_v3;   ARMS="A1_nospec A2_static_k3 A3_static_k1 A4_table_allk0 A5_table_switch A6_table_const3"; REPS=3; NPROMPT=24; CONC=8 ;;
   *) echo "MODE 必须是 smoke|full"; exit 2 ;;
 esac
+# WARMUP=1 ⇒ 测量前先跑一遍同样请求集并**丢弃**结果（预热前缀缓存）。
+# 事出有因（p21 实测）：**dflash 系投机**下前缀缓存第 2 遍仍 0 命中、第 3 遍才命中
+# （prefill_kv_computed 第 2 遍仍 4096/4096，第 3 遍降到 32/4096）。不预热就会把"缓存升温过程"
+# 误读成臂间差异：v2 网格里 rep1/rep2 对 A1(无投机) 已暖、对 A2–A6(有投机) 未暖，
+# **冷热状态不匹配** ⇒ 热 p50 不可比。预热后所有被测量的重复都处于稳态。
+WARMUP=${WARMUP:-0}
 OUTLEN=128; PORT=32080
 mkdir -p "$OUT"; TSV="$OUT/summary.tsv"
 [ -s "$TSV" ] || printf 'tag\trep\tout_tput\treq_tput\tmed_ttft_ms\tmed_tpot_ms\tmed_itl_ms\tmed_e2el_ms\tcompleted\tnum_prompts\n' > "$TSV"
@@ -100,12 +106,26 @@ PYEOF
   echo "[$tag r$r] ✅ out_tput=$(echo "$row"|cut -f3) req_tput=$(echo "$row"|cut -f4) ttft=$(echo "$row"|cut -f5) tpot=$(echo "$row"|cut -f6) completed=$(echo "$row"|cut -f9)"
   return 0; }
 
+run_warmup () { # $1=tag —— 预热一遍同样请求集并**丢弃**结果（不进 TSV）
+  local tag=$1 bl="$OUT/$tag.warmup.bench.log"
+  "$PY" -m vllm.entrypoints.cli.main bench serve \
+    --backend openai --base-url "http://127.0.0.1:$PORT" --endpoint /v1/completions \
+    --model q3 --tokenizer "$MODEL" --dataset-name custom --dataset-path "$PROMPTS" \
+    --num-prompts "$NPROMPT" --max-concurrency "$CONC" --ignore-eos --disable-shuffle \
+    --output-len "$OUTLEN" --label "$tag.warmup" \
+    > "$bl" 2>&1
+  local rc=$?
+  echo "  [预热] $tag rc=$rc 日志字节=$(stat -c%s "$bl" 2>/dev/null || echo 0)（结果已丢弃）"
+  [ $rc -ne 0 ] && { tail -5 "$bl"; return 1; }
+  return 0; }
+
 run_arm () { # $1=tag
   local tag=$1 spec; spec=$(spec_of "$tag") || return 1
   local fail=0 r
   serve "$tag" || { reap; return 1; }
   local pre="$OUT/$tag.metrics.pre.json" post="$OUT/$tag.metrics.post.json"
   if [ -n "$spec" ]; then "$PY" "$P/collect_spec_metrics.py" --base "http://127.0.0.1:$PORT" fetch --out "$pre" >/dev/null 2>&1 || true; fi
+  if [ "${WARMUP}" = "1" ]; then run_warmup "$tag" || fail=1; fi
   for r in $(seq 1 $REPS); do run_rep "$tag" "$r" || fail=1; done
   if [ -n "$spec" ]; then
     "$PY" "$P/collect_spec_metrics.py" --base "http://127.0.0.1:$PORT" fetch --out "$post" >/dev/null 2>&1 || true
@@ -115,7 +135,7 @@ run_arm () { # $1=tag
   reap || fail=1
   return $fail; }
 
-echo "########## p20 DSD 网格 v2 ($MODE) $(date -Is) ｜ 臂：$ARMS ｜ 每臂 $REPS 重复 ｜ 并发 $CONC ｜ prompt $NPROMPT ##########"
+echo "########## p20 DSD 网格 v3 ($MODE) WARMUP=$WARMUP $(date -Is) ｜ 臂：$ARMS ｜ 每臂 $REPS 重复 ｜ 并发 $CONC ｜ prompt $NPROMPT ##########"
 echo "起始显存：$(gpu_used) MiB"
 rc_all=0
 for tag in $ARMS; do
