@@ -40,7 +40,12 @@ serve () { # $1=graphs
   [ "$ok" != 1 ] && { echo "[$g] serve 未就绪"; grep -nE "Error|error" "$log" | tail -3; return 1; }
   echo "[$g] ready $(grep -oE 'cudagraph_mode=[A-Za-z_.]+' "$log" | head -1) $(date +%T)"; return 0; }
 one () { # $1=cfg $2=graphs $3=conc $4=arm $5=rep $6=seeded-flag
-  local cfg=$1 g=$2 c=$3 arm=$4 r=$5 flag=$6 j="$OUT/$cfg.$arm.r$r.json"
+  # ⚠️ bash 5 + `set -u` 陷阱（本工作区第 3 类仪器坑，已实测）：**同一条 `local` 里后面的赋值不能引用前面的**
+  #   `local a=$1 b=$2 c="$a-$b"` ⇒ 在 bash 5.1.16 上直接 `a: unbound variable` 并中止脚本。
+  #   （p20/p22 的运行器侥幸没踩到，只是因为 `tag`/`r` 恰好与**全局**变量重名、已被绑定 —— 属于偶然，不是对。）
+  #   所以这里**拆成两条**。
+  local cfg=$1 g=$2 c=$3 arm=$4 r=$5 flag=$6
+  local j="$OUT/$cfg.$arm.r$r.json"
   local rc=0
   "$PY" "$P/seeded_ab.py" --base-url "http://127.0.0.1:$PORT" --model q3 --prompts "$PROMPTS" \
      --n-prompts "$NPROMPT" --max-tokens "$MAXTOK" --concurrency "$c" $flag --out "$j" > "$OUT/$cfg.$arm.r$r.log" 2>&1 || rc=1
