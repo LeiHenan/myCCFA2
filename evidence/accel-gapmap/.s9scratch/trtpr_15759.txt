@@ -1,0 +1,246 @@
+TITLE: [#15791][fix] Enable SM120 skip-softmax FMHA support probe by mihai-chiorean · Pull Request #15759 · NVIDIA/TensorRT-LLM · GitHub
+STATE-TOKEN: open
+STATE-TOKEN: small
+STATE-TOKEN: merged
+STATE-TOKEN: small
+STATE-TOKEN: closed
+STATE-TOKEN: small
+
+--- COMMENT 1 ---
+Fixes #15791 
+
+ Summary
+
+ Teach checkIfKernelExist() to recognize the guarded SM120/SM121 BF16 causal PACKED_QKV bridge path.
+
+ Keep the predicate compile-time gated by TLLM_ENABLE_SKIP_SOFTMAX_SM120 and limited to the already-linked handwritten SM120 bridge; this does not add a new kernel.
+
+ Centralize the bridge eligibility predicate so support detection and dispatch stay in sync.
+
+ Test Coverage
+
+ git diff --check 
+
+ git diff --cached --check 
+
+ Spark validation on validate-blockers-811cc0732 @ df113db388332ea665efe9133fb0194abb18e3cd : FMHA missing warnings 11 -> 0 ; unfused fallback warnings 11 -> 0 ; max attention workspace ~13.4 GB -> ~100 MB ; batch 1 TPOT 18.37 -> 17.09 ms ; batch 8 TPOT 33.06 -> 32.55 ms ; output coherent.
+
+ Build log: /tmp/sm120_fmha_build_20260629_222414.log ; before/after logs: /tmp/sm120_fmha_before_batch_20260629_222045.log , /tmp/sm120_fmha_after_batch_20260629_225519.log .
+
+--- COMMENT 2 ---
+🧹 Nitpick comments (1) 
+ 
+ cpp/tensorrt_llm/kernels/contextFusedMultiHeadAttention/fused_multihead_attention_v2.cpp (1) 
+ 56-72 : 📐 Maintainability & Code Quality | 🔵 Trivial | ⚡ Quick win 
+
+ Keep the SM120 bridge eligibility matrix in one place. 
+
+ This helper is now a second copy of the bridge routing predicate in run() . The current PR fixes one drift between support detection and dispatch, but the next capability tweak can desynchronize them again. Please route both paths through one shared predicate and keep only the runtime-only checks ( flash_attention , interleaved , softmax-stats pointer) outside it.
+
+ 🤖 Prompt for AI Agents 
+ Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+In
+`@cpp/tensorrt_llm/kernels/contextFusedMultiHeadAttention/fused_multihead_attention_v2.cpp`
+around lines 56 - 72, The SM120 bridge eligibility logic is duplicated between
+isSupportedBySkipSoftmaxSm120Bridge and the routing in run(), which can drift
+over time. Refactor both paths to use one shared predicate for the capability
+matrix, and leave only runtime-only checks such as flash_attention, interleaved,
+and the softmax-stats pointer in the dispatch path. Keep the shared eligibility
+logic centralized in the helper and have run() call it directly instead of
+re-encoding the same conditions.
+
+=== PAGE TEXT (non-comment) ===
+[#15791][fix] Enable SM120 skip-softmax FMHA support probe by mihai-chiorean · Pull Request #15759 · NVIDIA/TensorRT-LLM · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ NVIDIA
+ 
+ / 
+ 
+ TensorRT-LLM 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 2.7k 
+
+ Star
+ 14.6k 
+
+ Code 
+
+ Issues 
+ 587 
+
+ Pull requests 
+ 875 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [#15791][fix] Enable SM120 skip-softmax FMHA support probe - # 15759 
+ # 15759 
+
+ Closed 
+ mihai-chiorean wants to merge 3 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from mihai-chiorean:fix/sm120-fmha-bridge-probe mihai-chiorean/TensorRT-LLM-FlashNext:fix/sm120-fmha-bridge-probe Copy head branch name to clipboard 
+
+ Conversation Commits 3 ( 3 ) Checks Files changed 
+
+ Closed 
+ [#15791][fix] Enable SM120 skip-softmax FMHA support probe # 15759 mihai-chiorean wants to merge 3 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from mihai-chiorean:fix/sm120-fmha-bridge-probe mihai-chiorean/TensorRT-LLM-FlashNext:fix/sm120-fmha-bridge-probe Copy head branch name to clipboard 
+
+ Conversation
+
+ mihai-chiorean 
+
+ commented
+
+ Jun 30, 2026 
+
+ • 
+
+ edited
+
+ Loading 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Copy link
+
+ Copy Markdown
+
+ Contributor
