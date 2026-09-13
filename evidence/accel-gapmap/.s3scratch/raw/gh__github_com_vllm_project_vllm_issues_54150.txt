@@ -1,0 +1,756 @@
+TITLE: [Bug]: GLM-5.3-Flash — ModelOpt NVFP4 checkpoints emit invalid UTF-8 byte tokens on SM120, while a compressed-tensors NVFP4 of the same model is clean · Issue #54150 · vllm-project/vllm · GitHub
+CREATED_AT: 2026-08-28T05:07:44Z | 2026-08-28T05:07:51Z | 2026-08-28T05:10:16Z | 2026-08-30T22:22:06Z
+LABELS: glm
+
+--- COMMENT 1 ---
+### Your current environment
+
+<details>
+<summary>Environment</summary>
+
+```text
+GPUs:     4x NVIDIA RTX PRO 6000 Blackwell (96 GiB, SM120), PCIe, no NVLink
+Image:    cstechdev/vllm:glm53-flash-nope-sm120-cu130-20260826-r1
+          (a NoPE sparse-MLA overlay on vllm/vllm-openai:glm53-flash;
+           github.com/chriswritescode-dev/glm-5.3-flash-sm120)
+vLLM:     0.1.dev20051+g487ecf187
+Model:    GLM-5.3-Flash (glm5_next), TP4
+KV:       fp8_ds_mla (the only layout the SM120 sparse-MLA impl accepts)
+MoE:      --kernel-config '{"moe_backend":"marlin","enable_flashinfer_autotune":false}'
+Other:    MTP off, --block-size auto (lands on 1792), --enable-prefix-caching
+```
+
+</details>
+
+### 🐛 Describe the bug
+
+Two ModelOpt-produced NVFP4 conversions of GLM-5.3-Flash emit **invalid UTF-8 byte-token
+sequences** during generation on SM120. A compressed-tensors NVFP4 conversion of the *same*
+model, served from the same image with the same kernel, KV layout, parallelism and sampling
+settings, is clean. Only the checkpoint changes between these rows.
+
+The failure is quiet: the server returns HTTP 200, throughput looks normal, English text is
+mostly fine, and short prompts read correctly. It shows up as U+FFFD inside multi-byte
+(here: Korean) text, which is easy to mistake for a rendering or client problem.
+
+#### Result
+
+Six generations per row — 3 at `temperature=0.0`, 3 at `0.7`, identical Korean prompt,
+`max_tokens=4096`. The count is U+FFFD characters across `content` + `reasoning`.
+
+| checkpoint | quant format | U+FFFD / 6 runs | degenerate loops |
+|---|---|---:|---:|
+| `LibertAIDAI/GLM-5.3-Flash-NVFP4` | modelopt NVFP4 | **86** | 0/6 |
+| `LibertAIDAI/...` @ rev `cf5434c00b` (43-entry ignore list) | modelopt NVFP4 | **62** | 1/6 |
+| `dealignai/GLM-5.3-Flash-UNCENSORED-NVFP4` | modelopt NVFP4 | **94** | 0/6 |
+| `RedHatAI/GLM-5.3-Flash-NVFP4` | compressed-tensors NVFP4 | **0** | 0/6 |
+
+Sample from a `temperature=0` generation on the LibertAI checkpoint — `퍼셉트론`
+(“perceptron”) loses its middle syllable:
+
+```
+프랭크 로젠블랫(Frank Rosenblatt)의 퍼<?>트론(Perceptron, 1957)
+```
+
+#### This is not a detokenizer artifact
+
+Requesting `return_token_ids: true` and decoding the returned ids offline with the
+checkpoint's own tokenizer reproduces the same U+FFFD count as the API text (5 and 5 on the
+sampled request), so the emitted token ids themselves do not form valid UTF-8. Byte-token
+continuations are near-deterministic, so producing an invalid continuation under greedy
+decoding points at the logits rather than at decoding.
+
+#### Ruled out
+
+Each of these was varied independently with everything else held fixed:
+
+- **Context length** — a Korean prompt answered correctly at 62, 25 772, 103 040, 412 112 and
+  1 030 162 prompt tokens, with both Korean and English filler. Corruption appears at
+  **zero context** too, so it is not the sparse-MLA/long-context path.
+- **Sampling** — present at `temperature=0.0`.
+- **MTP** — `num_speculative_tokens` 5 and 0 behave the same.
+- **PDL** — patching `CudaPlatformBase.is_arch_support_pdl` to exclude SM12x changes nothing.
+- **Abliteration** — the guardrail-removed `dealignai` build and its un-abliterated
+  `LibertAIDAI` sibling score the same (94 vs 86).
+- **`quantization_config.ignore` completeness** — our LibertAI copy predated commit
+  `cf5434c00b`, which grew the ignore list from 32 to 43 entries (fused attention
+  projections, `q/k/v/qkv_conv1d`, `o_norm`, `visual.*`). Updating `config.json` to that
+  revision — weights untouched — left corruption in place (86 → 62, within the run-to-run
+  spread of 7–22 per generation).
+
+#### Open question
+
+The two checkpoint families differ in **loader path**, not only in file format: modelopt vs
+compressed-tensors. So this data cannot distinguish
+
+- (A) the two ModelOpt conversions carry damaged weights, from
+- (B) vLLM's ModelOpt NVFP4 path is wrong here while the compressed-tensors NVFP4 path is
+  correct.
+
+If (B), every ModelOpt NVFP4 checkpoint is affected, not just this model. Someone able to
+compare the two loaders' dequantized weights for the same tensor would settle it quickly;
+we do not have a reference to diff against.
+
+#### Side observation: NvFp4 MoE backend availability on SM120
+
+While isolating the above, with the checkpoint held fixed:
+
+| `moe_backend` | result on SM120 |
+|---|---|
+| `flashinfer_trtllm` | rejected — `kernel does not support current device cuda` |
+| `flashinfer_cutedsl` | rejected — same |
+| `flashinfer_cutlass` | **6/6 runs collapse into a repeated single token** (`locklocklock…`) |
+| `cutlass` (VLLM_CUTLASS) | **6/6 collapse**, no `content` produced at all |
+| `emulation` | collapses — 49 129 chars of `</arg_value>` repeats, 0 % Hangul |
+| `marlin` | the only usable path |
+
+The two CUTLASS failures line up with sgl-project/sglang#18954 (“NVFP4 models produce NaN
+outputs on RTX PRO 6000 Blackwell (SM120)”), which was closed on the FlashInfer side; this is
+the same symptom reached through vLLM, and it reproduces on vLLM's own CUTLASS path as well.
+That `emulation` also collapses is the part we cannot explain — a dequantizing reference path
+should be the safe fallback.
+
+#### Reproduction
+
+```bash
+docker run --rm --gpus all --ipc=host --shm-size 32g -p 8000:8000 \
+  -v /data/GLM-5.3-Flash-NVFP4:/model:ro \
+  cstechdev/vllm:glm53-flash-nope-sm120-cu130-20260826-r1 /model \
+  --served-model-name GLM-5.3-Flash --host 0.0.0.0 --port 8000 \
+  --tensor-parallel-size 4 --max-num-seqs 64 --max-model-len 131072 \
+  --gpu-memory-utilization 0.95 --kv-cache-dtype fp8 \
+  --kernel-config '{"moe_backend":"marlin","enable_flashinfer_autotune":false}' \
+  --enable-prefix-caching --enable-auto-tool-choice \
+  --tool-call-parser glm47 --reasoning-parser glm45
+```
+
+Then ask for a long answer in a language with multi-byte characters and count U+FFFD:
+
+```bash
+curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "model":"GLM-5.3-Flash","temperature":0,"max_tokens":4096,
+  "messages":[{"role":"user","content":"인공지능의 역사를 1950년대부터 현재까지 시대별로 나누어 한국어로 자세히 설명해 주세요."}]
+}' | python3 -c 'import json,sys; m=json.load(sys.stdin)["choices"][0]["message"]; t=(m.get("content") or "")+(m.get("reasoning") or ""); print("U+FFFD:", t.count("�"))'
+```
+
+Swapping `/model` to `RedHatAI/GLM-5.3-Flash-NVFP4` with everything else identical returns 0.
+
+### Before submitting a new issue...
+
+- [x] I have searched for similar issues and read the documentation.
+
+--- COMMENT 2 ---
+Cross-references, since this sits between two existing threads rather than duplicating either:
+
+- **#52540** — *ModelOpt NVFP4 on SM120 dies or wedges under sustained load*, on the same
+  GPU family (RTX PRO 6000 Blackwell). Different symptom, but the same control structure:
+  the FP8 build of the same model is stable and only the ModelOpt NVFP4 build misbehaves.
+  If the two turn out to share a cause, that cause is in the ModelOpt NVFP4 path rather
+  than in either model.
+- **#53963** — *GLM-5.3-Flash: no SM120 sparse-MLA path for rope-free MLA*. That thread
+  covers attention-lane enablement on this exact hardware; this issue is downstream of it
+  and assumes a booting server, so the two do not overlap. Everything reported here was
+  measured with the attention lane already working.
+
+For anyone landing here from the quantization side: the checkpoint's
+`quantization_config.ignore` completeness is **not** the explanation — that was tested and
+ruled out (see the "Ruled out" section). The relevant sglang-side report about ignore-list
+matching is sgl-project/sglang#36596, which produces a load-time crash rather than the
+silent corruption reported here.
+
+--- COMMENT 3 ---
+Ran into this issue, but specifically on emoji corruption for whatever reason (and some random stops and failure to emit thinking end tokens). Fable put out this patch to fix it and it seems to resolve the Korean corruption + the emoji corruption:
+
+```diff
+--- a/vllm/model_executor/layers/quantization/modelopt.py
++++ b/vllm/model_executor/layers/quantization/modelopt.py
+@@ -1527,15 +1527,37 @@
+         Convert NVFP4 MoE weights into kernel format and setup the kernel.
+         """
+ 
+-        # Use a single gscale for w13.
++        # Use a single gscale for w13. The kernels take one global scale per
++        # expert for the fused w13 GEMM, but ModelOpt checkpoints carry
++        # separate global scales for w1 (gate) and w3 (up). Simply picking one
++        # of them mis-scales the other shard's dequant by gs_other/gs_picked
++        # (measured up to 10x on GLM-5.3-Flash NVFP4), so instead requantize:
++        # take the per-expert max and fold each shard's ratio into its E4M3
++        # block scales. Ratios are <= 1, so no overflow; the cost is one
++        # extra E4M3 rounding on the down-scaled shard's block scales.
++        gs_pair = layer.w13_weight_scale_2.to(torch.float32)  # (E, num_shards)
+         if self.moe.is_act_and_mul and not torch.allclose(
+-            layer.w13_weight_scale_2[:, 0], layer.w13_weight_scale_2[:, 1]
++            gs_pair[:, 0], gs_pair[:, 1]
+         ):
+             logger.warning_once(
+-                "w1_weight_scale_2 must match w3_weight_scale_2. "
+-                "Accuracy may be affected."
++                "w1_weight_scale_2 != w3_weight_scale_2; requantizing the "
++                "block scales onto a shared per-expert global scale."
+             )
+-        w13_weight_scale_2 = layer.w13_weight_scale_2[:, 0].contiguous()
++            gs_shared = gs_pair.max(dim=1).values  # (E,)
++            bs = layer.w13_weight_scale
++            num_experts, n2, kg = bs.shape
++            num_shards = gs_pair.shape[1]
++            ratio = (gs_pair / gs_shared.unsqueeze(1)).view(
++                num_experts, num_shards, 1, 1
++            )
++            bs_f = bs.data.to(torch.float32).view(
++                num_experts, num_shards, n2 // num_shards, kg
++            )
++            bs_f = (bs_f * ratio).view(num_experts, n2, kg)
++            replace_parameter(layer, "w13_weight_scale", bs_f.to(bs.dtype))
++            w13_weight_scale_2 = gs_shared.contiguous()
++        else:
++            w13_weight_scale_2 = gs_pair[:, 0].contiguous()
+ 
+         (
+             w13,
+```
+
+--- COMMENT 4 ---
+**Root cause found, with numeric proof and a validated fix — answering the open question above: it is (B), vLLM's ModelOpt NVFP4 path.** Reproduced and root-caused on 2× GB10 DGX Spark (SM121), image `radixark/vllm-glm53-flash:sm121-v8`, same vLLM commit `0.1.dev20051+g487ecf187`. Independent of the reporter's SM120 setup.
+
+## Root cause: single-gscale assumption in the NVFP4 fused-MoE marlin repack
+
+`vllm/model_executor/layers/quantization/modelopt.py`,
+`ModelOptNvFP4FusedMoE.process_weights_after_loading` (~line 1527):
+
+```python
+w13_weight_scale_2 = layer.w13_weight_scale_2[:, 0]
+```
+
+The fused `[gate; up]` marlin GEMM gets **one** global scale — gate's (w1). A
+`warning_once` fires when the scales differ ("w1_weight_scale_2 must match
+w3_weight_scale_2. Accuracy may be affected."), but the repack proceeds, and the
+up (w3) half is dequantized with gate's global scale. The up-proj output is then
+systematically mis-scaled by `ws2_gate / ws2_up` per expert.
+
+This is exact only when gate and up share one global scale. Whether they do is a
+property of the **checkpoint**, not the code:
+
+| checkpoint | producer | gate/up expert pairs | pairs with gate scale == up scale |
+|---|---|---|---|
+| Murai-P3 (ours) | ModelOpt 0.45.0, per-tensor amax, W4A16 | 12,384 (43 layers incl. MTP 45) | **30.9%** — mismatch on 69.1%; ratio max/min mean 1.1454, median 1.077, p90 1.286, max 10.0 |
+| RedHatAI/GLM-5.3-Flash-NVFP4 | llm-compressor (compressed-tensors, W4A4, group-16) | 12,096 (42 layers, no MTP) | **100.0%** — shared by construction |
+
+(Measured with a plain-python safetensors header reader over the checkpoints;
+no GPU involved.)
+
+So: **any ModelOpt NVFP4 checkpoint quantized with separate gate/up projections
+and per-tensor amax scaling hits this** — including the LibertAI checkpoint and
+ours. Compressed-tensors checkpoints that fuse the scale are immune. Note the
+compressed-tensors NVFP4 MoE scheme (`compressed_tensors_moe_w4a4_nvfp4.py`,
+lines ~203–210) has the same `[:, 0]` single-gscale pattern — it just happens to
+be exact for checkpoints llm-compressor produces.
+
+## Numeric proof (local, BF16 master + ModelOpt dequant, no serving)
+
+Layer 10, expert 0 (gate/up scale ratio 1.23), up-proj round-trip rel_l2:
+
+- correct dequant: **0.0929**
+- single-gscale repack: **0.2549**
+- single-gscale + compensation (below): **0.0929** (restored exactly)
+
+Controls: expert 2 (ratio 0.93): 0.1124 → 0.0924 compensated; expert 1
+(ratio 1.0): unaffected, as expected.
+
+## Runtime proof (serving, same checkpoint, only repack numerics changed)
+
+Probe: temp 0, non-streaming, 3 passes each of a Korean tool-call prompt and an
+English code+JSON prompt, counting U+FFFD (probe method from the reporter of
+this issue; corruption is silent server-side — nothing in the logs).
+
+| | unpatched | patched |
+|---|---|---|
+| Korean ×3 | 1 / 3 / 4 | 0 / 0 / 0 |
+| English ×3 | 0 / 0 / 0 | 0 / 0 / 0 |
+| **total** | **8 / 6 passes** | **0 / 6 passes** |
+
+Post-fix outputs verified non-vacuous (1,331 chars of structured Korean, 0
+U+FFFD). A behavioral spot-check battery on the patched build was
+behavior-neutral (within temp-1.0 sampling noise). A larger battery then ran
+46 passes / ~90k tokens on the patched build — the original Korean and
+English probes at 10 passes each, eight additional script families
+(Japanese, Chinese, Tamil, Arabic, Russian, Hindi, emoji-heavy,
+code-switching) at 3 passes each, and two 8,000-token Korean long-form
+generations: **0 U+FFFD events, 0 lone surrogates, 0 control characters, 0
+repetition loops — clean across the board.**
+
+## The fix (~20 lines, validated as a runtime bind-mount, no image rebuild)
+
+Before the repack, rescale the up half's FP8 block scales by
+`ws2_up / ws2_gate`, clamped to the FP8-E4M3 max (448):
+
+```python
+if self.moe.is_act_and_mul:
+    ratio = layer.w13_weight_scale_2[:, 1].float() / layer.w13_weight_scale_2[:, 0].float()
+    ratio = ratio.view(-1, *([1] * (layer.w13_weight_scale.dim() - 1)))  # (E,1,..,1) broadcast
+    nh = layer.w13_weight_scale.shape[1] // 2                            # TP-sharded fused dim
+    s = layer.w13_weight_scale.float()
+    s[:, nh:] = (s[:, nh:] * ratio).clamp(max=448.0)
+    layer.w13_weight_scale = torch.nn.Parameter(s.to(torch.float8_e4m3fn), requires_grad=False)
+w13_weight_scale_2 = layer.w13_weight_scale_2[:, 0].contiguous()  # unchanged line
+```
+
+Boot-time stats on our checkpoint: ratio mean ~1.0 / max 2.0 per layer, FP8
+clamps ≈ 0.03% of up-half scales (negligible). The pre-existing warning still
+fires once — the check is upstream of the compensation; cosmetic.
+
+Two implementation notes if this becomes a PR: (1) `w13_weight_scale` is 3-D
+`(E, 2·intermediate/tp, blocks)` per rank under TP — the half-split and the
+broadcast must be rank-aware (our v1 failed on exactly this); (2) an alternative
+is requantizing both halves to `max(ws2_gate, ws2_up)`, mirroring
+`process_fp8_weight_tensor_strategy_moe` — we did not test that variant.
+
+## Affected lineage
+
+All separate-gate/up ModelOpt NVFP4 MoE checkpoints whose gate/up per-tensor
+amax global scales differ. Confirmed on two independent GLM-5.3-Flash NVFP4
+checkpoints (ours and, per this issue's reporter, the LibertAI one); the
+reporter's control (compressed-tensors, RedHatAI) showed 0/0/0, which we
+independently replicated (0/6 on the same probe, same stack). This is not
+GB10-specific in mechanism — the mis-scaling happens at repack, before any
+kernel runs — but Blackwell marlin NVFP4 MoE is where this code path executes.
+
+=== PAGE TEXT (non-comment) ===
+[Bug]: GLM-5.3-Flash — ModelOpt NVFP4 checkpoints emit invalid UTF-8 byte tokens on SM120, while a compressed-tensors NVFP4 of the same model is clean · Issue #54150 · vllm-project/vllm · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ vllm-project
+ 
+ / 
+ 
+ vllm 
+
+ Public 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 22.1k 
+
+ Star
+ 91.6k 
+
+ Code 
+
+ Issues 
+ 2.4k 
+
+ Pull requests 
+ 5k+ 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 76 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [Bug]: GLM-5.3-Flash — ModelOpt NVFP4 checkpoints emit invalid UTF-8 byte tokens on SM120, while a compressed-tensors NVFP4 of the same model is clean #54150 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Open 
+
+ Open 
+ [Bug]: GLM-5.3-Flash — ModelOpt NVFP4 checkpoints emit invalid UTF-8 byte tokens on SM120, while a compressed-tensors NVFP4 of the same model is clean #54150 
+
+ Copy link 
+
+ Labels
+ glm 
+
+ Description
+ 
+ shing100 
+ opened on Aug 28, 2026 
+
+ Issue body actions 
+
+ Your current environment
+
+ Environment 
+ GPUs: 4x NVIDIA RTX PRO 6000 Blackwell (96 GiB, SM120), PCIe, no NVLink
+Image: cstechdev/vllm:glm53-flash-nope-sm120-cu130-20260826-r1
+ (a NoPE sparse-MLA overlay on vllm/vllm-openai:glm53-flash;
+ github.com/chriswritescode-dev/glm-5.3-flash-sm120)
+vLLM: 0.1.dev20051+g487ecf187
+Model: GLM-5.3-Flash (glm5_next), TP4
+KV: fp8_ds_mla (the only layout the SM120 sparse-MLA impl accepts)
+MoE: --kernel-config '{"moe_backend":"marlin","enable_flashinfer_autotune":false}'
+Other: MTP off, --block-size auto (lands on 1792), --enable-prefix-caching
+
+ 🐛 Describe the bug
+
+ Two ModelOpt-produced NVFP4 conversions of GLM-5.3-Flash emit invalid UTF-8 byte-token
+
+sequences during generation on SM120. A compressed-tensors NVFP4 conversion of the same 
+
+model, served from the same image with the same kernel, KV layout, parallelism and sampling
+
+settings, is clean. Only the checkpoint changes between these rows.
+
+ The failure is quiet: the server returns HTTP 200, throughput looks normal, English text is
+
+mostly fine, and short prompts read correctly. It shows up as U+FFFD inside multi-byte
+
+(here: Korean) text, which is easy to mistake for a rendering or client problem.
+
+ Result
+
+ Six generations per row — 3 at temperature=0.0 , 3 at 0.7 , identical Korean prompt,
+
+ max_tokens=4096 . The count is U+FFFD characters across content + reasoning .
+
+ checkpoint 
+ quant format 
+ U+FFFD / 6 runs 
+ degenerate loops 
+
+ LibertAIDAI/GLM-5.3-Flash-NVFP4 
+ modelopt NVFP4 
+ 86 
+ 0/6 
+
+ LibertAIDAI/... @ rev cf5434c00b (43-entry ignore list) 
+ modelopt NVFP4 
+ 62 
+ 1/6 
+
+ dealignai/GLM-5.3-Flash-UNCENSORED-NVFP4 
+ modelopt NVFP4 
+ 94 
+ 0/6 
+
+ RedHatAI/GLM-5.3-Flash-NVFP4 
+ compressed-tensors NVFP4 
+ 0 
+ 0/6 
+
+ Sample from a temperature=0 generation on the LibertAI checkpoint — 퍼셉트론 
+
+(“perceptron”) loses its middle syllable:
+
+ 프랭크 로젠블랫(Frank Rosenblatt)의 퍼<?>트론(Perceptron, 1957)
+
+ This is not a detokenizer artifact
+
+ Requesting return_token_ids: true and decoding the returned ids offline with the
+
+checkpoint's own tokenizer reproduces the same U+FFFD count as the API text (5 and 5 on the
+
+sampled request), so the emitted token ids themselves do not form valid UTF-8. Byte-token
+
+continuations are near-deterministic, so producing an invalid continuation under greedy
+
+decoding points at the logits rather than at decoding.
+
+ Ruled out
+
+ Each of these was varied independently with everything else held fixed:
+
+ Context length — a Korean prompt answered correctly at 62, 25 772, 103 040, 412 112 and
+
+1 030 162 prompt tokens, with both Korean and English filler. Corruption appears at
+
+ zero context too, so it is not the sparse-MLA/long-context path.
+
+ Sampling — present at temperature=0.0 .
+
+ MTP — num_speculative_tokens 5 and 0 behave the same.
+
+ PDL — patching CudaPlatformBase.is_arch_support_pdl to exclude SM12x changes nothing.
+
+ Abliteration — the guardrail-removed dealignai build and its un-abliterated
+
+ LibertAIDAI sibling score the same (94 vs 86).
+
+ quantization_config.ignore completeness — our LibertAI copy predated commit
+
+ cf5434c00b , which grew the ignore list from 32 to 43 entries (fused attention
+
+projections, q/k/v/qkv_conv1d , o_norm , visual.* ). Updating config.json to that
+
+revision — weights untouched — left corruption in place (86 → 62, within the run-to-run
+
+spread of 7–22 per generation).
+
+ Open question
+
+ The two checkpoint families differ in loader path , not only in file format: modelopt vs
+
+compressed-tensors. So this data cannot distinguish
+
+ (A) the two ModelOpt conversions carry damaged weights, from
+
+ (B) vLLM's ModelOpt NVFP4 path is wrong here while the compressed-tensors NVFP4 path is
+
+correct.
+
+ If (B), every ModelOpt NVFP4 checkpoint is affected, not just this model. Someone able to
+
+compare the two loaders' dequantized weights for the same tensor would settle it quickly;
+
+we do not have a reference to diff against.
+
+ Side observation: NvFp4 MoE backend availability on SM120
+
+ While isolating the above, with the checkpoint held fixed:
+
+ moe_backend 
+ result on SM120 
+
+ flashinfer_trtllm 
+ rejected — kernel does not support current device cuda 
+
+ flashinfer_cutedsl 
+ rejected — same 
+
+ flashinfer_cutlass 
+ 6/6 runs collapse into a repeated single token ( locklocklock… ) 
+
+ cutlass (VLLM_CUTLASS) 
+ 6/6 collapse , no content produced at all 
+
+ emulation 
+ collapses — 49 129 chars of </arg_value> repeats, 0 % Hangul 
+
+ marlin 
+ the only usable path 
+
+ The two CUTLASS failures line up with sgl-project/sglang#18954 (“NVFP4 models produce NaN
+
+outputs on RTX PRO 6000 Blackwell (SM120)”), which was closed on the FlashInfer side; this is
+
+the same symptom reached through vLLM, and it reproduces on vLLM's own CUTLASS path as well.
+
+That emulation also collapses is the part we cannot explain — a dequantizing reference path
+
+should be the safe fallback.
+
+ Reproduction
+
+ docker run --rm --gpus all --ipc=host --shm-size 32g -p 8000:8000 \
+ -v /data/GLM-5.3-Flash-NVFP4:/model:ro \
+ cstechdev/vllm:glm53-flash-nope-sm120-cu130-20260826-r1 /model \
+ --served-model-name GLM-5.3-Flash --host 0.0.0.0 --port 8000 \
+ --tensor-parallel-size 4 --max-num-seqs 64 --max-model-len 131072 \
+ --gpu-memory-utilization 0.95 --kv-cache-dtype fp8 \
+ --kernel-config ' {"moe_backend":"marlin","enable_flashinfer_autotune":false} ' \
+ --enable-prefix-caching --enable-auto-tool-choice \
+ --tool-call-parser glm47 --reasoning-parser glm45
+
+ Then ask for a long answer in a language with multi-byte characters and count U+FFFD:
+
+ curl -s localhost:8000/v1/chat/completions -H ' Content-Type: application/json ' -d ' { 
+ "model":"GLM-5.3-Flash","temperature":0,"max_tokens":4096, 
+ "messages":[{"role":"user","content":"인공지능의 역사를 1950년대부터 현재까지 시대별로 나누어 한국어로 자세히 설명해 주세요."}] 
+ } ' | python3 -c ' import json,sys; m=json.load(sys.stdin)["choices"][0]["message"]; t=(m.get("content") or "")+(m.get("reasoning") or ""); print("U+FFFD:", t.count("�")) ' 
+
+ Swapping /model to RedHatAI/GLM-5.3-Flash-NVFP4 with everything else identical returns 0.
+
+ Before submitting a new issue...
+
+ I have searched for similar issues and read the documentation.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ glm 
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

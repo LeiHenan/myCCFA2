@@ -1,0 +1,678 @@
+TITLE: How to achieve high accuracy on NVFP4？ · Issue #2936 · vllm-project/llm-compressor · GitHub
+CREATED_AT: 2026-07-17T01:43:42Z | 2026-07-17T01:43:44Z | 2026-07-20T19:09:01Z | 2026-07-22T08:44:36Z
+LABELS: enhancement
+
+--- COMMENT 1 ---
+Our team have been using LLMCompressor since v0.1.0.
+We have successfully quantized our language model to int4/int8/fp8 with high accuracy (nearly no drop on accuracy)!
+But when we test our new model using NVFP4, the quantized model drop from 61% to 30% on math. For GPTQ int4, our model drop from 61% to 54% on math.
+Is there any trick to improve accuracy? 
+We have tested llm-compressor v0.71 and v0.12.0.
+Here is our scripts:
+```
+from datasets import load_dataset
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from llmcompressor import oneshot
+from llmcompressor.modifiers.quantization import QuantizationModifier
+
+MODEL_ID = "/data1/maojunxiong/iter_0002500"
+
+# Load model.
+model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype="auto", trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+
+
+DATASET_ID = "/data1/maojunxiong/ultrachat_200k/"
+DATASET_SPLIT = "train"
+
+# Select number of samples - reduced for quick debugging
+NUM_CALIBRATION_SAMPLES = 8192
+MAX_SEQUENCE_LENGTH = 16384
+
+# Load dataset and preprocess.
+ds = load_dataset(DATASET_ID, split=f"{DATASET_SPLIT}[:{NUM_CALIBRATION_SAMPLES}]")
+ds = ds.shuffle(seed=42)
+
+
+def preprocess(example):
+    return {
+        "text": tokenizer.apply_chat_template(
+            example["messages"],
+            tokenize=False,
+        )
+    }
+
+
+ds = ds.map(preprocess)
+
+
+# Tokenize inputs.
+def tokenize(sample):
+    encoded = tokenizer(
+        sample["text"],
+        padding=False,
+        max_length=MAX_SEQUENCE_LENGTH,
+        truncation=True,
+        add_special_tokens=False,
+    )
+    # Add position_ids: [0, 1, 2, ..., L-1]
+    encoded["position_ids"] = list(range(len(encoded["input_ids"])))
+    return encoded
+
+
+ds = ds.map(tokenize, remove_columns=ds.column_names)
+
+# Configure the quantization algorithm and scheme.
+recipe = QuantizationModifier(
+    targets="Linear",
+    scheme="NVFP4",
+    ignore=["lm_head", "re:.*mlp.gate$"],
+)
+
+# Apply quantization.
+oneshot(
+    model=model,
+    dataset=ds,
+    recipe=recipe,
+    max_seq_length=MAX_SEQUENCE_LENGTH,
+    num_calibration_samples=NUM_CALIBRATION_SAMPLES,
+    trust_remote_code_model=True,
+)
+
+print("Quantization completed successfully")
+# Save to disk in compressed-tensors format.
+SAVE_DIR = "/data1/maojunxiong/iter002500-NVFP4-calib8192"
+model.save_pretrained(SAVE_DIR, save_compressed=True)
+tokenizer.save_pretrained(SAVE_DIR)
+```
+
+--- COMMENT 2 ---
+Hi @IEI-mjx , have you looked into using GPTQ or some other calibrated compression scheme? If naive round-to-nearest is insufficient, GPTQ would be good to try.
+
+--- COMMENT 3 ---
+> Hi [@IEI-mjx](https://github.com/IEI-mjx) , have you looked into using GPTQ or some other calibrated compression scheme? If naive round-to-nearest is insufficient, GPTQ would be good to try.
+
+I have tested GPTQModifer too!
+Here is our script,
+```
+import os
+from datasets import load_dataset
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from llmcompressor import oneshot
+from llmcompressor.modifiers.quantization import GPTQModifier
+
+MODEL_ID = "/data1/maojunxiong/iter_0002500"
+
+# Load model.
+model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype="auto", trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+
+
+DATASET_ID = "/data1/maojunxiong/ultrachat_200k/"
+DATASET_SPLIT = "train"
+
+# Select number of samples - reduced for quick debugging
+NUM_CALIBRATION_SAMPLES = 2048
+MAX_SEQUENCE_LENGTH = 2048
+
+# Load dataset and preprocess.
+ds = load_dataset(DATASET_ID, split=f"{DATASET_SPLIT}[:{NUM_CALIBRATION_SAMPLES}]")
+ds = ds.shuffle(seed=42)
+
+
+def preprocess(example):
+    return {
+        "text": tokenizer.apply_chat_template(
+            example["messages"],
+            tokenize=False,
+        )
+    }
+
+
+ds = ds.map(preprocess)
+
+
+# Tokenize inputs.
+def tokenize(sample):
+    encoded = tokenizer(
+        sample["text"],
+        padding=False,
+        max_length=MAX_SEQUENCE_LENGTH,
+        truncation=True,
+        add_special_tokens=False,
+    )
+    # Add position_ids: [0, 1, 2, ..., L-1]
+    encoded["position_ids"] = list(range(len(encoded["input_ids"])))
+    return encoded
+
+
+ds = ds.map(tokenize, remove_columns=ds.column_names)
+
+recipe = GPTQModifier(
+    targets="Linear",
+    scheme="NVFP4",
+    ignore=["lm_head", "re:.*mlp.gate$"],
+    actorder="static",  # or None if user prefers no specific ordering
+    dampening_frac=0.02,  # can be adjusted if Hessian inversion issues occur
+    offload_hessians=False,  # set to True for models ≥1TB
+    block_size=128,  # user can adjust if desired
+)
+
+
+# Apply quantization.
+# Use environment variable for MoE calibration because the oneshot API in
+# this llmcompressor version does not accept moe_calibrate_all_experts.
+#os.environ["LLMCOMPRESSOR_CALIBRATE_MOE_CONTEXT"] = "1"
+
+oneshot(
+    model=model,
+    dataset=ds,
+    recipe=recipe,
+    max_seq_length=MAX_SEQUENCE_LENGTH,
+    num_calibration_samples=NUM_CALIBRATION_SAMPLES,
+    trust_remote_code_model=True,
+)
+
+print("Quantization completed successfully")
+# Save to disk in compressed-tensors format.
+SAVE_DIR = "/data1/maojunxiong/yuanlm-4-0721-NVFP4-GPTQModifier-calib2048"
+model.save_pretrained(SAVE_DIR, save_compressed=True)
+tokenizer.save_pretrained(SAVE_DIR)
+```
+We have tested several dampening_frac parameters ranging from 0.01~0.05, the accuracy on math still drop from 61% to 41%.
+
+--- COMMENT 4 ---
+Have you experimented with different datasets, like one specifically for math? like https://huggingface.co/datasets/HuggingFaceH4/MATH-500 ?
+
+--- COMMENT 5 ---
+> Have you experimented with different datasets, like one specifically for math? like https://huggingface.co/datasets/HuggingFaceH4/MATH-500 ?
+
+I have tested other datasets, the accuracy still dropped !!
+These are our tests,
+
+- [ Qwen3-32B] Quantized to NVFP4 using QuantizationModifier math score dropped from 84% to 78.6% 
+
+- [ Qwen2.5-72B-Instruct] Quantized to NVFP4 using QuantizationModifier math score both were 84%
+
+- [Qwen3-30B-A3B]  Quantized to NVFP4 using QuantizationModifier math score dropped from 77.7% to 3.7%(I have also download NVFP4 
+
+model from modelscope the math score is 77.5%, so why our test cause accuracy drop?)
+
+- [OurMoeModel] 
+
+1.Quantized to NVFP4 using QuantizationModifier math score dropped from 61% to 29%
+
+2.Quantized to NVFP4 using GPTQModifer math score dropped from 61% to 41%
+
+3.Quantized to int4 using GPTQModifer math score dropped from 61% to 54%
+
+--- COMMENT 6 ---
+Without access to the model i can't tell you why it drops so significantly during training. You can experiment with other modifiers -- awq, autoround, smoothquant -- but might be an indication your model weights/activations have higher variance / magnitude than other models?
+
+--- COMMENT 7 ---
+Hi @IEI-mjx , see for more information on NVFP4 model recovery:
+* #2922
+
+--- COMMENT 8 ---
+One specific, measured contributor to NVFP4 accuracy loss that may be relevant here — on the **KV-cache side** rather than weights, so it's orthogonal to the GPTQ/dataset experiments above: with per-tensor amax KV-cache calibration (`kv_cache_scheme` with an amax observer) we measured a reproducible accuracy loss on NVFP4; calibration and serving emit no error or warning.
+
+**Setting.** Qwen3.6-27B served with `kv_cache_dtype="nvfp4"` on consumer Blackwell (RTX 5090, vLLM with the vllm-project/vllm#46329 NVFP4-KV path). Two checkpoints, identical except for KV scales: one with baked per-tensor amax scales from a 256-sample calibration, one plain (serving default scale 1.0).
+
+**End-to-end effect.** GSM8K, full 1319-item test split, temp 0, same items/platform/build: **calibrated 93.25% vs uncalibrated 94.92%** — McNemar exact p = 0.013 (47 items uniquely broken by the calibrated scales vs 25 the other way). Long-context retrieval (needle to ~240k tokens) was unaffected in the uncalibrated runs.
+
+**Mechanism (model-free kernel round-trip).** Our model's V activations contain massive-activation/sink layers with amax up to ~125k (9 of 16 calibrated layers had v_scale 6.2k–20.9k — correct amax measurements, not a calibration bug). NVFP4 KV storage is two-level: per-tensor scale × fp8-e4m3 block scales per 16 elements. Writing synthetic V tensors (Gaussian bulk + planted outliers at the measured magnitudes) through the real `reshape_and_cache_flash` writer (`kv_cache_dtype="nvfp4"`) and dequantizing independently:
+
+| layer type | per-tensor scale | V bulk rel-L2 | bulk exact-zero |
+|---|---|---|---|
+| no sink | 1.0 or amax/6 | 0.095 | 6.8% (baseline rounding) |
+| sink (42k/125k) | 1.0 | 0.096 | 6.8% — outlier clips at 2688 |
+| sink (42k/125k) | amax/6 | **1.000** | **100%** |
+
+With an amax-sized per-tensor scale, bulk blocks need fp8 block scales of ~3e-5 — below the e4m3 subnormal minimum — so the block scale underflows to 0 and every non-outlier value in the layer dequantizes to exactly zero, while the outlier itself is preserved. Note that the *global* rel-L2 ranks the two scales opposite to their end-to-end effect (0.001 vs 0.94) — the norm is outlier-dominated. At 8-bit (fp8 KV, ±448 with finer steps) the same calibration was unproblematic in our runs; the effect is specific to 4-bit.
+
+In our runs, serving the plain checkpoint (serving default scale 1.0; rare sink outliers clip at the 448·6 block ceiling) avoided the effect. If accuracy drops persist after fixing weights (as discussed above), it may be worth checking whether a `kv_cache_scheme` is quietly contributing.
+
+Happy to share the round-trip probe script (self-contained, ~150 lines, runs against the installed vLLM binding in minutes) if useful. Numbers x-ref the baseline effort in #2922.
+
+--- COMMENT 9 ---
+Hi @TechPrototyper , thanks for the message. Looks like original poster is not doing anything with kv-cache quantization, but if you're seeing degradation with nvfp4 kv cache quantization, you might want to look into a transform-based approach like SpinQuant that applied hadamard matrices to weights as a way to massage weights and activations into a more Gaussian distribution.
+
+Paper -- https://arxiv.org/abs/2405.16406
+SpinQuantModifier Implementation -- https://github.com/vllm-project/llm-compressor/blob/main/src/llmcompressor/modifiers/transform/spinquant/base.py
+
+--- COMMENT 10 ---
+Following up on the SpinQuant suggestion — we ran the measurement, and the results are interesting enough to share: **an R2-style Hadamard rotation does not rescue per-tensor amax calibration for 4-bit KV, but it does substantially improve outlier preservation under scale-1.0 serving.**
+
+**Method.** Same model-free round-trip probe as above (real `reshape_and_cache_flash` writer, `kv_cache_dtype="nvfp4"`, RTX 5090/sm120 this time), extended with an orthonormal per-head Hadamard along head_dim (d=128) applied before quantization and inverted after dequantization — i.e., exactly what folding R2 into W_v/W_o would do to KV-cache fidelity, with metrics computed in the original space. Sink tokens carry 2 outlier channels each (matching our checkpoint provenance), at the measured magnitudes 42k/125k.
+
+| sink amax | per-tensor scale | rotated | bulk rel-L2 | bulk zeros | outlier reconstruction |
+|---|---|---|---|---|---|
+| 125k | 1.0 | no | 0.096 | 6.8%* | 2,688 (clip, −98%) |
+| 125k | amax/6 | no | 1.000 | 100% | exact |
+| 125k | 1.0 | **yes** | 0.104 | 0% | **15,206 (5.7× better)** |
+| 125k | amax/6 | **yes** | 1.000 | 99.8% | exact |
+| 42k | amax/6 | **yes** | 1.000 | 99.8% | exact |
+
+\*baseline NVFP4 rounding noise; 42k rows otherwise analogous; sink-free control ~0.095 in all arms.
+
+**Two findings:**
+
+1. **Rotation + amax calibration still erases the bulk — even at the moderate 42k sink.** The reason is specific: real sink tokens have *multiple* outlier channels, and their contributions add after rotation (2×42k/√128 ≈ 7.4k per element, not 42k/√128 ≈ 3.7k). The resulting per-tensor scale (~1,237) still pushes bulk block scales below the fp8-e4m3 subnormal minimum (~1.95e-3), so they underflow to 0 and 99.8% of bulk values dequantize to exactly zero. The single-outlier back-of-envelope says 42k should be safe; the multi-channel structure of real sinks says otherwise.
+2. **Rotation + scale 1.0 trades ~8% relative bulk degradation (rel-L2 0.104 vs 0.096) for 5.7× outlier preservation** (effective sink reconstruction 15.2k instead of the 2,688 clip ceiling). Whether that trade is net-positive end-to-end presumably depends on how much a model's quality actually suffers from sink clipping — in our case the uncalibrated config is already at parity with fp8-KV (94.92% full-split GSM8K, needle-to-240k clean), so we don't currently have a deficit to close and haven't done the checkpoint surgery.
+
+**Takeaway for the observer question in this thread:** R2-style rotation alone doesn't change the conclusion that per-tensor amax observers are the wrong objective for 4-bit KV — the e4m3 block-scale floor plus multi-channel sinks still kills the bulk. It *does* look promising as a complement to scale-1.0 serving for models that measurably suffer from sink clipping. Probe script (self-contained, ~180 lines, runs against the installed vLLM binding in minutes) available as before — happy to also run a SpinQuantModifier-produced checkpoint through the same battery if that's useful for validating an R2 configuration on the KV path.
+
+--- COMMENT 11 ---
+Hi @TechPrototyper , interesting, thanks for sharing. Why only the R2-rotation? The R1 rotation would transform more of the weight matrices, though to get past your issue a larger hadamard size or some other modifier like GPTQ might be needed?
+
+--- COMMENT 12 ---
+Good question — R2 wasn't a shortcut, it's the only rotation with a grip on this particular failure mode:
+
+**Why not R1.** R1 rotates the residual-stream basis and folds into *both* sides of every projection (`W_v ← W_v·R1`, incoming activations `x ← R1ᵀ·x`) — so for the values actually written to the KV cache, `V = (W_v·R1)(R1ᵀx) = W_v·x`: **R1 cancels exactly and the cached tensors are bit-for-bit unchanged.** R1 earns its keep on *weight* quantization (spreading weight outliers before GPTQ/RTN), but our weights are FP8 and unremarkable — the pathology lives in the V *activations*, and the only rotation that changes their stored representation is R2, inserted between `W_v` and `W_o` along head_dim. (K would need the online R3 past RoPE; our measured k_scales are all sane, so we left K alone.)
+
+**Why not a larger Hadamard.** On the V path, head_dim (128) is the largest exactly-foldable block: attention output is a per-head softmax-weighted sum of that head's V vectors, then concat → `W_o`. A rotation spanning head boundaries doesn't commute with the per-head weighting, so it's no longer a lossless reparameterization — the size lever caps out right where the multi-channel-sink addition problem starts.
+
+**GPTQ** optimizes the weight representation; the erased tensor here is a cached activation, so it's orthogonal to this failure mode (it neither moves the per-tensor scale nor the e4m3 block-scale floor).
+
+Where we *do* see remaining levers for making calibration viable at 4-bit KV, in decreasing order of expected value: (1) the observer itself — bulk-/percentile-sized scales instead of amax; (2) finer per-tensor granularity, e.g. per-head scales — in our checkpoint 7 of 16 sampled layers are sink-free, and per-head scales would decouple healthy heads from sink heads (the sink head itself still faces the outlier-vs-bulk conflict, possibly R2+per-head combined helps there); (3) R2 as a complement to scale-1.0 serving for models that measurably lose quality to sink clipping — ours doesn't, so we can't test that part end-to-end.
+
+The standing offer remains: if you point me at a SpinQuantModifier config you'd like validated on the KV path (R2-only or otherwise), I'll run the produced checkpoint through the same battery (full-split GSM8K, needle to 240k, kernel round-trip) on sm_120/sm_121 and report numbers.
+
+--- COMMENT 13 ---
+Thanks @TechPrototyper , sorry for the delayed response. We are setting up a similar model evaluation pipeline on our internal openshift ai cluster (using kubeflow pipelines), both with and without transforms for reasoning based evals. NVFP4 will be done later on in the year when hardware gets added to the cluster. If you find anything interesting feel free to post here
+
+--- COMMENT 14 ---
+Thanks — and since you said interesting findings are welcome here: one
+datapoint that may be useful while your NVFP4 hardware is pending, plus two
+follow-ups on your question from
+https://github.com/vllm-project/llm-compressor/issues/2936#issuecomment-5208046649.
+
+**Same-model NVFP4 vs. INT4 weights, 117B MoE (8.5B active), fp8 KV pinned.**
+Two ~4-bit weight quants of `Laguna-S-2.1` under an otherwise identical
+serving config (vLLM 0.26, greedy, served sequentially on the same box):
+HumanEval pass@1 96.7% (NVFP4) vs 95.0% (INT4-Marlin) at n=120 — inside
+noise at that n, so the honest claim is *no detected accuracy difference,
+direction if anything favors NVFP4* — with parity across a
+harder agentic set (recovery, deploy discipline) and decode throughput.
+Full write-up with raw JSONs:
+https://github.com/TechPrototyper/local-ai-lab/blob/master/notes/laguna-nvfp4-vs-int4.md
+This is the weights axis, complementary to the KV-cache line discussed above.
+
+**On "larger hadamard size or some other modifier like GPTQ":** two probe
+runs are queued on the same model-free `reshape_and_cache_flash` round-trip
+setup as before:
+1. rotation + GPTQ on the KV-adjacent projections, and
+2. a deliberately non-foldable online Hadamard larger than head_dim=128
+   (crossing head boundaries) — not deployable, but it should answer whether
+   the block size is the limiter or whether multi-channel sinks win at any
+   rotation size.
+
+I'll post both here when they're in.
+
+--- COMMENT 15 ---
+Two more measurements on the same KV-cache round-trip probe, to close out the "larger hadamard size or some other modifier like GPTQ" question. Short version: **GPTQ doesn't touch this failure mode, and a bigger Hadamard helps but only up to a sink-magnitude ceiling.** Same model-free setup as before (real `reshape_and_cache_flash` writer, `kv_cache_dtype="nvfp4"`, sm120), metrics in the original space; sinks carry 2 outlier channels at the measured 42k/125k magnitudes.
+
+**1) GPTQ ablation.** Value bulk produced by a real projection V = X·Wᵥᵀ, with Wᵥ optionally quantized by a genuine GPTQ pass (Hessian XᵀX, Cholesky inverse, column-wise error propagation, int4); full matrix {scale 1.0, amax/6} × {no rot, R2} × {no GPTQ, GPTQ}.
+
+Under `amax/6`, the bulk is erased in **every** cell, GPTQ or not:
+
+| sink amax | rotated | GPTQ | baked v_scale | bulk rel-L2 | bulk exact-zero |
+|---|---|---|---|---|---|
+| 42k  | no  | no  | 6997 | 1.00 | 100% |
+| 42k  | no  | **yes** | 6997 | 1.00 | 100% |
+| 42k  | R2  | no  | 1237 | 1.00 | 99.8% |
+| 42k  | R2  | **yes** | 1237 | 1.00 | 99.8% |
+
+The baked per-tensor v_scale is *identical* with and without GPTQ — the sink dominates the amax, and GPTQ never sees it. GPTQ is doing real work on its own axis (weight rel-err 0.093 vs 0.128 round-to-nearest), it just adds a small separate bulk cost (unit-scale, sink-free: 0.096 → 0.108) and leaves the rotation/outlier behaviour unchanged. So GPTQ is orthogonal to this: it compensates weight-quant error, not the KV per-tensor-scale underflow.
+
+**2) Larger Hadamard — a non-foldable online rotation of size B across head boundaries** (B>128 can't fold into Wᵥ/W_o; applied at write, inverted at read; the amax observer sees the rotated space). Bulk exact-zero fraction under `amax/6` vs block size:
+
+| sink | B=1 | 128 | 256 | 512 | 1024 | v_scale @ 1024 |
+|---|---|---|---|---|---|---|
+| 42k  | 100% | 99.9% | 99.9% | 87.8% | **0.9%** | 437 |
+| 125k | 100% | 99.9% | 100% | 99.6% | **100%** | 1301 |
+
+The e4m3 block-scale subnormal floor is ~1.95e-3, so bulk survival needs the baked v_scale ≲ ~340. A B=1024 online rotation gets the **42k** sink there (v_scale 437, bulk essentially recovered) — but only to 1301 for the **125k** sink, which stays 100% erased; closing that would need B on the order of 1e4. Under scale-1.0 the same rotation improves outlier reconstruction monotonically with B (42k: 2688-clip → 15.2k → 21.5k → 30.4k → ~43k ≈ exact at B=1024) for a modest bulk cost.
+
+**Takeaway for the thread.** Block size is a genuine lever — a non-foldable online Hadamard rescues a *moderate* sink under amax — but it doesn't move the max-magnitude (~125k) layers that dominate the end-to-end loss, and GPTQ doesn't address this axis at all. So the earlier conclusion holds: for 4-bit KV with high-magnitude multi-channel sinks, per-tensor amax observers are the wrong objective, and scale-1.0 serving stays the fallback; a larger H is a useful complement to scale-1.0 outlier preservation rather than a fix for the calibrated path.
+
+Both probes are self-contained (extend the script shared earlier, run against the installed vLLM binding in minutes) — happy to share, and still happy to run a `SpinQuantModifier`-produced checkpoint through the same battery if that would help validate an R2/online configuration on the KV path.
+
+=== PAGE TEXT (non-comment) ===
+How to achieve high accuracy on NVFP4？ · Issue #2936 · vllm-project/llm-compressor · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ vllm-project
+ 
+ / 
+ 
+ llm-compressor 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 661 
+
+ Star
+ 3.8k 
+
+ Code 
+
+ Issues 
+ 42 
+
+ Pull requests 
+ 74 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Wiki 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Wiki
+
+ Security and quality
+
+ Insights
+
+ How to achieve high accuracy on NVFP4？ #2936 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Open 
+
+ Open 
+ How to achieve high accuracy on NVFP4？ #2936 
+
+ Copy link 
+
+ Labels
+ enhancement New feature or request New feature or request 
+
+ Description
+ 
+ IEI-mjx 
+ opened on Jul 17, 2026 
+
+ Issue body actions 
+
+ Our team have been using LLMCompressor since v0.1.0.
+
+We have successfully quantized our language model to int4/int8/fp8 with high accuracy (nearly no drop on accuracy)!
+
+But when we test our new model using NVFP4, the quantized model drop from 61% to 30% on math. For GPTQ int4, our model drop from 61% to 54% on math.
+
+Is there any trick to improve accuracy?
+
+We have tested llm-compressor v0.71 and v0.12.0.
+
+Here is our scripts:
+
+ from datasets import load_dataset
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from llmcompressor import oneshot
+from llmcompressor.modifiers.quantization import QuantizationModifier
+
+MODEL_ID = "/data1/maojunxiong/iter_0002500"
+
+# Load model.
+model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype="auto", trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+
+DATASET_ID = "/data1/maojunxiong/ultrachat_200k/"
+DATASET_SPLIT = "train"
+
+# Select number of samples - reduced for quick debugging
+NUM_CALIBRATION_SAMPLES = 8192
+MAX_SEQUENCE_LENGTH = 16384
+
+# Load dataset and preprocess.
+ds = load_dataset(DATASET_ID, split=f"{DATASET_SPLIT}[:{NUM_CALIBRATION_SAMPLES}]")
+ds = ds.shuffle(seed=42)
+
+def preprocess(example):
+ return {
+ "text": tokenizer.apply_chat_template(
+ example["messages"],
+ tokenize=False,
+ )
+ }
+
+ds = ds.map(preprocess)
+
+# Tokenize inputs.
+def tokenize(sample):
+ encoded = tokenizer(
+ sample["text"],
+ padding=False,
+ max_length=MAX_SEQUENCE_LENGTH,
+ truncation=True,
+ add_special_tokens=False,
+ )
+ # Add position_ids: [0, 1, 2, ..., L-1]
+ encoded["position_ids"] = list(range(len(encoded["input_ids"])))
+ return encoded
+
+ds = ds.map(tokenize, remove_columns=ds.column_names)
+
+# Configure the quantization algorithm and scheme.
+recipe = QuantizationModifier(
+ targets="Linear",
+ scheme="NVFP4",
+ ignore=["lm_head", "re:.*mlp.gate$"],
+)
+
+# Apply quantization.
+oneshot(
+ model=model,
+ dataset=ds,
+ recipe=recipe,
+ max_seq_length=MAX_SEQUENCE_LENGTH,
+ num_calibration_samples=NUM_CALIBRATION_SAMPLES,
+ trust_remote_code_model=True,
+)
+
+print("Quantization completed successfully")
+# Save to disk in compressed-tensors format.
+SAVE_DIR = "/data1/maojunxiong/iter002500-NVFP4-calib8192"
+model.save_pretrained(SAVE_DIR, save_compressed=True)
+tokenizer.save_pretrained(SAVE_DIR)
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ enhancement New feature or request New feature or request 
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

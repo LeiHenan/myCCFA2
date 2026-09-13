@@ -1,0 +1,476 @@
+TITLE: [Feature Request]: W4A8 (compressed-tensors) Kernel support for Blackwell SM100+ · Issue #35439 · vllm-project/vllm · GitHub
+CREATED_AT: 2026-02-26T20:19:35Z | 2026-02-26T20:19:36Z | 2026-02-26T20:33:31Z | 2026-02-27T17:44:56Z
+LABELS: bug, stale, unstale
+STATE_REASON: REOPENED
+STATE_REASON: NOT_PLANNED
+STATE_REASON: DUPLICATE
+
+--- COMMENT 1 ---
+### Your current environment
+
+vLLM version: 0.15.1
+PyTorch: 2.9.1+cu129
+CUDA: 12.9
+GPU: NVIDIA B200 (SM100, Blackwell)
+OS: Linux (Docker, vllm/vllm-openai:latest)
+Python: 3.12
+
+
+### Model
+
+Qwen/Qwen3-30B-A3B (MoE), quantized to W4A8 (int4 weights + fp8 activations) using llm-compressor `oneshot()` with `scheme="W4A8"` via compressed-tensors format.
+
+### 🐛 Describe the bug
+
+Loading a W4A8 compressed-tensors checkpoint into vLLM on a Blackwell B200 GPU (SM100) fails during model initialization. vLLM cannot find any mixed-precision linear kernel that supports SM100 for the W4A8 scheme.
+
+All six registered kernel implementations reject SM100:
+
+| Kernel | Rejection reason |
+|--------|-----------------|
+| CutlassW4A8LinearKernel | Requires compute capability of 90 (Hopper) |
+| MacheteLinearKernel | Requires compute capability of 90 (Hopper) |
+| AllSparkLinearKernel | Does not support device_capability = 100 |
+| MarlinLinearKernel | Quant type (int4) not supported |
+| ConchLinearKernel | Weight type (int4) not supported |
+| ExllamaLinearKernel | Only supports float16 activations |
+
+The same checkpoint works correctly on Hopper (SM90) GPUs. Quantization (export) succeeds on all architectures — only serving fails on SM100.
+
+### How to reproduce
+
+```python
+from vllm import LLM
+
+# Assumes a W4A8 compressed-tensors checkpoint at ./w4a8-int4fp8/
+llm = LLM(
+    model="./w4a8-int4fp8/",
+    dtype="bfloat16",
+    tensor_parallel_size=1,
+    gpu_memory_utilization=0.85,
+)
+# Raises ValueError: Failed to find a kernel that can implement the WNA16 linear layer.
+```
+
+To produce the checkpoint with llm-compressor:
+
+```python
+from llmcompressor import oneshot
+from llmcompressor.modifiers.quantization import QuantizationModifier
+
+oneshot(
+    model="Qwen/Qwen3-30B-A3B",
+    recipe=QuantizationModifier(targets="Linear", scheme="W4A8", ignore=["lm_head"]),
+    output_dir="./w4a8-int4fp8/",
+)
+```
+
+### Full error traceback
+
+```
+File "vllm/model_executor/layers/linear.py", line 496, in __init__
+    self.quant_method.create_weights(
+File "vllm/model_executor/layers/quantization/compressed_tensors/compressed_tensors.py", line 895, in create_weights
+    layer.scheme.create_weights(
+File "vllm/model_executor/layers/quantization/compressed_tensors/schemes/compressed_tensors_w4a8_int.py", line 105, in create_weights
+    kernel_type = choose_mp_linear_kernel(mp_linear_kernel_config)
+File "vllm/model_executor/layers/quantization/kernels/mixed_precision/__init__.py", line 116, in choose_mp_linear_kernel
+    raise ValueError(
+ValueError: Failed to find a kernel that can implement the WNA16 linear layer. Reasons:
+ CutlassW4A8LinearKernel cannot implement due to: CUTLASS W4A8 requires compute capability of 90 (Hopper)
+ MacheteLinearKernel cannot implement due to: Machete requires compute capability of 90 (Hopper)
+ AllSparkLinearKernel cannot implement due to: AllSpark currently does not support device_capability = 100.
+ MarlinLinearKernel cannot implement due to: Quant type (int4) not supported by Marlin, supported types are: [ScalarType.uint4b8, ScalarType.uint8b128, ScalarType.float8_e4m3fn, ScalarType.float4_e2m1f]
+ ConchLinearKernel cannot implement due to: Weight type (int4) not supported by ConchLinearKernel, supported types are: [ScalarType.uint4, ScalarType.uint8, ScalarType.uint4b8, ScalarType.uint8b128]
+ ExllamaLinearKernel cannot implement due to: Exllama only supports float16 activations
+```
+
+### Expected behavior
+
+W4A8 compressed-tensors checkpoints should load and serve on Blackwell (SM100) GPUs, Blackwell hardware supports both INT4 and FP8 tensor core operations, so W4A8 mixed-precision GEMM should be achievable on SM100 with dedicated kernel implementations. Currently no registered kernel in choose_mp_linear_kernel() covers SM100 for this scheme.
+
+### Relevant context
+
+- Related tracking issue: [RFC: Blackwell Enablement for vLLM (SM100) #18153](https://github.com/vllm-project/vllm/issues/18153)
+- Similar SM100 kernel gaps reported for other schemes: [NVFP4 MoE #33416](https://github.com/vllm-project/vllm/issues/33416), [FP8 MoE #32109](https://github.com/vllm-project/vllm/issues/32109)
+- The issue is in `vllm/model_executor/layers/quantization/kernels/mixed_precision/__init__.py` — `choose_mp_linear_kernel()` iterates all registered kernels and none accept SM100 for W4A8.
+  The existing W4A8 kernels (Cutlass, Machete) use Hopper-specific wgmma PTX
+  instructions that don't carry forward to SM100. This isn't a version check
+  oversight — SM100 needs its own kernel implementations. W4A16 works on
+  Blackwell via Marlin because those kernels use more portable instruction paths.
+
+--- COMMENT 2 ---
+realized this wasn't a duplicate as the other issue was focused specifically on mxfp4, and this issue is in general w4a8 support
+
+--- COMMENT 3 ---
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+--- COMMENT 4 ---
+I just ran into this problem, i don't know much about how this could be fixed, but i definitely would like it to remain open as a potential work item for the future
+
+--- COMMENT 5 ---
+This would be a great feature since I have been working a lot lately with B200 GPUs.
+
+=== PAGE TEXT (non-comment) ===
+[Feature Request]: W4A8 (compressed-tensors) Kernel support for Blackwell SM100+ · Issue #35439 · vllm-project/vllm · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ vllm-project
+ 
+ / 
+ 
+ vllm 
+
+ Public 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 22.1k 
+
+ Star
+ 91.6k 
+
+ Code 
+
+ Issues 
+ 2.4k 
+
+ Pull requests 
+ 5k+ 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 76 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [Feature Request]: W4A8 (compressed-tensors) Kernel support for Blackwell SM100+ #35439 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Open 
+
+ Open 
+ [Feature Request]: W4A8 (compressed-tensors) Kernel support for Blackwell SM100+ #35439 
+
+ Copy link 
+
+ Labels
+ bug Something isn't working Something isn't working unstale Recieved activity after being labelled stale Recieved activity after being labelled stale 
+
+ Description
+ 
+ zeryx 
+ opened on Feb 26, 2026 
+
+ Issue body actions 
+
+ Your current environment
+
+ vLLM version: 0.15.1
+
+PyTorch: 2.9.1+cu129
+
+CUDA: 12.9
+
+GPU: NVIDIA B200 (SM100, Blackwell)
+
+OS: Linux (Docker, vllm/vllm-openai:latest)
+
+Python: 3.12
+
+ Model
+
+ Qwen/Qwen3-30B-A3B (MoE), quantized to W4A8 (int4 weights + fp8 activations) using llm-compressor oneshot() with scheme="W4A8" via compressed-tensors format.
+
+ 🐛 Describe the bug
+
+ Loading a W4A8 compressed-tensors checkpoint into vLLM on a Blackwell B200 GPU (SM100) fails during model initialization. vLLM cannot find any mixed-precision linear kernel that supports SM100 for the W4A8 scheme.
+
+ All six registered kernel implementations reject SM100:
+
+ Kernel 
+ Rejection reason 
+
+ CutlassW4A8LinearKernel 
+ Requires compute capability of 90 (Hopper) 
+
+ MacheteLinearKernel 
+ Requires compute capability of 90 (Hopper) 
+
+ AllSparkLinearKernel 
+ Does not support device_capability = 100 
+
+ MarlinLinearKernel 
+ Quant type (int4) not supported 
+
+ ConchLinearKernel 
+ Weight type (int4) not supported 
+
+ ExllamaLinearKernel 
+ Only supports float16 activations 
+
+ The same checkpoint works correctly on Hopper (SM90) GPUs. Quantization (export) succeeds on all architectures — only serving fails on SM100.
+
+ How to reproduce
+
+ from vllm import LLM 
+
+ # Assumes a W4A8 compressed-tensors checkpoint at ./w4a8-int4fp8/ 
+ llm = LLM (
+ model = "./w4a8-int4fp8/" ,
+ dtype = "bfloat16" ,
+ tensor_parallel_size = 1 ,
+ gpu_memory_utilization = 0.85 ,
+)
+ # Raises ValueError: Failed to find a kernel that can implement the WNA16 linear layer. 
+
+ To produce the checkpoint with llm-compressor:
+
+ from llmcompressor import oneshot 
+ from llmcompressor . modifiers . quantization import QuantizationModifier 
+
+ oneshot (
+ model = "Qwen/Qwen3-30B-A3B" ,
+ recipe = QuantizationModifier ( targets = "Linear" , scheme = "W4A8" , ignore = [ "lm_head" ]),
+ output_dir = "./w4a8-int4fp8/" ,
+)
+
+ Full error traceback
+
+ File "vllm/model_executor/layers/linear.py", line 496, in __init__
+ self.quant_method.create_weights(
+File "vllm/model_executor/layers/quantization/compressed_tensors/compressed_tensors.py", line 895, in create_weights
+ layer.scheme.create_weights(
+File "vllm/model_executor/layers/quantization/compressed_tensors/schemes/compressed_tensors_w4a8_int.py", line 105, in create_weights
+ kernel_type = choose_mp_linear_kernel(mp_linear_kernel_config)
+File "vllm/model_executor/layers/quantization/kernels/mixed_precision/__init__.py", line 116, in choose_mp_linear_kernel
+ raise ValueError(
+ValueError: Failed to find a kernel that can implement the WNA16 linear layer. Reasons:
+ CutlassW4A8LinearKernel cannot implement due to: CUTLASS W4A8 requires compute capability of 90 (Hopper)
+ MacheteLinearKernel cannot implement due to: Machete requires compute capability of 90 (Hopper)
+ AllSparkLinearKernel cannot implement due to: AllSpark currently does not support device_capability = 100.
+ MarlinLinearKernel cannot implement due to: Quant type (int4) not supported by Marlin, supported types are: [ScalarType.uint4b8, ScalarType.uint8b128, ScalarType.float8_e4m3fn, ScalarType.float4_e2m1f]
+ ConchLinearKernel cannot implement due to: Weight type (int4) not supported by ConchLinearKernel, supported types are: [ScalarType.uint4, ScalarType.uint8, ScalarType.uint4b8, ScalarType.uint8b128]
+ ExllamaLinearKernel cannot implement due to: Exllama only supports float16 activations
+
+ Expected behavior
+
+ W4A8 compressed-tensors checkpoints should load and serve on Blackwell (SM100) GPUs, Blackwell hardware supports both INT4 and FP8 tensor core operations, so W4A8 mixed-precision GEMM should be achievable on SM100 with dedicated kernel implementations. Currently no registered kernel in choose_mp_linear_kernel() covers SM100 for this scheme.
+
+ Relevant context
+
+ Related tracking issue: RFC: Blackwell Enablement for vLLM (SM100) #18153 
+
+ Similar SM100 kernel gaps reported for other schemes: NVFP4 MoE #33416 , FP8 MoE #32109 
+
+ The issue is in vllm/model_executor/layers/quantization/kernels/mixed_precision/__init__.py — choose_mp_linear_kernel() iterates all registered kernels and none accept SM100 for W4A8.
+
+The existing W4A8 kernels (Cutlass, Machete) use Hopper-specific wgmma PTX
+
+instructions that don't carry forward to SM100. This isn't a version check
+
+oversight — SM100 needs its own kernel implementations. W4A16 works on
+
+Blackwell via Marlin because those kernels use more portable instruction paths.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ bug Something isn't working Something isn't working unstale Recieved activity after being labelled stale Recieved activity after being labelled stale 
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

@@ -1,0 +1,1006 @@
+TITLE: [Bug]: SM121 (GB10) excluded from FP8 block-scales SM120 Python paths while C++ getSMVersion() aliases 121→120 · Issue #17126 · NVIDIA/TensorRT-LLM · GitHub
+CREATED_AT: 2026-07-31T12:36:52Z | 2026-07-31T12:37:13Z | 2026-08-01T21:52:23Z | 2026-08-01T21:59:48Z
+LABELS: Customized kernels
+
+--- COMMENT 1 ---
+### System Info
+
+* GPU: a GB10 / DGX Spark (SM121) system; also relevant to SM120 consumer Blackwell as the reference behaviour
+* CPU architecture: aarch64
+* TensorRT-LLM branch: `main`, checked against commit `d924d9f185e3cb0d811e905d2b4b5ddb340d71ee`
+* Additional information: **code-inspection issue — no GPU run was performed.** See "Reproduction" for the exact minimal repro that would confirm it, which I was not able to execute.
+
+### Who can help?
+
+(leave for triage — the FP8 block-scale linear/MLA owners)
+
+### Information
+
+- [x] The official example scripts
+- [ ] My own modified scripts
+
+### Tasks
+
+- [x] An officially supported task in the `examples` folder
+- [ ] My own task or dataset
+
+---
+
+### Summary
+
+Checked against `NVIDIA/TensorRT-LLM` at `d924d9f185e3cb0d811e905d2b4b5ddb340d71ee`.
+
+**Observed (from source).** The C++ and Python layers disagree about what SM version a
+GB10 is. C++ `getSMVersion()` deliberately reports **120** for a real SM **121**, so that
+SM120 kernels are reused on SM121:
+
+https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/cpp/include/tensorrt_llm/common/cudaUtils.h#L289-L307
+
+```cpp
+/// @param queryRealSmArch Whether to query the real SM architecture. example usage: use real sm arch when do LUT tuning
+/// and use fake sm arch when reuse sm120 code on sm121 devices.
+inline int getSMVersion(bool queryRealSmArch = false)
+{
+    ...
+    if (sm == 121 && !queryRealSmArch)
+    {
+        return 120;
+    }
+    return sm;
+}
+```
+
+Python `get_sm_version()` performs **no such aliasing** — it returns 121 on a GB10:
+
+https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/tensorrt_llm/_utils.py#L676-L679
+
+```python
+@lru_cache(maxsize=1)
+def get_sm_version():
+    prop = torch.cuda.get_device_properties(0)
+    return prop.major * 10 + prop.minor
+```
+
+The FP8 block-scales code paths gate on `get_sm_version() == 120` (or `{90, 120}`). On a
+GB10 those gates are **False**, so Python selects the non-SM120 behaviour — while the C++
+op it subsequently calls has already been normalised **to** SM120 and therefore runs the
+SM120 kernel. The two sides pick incompatible scale layouts.
+
+### The concrete failure (dense FP8 block-scale linear)
+
+`FP8BlockScalesLinearMethod.apply`:
+
+https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/tensorrt_llm/_torch/modules/linear.py#L1144-L1166
+
+```python
+if is_sm_100f():                          # False on SM121 (100/103 only)
+    ...
+elif get_sm_version() == 120:             # False on SM121 -- it is 121
+    act_input_fp8, act_input_sf = per_token_quant_and_transform(input)   # int32 scales
+    output = torch.ops.trtllm.fp8_block_scaling_gemm(...)
+else:                                     # SM121 lands here
+    act_input_fp8, act_input_sf = torch.ops.trtllm.fp8_quantize_1x128(input)  # fp32 scales
+    output = torch.ops.trtllm.fp8_block_scaling_gemm(...)
+```
+
+Scale dtypes on each branch:
+
+* `per_token_quant_and_transform` → `output_scale` is **int32**
+  ([fp8_utils.py#L650-L653](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/tensorrt_llm/quantization/utils/fp8_utils.py#L650-L653))
+* `fp8_quantize_1x128` → scales are **fp32** (`FP8_BLOCK_SCALING_SF_DTYPE = torch::ScalarType::Float`,
+  [thUtils.h#L67](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/cpp/tensorrt_llm/thop/thUtils.h#L67));
+  its SM-specific scale post-processing is gated on `isSM100Family()` only
+  ([fp8Quantize.cpp#L72-L77](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/cpp/tensorrt_llm/thop/fp8Quantize.cpp#L72-L77)),
+  so SM120/121 receive the plain SM90 layout.
+
+The op then dispatches on the **aliased** SM:
+
+https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/cpp/tensorrt_llm/thop/fp8BlockScalingGemm.cpp#L243-L256
+
+```cpp
+auto const sm = tensorrt_llm::common::getSMVersion();   // 120 on a GB10
+switch (sm)
+{
+...
+case 120: return fp8_block_scale_gemm_blackwell_geforce(mat1, mat2, mat1Scale, mat2Scale);
+default: TORCH_CHECK(false, "Unsupported SM version for FP8 block scaling GEMM");
+}
+```
+
+and `fp8_block_scale_gemm_blackwell_geforce` requires int32 scales:
+
+https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/cpp/tensorrt_llm/thop/fp8BlockScalingGemm.cpp#L123-L124
+
+```cpp
+TORCH_CHECK(mat1Scale.scalar_type() == at::ScalarType::Int, "Scale dtype must be Int32.");
+TORCH_CHECK(mat2Scale.scalar_type() == at::ScalarType::Int, "Scale dtype must be Int32.");
+```
+
+**Inferred.** On a GB10, a dense FP8 block-scale linear layer should therefore abort with
+`Scale dtype must be Int32.` The geforce path additionally tightens `K % 128 == 0` where
+the SM90 path only needs `K % 16 == 0`, so shapes valid on the branch Python selected are
+not necessarily valid on the kernel C++ selected.
+
+### Affected sites
+
+All of these use `== 120` / `{90, 120}` where the surrounding code's convention is
+`(120, 121)`:
+
+| Site | Consequence on SM121 |
+|---|---|
+| [`linear.py#L1158`](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/tensorrt_llm/_torch/modules/linear.py#L1158) | wrong activation scale layout → `Scale dtype must be Int32.` |
+| [`mla.py#L356`](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/tensorrt_llm/_torch/modules/mla.py#L356) | same, via `fp8_block_scaling_bmm_out` (whose C++ side also branches on `sm == 120`, [L353-L368](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/cpp/tensorrt_llm/thop/fp8BlockScalingGemm.cpp#L353-L368)) |
+| [`trtllm_quant.py#L164`](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/tensorrt_llm/_torch/auto_deploy/custom_ops/quantization/trtllm_quant.py#L164) | same, on the AutoDeploy path |
+| [`fused_moe_cutlass.py#L105-L108`](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/tensorrt_llm/_torch/modules/fused_moe/fused_moe_cutlass.py#L105-L108) | `FP8_BLOCK_SCALES: ("in", {90, 120})` → CutlassFusedMoE reports it cannot implement FP8 block scales on SM121. Note `NVFP4` immediately below is `{100, 103, 120, 121}` |
+| [`fused_moe_cutlass.py#L902`](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/tensorrt_llm/_torch/modules/fused_moe/fused_moe_cutlass.py#L902) | SM121 does not take the Triton fallback that the comment says exists because "CUTLASS TMA fails on SM120" |
+| [`linear.py#L1284-L1289`](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/tensorrt_llm/_torch/modules/linear.py#L1284-L1289) | `use_deep_gemm_layout` False → weights not resmoothed to e8m0, though the SM120 kernel is the one selected |
+| [`mla.py#L3234`](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/tensorrt_llm/_torch/modules/mla.py#L3234) | `k_b_proj_trans` / `v_b_proj` not resmoothed on SM121 |
+| [`quantization.py#L1257`](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/tensorrt_llm/_torch/modules/fused_moe/quantization.py#L1257) | `_needs_e8m0_resmooth()` False → MoE weight layout mismatch |
+
+### Why this looks unintentional
+
+* The `getSMVersion` doc comment states the aliasing exists specifically to *reuse SM120
+  code on SM121 devices*. Excluding SM121 from the SM120 Python branches works against
+  that mechanism.
+* Where this repo wants 121 to behave like 120 it says so explicitly:
+  [`py_executor_creator.py#L51`](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/tensorrt_llm/_torch/pyexecutor/py_executor_creator.py#L51)
+  (`(90, 100, 103, 120, 121)`),
+  [`_mnnvl_utils.py#L394`](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/tensorrt_llm/_mnnvl_utils.py#L394),
+  [`pyexecutor/_util.py#L2077`](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/tensorrt_llm/_torch/pyexecutor/_util.py#L2077),
+  [`deep_ep_low_latency.py#L116`](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/tensorrt_llm/_torch/modules/fused_moe/communication/deep_ep_low_latency.py#L116),
+  [`trtllm_attention.py#L429`](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/tensorrt_llm/_torch/auto_deploy/custom_ops/attention/trtllm_attention.py#L429).
+* In the `fused_moe_cutlass.py` capability table, the NVFP4 and W4A8_MXFP4_MXFP8 entries
+  already list 121 while FP8_BLOCK_SCALES five lines above does not.
+* Where the *real* arch genuinely matters, callers pass the flag explicitly
+  ([`cublasScaledMM.cpp#L75`](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/cpp/tensorrt_llm/thop/cublasScaledMM.cpp#L75),
+  [`ncclUtils.cpp#L156`](https://github.com/NVIDIA/TensorRT-LLM/blob/d924d9f185e3cb0d811e905d2b4b5ddb340d71ee/cpp/tensorrt_llm/common/ncclUtils.cpp#L156)) —
+  so "SM121 must be distinguished here" has an established way to be expressed, and it is
+  not used at any of the sites above.
+
+I could not find a comment, waiver, or doc note indicating a deliberate SM121 carve-out
+for block scales. If one exists, this issue is invalid and I would appreciate the pointer.
+
+### Reproduction
+
+**I was not able to run this** — I do not currently have access to an SM121 machine, and
+this report is from source inspection only. The minimal check, on a GB10 / DGX Spark,
+needs no model:
+
+```python
+import torch
+from tensorrt_llm._torch.modules.linear import per_token_quant_and_transform
+
+m, n, k = 128, 512, 512
+a = torch.randn(m, k, dtype=torch.bfloat16, device="cuda")
+b = torch.randn(n, k, dtype=torch.bfloat16, device="cuda").to(torch.float8_e4m3fn)
+b_scale = torch.ones(n // 128, k // 128, dtype=torch.float32, device="cuda")
+
+# What linear.py's `else` branch does on SM121 (fp32 activation scales):
+a_fp8, a_sf = torch.ops.trtllm.fp8_quantize_1x128(a)
+print("activation scale dtype:", a_sf.dtype)          # expect torch.float32
+torch.ops.trtllm.fp8_block_scaling_gemm_impl(a_fp8, b, a_sf, b_scale)
+# expected: RuntimeError ... Scale dtype must be Int32.
+
+# What the SM120 branch would have done (int32 activation scales):
+a_fp8_2, a_sf_2 = per_token_quant_and_transform(a)
+print("activation scale dtype:", a_sf_2.dtype)        # expect torch.int32
+```
+
+Also worth printing both views of the SM version on such a machine, which is the root of
+the whole mismatch:
+
+```python
+from tensorrt_llm._utils import get_sm_version
+print(get_sm_version())                                  # expect 121
+print(torch.cuda.get_device_capability(0))               # expect (12, 1)
+# C++ side, for contrast, sees 120 via getSMVersion()
+```
+
+### Expected behavior
+
+On SM121 the Python FP8 block-scales gates should select the same SM120 behaviour that the
+C++ layer has already committed to — i.e. `get_sm_version() in (120, 121)` and
+`FP8_BLOCK_SCALES: ("in", {90, 120, 121})`, matching how NVFP4 and the other
+`(120, 121)` sites in the repo are written.
+
+### Actual behavior
+
+Python takes the non-SM120 branch while C++ runs the SM120 kernel, producing a scale-layout
+mismatch (`Scale dtype must be Int32.`) on the dense/MLA paths and an unnecessary
+"unsupported" verdict on the CutlassFusedMoE FP8-block-scales path.
+
+### Unknown
+
+* Whether any single model exercises all of these at once — the MoE support gate may
+  refuse a MoE model before the dense crash is reached, so the dense failure is most
+  likely to be seen with a dense FP8-block-scale checkpoint.
+* Whether the SM120 geforce block-scale kernels are numerically correct on SM121 once the
+  gates are aligned. The aliasing implies upstream expects them to be, but I have not
+  measured it, and a correctness check is the part of this that genuinely needs the
+  hardware.
+* Whether the `{90, 120}` MoE entry is additionally constrained by something outside this
+  dict.
+
+### Question for maintainers
+
+Is the SM121 omission at these sites an oversight (as the adjacent `{100, 103, 120, 121}`
+entries and the `getSMVersion` aliasing comment suggest), or is there a block-scales-specific
+reason SM121 must be held back? If it is an oversight I am happy to send a PR aligning the
+gates to `(120, 121)`; I would want someone with GB10 access to confirm numerics.
+
+--- COMMENT 2 ---
+I've implemented a fix for this issue. The root cause is that C++ getSMVersion() aliases SM121→120, but Python get_sm_version() returns 121, causing Python to select the wrong branch while C++ runs the SM120 code path, producing a scale-layout mismatch (Scale dtype must be Int32. on dense/MLA paths).
+
+The fix changes all Python FP8 block-scales gates from get_sm_version() == 120 to get_sm_version() in (120, 121) across 7 files: linear.py (2 sites), attention.py, torch_quant.py, fused_moe_cutlass.py (2 sites + sm_constraint set and comment), quantization.py, modeling_deepseekv3.py, and modeling_glm.py. No C++ changes are needed since the aliasing already exists in cudaUtils.h.
+
+Draft PR: https://github.com/NVIDIA/TensorRT-LLM/pull/17166
+
+--- COMMENT 3 ---
+Thanks for picking this up, and for confirming the C++-side conclusion independently.
+
+I have since been able to get onto a GB10 / DGX Spark (SM121) system, so I can replace the
+"code-inspection only" caveat in the original report with measurements. All five predicted
+points were observed on real hardware. The part that is most relevant to #17166 is point 5:
+the SM120 branch is not merely *reachable* on SM121, it is *numerically sane* there. That
+is the precondition for aligning the Python gates being a correct fix rather than just a way
+to make the crash go away.
+
+### 1. The aliasing is directly observable at runtime
+
+`getSMVersion` is exported as a weak symbol from both `libth_common.so` and
+`libtensorrt_llm.so`, so it can be called directly via `ctypes`
+(`restype=c_int`, `argtypes=[c_bool]`) on the live device:
+
+```
+C++ getSMVersion(queryRealSmArch=true)  = 121
+C++ getSMVersion(queryRealSmArch=false) = 120
+Python get_sm_version()                 = 121
+```
+
+`false` is the default argument (`cudaUtils.h:289`), and the FP8 block-scaling dispatch
+sites call it bare (`fp8BlockScalingGemm.cpp:246, 343, 356`). So the C++ dispatch sees
+**120** while Python sees **121**, on the same device in the same process. The intent
+comment at `cudaUtils.h:290-291` ("use fake sm arch when reuse sm120 code on sm121
+devices") is being executed as written.
+
+### 2. The error string proves the SM120 arm was entered
+
+Feeding the current (`else:`) branch's fp32 scales into `fp8_block_scaling_gemm` on this
+device raises, verbatim:
+
+```
+RuntimeError: Scale dtype must be Int32.
+```
+
+That `TORCH_CHECK` lives **only** inside `fp8_block_scale_gemm_blackwell_geforce`
+(`fp8BlockScalingGemm.cpp:123-124`), i.e. the `case 120:` arm. Had the dispatch seen an
+unaliased 121 it would have fallen to `default:` and raised
+`Unsupported SM version for FP8 block scaling GEMM` (`:254`). That alternative string is
+present in the very same shipped `.so` and was **not** what came out. So the switch
+demonstrably entered the SM120 arm on SM121 silicon — this is a Python-side gate bug only,
+which matches your "no C++ changes needed".
+
+### 3. The SM120 branch works on SM121 — 4.3% rel error
+
+Taking the `elif get_sm_version() == 120:` branch's own code path on this SM121 device:
+
+```
+per_token_quant_and_transform -> act dtype   : torch.float8_e4m3fn (64, 512)
+per_token_quant_and_transform -> scale dtype : torch.int32 (64, 1)
+transformed weight scale dtype               : torch.int32 (256, 1)
+SUCCESS -- output torch.bfloat16 (64, 256) finite: True
+max abs err vs bf16 ref: 0.1959  (rel 0.0431)
+```
+
+The identical `fp8_block_scaling_gemm` call that failed above now succeeds, output is
+finite, and it lands within 4.3% relative of a bf16 reference matmul — the right order for
+FP8-E4M3 with e8m0 block scaling.
+
+### 4. One thing this measurement says about the patch shape
+
+Note that the int32 weight-side scale above did not come for free: it required
+`resmooth_to_fp8_e8m0` + `transform_sf_into_required_layout`, i.e. the weight-layout gate,
+not just the activation-quant gate in `apply`. Both mat1Scale and mat2Scale are checked
+against Int32 by the geforce arm.
+
+So in `linear.py` the `apply` gate (`elif get_sm_version() == 120:`) and the
+`use_deep_gemm_layout` gate in `transform_weights` (`... or get_sm_version() == 120`) need
+to move **together**. Flipping only one of them leaves activation scales and weight scales
+in different layouts. The same pairing exists in `mla.py` (the `elif sm_version == 120:`
+chain, and the `is_sm120 = get_sm_version() == 120` weight-resmooth site).
+
+### 5. Caveats — stated plainly
+
+* **Version.** This ran against the released **1.2.1** aarch64 wheel plus torch
+  2.9.1+cu130, **not** the pinned `main` the issue was filed against. I re-read the four
+  relevant sites inside the installed 1.2.1 and they are the same shape, but it is not the
+  same tree.
+* **MPI.** MPI could not initialise on that box, so the package `__init__` was stubbed.
+  The compiled ops and both real Python modules were exercised, but
+  `import tensorrt_llm` never ran end-to-end. This is a kernel/dispatch-level measurement,
+  not a served-model run.
+* **One shape, not a sweep.** M=64, N=256, K=512 only. 4.3% on one shape is not a
+  correctness sweep.
+* **MoE path unexercised.** I did not run any MoE path, so my remark about
+  `CutlassFusedMoE`'s `FP8_BLOCK_SCALES: ("in", {90, 120})` sitting next to
+  `NVFP4: ("in", {100, 103, 120, 121})` remains **inspection-level only** — treat the MoE
+  part of the fix as unverified by me.
+
+Happy to run further shapes or a specific snippet on the SM121 box if that would help
+de-risk the patch.
+
+=== PAGE TEXT (non-comment) ===
+[Bug]: SM121 (GB10) excluded from FP8 block-scales SM120 Python paths while C++ getSMVersion() aliases 121→120 · Issue #17126 · NVIDIA/TensorRT-LLM · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ NVIDIA
+ 
+ / 
+ 
+ TensorRT-LLM 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 2.7k 
+
+ Star
+ 14.6k 
+
+ Code 
+
+ Issues 
+ 587 
+
+ Pull requests 
+ 875 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [Bug]: SM121 (GB10) excluded from FP8 block-scales SM120 Python paths while C++ getSMVersion() aliases 121→120 #17126 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Open 
+
+ Open 
+ [Bug]: SM121 (GB10) excluded from FP8 block-scales SM120 Python paths while C++ getSMVersion() aliases 121→120 #17126 
+
+ Copy link 
+
+ Labels
+ Customized kernels <NV>Specialized/modified CUDA kernels in TRTLLM for LLM ops, beyond standard TRT. Dev & perf. <NV>Specialized/modified CUDA kernels in TRTLLM for LLM ops, beyond standard TRT. Dev & perf. 
+
+ Description
+ 
+ Smallfu666 
+ opened on Jul 31, 2026 
+
+ Issue body actions 
+
+ System Info
+
+ GPU: a GB10 / DGX Spark (SM121) system; also relevant to SM120 consumer Blackwell as the reference behaviour
+
+ CPU architecture: aarch64
+
+ TensorRT-LLM branch: main , checked against commit d924d9f185e3cb0d811e905d2b4b5ddb340d71ee 
+
+ Additional information: code-inspection issue — no GPU run was performed. See "Reproduction" for the exact minimal repro that would confirm it, which I was not able to execute.
+
+ Who can help?
+
+ (leave for triage — the FP8 block-scale linear/MLA owners)
+
+ Information
+
+ The official example scripts
+
+ My own modified scripts
+
+ Tasks
+
+ An officially supported task in the examples folder
+
+ My own task or dataset
+
+ Summary
+
+ Checked against NVIDIA/TensorRT-LLM at d924d9f185e3cb0d811e905d2b4b5ddb340d71ee .
+
+ Observed (from source). The C++ and Python layers disagree about what SM version a
+
+GB10 is. C++ getSMVersion() deliberately reports 120 for a real SM 121 , so that
+
+SM120 kernels are reused on SM121:
+
+ TensorRT-LLM/cpp/include/tensorrt_llm/common/cudaUtils.h 
+
+ Lines 289 to 307
+ in
+ d924d9f 
+
+ // / @brief Get the SM version of the current device. 
+
+ // / @param queryRealSmArch Whether to query the real SM architecture. example usage: use real sm arch when do LUT tuning 
+
+ // / and use fake sm arch when reuse sm120 code on sm121 devices. 
+
+ // / @return The SM version of the current device. 
+
+ inline int getSMVersion ( bool queryRealSmArch = false ) 
+
+ { 
+
+ int device{- 1 }; 
+
+ check_cuda_error ( cudaGetDevice (&device)); 
+
+ int sm_major = 0 ; 
+
+ int sm_minor = 0 ; 
+
+ check_cuda_error ( cudaDeviceGetAttribute (&sm_major, cudaDevAttrComputeCapabilityMajor, device)); 
+
+ check_cuda_error ( cudaDeviceGetAttribute (&sm_minor, cudaDevAttrComputeCapabilityMinor, device)); 
+
+ int sm = sm_major * 10 + sm_minor; 
+
+ if (sm == 121 && !queryRealSmArch) 
+
+ { 
+
+ return 120 ; 
+
+ } 
+
+ return sm; 
+
+ } 
+
+ // / @param queryRealSmArch Whether to query the real SM architecture. example usage: use real sm arch when do LUT tuning 
+ // / and use fake sm arch when reuse sm120 code on sm121 devices. 
+ inline int getSMVersion ( bool queryRealSmArch = false )
+{
+ ...
+ if (sm == 121 && !queryRealSmArch)
+ {
+ return 120 ;
+ }
+ return sm;
+}
+
+ Python get_sm_version() performs no such aliasing — it returns 121 on a GB10:
+
+ TensorRT-LLM/tensorrt_llm/_utils.py 
+
+ Lines 676 to 679
+ in
+ d924d9f 
+
+ @ lru_cache ( maxsize = 1 ) 
+
+ def get_sm_version (): 
+
+ prop = torch . cuda . get_device_properties ( 0 ) 
+
+ return prop . major * 10 + prop . minor 
+
+ @ lru_cache ( maxsize = 1 ) 
+ def get_sm_version ():
+ prop = torch . cuda . get_device_properties ( 0 )
+ return prop . major * 10 + prop . minor 
+
+ The FP8 block-scales code paths gate on get_sm_version() == 120 (or {90, 120} ). On a
+
+GB10 those gates are False , so Python selects the non-SM120 behaviour — while the C++
+
+op it subsequently calls has already been normalised to SM120 and therefore runs the
+
+SM120 kernel. The two sides pick incompatible scale layouts.
+
+ The concrete failure (dense FP8 block-scale linear)
+
+ FP8BlockScalesLinearMethod.apply :
+
+ TensorRT-LLM/tensorrt_llm/_torch/modules/linear.py 
+
+ Lines 1144 to 1166
+ in
+ d924d9f 
+
+ if is_sm_100f (): 
+
+ if module . use_cute_dsl_blockscaling_mm or module . disable_deep_gemm : 
+
+ act_input_fp8 , act_input_sf = torch . ops . trtllm . fp8_quantize_1x128 ( 
+
+ input ) 
+
+ output = torch . ops . trtllm . cute_dsl_fp8_gemm_blackwell ( 
+
+ act_input_fp8 , module . weight , act_input_sf , 
+
+ module . weight_scale ) 
+
+ else : 
+
+ output = torch . ops . trtllm . fp8_swap_ab_gemm ( 
+
+ input , 
+
+ module . weight , 
+
+ module . weight_scale , 
+
+ disable_ue8m0_cast = True , 
+
+ ) 
+
+ elif get_sm_version () == 120 : 
+
+ act_input_fp8 , act_input_sf = per_token_quant_and_transform ( input ) 
+
+ output = torch . ops . trtllm . fp8_block_scaling_gemm ( 
+
+ act_input_fp8 , module . weight , act_input_sf , module . weight_scale ) 
+
+ else : 
+
+ act_input_fp8 , act_input_sf = torch . ops . trtllm . fp8_quantize_1x128 ( 
+
+ input ) 
+
+ output = torch . ops . trtllm . fp8_block_scaling_gemm ( 
+
+ act_input_fp8 , module . weight , act_input_sf , module . weight_scale ) 
+
+ if is_sm_100f (): # False on SM121 (100/103 only) 
+ ...
+ elif get_sm_version () == 120 : # False on SM121 -- it is 121 
+ act_input_fp8 , act_input_sf = per_token_quant_and_transform ( input ) # int32 scales 
+ output = torch . ops . trtllm . fp8_block_scaling_gemm (...)
+ else : # SM121 lands here 
+ act_input_fp8 , act_input_sf = torch . ops . trtllm . fp8_quantize_1x128 ( input ) # fp32 scales 
+ output = torch . ops . trtllm . fp8_block_scaling_gemm (...)
+
+ Scale dtypes on each branch:
+
+ per_token_quant_and_transform → output_scale is int32 
+
+( fp8_utils.py#L650-L653 )
+
+ fp8_quantize_1x128 → scales are fp32 ( FP8_BLOCK_SCALING_SF_DTYPE = torch::ScalarType::Float ,
+
+ thUtils.h#L67 );
+
+its SM-specific scale post-processing is gated on isSM100Family() only
+
+( fp8Quantize.cpp#L72-L77 ),
+
+so SM120/121 receive the plain SM90 layout.
+
+ The op then dispatches on the aliased SM:
+
+ TensorRT-LLM/cpp/tensorrt_llm/thop/fp8BlockScalingGemm.cpp 
+
+ Lines 243 to 256
+ in
+ d924d9f 
+
+ extern torch::Tensor fp8_block_scaling_gemm (torch::Tensor const & mat1, torch::Tensor const & mat2, 
+
+ torch::Tensor const & mat1Scale, torch::Tensor const & mat2Scale) 
+
+ { 
+
+ auto const sm = tensorrt_llm::common::getSMVersion (); 
+
+ switch (sm) 
+
+ { 
+
+ case 103 : return fp8_block_scale_gemm_blackwell (mat1, mat2, mat1Scale, mat2Scale); 
+
+ case 100 : return fp8_block_scale_gemm_blackwell (mat1, mat2, mat1Scale, mat2Scale); 
+
+ case 90 : return fp8_block_scaling_gemm_hopper (mat1, mat2, mat1Scale, mat2Scale); 
+
+ case 89 : return fp8_block_scaling_gemm_ada (mat1, mat2, mat1Scale, mat2Scale); 
+
+ case 120 : return fp8_block_scale_gemm_blackwell_geforce (mat1, mat2, mat1Scale, mat2Scale); 
+
+ default : TORCH_CHECK ( false , " Unsupported SM version for FP8 block scaling GEMM " ); 
+
+ } 
+
+ } 
+
+ auto const sm = tensorrt_llm::common::getSMVersion(); // 120 on a GB10 
+ switch (sm)
+{
+...
+ case 120 : return fp8_block_scale_gemm_blackwell_geforce (mat1, mat2, mat1Scale, mat2Scale);
+ default : TORCH_CHECK ( false , " Unsupported SM version for FP8 block scaling GEMM " );
+}
+
+ and fp8_block_scale_gemm_blackwell_geforce requires int32 scales:
+
+ TensorRT-LLM/cpp/tensorrt_llm/thop/fp8BlockScalingGemm.cpp 
+
+ Lines 123 to 124
+ in
+ d924d9f 
+
+ TORCH_CHECK (mat1Scale. scalar_type () == at::ScalarType::Int, " Scale dtype must be Int32. " ); 
+
+ TORCH_CHECK (mat2Scale. scalar_type () == at::ScalarType::Int, " Scale dtype must be Int32. " ); 
+
+ TORCH_CHECK (mat1Scale.scalar_type() == at::ScalarType::Int, " Scale dtype must be Int32. " );
+ TORCH_CHECK (mat2Scale.scalar_type() == at::ScalarType::Int, " Scale dtype must be Int32. " );
+
+ Inferred. On a GB10, a dense FP8 block-scale linear layer should therefore abort with
+
+ Scale dtype must be Int32. The geforce path additionally tightens K % 128 == 0 where
+
+the SM90 path only needs K % 16 == 0 , so shapes valid on the branch Python selected are
+
+not necessarily valid on the kernel C++ selected.
+
+ Affected sites
+
+ All of these use == 120 / {90, 120} where the surrounding code's convention is
+
+ (120, 121) :
+
+ Site 
+ Consequence on SM121 
+
+ linear.py#L1158 
+ wrong activation scale layout → Scale dtype must be Int32. 
+
+ mla.py#L356 
+ same, via fp8_block_scaling_bmm_out (whose C++ side also branches on sm == 120 , L353-L368 ) 
+
+ trtllm_quant.py#L164 
+ same, on the AutoDeploy path 
+
+ fused_moe_cutlass.py#L105-L108 
+ FP8_BLOCK_SCALES: ("in", {90, 120}) → CutlassFusedMoE reports it cannot implement FP8 block scales on SM121. Note NVFP4 immediately below is {100, 103, 120, 121} 
+
+ fused_moe_cutlass.py#L902 
+ SM121 does not take the Triton fallback that the comment says exists because "CUTLASS TMA fails on SM120" 
+
+ linear.py#L1284-L1289 
+ use_deep_gemm_layout False → weights not resmoothed to e8m0, though the SM120 kernel is the one selected 
+
+ mla.py#L3234 
+ k_b_proj_trans / v_b_proj not resmoothed on SM121 
+
+ quantization.py#L1257 
+ _needs_e8m0_resmooth() False → MoE weight layout mismatch 
+
+ Why this looks unintentional
+
+ The getSMVersion doc comment states the aliasing exists specifically to reuse SM120
+
+code on SM121 devices . Excluding SM121 from the SM120 Python branches works against
+
+that mechanism.
+
+ Where this repo wants 121 to behave like 120 it says so explicitly:
+
+ py_executor_creator.py#L51 
+
+( (90, 100, 103, 120, 121) ),
+
+ _mnnvl_utils.py#L394 ,
+
+ pyexecutor/_util.py#L2077 ,
+
+ deep_ep_low_latency.py#L116 ,
+
+ trtllm_attention.py#L429 .
+
+ In the fused_moe_cutlass.py capability table, the NVFP4 and W4A8_MXFP4_MXFP8 entries
+
+already list 121 while FP8_BLOCK_SCALES five lines above does not.
+
+ Where the real arch genuinely matters, callers pass the flag explicitly
+
+( cublasScaledMM.cpp#L75 ,
+
+ ncclUtils.cpp#L156 ) —
+
+so "SM121 must be distinguished here" has an established way to be expressed, and it is
+
+not used at any of the sites above.
+
+ I could not find a comment, waiver, or doc note indicating a deliberate SM121 carve-out
+
+for block scales. If one exists, this issue is invalid and I would appreciate the pointer.
+
+ Reproduction
+
+ I was not able to run this — I do not currently have access to an SM121 machine, and
+
+this report is from source inspection only. The minimal check, on a GB10 / DGX Spark,
+
+needs no model:
+
+ import torch 
+ from tensorrt_llm . _torch . modules . linear import per_token_quant_and_transform 
+
+ m , n , k = 128 , 512 , 512 
+ a = torch . randn ( m , k , dtype = torch . bfloat16 , device = "cuda" )
+ b = torch . randn ( n , k , dtype = torch . bfloat16 , device = "cuda" ). to ( torch . float8_e4m3fn )
+ b_scale = torch . ones ( n // 128 , k // 128 , dtype = torch . float32 , device = "cuda" )
+
+ # What linear.py's `else` branch does on SM121 (fp32 activation scales): 
+ a_fp8 , a_sf = torch . ops . trtllm . fp8_quantize_1x128 ( a )
+ print ( "activation scale dtype:" , a_sf . dtype ) # expect torch.float32 
+ torch . ops . trtllm . fp8_block_scaling_gemm_impl ( a_fp8 , b , a_sf , b_scale )
+ # expected: RuntimeError ... Scale dtype must be Int32. 
+
+ # What the SM120 branch would have done (int32 activation scales): 
+ a_fp8_2 , a_sf_2 = per_token_quant_and_transform ( a )
+ print ( "activation scale dtype:" , a_sf_2 . dtype ) # expect torch.int32 
+
+ Also worth printing both views of the SM version on such a machine, which is the root of
+
+the whole mismatch:
+
+ from tensorrt_llm . _utils import get_sm_version 
+ print ( get_sm_version ()) # expect 121 
+ print ( torch . cuda . get_device_capability ( 0 )) # expect (12, 1) 
+ # C++ side, for contrast, sees 120 via getSMVersion() 
+
+ Expected behavior
+
+ On SM121 the Python FP8 block-scales gates should select the same SM120 behaviour that the
+
+C++ layer has already committed to — i.e. get_sm_version() in (120, 121) and
+
+ FP8_BLOCK_SCALES: ("in", {90, 120, 121}) , matching how NVFP4 and the other
+
+ (120, 121) sites in the repo are written.
+
+ Actual behavior
+
+ Python takes the non-SM120 branch while C++ runs the SM120 kernel, producing a scale-layout
+
+mismatch ( Scale dtype must be Int32. ) on the dense/MLA paths and an unnecessary
+
+"unsupported" verdict on the CutlassFusedMoE FP8-block-scales path.
+
+ Unknown
+
+ Whether any single model exercises all of these at once — the MoE support gate may
+
+refuse a MoE model before the dense crash is reached, so the dense failure is most
+
+likely to be seen with a dense FP8-block-scale checkpoint.
+
+ Whether the SM120 geforce block-scale kernels are numerically correct on SM121 once the
+
+gates are aligned. The aliasing implies upstream expects them to be, but I have not
+
+measured it, and a correctness check is the part of this that genuinely needs the
+
+hardware.
+
+ Whether the {90, 120} MoE entry is additionally constrained by something outside this
+
+dict.
+
+ Question for maintainers
+
+ Is the SM121 omission at these sites an oversight (as the adjacent {100, 103, 120, 121} 
+
+entries and the getSMVersion aliasing comment suggest), or is there a block-scales-specific
+
+reason SM121 must be held back? If it is an oversight I am happy to send a PR aligning the
+
+gates to (120, 121) ; I would want someone with GB10 access to confirm numerics.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ Customized kernels <NV>Specialized/modified CUDA kernels in TRTLLM for LLM ops, beyond standard TRT. Dev & perf. <NV>Specialized/modified CUDA kernels in TRTLLM for LLM ops, beyond standard TRT. Dev & perf. 
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

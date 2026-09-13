@@ -1,0 +1,681 @@
+TITLE: [Bug]: Xid 13 "Out Of Range Address" / CUDA illegal memory access on RTX PRO 5000 (SM120) with FP8 model under sustained load — gone with VLLM_DISABLED_KERNELS=FlashInferFP8ScaledMMLinearKernel or --enforce-eager · Issue #55571 · vllm-project/vllm · GitHub
+CREATED_AT: 2026-09-06T12:45:12Z | 2026-09-06T12:45:13Z | 2026-09-06T12:45:20Z | 2026-09-06T12:53:11Z
+LABELS: bug, quantization
+
+--- COMMENT 1 ---
+### Your current environment
+
+<details>
+<summary>Output of <code>vllm collect-env</code> (inside the container) plus host details</summary>
+
+```
+OS                      : Ubuntu 24.04.3 LTS (x86_64) in container; host Ubuntu 24.04.4 LTS, kernel 6.8.0-139-generic
+PyTorch version         : 2.13.0+cu130
+CUDA used to build      : 13.0 ; CUDA runtime version 13.0.88 ; nvidia-cublas 13.1.1.3
+Python version          : 3.12.3
+GPU                     : NVIDIA RTX PRO 5000 72GB Blackwell (SM120), 73,415 MiB, VBIOS 98.02.9F.00.01
+Nvidia driver version   : 595.84 (nvidia-driver-595-open, Ubuntu package 595.84-0ubuntu0.24.04.1)
+CPU                     : AMD Ryzen Threadripper PRO 9955WX 16-Cores, 125 GB RAM
+vllm                    : 0.28.0  (docker image vllm/vllm-openai:v0.28.0, sha256:61fc8a896b0a4fbbbdc063bc4b0dbc25ce98e02b5050c24aeb7830ac02039b14,
+                                   VLLM_BUILD_COMMIT=2cf0a6915ce544dc493a0990f2ea38d81601128a)
+flashinfer-python       : 0.6.16.post3  (flashinfer-cubin 0.6.16.post3, flashinfer-jit-cache 0.6.16.post3+cu130)
+transformers            : 5.15.1 ; mistral_common 1.11.7
+Docker                  : 29.8.0, Compose v5.5.1 ; container started with gpus: all, ipc: host
+```
+</details>
+
+Command line (docker image entrypoint = `vllm serve`):
+
+```
+vllm serve mistralai/Ministral-3-14B-Instruct-2512 --served-model-name ministral-3-14b \
+  --tokenizer_mode mistral --config_format mistral --load_format mistral \
+  --enable-auto-tool-choice --tool-call-parser mistral \
+  --max-model-len 65536 --gpu-memory-utilization 0.82
+```
+
+Effective config as logged by `core.py:122` (excerpt): `dtype=torch.bfloat16, quantization=fp8, max_seq_len=65536, enforce_eager=False, kv_cache_dtype=auto, enable_prefix_caching=True, enable_chunked_prefill=True (max_num_batched_tokens=8192), compilation_config={'mode': VLLM_COMPILE, 'cudagraph_mode': FULL_AND_PIECEWISE, 'max_cudagraph_capture_size': 512, ...}, structured_outputs_config=StructuredOutputsConfig(backend='auto')`. Startup log: `Using FLASH_ATTN attention backend`, `Selected FlashInferFP8ScaledMMLinearKernel for Fp8LinearMethod`, `GPU KV cache size: 267,168 tokens`.
+
+### 🐛 Describe the bug
+
+**Symptom.** Under sustained load the EngineCore dies with `torch.AcceleratorError: CUDA error: an illegal memory access was encountered` (raised from `vllm/v1/worker/gpu/async_utils.py:168` in `get_output` → `self.copy_event.synchronize()`, i.e. the asynchronous error surfaces at the next sync). At the same second the kernel log shows an **Xid 13**:
+
+```
+NVRM: Xid (PCI:0000:11:00): 13, Graphics SM Warp Exception on (GPC 0, TPC 0, SM 0): Out Of Range Address
+NVRM: Xid (PCI:0000:11:00): 13, Graphics SM Global Exception on (GPC 0, TPC 0, SM 0): Multiple Warp Errors
+NVRM: Xid (PCI:0000:11:00): 13, Graphics Exception: ESR 0x505730=0xf05000e 0x505734=0x4 0x505728=0x1c81fb60 0x50572c=0x1174
+```
+
+Every event produces exactly 289 kernel lines, always starting at GPC 0 / TPC 0 / SM 0 and spreading over all GPCs, and always with the **same ESR values** (`0x505728=0x1c81fb60 0x50572c=0x1174`) — regardless of the attention backend (see experiments). `nvidia-smi -q -d ROW_REMAPPER` shows 0 correctable / 0 uncorrectable errors; the GPU is otherwise healthy. The container exits (`terminate called after throwing an instance of 'c10::AcceleratorError'`), Docker restarts it, and it serves again after ~25 s.
+
+**Frequency.** 4 events in roughly 2,500 chat completions over two days, all under load, none when idle:
+
+| event (local time) | attention backend | prompt tokens of the new request | of which prefix-cache hit (`num_computed_tokens`) | new tokens to prefill | running reqs | KV usage |
+|---|---|---:|---:|---:|---:|---:|
+| 2026-09-04 23:57:51 | FLASH_ATTN | 12,658 | 12,176 | **482** | 1 | — |
+| 2026-09-05 20:44:59 | FLASH_ATTN | 14,881 | 14,400 | **481** | 1 | 5.6 % |
+| 2026-09-05 21:18:28 | FLASH_ATTN | 10,733 | 10,304 | **429** | 6 | — |
+| 2026-09-05 22:26:08 | FLASHINFER | 28,661 | 28,256 | **405** | 2 | — |
+
+The numbers come from the `dump_input.py` output written before the crash (`scheduled_new_reqs=[NewRequestData(... prompt_token_ids_len=..., num_computed_tokens=...)]`, `SchedulerStats(num_running_reqs=..., num_waiting_reqs=0, ...)`). **All four dumps show the same shape:** a *new* request whose prompt is 96–99 % served from the prefix cache, with only 405–482 tokens left to prefill. In our workload that is the second round of a tool-calling conversation (system prompt + user turn + first assistant tool call are cached, the tool result is the new part). This shape occurs in essentially every request, but the crash hits only about once per 300–500 requests, so it is not deterministic on the shape alone.
+
+**Workload.** A RAG service (own .NET client against `/v1/chat/completions`): 2–3 completions per user question, tools with `tool_choice=auto` (Mistral tool parser → structured outputs, backend `guidance`, the grammar is visible in the dump's `SamplingParams`), prompts 10k–29k tokens, `temperature=0.0`, `seed=42`, `max_tokens=2048`. Load generator: ~1,000 user questions per hour, Poisson arrivals, 1–6 requests in flight (client-side limit 6).
+
+**Experiments** (each a 60-minute run at ~1,000 questions/h ≈ 2,500 completions, same question pool, same machine; "clean" = no Xid, no container restart):
+
+| configuration | FP8 GEMM kernel selected | CUDA graphs | result |
+|---|---|---|---|
+| default | `FlashInferFP8ScaledMMLinearKernel` | FULL_AND_PIECEWISE | **2 crashes** (20:44, 21:18) in 981 questions |
+| `--attention-backend FLASHINFER` | `FlashInferFP8ScaledMMLinearKernel` | FULL_AND_PIECEWISE | **1 crash** (22:26) in 499 questions (30 min, then aborted) |
+| `--enforce-eager` | `FlashInferFP8ScaledMMLinearKernel` | none | **clean**, 981 questions |
+| `VLLM_DISABLED_KERNELS=FlashInferFP8ScaledMMLinearKernel` → `CutlassFP8ScaledMMLinearKernel` | CUTLASS | FULL_AND_PIECEWISE | **clean**, 981 questions, identical throughput and latency under load |
+
+So the attention backend does not matter (identical ESR with FLASH_ATTN and FLASHINFER), the crash needs CUDA graphs (eager is clean), and swapping only the FP8 scaled-MM kernel from FlashInfer to CUTLASS while keeping graphs makes it go away. One clean hour is not a proof (at one crash per ~400 questions a clean hour has roughly a 10 % chance by luck), but two clean hours against three crashes in 1,480 questions is a strong signal. The intersection is **`FlashInferFP8ScaledMMLinearKernel` inside piecewise CUDA graphs on SM120**, for small mixed batches (≈400–480 new tokens after a large prefix-cache hit, padded to a capture size). On this GPU vLLM picks `FlashInferFP8ScaledMMLinearKernel` ahead of CUTLASS (`_POSSIBLE_FP8_KERNELS` order: Marlin, FlashInfer, CUTLASS, B12x, Torch); the v0.28.0 release notes mention new B12X dense linear backends for this architecture (#52016), so the FP8 GEMM path on SM120 is fresh territory in this release.
+
+Things ruled out: the torch.compile cache (deleted between event 1 and events 2–4), the attention backend, GPU memory errors (row remapper clean), thermal/power (card at its 300 W power cap, 89–90 °C, no thermal slowdown). The first event happened on 2026-09-04 after ~14 days of uptime without any Xid; all four events are under sustained load only.
+
+**Expected behaviour.** No illegal memory access; the FlashInfer FP8 scaled-MM kernel should behave like CUTLASS inside CUDA graph replay.
+
+**Related.** This looks like the mechanism described in #52553 / flashinfer-ai/flashinfer#4553 (the shared cuDNN GEMM workspace in FlashInfer is moved with `resize_()` when a plan asks for more than 32 MiB; graphs captured earlier keep the old address, so every later replay is a use-after-free — the PR author mentions an FP8 plan asking for 256 bytes more than the default). #52540 (ModelOpt NVFP4 on RTX PRO 6000) and #52225 (Xid 13 on SM120 under multi-hour load) report the same symptom with NVFP4 checkpoints; this report is an FP8 checkpoint on an RTX PRO 5000 where the FP8 scaled-MM kernel alone makes the difference, so it may serve as an independent confirmation from a different quantization path. I did not find an FP8 report for `FlashInferFP8ScaledMMLinearKernel` yet, hence the separate issue — happy to have it merged if it is a duplicate.
+
+**Workaround** we run now: `VLLM_DISABLED_KERNELS=FlashInferFP8ScaledMMLinearKernel` (CUTLASS is ~10 % slower in single-stream latency, no measurable difference under concurrency). `--enforce-eager` also works but costs ~20 % under load and ~50 % single-stream.
+
+**Available on request:** kernel log of all four events (1,156 Xid lines), the `dump_input.py` excerpts and the EngineCore traceback, `vllm collect-env`, the load generator (Python, open source) and the per-request timing logs (JSONL) of all four runs. The full container logs of the crashed containers were unfortunately not preserved (containers were recreated between experiments); the dump lines above were extracted before that. A 4-hour soak with the CUTLASS workaround (~4,000 questions) is running while I file this; I will add the result in a comment.
+
+### Before submitting a new issue...
+
+- [x] Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the [documentation page](https://docs.vllm.ai/en/latest/), which can answer lots of frequently asked questions.
+
+--- COMMENT 2 ---
+**Update — 4-hour soak with the workaround finished clean.**
+
+Same machine, same load generator and question pool, `VLLM_DISABLED_KERNELS=FlashInferFP8ScaledMMLinearKernel` (→ `CutlassFP8ScaledMMLinearKernel`), FLASH_ATTN, CUDA graphs on (`FULL_AND_PIECEWISE`), client-side concurrency limit 6:
+
+| | |
+|---|---:|
+| duration | 240 min |
+| user questions | 4,023 (≈ 10,000 chat completions, 1,004 questions/h) |
+| Xid events in the kernel log | **0** |
+| vLLM container restarts | **0** |
+| latency, end to end (median / p90 / p99 / max) | 12.3 s / 38.5 s / 83.9 s / 141.4 s |
+| GPU | 88 % average utilization, 279 W average (300 W cap), 48–90 °C |
+
+The only failed requests were 4 × HTTP 400 `maximum context length is 65536 tokens` from our own client sending an oversized prompt — unrelated to this issue.
+
+So with the FlashInfer FP8 scaled-MM kernel disabled the box has now done ~5 hours / ~12,500 completions with CUDA graphs and no fault, against 3 faults in the first ~1,500 questions with it enabled. Happy to run anything else that helps narrow it down (e.g. a patched FlashInfer wheel from flashinfer-ai/flashinfer#4553 on this SM120 card).
+
+--- COMMENT 3 ---
+At your versions, the path you isolated can hit the #52553 / flashinfer#4553 workspace bug, but only if the captured runner is cuDNN. This is from reading the source, not from a reproduction.
+
+In v0.28.0, `FlashInferFP8ScaledMMLinearKernel.apply_scaled_mm` -> `vllm.utils.flashinfer.flashinfer_scaled_fp8_mm` -> `flashinfer.bmm_fp8(..., backend="auto")`. In flashinfer 0.6.16.post3, `bmm_fp8` with `auto` builds its runner list from `_heuristic_func_bmm_fp8`, which on SM120 is `[cutlass_sm12x, cublas, cudnn]` (cuDNN only if `import cudnn` succeeds), allocates the shared `bmm_fp8_workspace` (32 MiB via `_get_cache_buf`) and calls `fp8_gemm_sm100` -> `tuner.choose_one("fp8_gemm", ...)`. Only the cuDNN runner (`CudnnFp8GemmRunner` -> `execute_cudnn_gemm_fp8_graph`) grows that workspace with `workspace.resize_()` when a plan wants more than it has; the CUTLASS and cuBLAS runners never resize it. The resize happens on a non-captured execution, and every graph captured earlier keeps the old pointer, which is the #4553 use-after-free.
+
+Without tuning data the autotuner returns `runners[0]`, i.e. CUTLASS sm12x, and cuDNN is never touched. But vLLM's kernel warmup runs FlashInfer autotune on any GPU with capability >= 9.0 (`kernel_warmup.py`: `has_device_capability(90)`), SM120 included, unless `enable_flashinfer_autotune` is explicitly False. It does one dummy run at `max_num_batched_tokens` (8192 in your config) and the tuner generates a profile per token bucket up to it; your 405 to 482 new-token prefills map to the 512 bucket (`map_to_hybrid_bucket_uncapped`, 256-token steps above 256), so those shapes hit tuned entries. If cuDNN won `fp8_gemm` for that bucket, your captured graphs replay the cuDNN runner and the first plan that needs a larger workspace moves it under them. Eager passing doesn't narrow it; any graph-lifetime bug does that. CUTLASS passing with graphs on does.
+
+Two things you can check without a long soak:
+
+1. `--no-enable-flashinfer-autotune` keeps `FlashInferFP8ScaledMMLinearKernel` but forces FlashInfer's fallback runner (CUTLASS sm12x) inside `bmm_fp8`, and skips loading any autotune cache. If the Xid stops, that points at the cuDNN runner; the cache file below shows whether it was picked at all. `VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS=fp8_gemm` is weaker: it skips tuning that op, but a cache file persisted from an earlier run is still loaded, so point `VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR` at an empty directory if you use it.
+2. vLLM logs `Using FlashInfer autotune cache file: <path>` at startup. The keys look like `('fp8_gemm', 'CudnnFp8GemmRunner', ...)`; that runner name in there means the cuDNN runner was live.
+
+A patched wheel from flashinfer#4553 would test whether the workspace-resize fix alone prevents the crash. Both #4553 and vLLM #52553 are open and unmerged as of today, and `flashinfer/gemm/gemm_base.py` at v0.6.18.post1 (the newest release; vLLM main's Dockerfile pins 0.6.18) still has the `resize_()` sites. So upgrading FlashInfer alone won't help.
+
+--- COMMENT 4 ---
+We encountered this exact same failure mode (`Xid 13: Out Of Range Address` on SM 0, surfacing asynchronously at `copy_event.synchronize()` / `torch.cuda.synchronize()` regardless of attention backend) on an RTX 4090 under vLLM v1.
+
+In our case, we isolated the root cause to an out-of-bounds gather in the v1 sampling pipeline:
+1. In `vllm/v1/worker/gpu/sample/prompt_logprob.py` (`_prompt_logprobs_token_ids_kernel`), `target_pos = num_computed_tokens + 1 + block` attempts to read index $L$ on prompt prefill of length $L$.
+2. This loads uninitialized memory / garbage values into `token_ids`.
+3. Downstream `torch.gather` or Triton kernels attempt to gather using those invalid token IDs, triggering the CUDA MMU `Xid 13` fault which then halts the stream and surfaces at the next synchronization event.
+
+**Question for the OP:** Does your sustained load workload issue requests with `logprobs` or `prompt_logprobs`?
+- If yes: Defensive clamping of token IDs (`clamped_ids = logprob_token_ids.clamp(0, vocab_size - 1)`) and fixing the boundary condition in `_prompt_logprobs_token_ids_kernel` immediately resolved this.
+- If no: It strongly suggests a sibling out-of-bounds indexing vulnerability in v1's KV block table mapping or dynamic batch queueing.
+
+--- COMMENT 5 ---
+@jahnclawdmonet Thank you — I checked your second point first because it costs nothing, and it comes back positive: **the cuDNN runner is live on this box, and it wins the exact bucket the crashes fall into.**
+
+I restarted vLLM once with the FlashInfer FP8 kernel re-enabled (no load, just a start) and compared the autotune cache against the configuration we run now.
+
+| | `VLLM_DISABLED_KERNELS=FlashInferFP8ScaledMMLinearKernel` (our workaround) | kernel enabled |
+|---|---|---|
+| kernel selected | `CutlassFP8ScaledMMLinearKernel` | `FlashInferFP8ScaledMMLinearKernel` |
+| autotune duration | 18 s | 62 s |
+| log line | `Saved 0 configs (0 new, 0 from previous config)` | `Saved 84 configs (84 new, 0 from previous config)` |
+| cache file | 244 bytes, `_metadata` only | 21,589 bytes, 84 `fp8_gemm` entries |
+
+Winners across all 84 tuned shapes:
+
+```
+67  CudnnFp8GemmRunner
+13  CublasFp8GemmRunner
+ 4  CutlassFp8GemmRunner
+```
+
+And for M = 512 — the bucket our 405–482-token prefills map to — **all four entries are cuDNN, with no CUTLASS or cuBLAS entry at that size at all**:
+
+```
+('fp8_gemm', 'CudnnFp8GemmRunner', ((1, 512, 16384), (1, 16384,  5120), ...), (float8_e4m3fn, float8_e4m3fn, bfloat16))
+('fp8_gemm', 'CudnnFp8GemmRunner', ((1, 512,  4096), (1,  4096,  5120), ...), (float8_e4m3fn, float8_e4m3fn, bfloat16))
+('fp8_gemm', 'CudnnFp8GemmRunner', ((1, 512,  5120), (1,  5120, 32768), ...), (float8_e4m3fn, float8_e4m3fn, bfloat16))
+('fp8_gemm', 'CudnnFp8GemmRunner', ((1, 512,  5120), (1,  5120,  6144), ...), (float8_e4m3fn, float8_e4m3fn, bfloat16))
+```
+
+The cache metadata records `cudnn_version: 92000` and `cudnn_frontend_version: 1.27.0`, so `import cudnn` succeeds in this container and the runner list does include cuDNN, exactly as you described. `enable_flashinfer_autotune=True` is in our engine config (we never set it), and the tuned M values run 1 … 8192, matching `max_num_batched_tokens=8192`.
+
+That is your prediction end to end: autotune runs on SM120, the tuned entry for our shape selects the cuDNN runner, the captured graphs replay it, and the cuDNN runner is the only one that moves the shared workspace with `resize_()`.
+
+It also explains the workaround better than I could before. With `VLLM_DISABLED_KERNELS=FlashInferFP8ScaledMMLinearKernel` the tuner saves **zero** configs — `flashinfer_scaled_fp8_mm` is never called, so `fp8_gemm` is never tuned and the cuDNN runner is never reached at all. It is not that CUTLASS is safer inside graphs; it is that this path never enters FlashInfer.
+
+One detail that may matter for reproduction: in our compose `/root/.cache/vllm` is **not** a volume (only `/root/.cache/huggingface` is). The autotune cache therefore dies with every container recreate, and every one of the crashing runs tuned from scratch at startup — so each of them had freshly written cuDNN entries for the 512 bucket, not a stale cache carried over from an earlier experiment.
+
+Two caveats, so nobody reads more into this than it holds:
+
+1. The 84-config cache above was produced today, on a start **without load**. The containers from the crashing runs were recreated between experiments and their caches are gone, so this is a reconstruction of the same code path on the same box with the same versions — not a capture from a crashing run.
+2. A start is not a soak. This shows the cuDNN runner is selected; it does not by itself show that the workspace resize happened.
+
+Happy to run the `--no-enable-flashinfer-autotune` soak next (kernel enabled, autotune off, 60 min at ~1,000 questions/h, empty `VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR`). If that is clean while the same hour with autotune on is not, the cuDNN runner is nailed down. Also still happy to test a patched FlashInfer wheel from flashinfer-ai/flashinfer#4553 on this SM120 card.
+
+---
+
+@RyanJFriedrich Thanks — the answer to your question is **no**: our client never sends `logprobs` or `prompt_logprobs`. The string does not occur anywhere in our client source, and the request body is built from `model`, `messages`, `stream`, `temperature`, `seed`, `max_tokens`, `tools` and `tool_choice` — nothing else.
+
+There is a second reason your mechanism does not fit this box. The only difference between our crashing configuration and our clean one is which FP8 scaled-MM kernel `Fp8LinearMethod` selects — same model, same sampling parameters, same attention backend, same CUDA graph settings, same request shapes. `_prompt_logprobs_token_ids_kernel` runs (or does not run) independently of that choice, so an out-of-bounds gather there could not be switched off by moving the GEMM from FlashInfer to CUTLASS. Our `--enforce-eager` run is also clean, which points at graph lifetime rather than at a kernel that is wrong on every launch.
+
+So I think we have the same *symptom* (Xid 13, `Out Of Range Address` on SM 0, surfacing asynchronously at the next synchronize) from two different causes — which is worth saying out loud, because that symptom is not diagnostic on its own. Your SM89 case is a real bug either way; the clamping fix you describe is orthogonal to the workspace-resize path above, and both could land.
+
+--- COMMENT 6 ---
+Thanks for checking the cache; that settles the runner question.
+
+1. Upgrading FlashInfer does change your case, and I had that wrong. flashinfer#4165 (2026-08-06, in v0.6.18 and v0.6.18.post1) gates cuDNN out of the `bmm_fp8` auto candidates on SM12x whenever the override-shape path is unavailable, which is any cuDNN backend below 9.23.1. Your cache shows 9.20.0, so on 0.6.18 the runner list for these shapes is CUTLASS sm12x and cuBLAS, the cuDNN fp8 runner isn't built at all, and a stale cache entry naming `CudnnFp8GemmRunner` is ignored because that class isn't in the list. The gate logs once at startup, "Skipping cuDNN in bmm_fp8 auto candidates on SM12x", grep the startup log for it. It only covers `bmm_fp8`; the bf16 and fp4 cuDNN paths still admit cuDNN on SM12x and still resize their own workspaces. The `resize_()` sites are still there in 0.6.18.post1, which is what I looked at; the fix for those is flashinfer#4666 (merged 2026-08-28: 40 MiB default, `_gemm_workspace_at_least()` in place of every `resize_()`, plan builds refused during capture), on main only, in no release. #4553 is the earlier attempt and now conflicts with main. vLLM main pins 0.6.18 in its Dockerfile, so an image built from main today has the gate. In the v0.28.0 container this means overriding the tested pin (`requirements/cuda.txt` has flashinfer-python and flashinfer-cubin at 0.6.16.post3; the 0.6.18.post1 cu130 wheels exist, cubin and jit-cache from the flashinfer.ai index, not PyPI). I haven't tried that swap against 0.28.0.
+
+2. If you instrument the resize, do it on stock 0.6.16.post3 and log from process start, not only under load. The resize that poisons the graphs happens once, during warmup, autotune or capture, and the shared buffer stays grown afterwards, so zero resizes during a crashing hour is the expected reading even when the mechanism is right. On cuDNN 9.20 the only fp8 site you can reach is `execute_cudnn_gemm_fp8_graph` (the override-shape executor has its own `resize_()` but needs 9.23.1); it computes `workspace_size = _get_cudnn_workspace_size(graph, plan_index)` per graph and plan, and graphs are cached per shape, stride, dtype and tactic. Print the shape, plan index and requested size at the `workspace.resize_(workspace_size)` line. If nothing is logged from start, the resize isn't the trigger, which doesn't by itself clear cuDNN.
+
+3. On the #4553 wheel: the patch removes the resize and logs nothing, so it's a separate experiment from the log above. Its own soak table says commits 1+2 with cuDNN still winning failed at about 13.5 minutes, and only excluding the cuDNN runner gave the clean 55-minute soak; a cuDNN kernel fault survived both commits. That table is an RTX PRO 6000 on vLLM v0.26.0 / FlashInfer 0.6.14 with an NVFP4/FP8-mixed checkpoint at 24-way load: the patched run still crashed in that setup, and I'd expect yours to as well. The autotune-off hour you planned is the arm that isolates the runner. The diff is one Python file and applies to 0.6.16.post3 in place (8 hunks, no rebuild).
+
+--- COMMENT 7 ---
+@jahnclawdmonet The autotune-off hour is done, and it is clean.
+
+**Configuration.** Same machine, same load generator, same 122-question pool, same client-side concurrency limit of 6. `VLLM_DISABLED_KERNELS` empty (so the FlashInfer FP8 kernel is back), `VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS=fp8_gemm`, and `VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR` pointed at a fresh empty directory. I used the env vars rather than `--no-enable-flashinfer-autotune` because our vLLM starts from a fixed compose command; the startup log confirms the arm took effect:
+
+```
+Selected FlashInferFP8ScaledMMLinearKernel for Fp8LinearMethod
+Skipping FlashInfer autotuning for ops ('fp8_gemm',)
+Using FlashInfer autotune cache file: /tmp/fi-autotune-leer/.../autotune_configs.json
+[Autotuner]: Saved 0 configs to ... (0 new, 0 from previous config)
+```
+
+Zero tuned entries, so `choose_one("fp8_gemm", ...)` falls back to `runners[0]` — CUTLASS sm12x inside `bmm_fp8` — and the cuDNN runner is never reached.
+
+**Result.**
+
+| | |
+|---|---|
+| duration | 62 min |
+| user questions | 981 (≈ 2,400 chat completions, 957 questions/h) |
+| Xid events in the kernel log | **0** |
+| vLLM container restarts | **0** |
+| answers judged correct | 902 / 972 = 92.8 % |
+
+For comparison, from the original report, same kernel with autotune left on: 2 crashes in 981 questions, and 1 more in 499 questions in the FLASHINFER-backend run.
+
+**What this is worth, stated plainly.** At roughly one fault per 400–500 questions, a clean 981-question hour has about a 13 % chance of happening by luck, so this hour on its own is not proof — it is exactly the same strength of evidence as the CUTLASS arm in the original report, and I would not claim more for it. What makes the chain coherent is that it lines up with the cache data from the previous comment: with autotune on, cuDNN wins 67 of 84 tuned shapes and **all four** entries at M = 512; with `fp8_gemm` tuning skipped, nothing is tuned and cuDNN is unreachable. Kernel unchanged, graphs unchanged, only the runner changed — and the faults stop.
+
+**I am deliberately not reporting latency from this run.** Between the crashing runs and this one I rebuilt our index and changed unrelated engine code, so the numbers are not comparable and I would only be adding noise to the thread. If a clean latency comparison between `CutlassFP8ScaledMMLinearKernel` and FlashInfer-with-autotune-off is useful to you, I can run both back to back on an unchanged index and post that separately.
+
+**On your correction about the FlashInfer version — that is the practical question for us now.** Our container runs flashinfer 0.6.16.post3 with cuDNN 9.20.0 (from the cache metadata), and grepping the startup log for `Skipping cuDNN in bmm_fp8` comes back empty, so we are squarely in the pre-#4165 regime you describe. If I read #4165 right, on 0.6.18.post1 the gate would fire for us — cuDNN below 9.23.1, override-shape path unavailable — and the cuDNN fp8 runner would not be built at all, which would make the upgrade a fix rather than a workaround for this box.
+
+Is overriding the tested pin (`requirements/cuda.txt`: flashinfer-python and flashinfer-cubin at 0.6.16.post3) against the v0.28.0 image something you would expect to work, or is the combination untested enough that you would rather see this fixed by picking up #4666 in a release? Happy to run the upgraded combination for an hour under the same load and report either way.
+
+Also noted for anyone instrumenting `workspace.resize_()` after reading this thread: your point that the poisoning resize happens once, during warmup or capture, and that zero resizes during a crashing hour is the expected reading, is the kind of thing that costs a day if you miss it. Logging from process start rather than under load.
+
+--- COMMENT 8 ---
+I'd expect the swap to work for your model. I haven't run that combination myself; what follows is from reading the diffs. The FP8 path you're on is the same code on both sides: `vllm/model_executor/kernels/linear/scaled_mm/flashinfer.py` is byte-identical between v0.28.0 and the 0.6.18 bump (7ab29234890b, #54313), the two `bmm_fp8` call sites in `vllm/utils/flashinfer.py` are unchanged, and `bmm_fp8` and `autotune()` keep the same signatures from 0.6.16.post3 to 0.6.18.post1 (0.6.18 adds a `cute-dsl` literal to the backend enum, nothing removed). The only dependency bump between the two flashinfer-python wheels is nvidia-cutlass-dsl>=4.6.2a0, which the image's 4.6.2 pin already meets. Everything else that changed around it in that window (#50572's bf16 CuTe-DSL GEMM helpers, the JIT warmup plumbing, the GDN change inside #54313) is outside a dense FP8 model. Skip 0.6.17, the gate commit (3e96dfa35ee3) isn't in it; 0.6.18 is the first release with it. Move all three packages together too; the v0.28.0 image ships flashinfer-jit-cache as well, and `flashinfer/jit/env.py` raises at import if the cubin or jit-cache version doesn't match flashinfer-python, so a partial swap fails before anything runs: flashinfer-python 0.6.18.post1 from PyPI, flashinfer-cubin 0.6.18.post1 from https://flashinfer.ai/whl/ (top level), flashinfer-jit-cache 0.6.18.post1+cu130 from https://flashinfer.ai/whl/cu130/ (the image is cu130; the cu128 index has no 0.6.18 jit-cache wheel, for anyone reading this on a 12.8 image). main pins 0.6.18 for python and cubin; post1 is what you asked about and carries the same gate.
+
+After the swap, the line `Skipping cuDNN in bmm_fp8 auto candidates on SM12x` is a one-shot warning from the auto-backend heuristic, so expect it at the first FP8 GEMM, which is the memory-profiling forward at startup, before the first request. If it prints, the gate is active. If it doesn't, cuDNN may never have reached the candidate list, and the cache file decides either way: drop `VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS` for that run, keep `VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR` on a fresh empty directory (0.6.18 stamps its version into the file and skips one written by another version), and the `fp8_gemm` entries should name only `CutlassFp8GemmRunner` and `CublasFp8GemmRunner`.
+
+#4666 is worth having in a release regardless, since it also covers the bf16 and fp4 cuDNN paths and cuDNN >= 9.23.1, where the gate doesn't apply. For your card at cuDNN 9.20 the 0.6.18 gate removes the crashing runner from that path; no reason to wait on #4666 for that. Whether 0.28.x gets the bump as a point release is a maintainer call.
+
+The latency comparison isn't needed for the crash. It would inform the SM120 kernel order (`_POSSIBLE_FP8_KERNELS` puts FlashInfer ahead of CUTLASS, after Marlin), so if you run it anyway, post it here for whoever picks that up.
+
+--- COMMENT 9 ---
+@jahnclawdmonet Swapped, and your read of #4165 holds exactly as described. Startup evidence and a clean 60-minute run, both below.
+
+**Image.** `FROM vllm/vllm-openai:v0.28.0`, then one pip call with `--extra-index-url https://flashinfer.ai/whl/` and `.../cu130/`, all three packages moved together as you said:
+
+```
+flashinfer-python==0.6.18.post1
+flashinfer-cubin==0.6.18.post1
+flashinfer-jit-cache==0.6.18.post1+cu130
+```
+
+Your note about `nvidia-cutlass-dsl` was right — the image ships 4.6.2 and pip did not touch it. Two things worth naming for anyone repeating this: pip warns that vllm 0.28.0 pins `flashinfer-python==0.6.16.post3`, which is precisely the pin being overridden, so the warning is expected but the combination is untested; and pip pulled `nvidia-nccl-cu13` up to 2.29.7 as a side effect of the jit-cache wheel. I did not ask for that and have not isolated whether it matters — on a single card without tensor parallelism NCCL should barely run, but "should" is not evidence, so I am naming it rather than letting anyone assume a one-variable experiment.
+
+Run with `VLLM_DISABLED_KERNELS` empty, `VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR` on a fresh empty directory, and — per your instruction — **no** `VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS`, so the tuner runs in full.
+
+**1. The gate fires at startup, before the first request**, exactly where you said to expect it:
+
+```
+Skipping cuDNN in bmm_fp8 auto candidates on SM12x: override_shape unavailable
+(cuDNN backend < 9.23.1); policy=ALL per-shape build is unbounded at serving time.
+```
+
+**2. The FlashInfer kernel is still the one selected** — this is not the CUTLASS workaround:
+
+```
+INFO 09-07 04:25:27 [__init__.py:720] Selected FlashInferFP8ScaledMMLinearKernel for Fp8LinearMethod
+```
+
+**3. Autotune runs in full, and the entries name only CUTLASS and cuBLAS.** 84 configs tuned, same count as before, and the winners have flipped completely:
+
+| runner | 0.6.16.post3 | 0.6.18.post1 |
+|---|---|---|
+| `CudnnFp8GemmRunner` | **67** | **0** |
+| `CublasFp8GemmRunner` | 13 | 65 |
+| `CutlassFp8GemmRunner` | 4 | 19 |
+
+And the bucket the crashes live in — M = 512, our 405–482-token prefills — was **four out of four cuDNN** before and is **four out of four cuBLAS** now:
+
+```
+('fp8_gemm', 'CublasFp8GemmRunner', ((1, 512, 16384), (1, 16384,  5120), ...))
+('fp8_gemm', 'CublasFp8GemmRunner', ((1, 512,  4096), (1,  4096,  5120), ...))
+('fp8_gemm', 'CublasFp8GemmRunner', ((1, 512,  5120), (1,  5120, 32768), ...))
+('fp8_gemm', 'CublasFp8GemmRunner', ((1, 512,  5120), (1,  5120,  6144), ...))
+```
+
+The cache metadata still reports `cudnn_version: 92000`, `cudnn_frontend_version: 1.27.0`, and `import cudnn` still succeeds in the container. So cuDNN is present and importable and the gate is what keeps it out of the candidate list — not a missing dependency. Same box, same card, same cuDNN, one gate.
+
+**4. Result of the 60-minute run.** Same machine, same load generator, same 122-question pool, same client-side concurrency limit of 6 — and, by coincidence, the same number of questions as the autotune-off hour, which makes the two arms directly comparable:
+
+| | autotune off (0.6.16.post3) | cuDNN gated out (0.6.18.post1) |
+|---|---|---|
+| duration | 62 min | 61 min |
+| user questions | 981 | 981 |
+| throughput | 957/h | 971/h |
+| **Xid events in the kernel log** | **0** | **0** |
+| **vLLM container restarts** | **0** | **0** |
+| answers judged correct | 902 / 972 = 92.8 % | 913 / 980 = 93.2 % |
+
+The single non-200 response was an HTTP 400 from the model for a request over our own 65,536-token limit — our missing input cap, unrelated to this.
+
+**What this settles and what it does not.** It settles the mechanism: on SM120 with cuDNN below 9.23.1, 0.6.16.post3 tunes into the cuDNN `bmm_fp8` runner for our shapes and 0.6.18.post1 does not. Whether the crash is *caused* by that runner still rests on crash counts, and crash counts here are slow evidence — at roughly one fault per 400–500 questions, a single clean hour is about 13 % likely by luck, and I would not claim more for this hour than for the two before it. What we now have is three arms on one machine: kernel disabled (clean, 981), kernel on with `fp8_gemm` tuning skipped (clean, 981), and kernel on with the cuDNN runner gated out at the source (clean, 981). The common factor across all three is that the cuDNN runner never executes; the only arm that ever faulted is the one where it did.
+
+For this box the upgrade is a fix rather than a workaround, and it keeps the faster kernel, so we are running it. Whether 0.28.x picks up the bump is a maintainer call, as you say.
+
+On the latency comparison: I will run `CutlassFP8ScaledMMLinearKernel` against FlashInfer-with-the-gate back to back on an unchanged index and post the numbers here for whoever looks at `_POSSIBLE_FP8_KERNELS` ordering. Not from these runs, though — an index rebuild and unrelated engine changes sit between them, and a number that cannot be attributed is worse than no number.
+
+=== PAGE TEXT (non-comment) ===
+[Bug]: Xid 13 "Out Of Range Address" / CUDA illegal memory access on RTX PRO 5000 (SM120) with FP8 model under sustained load — gone with VLLM_DISABLED_KERNELS=FlashInferFP8ScaledMMLinearKernel or --enforce-eager · Issue #55571 · vllm-project/vllm · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ vllm-project
+ 
+ / 
+ 
+ vllm 
+
+ Public 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 22.1k 
+
+ Star
+ 91.6k 
+
+ Code 
+
+ Issues 
+ 2.4k 
+
+ Pull requests 
+ 5k+ 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 76 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [Bug]: Xid 13 "Out Of Range Address" / CUDA illegal memory access on RTX PRO 5000 (SM120) with FP8 model under sustained load — gone with VLLM_DISABLED_KERNELS=FlashInferFP8ScaledMMLinearKernel or --enforce-eager #55571 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Open 
+
+ Open 
+ [Bug]: Xid 13 "Out Of Range Address" / CUDA illegal memory access on RTX PRO 5000 (SM120) with FP8 model under sustained load — gone with VLLM_DISABLED_KERNELS=FlashInferFP8ScaledMMLinearKernel or --enforce-eager #55571 
+
+ Copy link 
+
+ Labels
+ bug Something isn't working Something isn't working quantization 
+
+ Description
+ 
+ carstenkreissl 
+ opened on Sep 6, 2026 
+
+ Issue body actions 
+
+ Your current environment
+
+ Output of vllm collect-env (inside the container) plus host details 
+ OS : Ubuntu 24.04.3 LTS (x86_64) in container; host Ubuntu 24.04.4 LTS, kernel 6.8.0-139-generic
+PyTorch version : 2.13.0+cu130
+CUDA used to build : 13.0 ; CUDA runtime version 13.0.88 ; nvidia-cublas 13.1.1.3
+Python version : 3.12.3
+GPU : NVIDIA RTX PRO 5000 72GB Blackwell (SM120), 73,415 MiB, VBIOS 98.02.9F.00.01
+Nvidia driver version : 595.84 (nvidia-driver-595-open, Ubuntu package 595.84-0ubuntu0.24.04.1)
+CPU : AMD Ryzen Threadripper PRO 9955WX 16-Cores, 125 GB RAM
+vllm : 0.28.0 (docker image vllm/vllm-openai:v0.28.0, sha256:61fc8a896b0a4fbbbdc063bc4b0dbc25ce98e02b5050c24aeb7830ac02039b14,
+ VLLM_BUILD_COMMIT=2cf0a6915ce544dc493a0990f2ea38d81601128a)
+flashinfer-python : 0.6.16.post3 (flashinfer-cubin 0.6.16.post3, flashinfer-jit-cache 0.6.16.post3+cu130)
+transformers : 5.15.1 ; mistral_common 1.11.7
+Docker : 29.8.0, Compose v5.5.1 ; container started with gpus: all, ipc: host
+
+ Command line (docker image entrypoint = vllm serve ):
+
+ vllm serve mistralai/Ministral-3-14B-Instruct-2512 --served-model-name ministral-3-14b \
+ --tokenizer_mode mistral --config_format mistral --load_format mistral \
+ --enable-auto-tool-choice --tool-call-parser mistral \
+ --max-model-len 65536 --gpu-memory-utilization 0.82
+
+ Effective config as logged by core.py:122 (excerpt): dtype=torch.bfloat16, quantization=fp8, max_seq_len=65536, enforce_eager=False, kv_cache_dtype=auto, enable_prefix_caching=True, enable_chunked_prefill=True (max_num_batched_tokens=8192), compilation_config={'mode': VLLM_COMPILE, 'cudagraph_mode': FULL_AND_PIECEWISE, 'max_cudagraph_capture_size': 512, ...}, structured_outputs_config=StructuredOutputsConfig(backend='auto') . Startup log: Using FLASH_ATTN attention backend , Selected FlashInferFP8ScaledMMLinearKernel for Fp8LinearMethod , GPU KV cache size: 267,168 tokens .
+
+ 🐛 Describe the bug
+
+ Symptom. Under sustained load the EngineCore dies with torch.AcceleratorError: CUDA error: an illegal memory access was encountered (raised from vllm/v1/worker/gpu/async_utils.py:168 in get_output → self.copy_event.synchronize() , i.e. the asynchronous error surfaces at the next sync). At the same second the kernel log shows an Xid 13 :
+
+ NVRM: Xid (PCI:0000:11:00): 13, Graphics SM Warp Exception on (GPC 0, TPC 0, SM 0): Out Of Range Address
+NVRM: Xid (PCI:0000:11:00): 13, Graphics SM Global Exception on (GPC 0, TPC 0, SM 0): Multiple Warp Errors
+NVRM: Xid (PCI:0000:11:00): 13, Graphics Exception: ESR 0x505730=0xf05000e 0x505734=0x4 0x505728=0x1c81fb60 0x50572c=0x1174
+
+ Every event produces exactly 289 kernel lines, always starting at GPC 0 / TPC 0 / SM 0 and spreading over all GPCs, and always with the same ESR values ( 0x505728=0x1c81fb60 0x50572c=0x1174 ) — regardless of the attention backend (see experiments). nvidia-smi -q -d ROW_REMAPPER shows 0 correctable / 0 uncorrectable errors; the GPU is otherwise healthy. The container exits ( terminate called after throwing an instance of 'c10::AcceleratorError' ), Docker restarts it, and it serves again after ~25 s.
+
+ Frequency. 4 events in roughly 2,500 chat completions over two days, all under load, none when idle:
+
+ event (local time) 
+ attention backend 
+ prompt tokens of the new request 
+ of which prefix-cache hit ( num_computed_tokens ) 
+ new tokens to prefill 
+ running reqs 
+ KV usage 
+
+ 2026-09-04 23:57:51 
+ FLASH_ATTN 
+ 12,658 
+ 12,176 
+ 482 
+ 1 
+ — 
+
+ 2026-09-05 20:44:59 
+ FLASH_ATTN 
+ 14,881 
+ 14,400 
+ 481 
+ 1 
+ 5.6 % 
+
+ 2026-09-05 21:18:28 
+ FLASH_ATTN 
+ 10,733 
+ 10,304 
+ 429 
+ 6 
+ — 
+
+ 2026-09-05 22:26:08 
+ FLASHINFER 
+ 28,661 
+ 28,256 
+ 405 
+ 2 
+ — 
+
+ The numbers come from the dump_input.py output written before the crash ( scheduled_new_reqs=[NewRequestData(... prompt_token_ids_len=..., num_computed_tokens=...)] , SchedulerStats(num_running_reqs=..., num_waiting_reqs=0, ...) ). All four dumps show the same shape: a new request whose prompt is 96–99 % served from the prefix cache, with only 405–482 tokens left to prefill. In our workload that is the second round of a tool-calling conversation (system prompt + user turn + first assistant tool call are cached, the tool result is the new part). This shape occurs in essentially every request, but the crash hits only about once per 300–500 requests, so it is not deterministic on the shape alone.
+
+ Workload. A RAG service (own .NET client against /v1/chat/completions ): 2–3 completions per user question, tools with tool_choice=auto (Mistral tool parser → structured outputs, backend guidance , the grammar is visible in the dump's SamplingParams ), prompts 10k–29k tokens, temperature=0.0 , seed=42 , max_tokens=2048 . Load generator: ~1,000 user questions per hour, Poisson arrivals, 1–6 requests in flight (client-side limit 6).
+
+ Experiments (each a 60-minute run at ~1,000 questions/h ≈ 2,500 completions, same question pool, same machine; "clean" = no Xid, no container restart):
+
+ configuration 
+ FP8 GEMM kernel selected 
+ CUDA graphs 
+ result 
+
+ default 
+ FlashInferFP8ScaledMMLinearKernel 
+ FULL_AND_PIECEWISE 
+ 2 crashes (20:44, 21:18) in 981 questions 
+
+ --attention-backend FLASHINFER 
+ FlashInferFP8ScaledMMLinearKernel 
+ FULL_AND_PIECEWISE 
+ 1 crash (22:26) in 499 questions (30 min, then aborted) 
+
+ --enforce-eager 
+ FlashInferFP8ScaledMMLinearKernel 
+ none 
+ clean , 981 questions 
+
+ VLLM_DISABLED_KERNELS=FlashInferFP8ScaledMMLinearKernel → CutlassFP8ScaledMMLinearKernel 
+ CUTLASS 
+ FULL_AND_PIECEWISE 
+ clean , 981 questions, identical throughput and latency under load 
+
+ So the attention backend does not matter (identical ESR with FLASH_ATTN and FLASHINFER), the crash needs CUDA graphs (eager is clean), and swapping only the FP8 scaled-MM kernel from FlashInfer to CUTLASS while keeping graphs makes it go away. One clean hour is not a proof (at one crash per ~400 questions a clean hour has roughly a 10 % chance by luck), but two clean hours against three crashes in 1,480 questions is a strong signal. The intersection is FlashInferFP8ScaledMMLinearKernel inside piecewise CUDA graphs on SM120 , for small mixed batches (≈400–480 new tokens after a large prefix-cache hit, padded to a capture size). On this GPU vLLM picks FlashInferFP8ScaledMMLinearKernel ahead of CUTLASS ( _POSSIBLE_FP8_KERNELS order: Marlin, FlashInfer, CUTLASS, B12x, Torch); the v0.28.0 release notes mention new B12X dense linear backends for this architecture ( #52016 ), so the FP8 GEMM path on SM120 is fresh territory in this release.
+
+ Things ruled out: the torch.compile cache (deleted between event 1 and events 2–4), the attention backend, GPU memory errors (row remapper clean), thermal/power (card at its 300 W power cap, 89–90 °C, no thermal slowdown). The first event happened on 2026-09-04 after ~14 days of uptime without any Xid; all four events are under sustained load only.
+
+ Expected behaviour. No illegal memory access; the FlashInfer FP8 scaled-MM kernel should behave like CUTLASS inside CUDA graph replay.
+
+ Related. This looks like the mechanism described in #52553 / flashinfer-ai/flashinfer#4553 (the shared cuDNN GEMM workspace in FlashInfer is moved with resize_() when a plan asks for more than 32 MiB; graphs captured earlier keep the old address, so every later replay is a use-after-free — the PR author mentions an FP8 plan asking for 256 bytes more than the default). #52540 (ModelOpt NVFP4 on RTX PRO 6000) and #52225 (Xid 13 on SM120 under multi-hour load) report the same symptom with NVFP4 checkpoints; this report is an FP8 checkpoint on an RTX PRO 5000 where the FP8 scaled-MM kernel alone makes the difference, so it may serve as an independent confirmation from a different quantization path. I did not find an FP8 report for FlashInferFP8ScaledMMLinearKernel yet, hence the separate issue — happy to have it merged if it is a duplicate.
+
+ Workaround we run now: VLLM_DISABLED_KERNELS=FlashInferFP8ScaledMMLinearKernel (CUTLASS is ~10 % slower in single-stream latency, no measurable difference under concurrency). --enforce-eager also works but costs ~20 % under load and ~50 % single-stream.
+
+ Available on request: kernel log of all four events (1,156 Xid lines), the dump_input.py excerpts and the EngineCore traceback, vllm collect-env , the load generator (Python, open source) and the per-request timing logs (JSONL) of all four runs. The full container logs of the crashed containers were unfortunately not preserved (containers were recreated between experiments); the dump lines above were extracted before that. A 4-hour soak with the CUTLASS workaround (~4,000 questions) is running while I file this; I will add the result in a comment.
+
+ Before submitting a new issue...
+
+ Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page , which can answer lots of frequently asked questions.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ bug Something isn't working Something isn't working quantization 
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

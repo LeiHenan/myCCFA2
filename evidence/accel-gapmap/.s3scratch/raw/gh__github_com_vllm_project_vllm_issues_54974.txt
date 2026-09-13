@@ -1,0 +1,394 @@
+TITLE: [Bug] modelopt NVFP4 MoE: mismatched w1/w3 global scales are detected, warned about, and then used anyway · Issue #54974 · vllm-project/vllm · GitHub
+CREATED_AT: 2026-09-02T14:18:03Z | 2026-09-02T14:21:04Z | 2026-09-02T14:46:11Z
+LABELS: quantization
+
+--- COMMENT 1 ---
+### The behaviour
+
+`ModelOptNvFp4FusedMoE.process_weights_after_loading` fuses `gate_proj` and `up_proj` into `w13` and keeps only the **gate** per-tensor global scale:
+
+https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/quantization/modelopt.py#L967-L975
+
+```python
+# Use a single gscale for w13.
+if self.moe.is_act_and_mul and not torch.allclose(
+    layer.w13_weight_scale_2[:, 0], layer.w13_weight_scale_2[:, 1]
+):
+    logger.warning_once(
+        "w1_weight_scale_2 must match w3_weight_scale_2. Accuracy may be affected."
+    )
+w13_weight_scale_2 = layer.w13_weight_scale_2[:, 0].contiguous()
+```
+
+When the two differ, the up-projection half of `w13` is then dequantised with the gate half's global scale. The mismatch is detected, logged once, and the wrong scale is used anyway.
+
+### How far apart they can be
+
+Measured directly from the checkpoints on disk (reading only the `weight_scale_2` scalars — no GPU, no inference):
+
+| checkpoint | modelopt | gate/up pairs | pairs that differ | ratio median / p99 / max |
+|---|---|---|---|---|
+| `dealignai/GLM-5.3-Flash-ABLITERATED-NVFP4` | 0.45.0 | 12,384 | **8,563 (69.1%)** | 1.077 / 1.69 / **10.0** |
+| `RadixArk/Qwen3.8-Flash-Next-NVFP4` | 0.46.0 | 24,576 | 0 (0.0%) | — |
+| `mazinb/Qwen3.8-Flash-Next-Uncensored-NVFP4` | 0.46.0-compatible-rtn | 24,576 | 0 (0.0%) | — |
+
+All 43 MoE layers of the GLM checkpoint are affected; the worst layer has 272 of 288 experts mismatched. So this is not universal — the two modelopt 0.46 checkpoints tie the two scales exactly — but when a checkpoint does not tie them, the divergence is large and the whole model is affected.
+
+Script used, if it is useful for triage:
+
+```python
+from safetensors import safe_open
+# for each "...experts.N.gate_proj.weight_scale_2", compare with the
+# matching "...up_proj.weight_scale_2" in the same checkpoint
+```
+
+### Why I am filing this rather than sending a patch
+
+The detection is already there — the question is what to do on detection, and that is a design call I would rather not make unilaterally:
+
+1. **Refuse to load** when the ratio exceeds some threshold, rather than warn and produce a quietly mis-scaled model. `warning_once` is easy to miss in a long startup log, and there is no runtime signal afterwards.
+2. **Rescale** the `w3` half's per-block scales into the common global scale at load. The block scales are e4m3 with limited range, so this trades one error for another and needs care — I do not know whether it is a net win.
+3. **Leave as-is** and treat it as a checkpoint-producer bug, but make the warning louder / include the measured ratio so a user can tell a 1.01x from a 10x.
+
+Happy to implement whichever direction a maintainer prefers.
+
+### Environment
+
+Reproduced on a checkpoint on disk; no GPU needed for the measurement above. The model that surfaced it is GLM-5.3-Flash NVFP4 served on an RTX PRO 6000 Blackwell (SM120).
+
+--- COMMENT 2 ---
+Option 2 is the policy vLLM already applies to FP8: `requantize_with_max_scale` for fused dense shards and `process_fp8_weight_tensor_strategy_moe` for w13 ("Per tensor kernels require single weight scale for w13 per expert ... Use the max to requantize"). The NVFP4 version is cheaper, since only the e4m3 block scales move and the fp4 payload is untouched.
+
+**Where the choice lives.** The `[:, 0]` line is repeated in `quark/quark_moe.py` and `compressed_tensors_moe_w4a4_nvfp4.py` (compressed-tensors stores `1/gs`, so a max in `scale_2` terms is a min of the stored value there), and each passes one per-expert `w13_scale_2` into `convert_to_nvfp4_moe_kernel_format`. The cutlass, cutedsl, Marlin and B12X backends apply that one value to the whole GEMM1 output, which covers what is reachable on SM120. Two backends differ: HUMMING ignores the argument and folds each half's own `scale_2` into bf16 block scales in its converter, so the line is dead there; FLASHINFER_TRTLLM's GEMM1 takes separate gate and linear scalars that vLLM fills from the same `g1_alphas`, so on SM100 the mismatch is fixable with two scalars and no block-scale change.
+
+**What the mismatch does.** With one scale, the up half dequantizes as `fp4 * block_scale * gs_gate` instead of `* gs_up`. SwiGLU is linear in the up projection and `down_proj` is linear, so to first order the expert's output is multiplied by `gs_gate / gs_up`, above or below 1. Read that way, your table is per-expert output gain error: median 7.7 %, 99th percentile 69 %, maximum 10x, on 69 % of the pairs in that checkpoint. In the W4A4 backends the intermediate is then requantized with a static `a2` scale calibrated on the correctly scaled intermediate, so clipping or subnormal loss in that step sits on top of the gain. Index 0 is the right survivor: the gate half feeds the nonlinearity, so a wrong gate scale cannot be compensated, while a wrong up scale is a pure gain.
+
+**The fix and its cost.** Before `convert_to_nvfp4_moe_kernel_format`, while `w13_weight_scale` is still the raw `[E, 2I, H/16]` e4m3 tensor: per expert, `gs = max(gs_gate, gs_up)`, multiply the other half's block scales by `gs_half / gs <= 1`, requantize to e4m3. Nothing overflows. Block scales that stay in the normal range round within 2^-4 relative; values pushed below 2^-6 lose more relative precision and anything under 2^-10 flushes to zero, but the absolute error is bounded by 2^-10 in block-scale units, about 2.2e-6 of the tensor amax per weight, so no clamp is needed (Marlin already zeroes subnormal block scales in its repack). A second route that never touches block scales: keep the gate scale for GEMM1 and cancel the gain on the w2 side with `w2_input_scale *= c` and `w2_weight_scale_2 /= c` per expert, which is exact for VLLM_CUTLASS and Marlin and a layer-wide compromise for the FlashInfer backends that collapse `a2` to one value.
+
+**On the checkpoints.** modelopt's fused-experts path quantizes the whole `(2I, H)` slice with one quantizer and splits it on export, consistent with the two 0.46 checkpoints tying exactly; per-Linear `gate_proj` and `up_proj` exports get independent quantizers and nothing in modelopt requires them to match. So the 0.45 GLM checkpoint is a legitimate producer output and the loader is the place to reconcile it, with the measured maximum ratio in the warning either way.
+
+=== PAGE TEXT (non-comment) ===
+[Bug] modelopt NVFP4 MoE: mismatched w1/w3 global scales are detected, warned about, and then used anyway · Issue #54974 · vllm-project/vllm · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ vllm-project
+ 
+ / 
+ 
+ vllm 
+
+ Public 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 22.1k 
+
+ Star
+ 91.6k 
+
+ Code 
+
+ Issues 
+ 2.4k 
+
+ Pull requests 
+ 5k+ 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 76 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [Bug] modelopt NVFP4 MoE: mismatched w1/w3 global scales are detected, warned about, and then used anyway #54974 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Open 
+ #55073 
+
+ Open 
+ [Bug] modelopt NVFP4 MoE: mismatched w1/w3 global scales are detected, warned about, and then used anyway #54974 
+ #55073 
+
+ Copy link 
+
+ Labels
+ quantization 
+
+ Description
+ 
+ pctablet505 
+ opened on Sep 2, 2026 
+
+ Issue body actions 
+
+ The behaviour
+
+ ModelOptNvFp4FusedMoE.process_weights_after_loading fuses gate_proj and up_proj into w13 and keeps only the gate per-tensor global scale:
+
+ https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/quantization/modelopt.py#L967-L975 
+
+ # Use a single gscale for w13. 
+ if self . moe . is_act_and_mul and not torch . allclose (
+ layer . w13_weight_scale_2 [:, 0 ], layer . w13_weight_scale_2 [:, 1 ]
+):
+ logger . warning_once (
+ "w1_weight_scale_2 must match w3_weight_scale_2. Accuracy may be affected." 
+ )
+ w13_weight_scale_2 = layer . w13_weight_scale_2 [:, 0 ]. contiguous ()
+
+ When the two differ, the up-projection half of w13 is then dequantised with the gate half's global scale. The mismatch is detected, logged once, and the wrong scale is used anyway.
+
+ How far apart they can be
+
+ Measured directly from the checkpoints on disk (reading only the weight_scale_2 scalars — no GPU, no inference):
+
+ checkpoint 
+ modelopt 
+ gate/up pairs 
+ pairs that differ 
+ ratio median / p99 / max 
+
+ dealignai/GLM-5.3-Flash-ABLITERATED-NVFP4 
+ 0.45.0 
+ 12,384 
+ 8,563 (69.1%) 
+ 1.077 / 1.69 / 10.0 
+
+ RadixArk/Qwen3.8-Flash-Next-NVFP4 
+ 0.46.0 
+ 24,576 
+ 0 (0.0%) 
+ — 
+
+ mazinb/Qwen3.8-Flash-Next-Uncensored-NVFP4 
+ 0.46.0-compatible-rtn 
+ 24,576 
+ 0 (0.0%) 
+ — 
+
+ All 43 MoE layers of the GLM checkpoint are affected; the worst layer has 272 of 288 experts mismatched. So this is not universal — the two modelopt 0.46 checkpoints tie the two scales exactly — but when a checkpoint does not tie them, the divergence is large and the whole model is affected.
+
+ Script used, if it is useful for triage:
+
+ from safetensors import safe_open 
+ # for each "...experts.N.gate_proj.weight_scale_2", compare with the 
+ # matching "...up_proj.weight_scale_2" in the same checkpoint 
+
+ Why I am filing this rather than sending a patch
+
+ The detection is already there — the question is what to do on detection, and that is a design call I would rather not make unilaterally:
+
+ Refuse to load when the ratio exceeds some threshold, rather than warn and produce a quietly mis-scaled model. warning_once is easy to miss in a long startup log, and there is no runtime signal afterwards.
+
+ Rescale the w3 half's per-block scales into the common global scale at load. The block scales are e4m3 with limited range, so this trades one error for another and needs care — I do not know whether it is a net win.
+
+ Leave as-is and treat it as a checkpoint-producer bug, but make the warning louder / include the measured ratio so a user can tell a 1.01x from a 10x.
+
+ Happy to implement whichever direction a maintainer prefers.
+
+ Environment
+
+ Reproduced on a checkpoint on disk; no GPU needed for the measurement above. The model that surfaced it is GLM-5.3-Flash NVFP4 served on an RTX PRO 6000 Blackwell (SM120).
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ quantization 
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

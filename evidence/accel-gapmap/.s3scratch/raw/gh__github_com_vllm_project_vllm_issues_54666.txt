@@ -1,0 +1,628 @@
+TITLE: [Feature]: Consider B12X in automatic NVFP4 MoE backend selection on SM120/SM121 before the Marlin fallback · Issue #54666 · vllm-project/vllm · GitHub
+CREATED_AT: 2026-09-01T02:02:26Z | 2026-09-01T02:02:35Z
+LABELS: quantization
+
+--- COMMENT 1 ---
+### 🚀 The feature, motivation and pitch
+
+vLLM main already contains the optional direct **B12X** NVFP4 linear *and* MoE backend merged in #52018. Its support predicate explicitly covers **SM120 and SM121**, NVFP4 W4A16, supported shapes, tensor-parallel constraints and package availability.
+
+However, the automatic NVFP4 MoE selector in `vllm/model_executor/layers/fused_moe/oracle/nvfp4.py` never considers `NvFp4MoeBackend.B12X`. On an SM121 (GB10 / DGX Spark) deployment the preference list walks past the FlashInfer/CUTLASS entries and lands directly on **Marlin**, so the merged B12X MoE kernel is only reachable via an explicit `--moe-backend b12x`. This is the fallback behaviour reported in #50925, and Marlin NVFP4 on this class of device is the common factor in #49926, #50934, #52225 and #49070.
+
+**The proposal:** insert `NvFp4MoeBackend.B12X` immediately before `MARLIN` in the automatic preference list. No model, server or device special case is encoded — the existing B12X support predicate stays the authority, so an absent package, an unsupported GPU, quantization scheme, shape or parallel configuration falls through to the current Marlin path unchanged.
+
+#### What was measured
+
+On a GB10 (SM121) running a hybrid Mamba NVFP4 MoE model at `max_model_len=131072`, FP8 KV cache, prefix caching on, full CUDA graphs:
+
+| run | backend | outcome |
+| --- | --- | --- |
+| A | Marlin (auto) | `EngineDeadError`, illegal memory access surfacing at output-copy sync |
+| B | Marlin (auto), `VLLM_MARLIN_USE_ATOMIC_ADD=0` | same fault class — disabling atomic accumulation was **not** sufficient |
+| C | `--moe-backend b12x` explicit | ~26 min, 18,499,772 prompt tokens, 106,838 generated, 18,530,470 prefix-cache queries / 17,082,400 hits, peak engine concurrency 3, **no CUDA traceback or illegal-memory-access line** |
+
+Run C exercised substantially more prompt traffic than either crashing Marlin run at the same observed peak request concurrency.
+
+With the one-line selector change and **no** explicit backend flag (`moe_backend='auto'` in the emitted serve config), the engine boots as:
+
+```text
+Using 'B12X' NvFp4 MoE backend out of potential backends: [..., 'VLLM_CUTLASS', 'B12X', 'MARLIN', ...].
+```
+
+It completed piecewise and full CUDA-graph capture, warmed the B12X MoE signature, returned HTTP 200 from `/health` and advertised the model at `max_model_len=131072` with no traceback.
+
+**Honest limits:** this does not prove which Marlin instruction caused the asynchronous fault, and a single ~26-minute stress sample does not establish multi-day stability. What it does show is that a supported, already-merged backend is being hidden from users who never pass an explicit flag.
+
+### Alternatives
+
+- **#47577** — the existing open PR auto-selects a *FlashInfer* B12X implementation on **exact SM120** and deliberately leaves SM121 on Marlin. This proposal does not duplicate that kernel work; it exposes the newer *direct* B12X backend from #52018, whose merged support predicate and measured coverage include SM121. I found no open PR that adds the direct backend to the automatic NVFP4 selector.
+- **#48624** (gated-intermediate padding) does not apply — the model's `moe_intermediate_size=512` at TP=1 is already aligned to the relevant tile boundaries.
+- **#48929** (MiniMax correctness) plumbs model-specific SwiGLU-OAI and sparse-index layouts and explicitly changes no low-level Marlin kernel; the model here uses ordinary SiLU.
+- **Explicit `--moe-backend b12x`** works today, but requires every SM12x operator to independently discover that the default is unsafe for them.
+- **Eager execution** also survived the stress, at a significant throughput cost.
+
+### Additional context
+
+Patch below, based on `main` at `22df3a34e`. Pre-commit passes for all three changed files (Ruff, formatting, typos, markdownlint, SPDX, mypy). The focused GPU suite passed **39/39 on SM121**, covering selector behaviour, W4A16 correctness and CUDA-graph replay. The added parametrized test proves both the supported selection and the unsupported fall-through ordering.
+
+Happy to open this as a pull request if maintainers would prefer that — I filed it as an issue first so the SM121 evidence and the relationship to #47577 could be discussed before the code review.
+
+> **AI-assistance disclosure:** OpenAI Codex was used while developing this patch. I have reviewed every changed line and am responsible for the contribution end-to-end.
+
+<details>
+<summary><code>vllm-sm121-b12x-auto-2026-09-01.patch</code> (git format-patch, 3 files, +59/-3)</summary>
+
+Author email is redacted from the `From:`/`Signed-off-by:` trailers below; the full DCO sign-off is on the local branch and would ride the pull request.
+
+```diff
+From efafa2d5eee49b505ccfe9e47db2bfe8c9b2a9ed Mon Sep 17 00:00:00 2001
+From: Nancy
+Date: Tue, 1 Sep 2026 02:46:49 +0200
+Subject: [PATCH] Enable B12X in automatic NVFP4 MoE selection
+
+Prefer the optional SM12x-capable B12X backend before the Marlin fallback when its support predicate accepts the deployment. Add selector-order coverage and document automatic MoE selection.
+
+Related-to: vllm-project/vllm#49926
+
+Related-to: vllm-project/vllm#50925
+
+AI assistance from OpenAI Codex was used while developing this patch. The human submitter must review every changed line and is responsible for the contribution end-to-end.
+
+Co-authored-by: Codex <codex@openai.com>
+
+Signed-off-by: Nancy
+---
+ docs/features/quantization/b12x.md            |  7 +--
+ tests/kernels/moe/test_b12x.py                | 50 +++++++++++++++++++
+ .../layers/fused_moe/oracle/nvfp4.py          |  5 ++
+ 3 files changed, 59 insertions(+), 3 deletions(-)
+
+diff --git a/docs/features/quantization/b12x.md b/docs/features/quantization/b12x.md
+index b5f56d71c..580cdb669 100644
+--- a/docs/features/quantization/b12x.md
++++ b/docs/features/quantization/b12x.md
+@@ -7,9 +7,10 @@ NVIDIA SM120 and SM121 GPUs. Install the dependency with:
+ uv pip install "vllm[b12x]"
+ ```
+ 
+-b12x linear kernels participate in automatic selection after established
+-optimized backends and before emulation. Select the linear and MoE backends
+-explicitly with:
++b12x linear and MoE kernels participate in automatic selection when the
++optional package is installed and the deployment is supported. They are tried
++after established optimized backends and before fallback or emulation kernels.
++Select either backend explicitly with:
+ 
+ ```bash
+ vllm serve <model> \
+diff --git a/tests/kernels/moe/test_b12x.py b/tests/kernels/moe/test_b12x.py
+index fa1dd4410..ac71d1d85 100644
+--- a/tests/kernels/moe/test_b12x.py
++++ b/tests/kernels/moe/test_b12x.py
+@@ -573,6 +573,56 @@ def test_explicit_b12x_nvfp4_selection(
+     assert selected_activation_keys == [expected_activation_key]
+ 
+ 
++@pytest.mark.parametrize(
++    "b12x_supported,expected_backend",
++    [
++        (True, NvFp4MoeBackend.B12X),
++        (False, NvFp4MoeBackend.MARLIN),
++    ],
++)
++def test_auto_b12x_nvfp4_selection_precedes_marlin(
++    monkeypatch: pytest.MonkeyPatch,
++    b12x_supported: bool,
++    expected_backend: NvFp4MoeBackend,
++) -> None:
++    selected_backends: list[NvFp4MoeBackend] = []
++
++    class CandidateExperts:
++        @staticmethod
++        def is_supported_config(
++            cls, config, weight_key, activation_key, activation_format
++        ):
++            backend = selected_backends[-1]
++            if backend == NvFp4MoeBackend.B12X:
++                return b12x_supported, None if b12x_supported else "unavailable"
++            if backend == NvFp4MoeBackend.MARLIN:
++                return True, None
++            return False, "unsupported in selector-order test"
++
++    def backend_to_kernel_cls(backend: NvFp4MoeBackend):
++        selected_backends.append(backend)
++        return [CandidateExperts]
++
++    monkeypatch.setattr(nvfp4_oracle, "backend_to_kernel_cls", backend_to_kernel_cls)
++    config = make_dummy_moe_config(hidden_dim=128, intermediate_size=64)
++
++    backend, experts_cls = select_nvfp4_moe_backend(
++        config,
++        weight_key=kNvfp4Static,
++        activation_key=None,
++    )
++
++    assert backend == expected_backend
++    assert experts_cls is CandidateExperts
++    assert NvFp4MoeBackend.B12X in selected_backends
++    if b12x_supported:
++        assert NvFp4MoeBackend.MARLIN not in selected_backends
++    else:
++        assert selected_backends.index(NvFp4MoeBackend.B12X) < selected_backends.index(
++            NvFp4MoeBackend.MARLIN
++        )
++
++
+ @pytest.mark.parametrize(
+     "force_a16,expected_quant_dtype", [(False, "nvfp4"), (True, None)]
+ )
+diff --git a/vllm/model_executor/layers/fused_moe/oracle/nvfp4.py b/vllm/model_executor/layers/fused_moe/oracle/nvfp4.py
+index a86000377..fdc474a06 100644
+--- a/vllm/model_executor/layers/fused_moe/oracle/nvfp4.py
++++ b/vllm/model_executor/layers/fused_moe/oracle/nvfp4.py
+@@ -199,6 +199,11 @@ def select_nvfp4_moe_backend(
+         NvFp4MoeBackend.FLASHINFER_CUTEDSL_BATCHED,
+         NvFp4MoeBackend.FLASHINFER_CUTLASS,
+         NvFp4MoeBackend.VLLM_CUTLASS,
++        # B12X is optional. Its support predicate checks that the package,
++        # device, quantization scheme, shape, and parallel configuration are
++        # all compatible, so an unavailable installation falls through
++        # without changing the existing Marlin fallback.
++        NvFp4MoeBackend.B12X,
+         NvFp4MoeBackend.MARLIN,
+         NvFp4MoeBackend.HUMMING,
+         NvFp4MoeBackend.EMULATION,
+-- 
+2.54.0.windows.1
+```
+
+</details>
+
+### Before submitting a new issue...
+
+- [X] Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the [documentation page](https://docs.vllm.ai/en/latest/), which can answer lots of frequently asked questions.
+
+=== PAGE TEXT (non-comment) ===
+[Feature]: Consider B12X in automatic NVFP4 MoE backend selection on SM120/SM121 before the Marlin fallback · Issue #54666 · vllm-project/vllm · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ vllm-project
+ 
+ / 
+ 
+ vllm 
+
+ Public 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 22.1k 
+
+ Star
+ 91.6k 
+
+ Code 
+
+ Issues 
+ 2.4k 
+
+ Pull requests 
+ 5k+ 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 76 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [Feature]: Consider B12X in automatic NVFP4 MoE backend selection on SM120/SM121 before the Marlin fallback #54666 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Open 
+ #54719 
+
+ Open 
+ [Feature]: Consider B12X in automatic NVFP4 MoE backend selection on SM120/SM121 before the Marlin fallback #54666 
+ #54719 
+
+ Copy link 
+
+ Labels
+ quantization 
+
+ Description
+ 
+ NancySadkov 
+ opened on Sep 1, 2026 
+
+ Issue body actions 
+
+ 🚀 The feature, motivation and pitch
+
+ vLLM main already contains the optional direct B12X NVFP4 linear and MoE backend merged in #52018 . Its support predicate explicitly covers SM120 and SM121 , NVFP4 W4A16, supported shapes, tensor-parallel constraints and package availability.
+
+ However, the automatic NVFP4 MoE selector in vllm/model_executor/layers/fused_moe/oracle/nvfp4.py never considers NvFp4MoeBackend.B12X . On an SM121 (GB10 / DGX Spark) deployment the preference list walks past the FlashInfer/CUTLASS entries and lands directly on Marlin , so the merged B12X MoE kernel is only reachable via an explicit --moe-backend b12x . This is the fallback behaviour reported in #50925 , and Marlin NVFP4 on this class of device is the common factor in #49926 , #50934 , #52225 and #49070 .
+
+ The proposal: insert NvFp4MoeBackend.B12X immediately before MARLIN in the automatic preference list. No model, server or device special case is encoded — the existing B12X support predicate stays the authority, so an absent package, an unsupported GPU, quantization scheme, shape or parallel configuration falls through to the current Marlin path unchanged.
+
+ What was measured
+
+ On a GB10 (SM121) running a hybrid Mamba NVFP4 MoE model at max_model_len=131072 , FP8 KV cache, prefix caching on, full CUDA graphs:
+
+ run 
+ backend 
+ outcome 
+
+ A 
+ Marlin (auto) 
+ EngineDeadError , illegal memory access surfacing at output-copy sync 
+
+ B 
+ Marlin (auto), VLLM_MARLIN_USE_ATOMIC_ADD=0 
+ same fault class — disabling atomic accumulation was not sufficient 
+
+ C 
+ --moe-backend b12x explicit 
+ ~26 min, 18,499,772 prompt tokens, 106,838 generated, 18,530,470 prefix-cache queries / 17,082,400 hits, peak engine concurrency 3, no CUDA traceback or illegal-memory-access line 
+
+ Run C exercised substantially more prompt traffic than either crashing Marlin run at the same observed peak request concurrency.
+
+ With the one-line selector change and no explicit backend flag ( moe_backend='auto' in the emitted serve config), the engine boots as:
+
+ Using 'B12X' NvFp4 MoE backend out of potential backends: [..., 'VLLM_CUTLASS', 'B12X', 'MARLIN', ...].
+
+ It completed piecewise and full CUDA-graph capture, warmed the B12X MoE signature, returned HTTP 200 from /health and advertised the model at max_model_len=131072 with no traceback.
+
+ Honest limits: this does not prove which Marlin instruction caused the asynchronous fault, and a single ~26-minute stress sample does not establish multi-day stability. What it does show is that a supported, already-merged backend is being hidden from users who never pass an explicit flag.
+
+ Alternatives
+
+ [MoE/b12x] Auto-select FLASHINFER_B12X NVFP4 MoE backend on SM120, reject EP deployments #47577 — the existing open PR auto-selects a FlashInfer B12X implementation on exact SM120 and deliberately leaves SM121 on Marlin. This proposal does not duplicate that kernel work; it exposes the newer direct B12X backend from [Kernel] Add b12x FP4 MoE backend #52018 , whose merged support predicate and measured coverage include SM121. I found no open PR that adds the direct backend to the automatic NVFP4 selector.
+
+ [Bugfix][NVFP4/FP8 MoE] Fix gated MoE crash on unaligned intermediate #48624 (gated-intermediate padding) does not apply — the model's moe_intermediate_size=512 at TP=1 is already aligned to the relevant tile boundaries.
+
+ [Bugfix][Model] Fix MiniMax-M3 NVFP4 inference correctness #48929 (MiniMax correctness) plumbs model-specific SwiGLU-OAI and sparse-index layouts and explicitly changes no low-level Marlin kernel; the model here uses ordinary SiLU.
+
+ Explicit --moe-backend b12x works today, but requires every SM12x operator to independently discover that the default is unsafe for them.
+
+ Eager execution also survived the stress, at a significant throughput cost.
+
+ Additional context
+
+ Patch below, based on main at 22df3a34e . Pre-commit passes for all three changed files (Ruff, formatting, typos, markdownlint, SPDX, mypy). The focused GPU suite passed 39/39 on SM121 , covering selector behaviour, W4A16 correctness and CUDA-graph replay. The added parametrized test proves both the supported selection and the unsupported fall-through ordering.
+
+ Happy to open this as a pull request if maintainers would prefer that — I filed it as an issue first so the SM121 evidence and the relationship to #47577 could be discussed before the code review.
+
+ AI-assistance disclosure: OpenAI Codex was used while developing this patch. I have reviewed every changed line and am responsible for the contribution end-to-end.
+
+ vllm-sm121-b12x-auto-2026-09-01.patch (git format-patch, 3 files, +59/-3) 
+ Author email is redacted from the From: / Signed-off-by: trailers below; the full DCO sign-off is on the local branch and would ride the pull request.
+
+ From efafa2d5eee49b505ccfe9e47db2bfe8c9b2a9ed Mon Sep 17 00:00:00 2001
+From: Nancy
+Date: Tue, 1 Sep 2026 02:46:49 +0200
+Subject: [PATCH] Enable B12X in automatic NVFP4 MoE selection
+
+Prefer the optional SM12x-capable B12X backend before the Marlin fallback when its support predicate accepts the deployment. Add selector-order coverage and document automatic MoE selection.
+
+Related-to: vllm-project/vllm#49926
+
+Related-to: vllm-project/vllm#50925
+
+AI assistance from OpenAI Codex was used while developing this patch. The human submitter must review every changed line and is responsible for the contribution end-to-end.
+
+Co-authored-by: Codex <codex@openai.com>
+
+Signed-off-by: Nancy
+ --- 
+ docs/features/quantization/b12x.md | 7 +--
+ tests/kernels/moe/test_b12x.py | 50 +++++++++++++++++++
+ .../layers/fused_moe/oracle/nvfp4.py | 5 ++
+ 3 files changed, 59 insertions(+), 3 deletions(-)
+
+ diff --git a/docs/features/quantization/b12x.md b/docs/features/quantization/b12x.md 
+index b5f56d71c..580cdb669 100644
+ --- a/docs/features/quantization/b12x.md 
+ +++ b/docs/features/quantization/b12x.md 
+ @@ -7,9 +7,10 @@ NVIDIA SM120 and SM121 GPUs. Install the dependency with:
+ uv pip install "vllm[b12x]"
+
+ -b12x linear kernels participate in automatic selection after established
+
+-optimized backends and before emulation. Select the linear and MoE backends
+
+-explicitly with:
+
++b12x linear and MoE kernels participate in automatic selection when the
+
++optional package is installed and the deployment is supported. They are tried
+
++after established optimized backends and before fallback or emulation kernels.
+
++Select either backend explicitly with:
+
+ vllm serve < model > \
+diff --git a/tests/kernels/moe/test_b12x.py b/tests/kernels/moe/test_b12x.py
+index fa1dd4410..ac71d1d85 100644
+--- a/tests/kernels/moe/test_b12x.py
++++ b/tests/kernels/moe/test_b12x.py
+@@ -573,6 +573,56 @@ def test_explicit_b12x_nvfp4_selection(
+ assert selected_activation_keys == [expected_activation_key]
+
++@pytest.mark.parametrize(
++ " b12x_supported,expected_backend " ,
++ [
++ (True, NvFp4MoeBackend.B12X),
++ (False, NvFp4MoeBackend.MARLIN),
++ ],
++)
++def test_auto_b12x_nvfp4_selection_precedes_marlin(
++ monkeypatch: pytest.MonkeyPatch,
++ b12x_supported: bool,
++ expected_backend: NvFp4MoeBackend,
++) - > None:
++ selected_backends: list[NvFp4MoeBackend] = []
++
++ class CandidateExperts:
++ @staticmethod
++ def is_supported_config(
++ cls, config, weight_key, activation_key, activation_format
++ ):
++ backend = selected_backends[-1]
++ if backend == NvFp4MoeBackend.B12X:
++ return b12x_supported, None if b12x_supported else " unavailable " 
++ if backend == NvFp4MoeBackend.MARLIN:
++ return True, None
++ return False, " unsupported in selector-order test " 
++
++ def backend_to_kernel_cls(backend: NvFp4MoeBackend):
++ selected_backends.append(backend)
++ return [CandidateExperts]
++
++ monkeypatch.setattr(nvfp4_oracle, " backend_to_kernel_cls " , backend_to_kernel_cls)
++ config = make_dummy_moe_config(hidden_dim=128, intermediate_size=64)
++
++ backend, experts_cls = select_nvfp4_moe_backend(
++ config,
++ weight_key=kNvfp4Static,
++ activation_key=None,
++ )
++
++ assert backend == expected_backend
++ assert experts_cls is CandidateExperts
++ assert NvFp4MoeBackend.B12X in selected_backends
++ if b12x_supported:
++ assert NvFp4MoeBackend.MARLIN not in selected_backends
++ else:
++ assert selected_backends.index(NvFp4MoeBackend.B12X) < selected_backends.index(
++ NvFp4MoeBackend.MARLIN
++ )
++
++
+@pytest.mark.parametrize(
+ " force_a16,expected_quant_dtype " , [(False, " nvfp4 " ), (True, None)]
+)
+diff --git a/vllm/model_executor/layers/fused_moe/oracle/nvfp4.py b/vllm/model_executor/layers/fused_moe/oracle/nvfp4.py
+index a86000377..fdc474a06 100644
+--- a/vllm/model_executor/layers/fused_moe/oracle/nvfp4.py
++++ b/vllm/model_executor/layers/fused_moe/oracle/nvfp4.py
+@@ -199,6 +199,11 @@ def select_nvfp4_moe_backend(
+ NvFp4MoeBackend.FLASHINFER_CUTEDSL_BATCHED,
+ NvFp4MoeBackend.FLASHINFER_CUTLASS,
+ NvFp4MoeBackend.VLLM_CUTLASS,
++ # B12X is optional. Its support predicate checks that the package, 
++ # device, quantization scheme, shape, and parallel configuration are 
++ # all compatible, so an unavailable installation falls through 
++ # without changing the existing Marlin fallback. 
++ NvFp4MoeBackend.B12X,
+ NvFp4MoeBackend.MARLIN,
+ NvFp4MoeBackend.HUMMING,
+ NvFp4MoeBackend.EMULATION,
+-- 
+2.54.0.windows.1
+
+ Before submitting a new issue...
+
+ Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page , which can answer lots of frequently asked questions.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ quantization 
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

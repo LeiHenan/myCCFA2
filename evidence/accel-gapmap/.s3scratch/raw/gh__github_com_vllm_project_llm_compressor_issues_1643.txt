@@ -1,0 +1,846 @@
+TITLE: NVFP4A16 works on vLLM but NVFP4A4 won't (Blackwell) · Issue #1643 · vllm-project/llm-compressor · GitHub
+CREATED_AT: 2025-07-12T00:46:32Z | 2025-07-12T00:46:33Z | 2025-07-12T10:49:21Z | 2025-07-12T10:49:22Z
+LABELS: bug, vllm
+STATE_REASON: COMPLETED
+
+--- COMMENT 1 ---
+Hello i've the following issue:
+
+**Describe the bug**
+Every models can load except NVFP4A4.
+I used the end to end [Activation quantization to fp4](https://github.com/vllm-project/llm-compressor/blob/main/examples/quantization_w4a4_fp4/llama3_example.py)
+Compression works but i'm unable to load with vLLM.
+
+**Expected behavior**
+Being able to load NVFP4A4
+
+**Environment**
+Include all relevant environment information:
+1. Windows 11 + WSL2 Ubuntu 22.04
+2. Python 3.12
+3. LLM Compressor 0.6.0
+4. Pytorch 2.7 + cu128
+5. vLLM 0.9.2
+6. RTX 5090 32GB
+7. Isolated conda env
+
+**To Reproduce**
+Blackwell GPU, Qwen/Qwen3-4B, being able to load every other models (NVFP4A16 included), compress with 
+[Activation quantization to fp4](https://github.com/vllm-project/llm-compressor/blob/main/examples/quantization_w4a4_fp4/llama3_example.py)
+Load with vllm serve
+
+**Errors**
+Process EngineCore_0:
+
+Traceback (most recent call last):
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+
+    self.run()
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/multiprocessing/process.py", line 108, in run
+
+    self._target(*self._args, **self._kwargs)
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 590, in run_engine_core
+
+    raise e
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 577, in run_engine_core
+
+    engine_core = EngineCoreProc(*args, **kwargs)
+
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 404, in __init__
+
+    super().__init__(vllm_config, executor_class, log_stats,
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 82, in __init__
+
+    self._initialize_kv_caches(vllm_config)
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 142, in _initialize_kv_caches
+
+    available_gpu_memory = self.model_executor.determine_available_memory()
+
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/executor/abstract.py", line 76, in determine_available_memory
+
+    output = self.collective_rpc("determine_available_memory")
+
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/executor/uniproc_executor.py", line 57, in collective_rpc
+
+    answer = run_method(self.driver_worker, method, args, kwargs)
+
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/utils/__init__.py", line 2736, in run_method
+
+    return func(*args, **kwargs)
+
+           ^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 116, in decorate_context
+
+    return func(*args, **kwargs)
+
+           ^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py", line 210, in determine_available_memory
+
+    self.model_runner.profile_run()
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/worker/gpu_model_runner.py", line 2274, in profile_run
+
+    = self._dummy_run(self.max_num_tokens, is_profile=True)
+
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 116, in decorate_context
+
+    return func(*args, **kwargs)
+
+           ^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/worker/gpu_model_runner.py", line 2057, in _dummy_run
+
+    outputs = model(
+
+              ^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+
+    return self._call_impl(*args, **kwargs)
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+
+    return forward_call(*args, **kwargs)
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/model_executor/models/qwen3.py", line 302, in forward
+
+    hidden_states = self.model(input_ids, positions, intermediate_tensors,
+
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/compilation/decorators.py", line 239, in __call__
+
+    output = self.compiled_callable(*args, **kwargs)
+
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py", line 655, in _fn
+
+    return fn(*args, **kwargs)
+
+           ^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/model_executor/models/qwen2.py", line 337, in forward
+
+    def forward(
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+
+    return self._call_impl(*args, **kwargs)
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+
+    return forward_call(*args, **kwargs)
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py", line 838, in _fn
+
+    return fn(*args, **kwargs)
+
+           ^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/fx/graph_module.py", line 830, in call_wrapped
+
+    return self._wrapped_call(self, *args, **kwargs)
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/fx/graph_module.py", line 406, in __call__
+
+    raise e
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/fx/graph_module.py", line 393, in __call__
+
+    return super(self.cls, obj).__call__(*args, **kwargs)  # type: ignore[misc]
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+
+    return self._call_impl(*args, **kwargs)
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+
+    return forward_call(*args, **kwargs)
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "<eval_with_key>.74", line 730, in forward
+
+    submod_0 = self.submod_0(l_input_ids_, s0, l_self_modules_embed_tokens_parameters_weight_, l_self_modules_layers_modules_0_modules_input_layernorm_parameters_weight_, l_self_modules_layers_modules_0_modules_self_attn_modules_qkv_proj_parameters_input_global_scale_, l_self_modules_layers_modules_0_modules_self_attn_modules_qkv_proj_parameters_alpha_, l_self_modules_layers_modules_0_modules_self_attn_modules_qkv_proj_parameters_weight_, l_self_modules_layers_modules_0_modules_self_attn_modules_qkv_proj_parameters_weight_scale_swizzled_, l_self_modules_layers_modules_0_modules_self_attn_modules_q_norm_parameters_weight_, l_self_modules_layers_modules_0_modules_self_attn_modules_k_norm_parameters_weight_, l_positions_, l_self_modules_layers_modules_0_modules_self_attn_modules_rotary_emb_buffers_cos_sin_cache_);  l_input_ids_ = l_self_modules_embed_tokens_parameters_weight_ = l_self_modules_layers_modules_0_modules_input_layernorm_parameters_weight_ = l_self_modules_layers_modules_0_modules_self_attn_modules_qkv_proj_parameters_input_global_scale_ = l_self_modules_layers_modules_0_modules_self_attn_modules_qkv_proj_parameters_alpha_ = l_self_modules_layers_modules_0_modules_self_attn_modules_qkv_proj_parameters_weight_ = l_self_modules_layers_modules_0_modules_self_attn_modules_qkv_proj_parameters_weight_scale_swizzled_ = l_self_modules_layers_modules_0_modules_self_attn_modules_q_norm_parameters_weight_ = l_self_modules_layers_modules_0_modules_self_attn_modules_k_norm_parameters_weight_ = None
+
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/compilation/cuda_piecewise_backend.py", line 112, in __call__
+
+    return self.compiled_graph_for_general_shape(*args)
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py", line 838, in _fn
+
+    return fn(*args, **kwargs)
+
+           ^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_functorch/aot_autograd.py", line 1201, in forward
+
+    return compiled_fn(full_args)
+
+           ^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 328, in runtime_wrapper
+
+    all_outs = call_func_at_runtime_with_args(
+
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/utils.py", line 126, in call_func_at_runtime_with_args
+
+    out = normalize_as_list(f(args))
+
+                            ^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 689, in inner_fn
+
+    outs = compiled_fn(args)
+
+           ^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 495, in wrapper
+
+    return compiled_fn(runtime_args)
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_inductor/output_code.py", line 460, in __call__
+
+    return self.current_callable(inputs)
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_inductor/utils.py", line 2404, in run
+
+    return model(new_inputs)
+
+           ^^^^^^^^^^^^^^^^^
+
+  File "/root/.cache/vllm/torch_compile_cache/cee94ac328/rank_0_0/inductor_cache/eh/cehynd2dtvb4t3q2n6ocdpmizzzpk7uydqlrcwytk4s7wsxgkbmq.py", line 514, in call
+
+    buf8 = empty_strided_cuda((s0, 6144), (6144, 1), torch.bfloat16)
+
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+RuntimeError: CUDA error: no kernel image is available for execution on the device
+
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+--- COMMENT 2 ---
+@Matriv-org Can you share what version of vllm you’re using? Please make sure you’re using 0.9.2.
+
+--- COMMENT 3 ---
+```
+pip show vllm
+Name: vllm
+Version: 0.9.2
+Summary: A high-throughput and memory-efficient inference and serving engine for LLMs
+Home-page: https://github.com/vllm-project/vllm
+Author: vLLM Team
+```
+
+Unfortunately yes
+
+--- COMMENT 4 ---
+Could you share your vllm installation steps and hardware specifications?
+
+--- COMMENT 5 ---
+For vLLM:
+pip install vllm --extra-index-url https://download.pytorch.org/whl/cu128
+
+Transformers is 4.53.2, flash-attn 2.8.1, python flash-infer builded on last version, every dependency are verified on compatibility and up to date, cuda home set proprely, torch usage tested and working with cuda capabilities 12.0
+
+CPU: Ryzen 5 7600X
+RAM: 64GB DDR5
+Storage: 4TB of nvme
+GPU: RTX5090 32GB, lastest driver
+
+I think hardware is not the issue here, since I am able to run every kind of quants (exl3, awq, gguf, NVFP4A16, FP8), this problem concern only NVFP4A4
+
+--- COMMENT 6 ---
+same issue for 5090
+```
+NotImplementedError: No compiled nvfp4 quantization kernel
+```
+
+--- COMMENT 7 ---
+Hello, we don't have NVFP4A4 support yet for SM120 so this is expected behavior. We will try to prioritize this in vLLM. Hope to get it in the next release or right after
+
+--- COMMENT 8 ---
+Thank you a lot for your answer !
+If I can help for tests or anything, don't hesitante to contact me !
+
+=== PAGE TEXT (non-comment) ===
+NVFP4A16 works on vLLM but NVFP4A4 won't (Blackwell) · Issue #1643 · vllm-project/llm-compressor · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ vllm-project
+ 
+ / 
+ 
+ llm-compressor 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 661 
+
+ Star
+ 3.8k 
+
+ Code 
+
+ Issues 
+ 42 
+
+ Pull requests 
+ 74 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Wiki 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Wiki
+
+ Security and quality
+
+ Insights
+
+ NVFP4A16 works on vLLM but NVFP4A4 won't (Blackwell) #1643 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Closed 
+
+ Closed 
+ NVFP4A16 works on vLLM but NVFP4A4 won't (Blackwell) #1643 
+
+ Copy link 
+
+ Assignees
+
+ Labels
+ bug Something isn't working Something isn't working vllm Using vLLM Using vLLM 
+
+ Description
+ 
+ Matriv-org 
+ opened on Jul 12, 2025 
+
+ Issue body actions 
+
+ Hello i've the following issue:
+
+ Describe the bug 
+
+Every models can load except NVFP4A4.
+
+I used the end to end Activation quantization to fp4 
+
+Compression works but i'm unable to load with vLLM.
+
+ Expected behavior 
+
+Being able to load NVFP4A4
+
+ Environment 
+
+Include all relevant environment information:
+
+ Windows 11 + WSL2 Ubuntu 22.04
+
+ Python 3.12
+
+ LLM Compressor 0.6.0
+
+ Pytorch 2.7 + cu128
+
+ vLLM 0.9.2
+
+ RTX 5090 32GB
+
+ Isolated conda env
+
+ To Reproduce 
+
+Blackwell GPU, Qwen/Qwen3-4B, being able to load every other models (NVFP4A16 included), compress with
+
+ Activation quantization to fp4 
+
+Load with vllm serve
+
+ Errors 
+
+Process EngineCore_0:
+
+ Traceback (most recent call last):
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+
+ self.run()
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/multiprocessing/process.py", line 108, in run
+
+ self._target(*self._args, **self._kwargs)
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 590, in run_engine_core
+
+ raise e
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 577, in run_engine_core
+
+ engine_core = EngineCoreProc(*args, **kwargs)
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 404, in init 
+
+ super(). init (vllm_config, executor_class, log_stats,
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 82, in init 
+
+ self._initialize_kv_caches(vllm_config)
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 142, in _initialize_kv_caches
+
+ available_gpu_memory = self.model_executor.determine_available_memory()
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/executor/abstract.py", line 76, in determine_available_memory
+
+ output = self.collective_rpc("determine_available_memory")
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/executor/uniproc_executor.py", line 57, in collective_rpc
+
+ answer = run_method(self.driver_worker, method, args, kwargs)
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/utils/ init .py", line 2736, in run_method
+
+ return func(*args, **kwargs)
+
+ ^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 116, in decorate_context
+
+ return func(*args, **kwargs)
+
+ ^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py", line 210, in determine_available_memory
+
+ self.model_runner.profile_run()
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/worker/gpu_model_runner.py", line 2274, in profile_run
+
+ = self._dummy_run(self.max_num_tokens, is_profile=True)
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 116, in decorate_context
+
+ return func(*args, **kwargs)
+
+ ^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/v1/worker/gpu_model_runner.py", line 2057, in _dummy_run
+
+ outputs = model(
+
+ ^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+
+ return self._call_impl(*args, **kwargs)
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+
+ return forward_call(*args, **kwargs)
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/model_executor/models/qwen3.py", line 302, in forward
+
+ hidden_states = self.model(input_ids, positions, intermediate_tensors,
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/compilation/decorators.py", line 239, in call 
+
+ output = self.compiled_callable(*args, **kwargs)
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py", line 655, in _fn
+
+ return fn(*args, **kwargs)
+
+ ^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/model_executor/models/qwen2.py", line 337, in forward
+
+ def forward(
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+
+ return self._call_impl(*args, **kwargs)
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+
+ return forward_call(*args, **kwargs)
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py", line 838, in _fn
+
+ return fn(*args, **kwargs)
+
+ ^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/fx/graph_module.py", line 830, in call_wrapped
+
+ return self._wrapped_call(self, *args, **kwargs)
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/fx/graph_module.py", line 406, in call 
+
+ raise e
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/fx/graph_module.py", line 393, in call 
+
+ return super(self.cls, obj). call (*args, **kwargs) # type: ignore[misc]
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+
+ return self._call_impl(*args, **kwargs)
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+
+ return forward_call(*args, **kwargs)
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "<eval_with_key>.74", line 730, in forward
+
+ submod_0 = self.submod_0(l_input_ids_, s0, l_self_modules_embed_tokens_parameters_weight_, l_self_modules_layers_modules_0_modules_input_layernorm_parameters_weight_, l_self_modules_layers_modules_0_modules_self_attn_modules_qkv_proj_parameters_input_global_scale_, l_self_modules_layers_modules_0_modules_self_attn_modules_qkv_proj_parameters_alpha_, l_self_modules_layers_modules_0_modules_self_attn_modules_qkv_proj_parameters_weight_, l_self_modules_layers_modules_0_modules_self_attn_modules_qkv_proj_parameters_weight_scale_swizzled_, l_self_modules_layers_modules_0_modules_self_attn_modules_q_norm_parameters_weight_, l_self_modules_layers_modules_0_modules_self_attn_modules_k_norm_parameters_weight_, l_positions_, l_self_modules_layers_modules_0_modules_self_attn_modules_rotary_emb_buffers_cos_sin_cache_); l_input_ids_ = l_self_modules_embed_tokens_parameters_weight_ = l_self_modules_layers_modules_0_modules_input_layernorm_parameters_weight_ = l_self_modules_layers_modules_0_modules_self_attn_modules_qkv_proj_parameters_input_global_scale_ = l_self_modules_layers_modules_0_modules_self_attn_modules_qkv_proj_parameters_alpha_ = l_self_modules_layers_modules_0_modules_self_attn_modules_qkv_proj_parameters_weight_ = l_self_modules_layers_modules_0_modules_self_attn_modules_qkv_proj_parameters_weight_scale_swizzled_ = l_self_modules_layers_modules_0_modules_self_attn_modules_q_norm_parameters_weight_ = l_self_modules_layers_modules_0_modules_self_attn_modules_k_norm_parameters_weight_ = None
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/vllm/compilation/cuda_piecewise_backend.py", line 112, in call 
+
+ return self.compiled_graph_for_general_shape(*args)
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py", line 838, in _fn
+
+ return fn(*args, **kwargs)
+
+ ^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_functorch/aot_autograd.py", line 1201, in forward
+
+ return compiled_fn(full_args)
+
+ ^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 328, in runtime_wrapper
+
+ all_outs = call_func_at_runtime_with_args(
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/utils.py", line 126, in call_func_at_runtime_with_args
+
+ out = normalize_as_list(f(args))
+
+ ^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 689, in inner_fn
+
+ outs = compiled_fn(args)
+
+ ^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 495, in wrapper
+
+ return compiled_fn(runtime_args)
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_inductor/output_code.py", line 460, in call 
+
+ return self.current_callable(inputs)
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ File "/root/miniconda3/envs/vllm/lib/python3.12/site-packages/torch/_inductor/utils.py", line 2404, in run
+
+ return model(new_inputs)
+
+ ^^^^^^^^^^^^^^^^^
+
+ File "/root/.cache/vllm/torch_compile_cache/cee94ac328/rank_0_0/inductor_cache/eh/cehynd2dtvb4t3q2n6ocdpmizzzpk7uydqlrcwytk4s7wsxgkbmq.py", line 514, in call
+
+ buf8 = empty_strided_cuda((s0, 6144), (6144, 1), torch.bfloat16)
+
+ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ RuntimeError: CUDA error: no kernel image is available for execution on the device
+
+ CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+
+ For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+
+ Compile with TORCH_USE_CUDA_DSA to enable device-side assertions.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ dsikka
+
+ Labels
+
+ bug Something isn't working Something isn't working vllm Using vLLM Using vLLM 
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

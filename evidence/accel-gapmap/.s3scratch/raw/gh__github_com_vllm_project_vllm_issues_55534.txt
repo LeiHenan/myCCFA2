@@ -1,0 +1,605 @@
+TITLE: [Bug]: CUTLASS 3.x scaled_mm ignores leading strides of sliced tensors · Issue #55534 · vllm-project/vllm · GitHub
+CREATED_AT: 2026-09-06T04:18:05Z | 2026-09-06T04:18:06Z | 2026-09-06T04:19:07Z | 2026-09-06T04:19:08Z
+LABELS: bug, nvidia, quantization
+
+--- COMMENT 1 ---
+### Your current environment
+
+## Environment
+
+- GPU: NVIDIA H800 PCIe (SM90)
+- Driver: 580.82.07
+- CUDA runtime/toolkit: 13.0
+- Python: 3.12
+- PyTorch: 2.13.0+cu130
+- Released build: official vLLM 0.28.0 wheel
+- Source build: vLLM main at `a69e75b9b6d6a26d90b6790e2eb75b3419a47c16`
+
+### 🐛 Describe the bug
+
+## Summary
+
+`torch.ops._C.cutlass_scaled_mm` silently returns incorrect results on the CUTLASS 3.x path when otherwise-valid A, B, or output tensors have a padded leading dimension.
+
+The operator entry point accepts these layouts: it requires `a.stride(1) == 1`, `b.stride(0) == 1`, and `c.stride(1) == 1`, but does not require tightly packed leading dimensions. However, the C3x caller reconstructs packed strides from tensor shapes and discards the tensors' actual leading strides.
+
+I reproduced this on both the official vLLM 0.28.0 wheel and main at commit `a69e75b9b6d6a26d90b6790e2eb75b3419a47c16`, on an NVIDIA H800 (SM90). This is a correctness issue rather than a tolerance issue: separate A-only, B-only, and output-only padding controls each produce about 8.1% mismatched elements. A minimal fix that passes the actual leading dimensions to CUTLASS reduces all five cases below to zero mismatches.
+
+## Reproduction
+
+The reproducer creates 512x512 views backed by 1024x1024 allocations:
+
+```python
+import torch
+
+torch.manual_seed(0)
+
+def to_int8(x):
+    return torch.round(x.clamp(-128, 127)).to(torch.int8)
+
+whole_a = to_int8(torch.randn((1024, 1024), device="cuda") * 5)
+whole_b = to_int8(torch.randn((1024, 1024), device="cuda").t() * 5)
+
+a = whole_a[:512, :512]  # stride (1024, 1)
+b = whole_b[:512, :512]  # stride (1, 1024)
+
+scale_a = torch.randn((1, 1), device="cuda", dtype=torch.float32) / 10
+scale_b = torch.randn((1, 1), device="cuda", dtype=torch.float32) / 10
+
+out = torch.empty((512, 512), dtype=torch.bfloat16, device="cuda")
+torch.ops._C.cutlass_scaled_mm(out, a, b, scale_a, scale_b, None)
+
+expected = torch.mm(
+    scale_a * a.float(), scale_b * b.float()
+).to(torch.bfloat16)
+
+close = torch.isclose(out, expected, rtol=1e-1, atol=1.0)
+print((~close).sum().item(), close.numel())
+```
+
+Baseline results with a fixed seed:
+
+| Case | A stride | B stride | Output stride | Mismatches / 262,144 | Max abs error |
+|---|---:|---:|---:|---:|---:|
+| A and B padded | `(1024, 1)` | `(1, 1024)` | `(512, 1)` | 21,389 (8.16%) | 3.0391 |
+| B only padded | `(512, 1)` | `(1, 1024)` | `(512, 1)` | 21,227 (8.10%) | 2.8359 |
+| A only padded | `(1024, 1)` | `(1, 512)` | `(512, 1)` | 21,297 (8.12%) | 2.7578 |
+| All packed | `(512, 1)` | `(1, 512)` | `(512, 1)` | 0 | 3.5e-7 |
+| Output only padded | `(512, 1)` | `(1, 512)` | `(640, 1)` | 21,356 (8.15%) | 2.7656 |
+
+The existing upstream `test_cutlass_subset` also fails on the released wheel and passes with the fix.
+
+## Root cause
+
+In `csrc/libtorch_stable/quantization/w8a8/cutlass/c3x/cutlass_gemm_caller.cuh`, the caller currently constructs every CUTLASS stride as tightly packed:
+
+```cpp
+StrideA a_stride =
+    cutlass::make_cute_packed_stride(StrideA{}, cute::make_shape(M, K, L));
+StrideB b_stride =
+    cutlass::make_cute_packed_stride(StrideB{}, cute::make_shape(N, K, L));
+StrideC c_stride =
+    cutlass::make_cute_packed_stride(StrideC{}, cute::make_shape(M, N, L));
+```
+
+For the layouts used by this kernel, those helpers substitute `K`, `K`, and `N` for the runtime leading dimensions. The kernel therefore reads or writes the wrong addresses whenever the real values are larger because the tensor is a sliced or padded view.
+
+## Proposed fix and validation
+
+Keep the existing CUTLASS stride types and static unit inner strides, but set their runtime leading components from the tensor metadata:
+
+```cpp
+cute::get<0>(a_stride) = a.stride(0);
+cute::get<0>(b_stride) = b.stride(1);
+cute::get<0>(c_stride) = out.stride(0);
+cute::get<0>(d_stride) = out.stride(0);
+```
+
+This adds no copies and leaves packed inputs unchanged because their actual leading dimensions equal the shape-derived values.
+
+Validation on the source build:
+
+- five-way stride matrix above: all cases pass with 0 mismatches;
+- existing focused upstream test: `1 passed` (`test_cutlass_subset`).
+
+I am preparing a focused fix and regression coverage. This finding is separate from #38697: that issue concerns eager-path host/workspace overhead, while this report concerns incorrect tensor addressing in the C3x GEMM caller.
+
+
+
+### Before submitting a new issue...
+
+- [x] Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the [documentation page](https://docs.vllm.ai/en/latest/), which can answer lots of frequently asked questions.
+
+## Remaining implementation coverage
+
+- [ ] `cutlass_gemm_caller.cuh` common caller (INT8, SM120 tensorwise FP8) — #55537
+- [ ] `scaled_mm_sm90_fp8_dispatch.cuh` (including `swap_ab`) — #55537
+- [ ] `scaled_mm_blockwise_sm90_fp8_dispatch.cuh` — #56248
+- [ ] `scaled_mm_sm100_fp8_dispatch.cuh` — #56480
+- [ ] `scaled_mm_blockwise_sm100_fp8_dispatch.cuh` — #56480
+- [ ] `scaled_mm_blockwise_sm120_fp8_dispatch.cuh` — #56659
+
+The C2x caller used on SM75/80/89 is unaffected: it already reads the tensors' actual `lda`/`ldb`/`ldc`.
+
+Every caller now has an open PR. Boxes are checked when the corresponding PR merges; this issue stays open until all six have.
+
+--- COMMENT 2 ---
+## Coverage status: three PRs now, one caller still open
+
+Thanks @gpulost and @ptimizeroracle for picking up the callers I had no hardware for. Current state, so nobody duplicates and so the merge order is deliberate:
+
+| Caller | Status | PR | Validated on |
+|---|---|---|---|
+| `cutlass_gemm_caller.cuh` (common C3x: INT8, SM120 tensorwise FP8) | fix open | #55537 | H800 / SM90 |
+| `scaled_mm_sm90_fp8_dispatch.cuh` (incl. `swap_ab`) | fix open | #55537 | H800 / SM90 |
+| `scaled_mm_blockwise_sm90_fp8_dispatch.cuh` | fix open | #56248 | — |
+| `scaled_mm_sm100_fp8_dispatch.cuh` | fix open | #56480 | B300 / SM103 |
+| `scaled_mm_blockwise_sm100_fp8_dispatch.cuh` | fix open | #56480 | B300 / SM103 |
+| `scaled_mm_blockwise_sm120_fp8_dispatch.cuh` | **unclaimed** | — | — |
+
+For the record, the C2x caller used on SM75/80/89 is **not** affected: `scaled_mm_c2x.cuh` already reads `a.stride(0)`, `b.stride(1)` and `out.stride(0)` from the tensors. The defect is specific to the C3x callers that rebuild strides from shape with `make_cute_packed_stride`.
+
+The kernel-side changes in the three PRs are disjoint — no two of them touch the same `.cuh` or `.cu` file.
+
+## The three PRs collide in the test file
+
+All three add cases to `tests/kernels/quantization/test_cutlass_scaled_mm.py`, and two collisions are already certain from the hunk anchors:
+
+```
+#55537  @@ -561,23 +561,126 @@   replaces test_cutlass_subset
+#56248  @@ -259,6  +259,47  @@   after test_cutlass_fp8_blockwise_scale_gemm
+#56480  @@ -259,6  +259,62  @@   same anchor as #56248
+        @@ -591,6  +647,56  @@   context: "def test_cutlass_subset():"
+```
+
+- **#56248 vs #56480** both insert at line 259 after the same function.
+- **#55537 vs #56480**: #55537 removes `test_cutlass_subset` and replaces it with a parametrized `test_cutlass_strided_subsets`, which is the anchor #56480's second hunk relies on.
+
+Nothing here is a disagreement about the fix; it is three independent insertions into one file. Suggested order, purely to minimise rebase churn — happy to be overridden by whoever reviews:
+
+1. **#55537** first. It restructures that region of the test file (removing `test_cutlass_subset`) and has already been through a review round, so landing it first means the other two rebase once against a stable shape rather than each other.
+2. **#56248** and **#56480** in either order, rebased onto it. Their remaining conflict is a single insertion point and trivial to resolve.
+
+If reviewers would rather land the SM100 work first, I'm glad to rebase #55537 instead — I only want to avoid all three of us resolving the same conflict repeatedly.
+
+## One interaction worth flagging to @gpulost and @ptimizeroracle
+
+#55537 also tightens the shared operator boundary in `scaled_mm_entry.cu`, for every architecture:
+
+- A, B and output `data_ptr()` must be 16-byte aligned (a non-zero `storage_offset` could previously pass the stride checks and hand TMA a misaligned address);
+- each leading dimension must be at least its logical row/column extent, rejecting zero-stride and overlapping views.
+
+Both were raised in review by @liulanze on #55537. Your padded test views need to satisfy them once that lands. Spot-checking #56480's example — `(8, 256)` with stride `(384, 1)` — 384 is 16-aligned and ≥ 256, so it should pass; but if any of your cases build padded views by slicing with an element offset, the pointer check will reject them. Worth a look before rebasing rather than discovering it in CI.
+
+## Remaining work
+
+`scaled_mm_blockwise_sm120_fp8_dispatch.cuh` is the last unclaimed caller. It needs SM120 hardware (RTX 5090 / RTX PRO Blackwell) to validate. I don't have access to one; if anyone does, the fix is the same shape as the other five and the three open PRs are all usable as templates.
+
+This issue should stay open until that box is checked.
+
+--- COMMENT 3 ---
+@jackLei0901 checked the 16 added layouts in #56480 at cc9ce3ae against the guards in #55537 at 5af1adbc. standard fp8 uses leading strides of 256/272 elements, blockwise uses 256/384. all satisfy the inner-stride, minimum leading-dimension and stride-divisibility checks. the slices start at storage offset zero, and transposing b does not move its pointer, so they preserve the backing allocations' pointer alignment.
+
+this is a static check, not a gpu run with the combined patches. no layout change appears necessary for these guards.
+
+#55537 first works for me to reduce test-file conflicts, also fine with whichever order reviewers prefer. i'll reconcile #56480 with whichever overlapping pr lands first.
+
+--- COMMENT 4 ---
+@jackLei0901 `scaled_mm_blockwise_sm120_fp8_dispatch.cuh` is covered by #56659, validated on an RTX 5090 (SM120). Same fix shape as the other three; kernel change is confined to that header, tests go in the shared test file after `test_cutlass_fp8_blockwise_scale_gemm`. Baseline 24/30 padded cases fail, patched 30/30 and the full `-k blockwise` selection pass. I will rebase onto whichever of #55537 / #56248 / #56480 lands first.
+
+=== PAGE TEXT (non-comment) ===
+[Bug]: CUTLASS 3.x scaled_mm ignores leading strides of sliced tensors · Issue #55534 · vllm-project/vllm · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ vllm-project
+ 
+ / 
+ 
+ vllm 
+
+ Public 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 22.1k 
+
+ Star
+ 91.6k 
+
+ Code 
+
+ Issues 
+ 2.4k 
+
+ Pull requests 
+ 5k+ 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 76 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [Bug]: CUTLASS 3.x scaled_mm ignores leading strides of sliced tensors #55534 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Open 
+
+ Open 
+ [Bug]: CUTLASS 3.x scaled_mm ignores leading strides of sliced tensors #55534 
+
+ Copy link 
+
+ Labels
+ bug Something isn't working Something isn't working nvidia quantization 
+
+ Description
+ 
+ jackLei0901 
+ opened on Sep 6, 2026 
+
+ Issue body actions 
+
+ Your current environment
+
+ Environment
+
+ GPU: NVIDIA H800 PCIe (SM90)
+
+ Driver: 580.82.07
+
+ CUDA runtime/toolkit: 13.0
+
+ Python: 3.12
+
+ PyTorch: 2.13.0+cu130
+
+ Released build: official vLLM 0.28.0 wheel
+
+ Source build: vLLM main at a69e75b9b6d6a26d90b6790e2eb75b3419a47c16 
+
+ 🐛 Describe the bug
+
+ Summary
+
+ torch.ops._C.cutlass_scaled_mm silently returns incorrect results on the CUTLASS 3.x path when otherwise-valid A, B, or output tensors have a padded leading dimension.
+
+ The operator entry point accepts these layouts: it requires a.stride(1) == 1 , b.stride(0) == 1 , and c.stride(1) == 1 , but does not require tightly packed leading dimensions. However, the C3x caller reconstructs packed strides from tensor shapes and discards the tensors' actual leading strides.
+
+ I reproduced this on both the official vLLM 0.28.0 wheel and main at commit a69e75b9b6d6a26d90b6790e2eb75b3419a47c16 , on an NVIDIA H800 (SM90). This is a correctness issue rather than a tolerance issue: separate A-only, B-only, and output-only padding controls each produce about 8.1% mismatched elements. A minimal fix that passes the actual leading dimensions to CUTLASS reduces all five cases below to zero mismatches.
+
+ Reproduction
+
+ The reproducer creates 512x512 views backed by 1024x1024 allocations:
+
+ import torch 
+
+ torch . manual_seed ( 0 )
+
+ def to_int8 ( x ):
+ return torch . round ( x . clamp ( - 128 , 127 )). to ( torch . int8 )
+
+ whole_a = to_int8 ( torch . randn (( 1024 , 1024 ), device = "cuda" ) * 5 )
+ whole_b = to_int8 ( torch . randn (( 1024 , 1024 ), device = "cuda" ). t () * 5 )
+
+ a = whole_a [: 512 , : 512 ] # stride (1024, 1) 
+ b = whole_b [: 512 , : 512 ] # stride (1, 1024) 
+
+ scale_a = torch . randn (( 1 , 1 ), device = "cuda" , dtype = torch . float32 ) / 10 
+ scale_b = torch . randn (( 1 , 1 ), device = "cuda" , dtype = torch . float32 ) / 10 
+
+ out = torch . empty (( 512 , 512 ), dtype = torch . bfloat16 , device = "cuda" )
+ torch . ops . _C . cutlass_scaled_mm ( out , a , b , scale_a , scale_b , None )
+
+ expected = torch . mm (
+ scale_a * a . float (), scale_b * b . float ()
+). to ( torch . bfloat16 )
+
+ close = torch . isclose ( out , expected , rtol = 1e-1 , atol = 1.0 )
+ print (( ~ close ). sum (). item (), close . numel ())
+
+ Baseline results with a fixed seed:
+
+ Case 
+ A stride 
+ B stride 
+ Output stride 
+ Mismatches / 262,144 
+ Max abs error 
+
+ A and B padded 
+ (1024, 1) 
+ (1, 1024) 
+ (512, 1) 
+ 21,389 (8.16%) 
+ 3.0391 
+
+ B only padded 
+ (512, 1) 
+ (1, 1024) 
+ (512, 1) 
+ 21,227 (8.10%) 
+ 2.8359 
+
+ A only padded 
+ (1024, 1) 
+ (1, 512) 
+ (512, 1) 
+ 21,297 (8.12%) 
+ 2.7578 
+
+ All packed 
+ (512, 1) 
+ (1, 512) 
+ (512, 1) 
+ 0 
+ 3.5e-7 
+
+ Output only padded 
+ (512, 1) 
+ (1, 512) 
+ (640, 1) 
+ 21,356 (8.15%) 
+ 2.7656 
+
+ The existing upstream test_cutlass_subset also fails on the released wheel and passes with the fix.
+
+ Root cause
+
+ In csrc/libtorch_stable/quantization/w8a8/cutlass/c3x/cutlass_gemm_caller.cuh , the caller currently constructs every CUTLASS stride as tightly packed:
+
+ StrideA a_stride =
+ cutlass::make_cute_packed_stride (StrideA{}, cute::make_shape(M, K, L));
+StrideB b_stride =
+ cutlass::make_cute_packed_stride (StrideB{}, cute::make_shape(N, K, L));
+StrideC c_stride =
+ cutlass::make_cute_packed_stride (StrideC{}, cute::make_shape(M, N, L));
+
+ For the layouts used by this kernel, those helpers substitute K , K , and N for the runtime leading dimensions. The kernel therefore reads or writes the wrong addresses whenever the real values are larger because the tensor is a sliced or padded view.
+
+ Proposed fix and validation
+
+ Keep the existing CUTLASS stride types and static unit inner strides, but set their runtime leading components from the tensor metadata:
+
+ cute::get< 0 >(a_stride) = a.stride( 0 );
+cute::get< 0 >(b_stride) = b.stride( 1 );
+cute::get< 0 >(c_stride) = out.stride( 0 );
+cute::get< 0 >(d_stride) = out.stride( 0 );
+
+ This adds no copies and leaves packed inputs unchanged because their actual leading dimensions equal the shape-derived values.
+
+ Validation on the source build:
+
+ five-way stride matrix above: all cases pass with 0 mismatches;
+
+ existing focused upstream test: 1 passed ( test_cutlass_subset ).
+
+ I am preparing a focused fix and regression coverage. This finding is separate from #38697 : that issue concerns eager-path host/workspace overhead, while this report concerns incorrect tensor addressing in the C3x GEMM caller.
+
+ Before submitting a new issue...
+
+ Make sure you already searched for relevant issues, and asked the chatbot living at the bottom right corner of the documentation page , which can answer lots of frequently asked questions.
+
+ Remaining implementation coverage
+
+ cutlass_gemm_caller.cuh common caller (INT8, SM120 tensorwise FP8) — [Kernel] Honor leading strides in SM90 tensorwise CUTLASS scaled_mm #55537 
+
+ scaled_mm_sm90_fp8_dispatch.cuh (including swap_ab ) — [Kernel] Honor leading strides in SM90 tensorwise CUTLASS scaled_mm #55537 
+
+ scaled_mm_blockwise_sm90_fp8_dispatch.cuh — [Bugfix][Kernel] Honor leading strides in SM90 blockwise FP8 GEMM #56248 
+
+ scaled_mm_sm100_fp8_dispatch.cuh — [bugfix][kernel] honor leading strides in sm100 standard and blockwise fp8 gemm #56480 
+
+ scaled_mm_blockwise_sm100_fp8_dispatch.cuh — [bugfix][kernel] honor leading strides in sm100 standard and blockwise fp8 gemm #56480 
+
+ scaled_mm_blockwise_sm120_fp8_dispatch.cuh — [Bugfix][Kernel] Honor leading strides in SM120 blockwise FP8 GEMM #56659 
+
+ The C2x caller used on SM75/80/89 is unaffected: it already reads the tensors' actual lda / ldb / ldc .
+
+ Every caller now has an open PR. Boxes are checked when the corresponding PR merges; this issue stays open until all six have.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ bug Something isn't working Something isn't working nvidia quantization 
+
+ Type
+
+ No type 
+
+ Projects
+
+ NVIDIA
+ 
+ Status In progress 
+
+ Show more project fields 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

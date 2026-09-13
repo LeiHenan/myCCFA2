@@ -1,0 +1,396 @@
+TITLE: [Bug]: B12x NVFP4 MoE JIT fails on SM120/SM121 with CUDA 12 CuTe DSL payload · Issue #15853 · NVIDIA/TensorRT-LLM · GitHub
+CREATED_AT: 2026-07-01T22:11:16Z | 2026-07-01T22:13:25Z | 2026-07-01T22:17:15Z | 2026-07-01T23:37:26Z
+LABELS: Customized kernels, Pytorch
+
+--- COMMENT 1 ---
+### System Info
+
+- GPU: Blackwell SM121 / DGX Spark observed for full-model repro; SM120 target reproduced with the same FlashInfer B12x micro-kernel target override
+- Model: Qwen3 MoE NVFP4
+- Backend: PyTorch, MoE backend CUTEDSL, FlashInfer B12x NVFP4 MoE decode path
+- Relevant package state: `nvidia-cutlass-dsl-libs-cu13==4.5.0` installed, but active `cutlass.base_dsl.version_info.CUDA_VERSION` reported CUDA 12.9 because the active CuTe DSL native payload came from the base CUDA 12 payload
+
+### Who can help?
+
+@Tracin @Fridah-nv
+
+### Information
+
+- [x] The official example scripts
+- [x] My own modified scripts
+
+### Tasks
+
+- [ ] An officially supported task in the examples folder
+- [x] My own task or dataset
+
+### Reproduction
+
+Use an NVFP4 Qwen3 MoE model on Blackwell SM121 and force the PyTorch MoE backend to CUTEDSL so TRT-LLM selects the FlashInfer/CuTe DSL B12x fused MoE path. The selector promotes to `CuteDslB12xFusedMoE`, then FlashInfer JIT enters the Blackwell SM12x MoE micro-kernel path and instantiates the NVFP4/MXF4 MMA atom.
+
+The failing environment has `nvidia-cutlass-dsl-libs-cu13==4.5.0` installed, but the active CuTe DSL runtime reports CUDA 12.9. In that state, the generated PTX contains internal `_mma.block_scale...` instructions rather than the CUDA 13 public `mma.sync.aligned...kind::mxf4nvf4` spelling. ptxas rejects the generated PTX during JIT compilation.
+
+A minimal FlashInfer B12x micro-kernel repro shows the same ptxas failure for both SM121 and an SM120 target override when the active CuTe DSL payload is CUDA 12.x. Reinstalling the CUDA 13 CuTe DSL native payload so `CUDA_VERSION` reports 13.1 makes the SM121 B12x path compile and run.
+
+### Expected behavior
+
+TRT-LLM should not select the B12x CuTe DSL/FlashInfer NVFP4 MoE path when the active CuTe DSL native payload is CUDA 12.x or unavailable, because that combination JIT-compiles invalid PTX for the B12x NVFP4 MMA atom.
+
+When the active CuTe DSL native payload reports CUDA 13 or newer, TRT-LLM should allow B12x on supported SM12x targets.
+
+### Actual behavior
+
+With CUDA 12.x active in CuTe DSL, initialization fails during FlashInfer/CuTe DSL JIT with ptxas errors similar to:
+
+```text
+ptxas application ptx input, line ...; error : Unexpected instruction types specified for `_mma`
+DSLRuntimeError: ICE
+RuntimeError: Executor worker died during initialization
+```
+
+This happens after TRT-LLM has already selected `CuteDslB12xFusedMoE`, so the process fails during model initialization instead of falling back to a safe MoE backend.
+
+### Root cause hypothesis
+
+CUDA 12.x CuTe DSL lowers the FlashInfer B12x NVFP4/MXF4 MMA atom to an internal `_mma.block_scale...` PTX form that the active ptxas rejects. CUDA 13.x CuTe DSL lowers the same operation to the public `kind::mxf4nvf4` opcode form, which compiles successfully.
+
+The immediate TRT-LLM fix is a runtime capability gate: for B12x on supported SM12x targets, require the active CuTe DSL native payload to report CUDA 13 or newer; otherwise fall back to CUTLASS with an actionable warning.
+
+### Validation
+
+- Reinstalling the CUDA 13 CuTe DSL native payload made `CUDA_VERSION` report CUDA 13.1.
+- Full-model Qwen3 NVFP4 on SM121 with `CuteDslB12xFusedMoE` selected initialized successfully, generated coherent output, and improved throughput versus the CUTLASS MoE path.
+- MTP was separately verified active on the CUDA 13 B12x path via iteration stats and instantiated model modules; no MTP code change is required for the B12x gate itself.
+
+### Related PR
+
+- Fix/guard PR: #15851
+
+### Before submitting a new issue...
+
+- [x] I searched existing issues for B12x, SM121, DGX Spark, CuTe DSL, FlashInfer, `_mma`, and `block_scale` and did not find this exact failure mode.
+
+=== PAGE TEXT (non-comment) ===
+[Bug]: B12x NVFP4 MoE JIT fails on SM120/SM121 with CUDA 12 CuTe DSL payload · Issue #15853 · NVIDIA/TensorRT-LLM · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ NVIDIA
+ 
+ / 
+ 
+ TensorRT-LLM 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 2.7k 
+
+ Star
+ 14.6k 
+
+ Code 
+
+ Issues 
+ 587 
+
+ Pull requests 
+ 875 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [Bug]: B12x NVFP4 MoE JIT fails on SM120/SM121 with CUDA 12 CuTe DSL payload #15853 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Open 
+ #15851 
+
+ Open 
+ [Bug]: B12x NVFP4 MoE JIT fails on SM120/SM121 with CUDA 12 CuTe DSL payload #15853 
+ #15851 
+
+ Copy link 
+
+ Labels
+ Customized kernels <NV>Specialized/modified CUDA kernels in TRTLLM for LLM ops, beyond standard TRT. Dev & perf. <NV>Specialized/modified CUDA kernels in TRTLLM for LLM ops, beyond standard TRT. Dev & perf. Pytorch <NV>Pytorch backend related issues <NV>Pytorch backend related issues 
+
+ Description
+ 
+ mihai-chiorean 
+ opened on Jul 1, 2026 
+
+ Issue body actions 
+
+ System Info
+
+ GPU: Blackwell SM121 / DGX Spark observed for full-model repro; SM120 target reproduced with the same FlashInfer B12x micro-kernel target override
+
+ Model: Qwen3 MoE NVFP4
+
+ Backend: PyTorch, MoE backend CUTEDSL, FlashInfer B12x NVFP4 MoE decode path
+
+ Relevant package state: nvidia-cutlass-dsl-libs-cu13==4.5.0 installed, but active cutlass.base_dsl.version_info.CUDA_VERSION reported CUDA 12.9 because the active CuTe DSL native payload came from the base CUDA 12 payload
+
+ Who can help?
+
+ @Tracin @Fridah-nv 
+
+ Information
+
+ The official example scripts
+
+ My own modified scripts
+
+ Tasks
+
+ An officially supported task in the examples folder
+
+ My own task or dataset
+
+ Reproduction
+
+ Use an NVFP4 Qwen3 MoE model on Blackwell SM121 and force the PyTorch MoE backend to CUTEDSL so TRT-LLM selects the FlashInfer/CuTe DSL B12x fused MoE path. The selector promotes to CuteDslB12xFusedMoE , then FlashInfer JIT enters the Blackwell SM12x MoE micro-kernel path and instantiates the NVFP4/MXF4 MMA atom.
+
+ The failing environment has nvidia-cutlass-dsl-libs-cu13==4.5.0 installed, but the active CuTe DSL runtime reports CUDA 12.9. In that state, the generated PTX contains internal _mma.block_scale... instructions rather than the CUDA 13 public mma.sync.aligned...kind::mxf4nvf4 spelling. ptxas rejects the generated PTX during JIT compilation.
+
+ A minimal FlashInfer B12x micro-kernel repro shows the same ptxas failure for both SM121 and an SM120 target override when the active CuTe DSL payload is CUDA 12.x. Reinstalling the CUDA 13 CuTe DSL native payload so CUDA_VERSION reports 13.1 makes the SM121 B12x path compile and run.
+
+ Expected behavior
+
+ TRT-LLM should not select the B12x CuTe DSL/FlashInfer NVFP4 MoE path when the active CuTe DSL native payload is CUDA 12.x or unavailable, because that combination JIT-compiles invalid PTX for the B12x NVFP4 MMA atom.
+
+ When the active CuTe DSL native payload reports CUDA 13 or newer, TRT-LLM should allow B12x on supported SM12x targets.
+
+ Actual behavior
+
+ With CUDA 12.x active in CuTe DSL, initialization fails during FlashInfer/CuTe DSL JIT with ptxas errors similar to:
+
+ ptxas application ptx input, line ...; error : Unexpected instruction types specified for `_mma`
+DSLRuntimeError: ICE
+RuntimeError: Executor worker died during initialization
+
+ This happens after TRT-LLM has already selected CuteDslB12xFusedMoE , so the process fails during model initialization instead of falling back to a safe MoE backend.
+
+ Root cause hypothesis
+
+ CUDA 12.x CuTe DSL lowers the FlashInfer B12x NVFP4/MXF4 MMA atom to an internal _mma.block_scale... PTX form that the active ptxas rejects. CUDA 13.x CuTe DSL lowers the same operation to the public kind::mxf4nvf4 opcode form, which compiles successfully.
+
+ The immediate TRT-LLM fix is a runtime capability gate: for B12x on supported SM12x targets, require the active CuTe DSL native payload to report CUDA 13 or newer; otherwise fall back to CUTLASS with an actionable warning.
+
+ Validation
+
+ Reinstalling the CUDA 13 CuTe DSL native payload made CUDA_VERSION report CUDA 13.1.
+
+ Full-model Qwen3 NVFP4 on SM121 with CuteDslB12xFusedMoE selected initialized successfully, generated coherent output, and improved throughput versus the CUTLASS MoE path.
+
+ MTP was separately verified active on the CUDA 13 B12x path via iteration stats and instantiated model modules; no MTP code change is required for the B12x gate itself.
+
+ Related PR
+
+ Fix/guard PR: [#15853][fix] Gate B12x MoE on CUDA13 CuTe DSL #15851 
+
+ Before submitting a new issue...
+
+ I searched existing issues for B12x, SM121, DGX Spark, CuTe DSL, FlashInfer, _mma , and block_scale and did not find this exact failure mode.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ Customized kernels <NV>Specialized/modified CUDA kernels in TRTLLM for LLM ops, beyond standard TRT. Dev & perf. <NV>Specialized/modified CUDA kernels in TRTLLM for LLM ops, beyond standard TRT. Dev & perf. Pytorch <NV>Pytorch backend related issues <NV>Pytorch backend related issues 
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

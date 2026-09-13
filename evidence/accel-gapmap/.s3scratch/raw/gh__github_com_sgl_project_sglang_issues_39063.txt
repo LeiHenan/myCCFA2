@@ -1,0 +1,557 @@
+TITLE: [Bug] SM120 grouped FP8 DeepGEMM weight preparation skips UE8M0 requantization · Issue #39063 · sgl-project/sglang · GitHub
+CREATED_AT: 2026-09-11T08:27:55Z | 2026-09-11T08:39:12Z
+
+--- COMMENT 1 ---
+# [Bug] SM120 grouped FP8 DeepGEMM weight preparation skips UE8M0 requantization
+
+## Checklist
+
+- [x] I searched related issues but found no solution for this specific guard.
+- [x] Reproduced with the latest SGLang main checked out for this test.
+- [x] Environment and a minimal reproduction are provided.
+- [x] This is a bug report, written in English.
+
+## Describe the bug
+
+On NVIDIA RTX PRO 5000 72GB (SM120), SGLang enables DeepGEMM and UE8M0 scales when a compatible DeepGEMM build is installed. However, `should_deepgemm_weight_requant_ue8m0` unconditionally returns False for SM120, including grouped MoE weights.
+
+`Fp8MoEMethod.process_weights_after_loading` calls `requant_block_scale_ue8m0_for_deepgemm` for w13/w2, but that helper therefore skips conversion. Passing non-power-of-two FP32 block scales to the grouped FP8 DeepGEMM path then triggers its scale-layout assertion.
+
+This report is based on a **single-GPU weight-preparation + grouped-GEMM reproduction**, not a full-model startup or accuracy run. The motivating workload is GLM-5.3-Flash blockwise FP8 MoE. No checkpoint download is needed for the reproduction.
+
+## Versions
+
+- SGLang main: `ad5af539cd39e9af10ef318d3f8a50f5d6f9c153` (fresh checkout, production source unmodified).
+- DeepGEMM nv_dev: `572557e7ae9ad5331b81a1c250f141fba2c57962`, package `2.6.1+local` with SM120 grouped FP8 support.
+- GPU: NVIDIA RTX PRO 5000 72GB Blackwell, capability `(12, 0)`.
+- PyTorch: `2.13.0+cu130`; CUDA runtime: `13.0`.
+
+## Reproduction
+
+Run in an environment with the above SGLang and DeepGEMM installed:
+
+```bash
+SGLANG_ENABLE_JIT_DEEPGEMM=1 python repro.py
+# Run the control in a NEW process after the device assertion:
+SGLANG_ENABLE_JIT_DEEPGEMM=1 REPRO_MODE=explicit_requant_control python repro.py
+```
+
+```python
+import os
+import torch
+import sglang
+import deep_gemm as dg
+from sglang.srt.layers import deep_gemm_wrapper as wrapper
+from sglang.srt.layers.quantization.fp8_utils import (
+    requant_block_scale_ue8m0_for_deepgemm,
+    requant_weight_ue8m0_inplace,
+)
+
+print("SGLang source:", sglang.__file__)
+print("DeepGEMM source:", dg.__file__)
+torch.manual_seed(123)
+w = torch.nn.Parameter(
+    torch.randn(2, 256, 256, device="cuda").to(torch.float8_e4m3fn),
+    requires_grad=False,
+)
+ws = torch.nn.Parameter(
+    torch.full((2, 2, 2), 0.03, device="cuda", dtype=torch.float32),
+    requires_grad=False,
+)
+print(wrapper.ENABLE_JIT_DEEPGEMM, wrapper.DEEPGEMM_SCALE_UE8M0)
+print(requant_block_scale_ue8m0_for_deepgemm(
+    w, ws, [128, 128], use_deepgemm_runner=True,
+    output_dtype=torch.bfloat16, weight_shape=(256, 256),
+))
+q = torch.randn(256, 256, device="cuda").to(torch.float8_e4m3fn)
+qs = torch.full((256, 2), 0.03125, device="cuda", dtype=torch.float32)
+idx = torch.arange(2, device="cuda", dtype=torch.int32).repeat_interleave(128)
+out = torch.empty(256, 256, device="cuda", dtype=torch.bfloat16)
+if os.environ.get("REPRO_MODE") == "explicit_requant_control":
+    requant_weight_ue8m0_inplace(w, ws, [128, 128])
+dg.m_grouped_fp8_gemm_nt_contiguous((q, qs), (w, ws), out, idx)
+torch.cuda.synchronize()
+print("finite:", torch.isfinite(out).all().item())
+```
+
+## Actual results
+
+Unmodified upstream weight-preparation path:
+
+```text
+FLAGS True True
+GUARD False
+PREPARE False
+Assertion failed: deep_gemm/impls/smxx_layout.cuh:131,
+condition: (values[j] & 0x807fffffu) == 0
+CUDA_ERROR_LAUNCH_FAILED
+```
+
+Separate-process control explicitly calling the existing requantization helper:
+
+```text
+FLAGS True True
+GUARD False
+PREPARE False
+MODE explicit_requant_control
+PASS finite= True
+```
+
+The control establishes successful execution and finite outputs only; it is not an end-to-end numerical accuracy claim.
+
+## Expected behavior / suggested direction
+
+Preserve the SM120 dense Linear guard for CUTLASS/Triton consumers, but allow supported grouped MoE weights to follow the existing UE8M0 requantization path when DeepGEMM is selected. Merely removing the SM120 guard globally would risk converting scales for dense kernels that still expect FP32 scales.
+
+Relevant pinned sources:
+
+- [Capability detection](https://github.com/sgl-project/sglang/blob/ad5af539cd39e9af10ef318d3f8a50f5d6f9c153/python/sglang/srt/layers/deep_gemm_wrapper/configurer.py)
+- [Unconditional SM120 guard](https://github.com/sgl-project/sglang/blob/ad5af539cd39e9af10ef318d3f8a50f5d6f9c153/python/sglang/srt/model_loader/utils.py#L265)
+- [MoE weight preparation](https://github.com/sgl-project/sglang/blob/ad5af539cd39e9af10ef318d3f8a50f5d6f9c153/python/sglang/srt/layers/quantization/fp8.py#L1809)
+
+## Environment
+
+`check_env` reports installed distribution metadata for SGLang (`0.0.0.dev1+gf609d677b`), not the source override. The reproduction prints `sglang.__file__` and imports the fresh upstream checkout at the SHA above through PYTHONPATH. No older SGLang source directory is on the reproduction PYTHONPATH.
+
+```text
+Python: 3.12.3 (main, Jul 15 2026, 23:46:41) [GCC 13.3.0]
+CUDA available: True
+GPU 0,1,2,3,4,5,6,7: NVIDIA RTX PRO 5000 72GB Blackwell
+GPU 0,1,2,3,4,5,6,7 Compute Capability: 12.0
+CUDA_HOME: /usr/local/cuda
+NVCC: Cuda compilation tools, release 13.0, V13.0.88
+CUDA Driver Version: 580.126.09
+PyTorch: 2.13.0+cu130
+sglang: 0.0.0.dev1+gf609d677b
+sglang-kernel: 0.4.6.post1
+flashinfer_python: 0.6.17
+flashinfer_cubin: 0.6.17
+flashinfer_jit_cache: 0.6.17+cu130
+triton: 3.7.1
+transformers: 5.16.0.dev0
+torchao: Module Not Found
+numpy: 2.3.5
+aiohttp: 3.14.3
+fastapi: 0.141.1
+huggingface_hub: 1.28.0
+interegular: 0.3.3
+modelscope: 1.39.1
+orjson: 3.12.0
+outlines: 0.1.11
+packaging: 26.3
+psutil: 7.2.2
+pydantic: 2.13.4
+python-multipart: 0.0.32
+pyzmq: 27.2.0
+uvicorn: 0.52.4
+uvloop: 0.22.1
+vllm: Module Not Found
+xgrammar: 0.2.1
+openai: 2.6.1
+tiktoken: 0.14.0
+anthropic: 1.0.0
+litellm: Module Not Found
+torchcodec: 0.15.0+cu130
+ulimit soft: 1048576
+```
+
+Topology: GPUs 0–3 share NUMA node 0 (CPU 0–63,128–191); GPUs 4–7 share NUMA node 1 (CPU 64–127,192–255). Within each group, GPU connections are NODE; between groups, SYS. This reproduction uses only GPU 0.
+
+=== PAGE TEXT (non-comment) ===
+[Bug] SM120 grouped FP8 DeepGEMM weight preparation skips UE8M0 requantization · Issue #39063 · sgl-project/sglang · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ sgl-project
+ 
+ / 
+ 
+ sglang 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 8.8k 
+
+ Star
+ 35.9k 
+
+ Code 
+
+ Issues 
+ 891 
+
+ Pull requests 
+ 4.4k 
+
+ Discussions 
+
+ Actions 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Security and quality
+
+ Insights
+
+ [Bug] SM120 grouped FP8 DeepGEMM weight preparation skips UE8M0 requantization #39063 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Open 
+ #39065 
+
+ Open 
+ [Bug] SM120 grouped FP8 DeepGEMM weight preparation skips UE8M0 requantization #39063 
+ #39065 
+
+ Copy link 
+
+ Description
+ 
+ number-eleven11 
+ opened on Sep 11, 2026 
+
+ Issue body actions 
+
+ [Bug] SM120 grouped FP8 DeepGEMM weight preparation skips UE8M0 requantization
+
+ Checklist
+
+ I searched related issues but found no solution for this specific guard.
+
+ Reproduced with the latest SGLang main checked out for this test.
+
+ Environment and a minimal reproduction are provided.
+
+ This is a bug report, written in English.
+
+ Describe the bug
+
+ On NVIDIA RTX PRO 5000 72GB (SM120), SGLang enables DeepGEMM and UE8M0 scales when a compatible DeepGEMM build is installed. However, should_deepgemm_weight_requant_ue8m0 unconditionally returns False for SM120, including grouped MoE weights.
+
+ Fp8MoEMethod.process_weights_after_loading calls requant_block_scale_ue8m0_for_deepgemm for w13/w2, but that helper therefore skips conversion. Passing non-power-of-two FP32 block scales to the grouped FP8 DeepGEMM path then triggers its scale-layout assertion.
+
+ This report is based on a single-GPU weight-preparation + grouped-GEMM reproduction , not a full-model startup or accuracy run. The motivating workload is GLM-5.3-Flash blockwise FP8 MoE. No checkpoint download is needed for the reproduction.
+
+ Versions
+
+ SGLang main: ad5af539cd39e9af10ef318d3f8a50f5d6f9c153 (fresh checkout, production source unmodified).
+
+ DeepGEMM nv_dev: 572557e7ae9ad5331b81a1c250f141fba2c57962 , package 2.6.1+local with SM120 grouped FP8 support.
+
+ GPU: NVIDIA RTX PRO 5000 72GB Blackwell, capability (12, 0) .
+
+ PyTorch: 2.13.0+cu130 ; CUDA runtime: 13.0 .
+
+ Reproduction
+
+ Run in an environment with the above SGLang and DeepGEMM installed:
+
+ SGLANG_ENABLE_JIT_DEEPGEMM=1 python repro.py
+ # Run the control in a NEW process after the device assertion: 
+SGLANG_ENABLE_JIT_DEEPGEMM=1 REPRO_MODE=explicit_requant_control python repro.py
+
+ import os 
+ import torch 
+ import sglang 
+ import deep_gemm as dg 
+ from sglang . srt . layers import deep_gemm_wrapper as wrapper 
+ from sglang . srt . layers . quantization . fp8_utils import (
+ requant_block_scale_ue8m0_for_deepgemm ,
+ requant_weight_ue8m0_inplace ,
+)
+
+ print ( "SGLang source:" , sglang . __file__ )
+ print ( "DeepGEMM source:" , dg . __file__ )
+ torch . manual_seed ( 123 )
+ w = torch . nn . Parameter (
+ torch . randn ( 2 , 256 , 256 , device = "cuda" ). to ( torch . float8_e4m3fn ),
+ requires_grad = False ,
+)
+ ws = torch . nn . Parameter (
+ torch . full (( 2 , 2 , 2 ), 0.03 , device = "cuda" , dtype = torch . float32 ),
+ requires_grad = False ,
+)
+ print ( wrapper . ENABLE_JIT_DEEPGEMM , wrapper . DEEPGEMM_SCALE_UE8M0 )
+ print ( requant_block_scale_ue8m0_for_deepgemm (
+ w , ws , [ 128 , 128 ], use_deepgemm_runner = True ,
+ output_dtype = torch . bfloat16 , weight_shape = ( 256 , 256 ),
+))
+ q = torch . randn ( 256 , 256 , device = "cuda" ). to ( torch . float8_e4m3fn )
+ qs = torch . full (( 256 , 2 ), 0.03125 , device = "cuda" , dtype = torch . float32 )
+ idx = torch . arange ( 2 , device = "cuda" , dtype = torch . int32 ). repeat_interleave ( 128 )
+ out = torch . empty ( 256 , 256 , device = "cuda" , dtype = torch . bfloat16 )
+ if os . environ . get ( "REPRO_MODE" ) == "explicit_requant_control" :
+ requant_weight_ue8m0_inplace ( w , ws , [ 128 , 128 ])
+ dg . m_grouped_fp8_gemm_nt_contiguous (( q , qs ), ( w , ws ), out , idx )
+ torch . cuda . synchronize ()
+ print ( "finite:" , torch . isfinite ( out ). all (). item ())
+
+ Actual results
+
+ Unmodified upstream weight-preparation path:
+
+ FLAGS True True
+GUARD False
+PREPARE False
+Assertion failed: deep_gemm/impls/smxx_layout.cuh:131,
+condition: (values[j] & 0x807fffffu) == 0
+CUDA_ERROR_LAUNCH_FAILED
+
+ Separate-process control explicitly calling the existing requantization helper:
+
+ FLAGS True True
+GUARD False
+PREPARE False
+MODE explicit_requant_control
+PASS finite= True
+
+ The control establishes successful execution and finite outputs only; it is not an end-to-end numerical accuracy claim.
+
+ Expected behavior / suggested direction
+
+ Preserve the SM120 dense Linear guard for CUTLASS/Triton consumers, but allow supported grouped MoE weights to follow the existing UE8M0 requantization path when DeepGEMM is selected. Merely removing the SM120 guard globally would risk converting scales for dense kernels that still expect FP32 scales.
+
+ Relevant pinned sources:
+
+ Capability detection 
+
+ Unconditional SM120 guard 
+
+ MoE weight preparation 
+
+ Environment
+
+ check_env reports installed distribution metadata for SGLang ( 0.0.0.dev1+gf609d677b ), not the source override. The reproduction prints sglang.__file__ and imports the fresh upstream checkout at the SHA above through PYTHONPATH. No older SGLang source directory is on the reproduction PYTHONPATH.
+
+ Python: 3.12.3 (main, Jul 15 2026, 23:46:41) [GCC 13.3.0]
+CUDA available: True
+GPU 0,1,2,3,4,5,6,7: NVIDIA RTX PRO 5000 72GB Blackwell
+GPU 0,1,2,3,4,5,6,7 Compute Capability: 12.0
+CUDA_HOME: /usr/local/cuda
+NVCC: Cuda compilation tools, release 13.0, V13.0.88
+CUDA Driver Version: 580.126.09
+PyTorch: 2.13.0+cu130
+sglang: 0.0.0.dev1+gf609d677b
+sglang-kernel: 0.4.6.post1
+flashinfer_python: 0.6.17
+flashinfer_cubin: 0.6.17
+flashinfer_jit_cache: 0.6.17+cu130
+triton: 3.7.1
+transformers: 5.16.0.dev0
+torchao: Module Not Found
+numpy: 2.3.5
+aiohttp: 3.14.3
+fastapi: 0.141.1
+huggingface_hub: 1.28.0
+interegular: 0.3.3
+modelscope: 1.39.1
+orjson: 3.12.0
+outlines: 0.1.11
+packaging: 26.3
+psutil: 7.2.2
+pydantic: 2.13.4
+python-multipart: 0.0.32
+pyzmq: 27.2.0
+uvicorn: 0.52.4
+uvloop: 0.22.1
+vllm: Module Not Found
+xgrammar: 0.2.1
+openai: 2.6.1
+tiktoken: 0.14.0
+anthropic: 1.0.0
+litellm: Module Not Found
+torchcodec: 0.15.0+cu130
+ulimit soft: 1048576
+
+ Topology: GPUs 0–3 share NUMA node 0 (CPU 0–63,128–191); GPUs 4–7 share NUMA node 1 (CPU 64–127,192–255). Within each group, GPU connections are NODE; between groups, SYS. This reproduction uses only GPU 0.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ No labels No labels
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

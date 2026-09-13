@@ -1,0 +1,767 @@
+TITLE: [Bug]: # Gemma NVFP4 fails to serve on RTX PRO 5000 Blackwell (SM120) with TensorRT-LLM 1.3.0rc22; devel build also blocked · Issue #17052 · NVIDIA/TensorRT-LLM · GitHub
+CREATED_AT: 2026-07-30T06:49:16Z | 2026-07-30T06:49:17Z | 2026-07-30T06:54:25Z | 2026-07-30T17:43:44Z
+LABELS: Customized kernels, bug
+STATE_REASON: COMPLETED
+
+--- COMMENT 1 ---
+### System Info
+
+## Environment
+
+| Item | Value |
+|---|---|
+| GPU | NVIDIA RTX PRO 5000 Blackwell |
+| GPU compute capability | 12.0 / SM120 |
+| GPU memory | 48935 MiB |
+| Host driver | 580.126.20 |
+| TensorRT-LLM release image | `nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc22` |
+| Release image digest | `sha256:36d6146dfb19084f7098852991b0da67565cba1e5a9bb5980b1c1a7edae3bf1b` |
+| TensorRT-LLM devel image | `nvcr.io/nvidia/tensorrt-llm/devel:1.3.0rc22` |
+| Devel image digest | `sha256:08fd5ecb9598cc9736fb80585c214984081ae205f284341ad6a1dad21235c572` |
+| TensorRT-LLM version in release log | `1.3.0rc22` |
+| PyTorch in release log | `2.12.0a0+5aff392`, NVIDIA Release 26.05 |
+| CUDA note in release log | CUDA forward compatibility enabled; CUDA 13.2 driver version 595.58.03 with kernel driver 580.126.20 |
+
+### Who can help?
+
+_No response_
+
+### Information
+
+- [x] The official example scripts
+- [x] My own modified scripts
+
+### Tasks
+
+- [x] An officially supported task in the `examples` folder (such as GLUE/SQuAD, ...)
+- [x] My own task or dataset (give details below)
+
+### Reproduction
+
+## Summary
+
+I am trying to serve a Gemma NVFP4 vision-language model on an NVIDIA RTX PRO 5000 Blackwell GPU. The same model can be served and benchmarked successfully with vLLM, but TensorRT-LLM `release:1.3.0rc22` fails during executor warmup before the OpenAI-compatible HTTP server becomes ready.
+
+The main release-image failure is:
+
+```text
+RuntimeError: Error in function 'TllmGenFmhaRunner' at
+/usr/local/lib/python3.12/dist-packages/flashinfer/data/include/flashinfer/trtllm/fmha/fmhaRunner.cuh:37:
+Unsupported architecture
+```
+
+I also tried the `devel:1.3.0rc22` image and attempted to build TensorRT-LLM from source for `sm_120`, but could not produce a usable runtime image.
+## Model
+
+Local model path:
+
+```text
+nvidia/Gemma-4-26B-A4B-NVFP4
+```
+
+Model config summary:
+
+```json
+{
+  "model_type": "gemma4",
+  "architectures": ["Gemma4ForConditionalGeneration"],
+  "dtype": "bfloat16",
+  "quantization_config": {
+    "quant_algo": "NVFP4",
+    "quant_method": "modelopt",
+    "producer": {
+      "name": "modelopt",
+      "version": "0.43.0rc2.dev91+gc79ebc014"
+    },
+    "kv_cache_scheme": {
+      "dynamic": false,
+      "num_bits": 8,
+      "type": "float"
+    }
+  }
+}
+```
+
+The release image appears to load the NVFP4 weights before failing during warmup. The log repeatedly shows:
+
+```text
+[TRT-LLM] [W] [quantize] Inline 'config.json.quantization_config' diverges from 'hf_quant_config.json':
+  - group_size: file=16, inline=None
+```
+
+
+### Expected behavior
+
+
+`trtllm-serve` should start successfully on SM120 and serve the Gemma NVFP4 model, or the documentation should state that this model/GPU/quantization combination is unsupported and provide the recommended image/configuration.
+The same model can run through the OpenAI-compatible API with vLLM on the same server. A small vision request benchmark used one inline 1x1 PNG image, `temperature=0`, `max_tokens=64`, 64 measured requests per worker setting, and 4 warmup requests excluded from timing.
+
+Results:
+
+| Framework | w1 QPS | w2 QPS | w4 QPS | w8 QPS | Abnormal outputs |
+|---|---:|---:|---:|---:|---:|
+| vLLM | 6.37 | 10.77 | 21.73 | 41.51 | 0 |
+| TensorRT-LLM | N/A | N/A | N/A | N/A | 0 |
+
+This suggests the model files are usable and the failure is specific to TensorRT-LLM runtime/configuration/support.
+
+
+### actual behavior
+
+With `release:1.3.0rc22`
+
+The service fails before becoming ready. The default path enters FlashInfer/TRTLLM-gen FMHA and fails with `Unsupported architecture`:
+
+```text
+Model init total -- 21.36s
+[TRT-LLM] [W] [_torch] KVCacheV2Scheduler only supports MAX_UTILIZATION for now, got GUARANTEED_NO_EVICT, setting to MAX_UTILIZATION
+flashinfer.jit: Fetching .../fmha/trtllm-gen/checksums.txt
+flashinfer.jit: File downloaded successfully ...
+flashinfer.jit: Fetching .../fmha/trtllm-gen/include/flashInferMetaInfo.h
+flashinfer.jit: File downloaded successfully ...
+[TRT-LLM] [E] [executor] Failed to initialize executor on rank 0:
+Error in function 'TllmGenFmhaRunner' at
+/usr/local/lib/python3.12/dist-packages/flashinfer/data/include/flashinfer/trtllm/fmha/fmhaRunner.cuh:37:
+Unsupported architecture
+```
+
+The full traceback ends with:
+
+```text
+File "/usr/local/lib/python3.12/dist-packages/flashinfer/prefill.py", line 264, in _paged_run
+  op.trtllm_paged_attention_context(
+File "python/tvm_ffi/cython/function.pxi", line 923, in tvm_ffi.core.Function.__call__
+RuntimeError: Error in function 'TllmGenFmhaRunner' at
+/usr/local/lib/python3.12/dist-packages/flashinfer/data/include/flashinfer/trtllm/fmha/fmhaRunner.cuh:37:
+Unsupported architecture
+```
+
+Then the server exits:
+
+```text
+[TRT-LLM] [E] [executor] Executor worker died during initialization.
+RuntimeError: Executor worker died during initialization
+```
+
+## Workarounds Tried
+
+I tried forcing different attention backends and explicit KV cache limits:
+
+```yaml
+max_input_len: 2048
+attn_backend: VANILLA
+kv_cache_config:
+  max_tokens: 32768
+```
+
+```yaml
+max_input_len: 2048
+attn_backend: TRTLLM
+kv_cache_config:
+  max_tokens: 32768
+```
+
+The recorded result was that these avoided the first `TllmGenFmhaRunner` failure, but still entered `flashinfer.py` and failed with a metadata mismatch:
+
+```text
+swap_paged_kv_indices_for_layer missing on Vanilla/TrtllmAttentionMetadata
+```
+
+
+### additional notes
+
+I also pulled `nvcr.io/nvidia/tensorrt-llm/devel:1.3.0rc22`, but it is not a drop-in replacement for the release image:
+
+```text
+which trtllm-serve -> not found
+python3 importlib.util.find_spec("tensorrt_llm") -> None
+bash: line 1: trtllm-serve: command not found
+```
+
+The `/workspace` directory in the devel image contained README/tutorial/docker example files, but no TensorRT-LLM source checkout.
+
+## Source Build Attempt From Devel Image
+
+I uploaded a TensorRT-LLM source checkout under:
+
+```text
+/root/workspace/test_script/build/TensorRT-LLM
+```
+
+The README in the checkout identifies the release as `1.3.0rc22`. I attempted to build for:
+
+```text
+--cuda_architectures=120-real
+```
+
+Important observations:
+
+```text
+-- TensorRT LLM version: 1.3.0rc22
+-- CUDA compiler: /usr/local/cuda/bin/nvcc
+-- The CUDA compiler identification is NVIDIA 13.2.78 with host compiler GNU 13.3.0
+-- GPU architectures: 120
+-- Excluding SM 80
+-- Excluding SM 86
+-- Excluding SM 89
+-- Excluding SM 90
+-- Excluding SM 100
+-- Excluding SM 103
+-- Excluding SM 100F
+```
+
+So CMake did accept SM120 at configure time.
+
+Build attempts:
+
+1. Full `build_wheel.py` with `requirements-dev.txt`: container exited with code 137 during pip dependency installation.
+2. Runtime-only requirements: container also exited with code 137 during pip dependency installation.
+3. No-requirements build using preinstalled packages plus Conan: reached CMake configure and accepted SM120, but `FetchContent[pybind11]` GitHub clone hung/killed.
+4. GitHub mirror/ghproxy: `git ls-remote` worked, but actual `git clone` still exited 137.
+5. Minimal URL/tarball build with `BUILD_DEEP_EP=OFF`, `BUILD_DEEP_GEMM=OFF`, `BUILD_FLASH_MLA=OFF`, and pip-installed `nanobind`: nanobind resolved, but CUTLASS tarball download failed:
+
+```text
+-- FetchContent[cutlass]: clone start
+-- Using src='https://ghproxy.net/https://github.com/NVIDIA/cutlass/archive/v4.4.2.tar.gz'
+CMake Error at .../download-cutlass-populate.cmake:163 (message):
+  error: downloading 'https://ghproxy.net/https://github.com/NVIDIA/cutlass/archive/v4.4.2.tar.gz' failed
+  status_string: "Stream error in the HTTP/2 framing layer"
+...
+HTTP/2 stream 1 was not closed cleanly: INTERNAL_ERROR (err 2)
+...
+CMake Error at /usr/local/cmake/share/cmake-4.0/Modules/FetchContent.cmake:1918 (message):
+  Build step for cutlass failed: 2
+```
+
+No usable TensorRT-LLM image with `trtllm-serve` was produced.
+## Questions
+
+1. Is RTX PRO 5000 Blackwell / SM120 officially supported by `nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc22` for Gemma NVFP4?
+2. Is `TllmGenFmhaRunner ... Unsupported architecture` expected on SM120 in this image, or is this a missing FlashInfer/TRTLLM-gen FMHA cubin/kernel support issue?
+3. What is the recommended attention backend and `trtllm-serve` configuration for Gemma NVFP4 on SM120?
+4. Is the `swap_paged_kv_indices_for_layer` metadata mismatch with `VANILLA`/`TRTLLM` attention backends a known issue in `1.3.0rc22`?
+5. Which image should be used to build and run TensorRT-LLM for SM120 + Gemma NVFP4? Is there a newer internal/nightly image or documented source build path that includes all required dependencies?
+6. Are there any required flags for NVFP4 acceleration on Blackwell that are not automatically enabled by `trtllm-serve`?
+
+
+### Before submitting a new issue...
+
+- [x] Make sure you already searched for relevant issues, and checked the [documentation](https://nvidia.github.io/TensorRT-LLM/) and [examples](https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples) for answers to frequently asked questions.
+
+--- COMMENT 2 ---
+/assign
+
+--- COMMENT 3 ---
+Hi @jiuzhuanzhuan Currently, TRTLLM does not support Gemma NVFP4 on SM120.
+
+=== PAGE TEXT (non-comment) ===
+[Bug]: # Gemma NVFP4 fails to serve on RTX PRO 5000 Blackwell (SM120) with TensorRT-LLM 1.3.0rc22; devel build also blocked · Issue #17052 · NVIDIA/TensorRT-LLM · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ NVIDIA
+ 
+ / 
+ 
+ TensorRT-LLM 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 2.7k 
+
+ Star
+ 14.6k 
+
+ Code 
+
+ Issues 
+ 587 
+
+ Pull requests 
+ 875 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [Bug]: # Gemma NVFP4 fails to serve on RTX PRO 5000 Blackwell (SM120) with TensorRT-LLM 1.3.0rc22; devel build also blocked #17052 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Closed 
+
+ Closed 
+ [Bug]: # Gemma NVFP4 fails to serve on RTX PRO 5000 Blackwell (SM120) with TensorRT-LLM 1.3.0rc22; devel build also blocked #17052 
+
+ Copy link 
+
+ Labels
+ Customized kernels <NV>Specialized/modified CUDA kernels in TRTLLM for LLM ops, beyond standard TRT. Dev & perf. <NV>Specialized/modified CUDA kernels in TRTLLM for LLM ops, beyond standard TRT. Dev & perf. bug Something isn't working Something isn't working 
+
+ Description
+ 
+ jiuzhuanzhuan 
+ opened on Jul 30, 2026 
+
+ Issue body actions 
+
+ System Info
+
+ Environment
+
+ Item 
+ Value 
+
+ GPU 
+ NVIDIA RTX PRO 5000 Blackwell 
+
+ GPU compute capability 
+ 12.0 / SM120 
+
+ GPU memory 
+ 48935 MiB 
+
+ Host driver 
+ 580.126.20 
+
+ TensorRT-LLM release image 
+ nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc22 
+
+ Release image digest 
+ sha256:36d6146dfb19084f7098852991b0da67565cba1e5a9bb5980b1c1a7edae3bf1b 
+
+ TensorRT-LLM devel image 
+ nvcr.io/nvidia/tensorrt-llm/devel:1.3.0rc22 
+
+ Devel image digest 
+ sha256:08fd5ecb9598cc9736fb80585c214984081ae205f284341ad6a1dad21235c572 
+
+ TensorRT-LLM version in release log 
+ 1.3.0rc22 
+
+ PyTorch in release log 
+ 2.12.0a0+5aff392 , NVIDIA Release 26.05 
+
+ CUDA note in release log 
+ CUDA forward compatibility enabled; CUDA 13.2 driver version 595.58.03 with kernel driver 580.126.20 
+
+ Who can help?
+
+ No response 
+
+ Information
+
+ The official example scripts
+
+ My own modified scripts
+
+ Tasks
+
+ An officially supported task in the examples folder (such as GLUE/SQuAD, ...)
+
+ My own task or dataset (give details below)
+
+ Reproduction
+
+ Summary
+
+ I am trying to serve a Gemma NVFP4 vision-language model on an NVIDIA RTX PRO 5000 Blackwell GPU. The same model can be served and benchmarked successfully with vLLM, but TensorRT-LLM release:1.3.0rc22 fails during executor warmup before the OpenAI-compatible HTTP server becomes ready.
+
+ The main release-image failure is:
+
+ RuntimeError: Error in function 'TllmGenFmhaRunner' at
+/usr/local/lib/python3.12/dist-packages/flashinfer/data/include/flashinfer/trtllm/fmha/fmhaRunner.cuh:37:
+Unsupported architecture
+
+ I also tried the devel:1.3.0rc22 image and attempted to build TensorRT-LLM from source for sm_120 , but could not produce a usable runtime image.
+
+ Model
+
+ Local model path:
+
+ nvidia/Gemma-4-26B-A4B-NVFP4
+
+ Model config summary:
+
+ {
+ "model_type" : " gemma4 " ,
+ "architectures" : [ " Gemma4ForConditionalGeneration " ],
+ "dtype" : " bfloat16 " ,
+ "quantization_config" : {
+ "quant_algo" : " NVFP4 " ,
+ "quant_method" : " modelopt " ,
+ "producer" : {
+ "name" : " modelopt " ,
+ "version" : " 0.43.0rc2.dev91+gc79ebc014 " 
+ },
+ "kv_cache_scheme" : {
+ "dynamic" : false ,
+ "num_bits" : 8 ,
+ "type" : " float " 
+ }
+ }
+}
+
+ The release image appears to load the NVFP4 weights before failing during warmup. The log repeatedly shows:
+
+ [TRT-LLM] [W] [quantize] Inline 'config.json.quantization_config' diverges from 'hf_quant_config.json':
+ - group_size: file=16, inline=None
+
+ Expected behavior
+
+ trtllm-serve should start successfully on SM120 and serve the Gemma NVFP4 model, or the documentation should state that this model/GPU/quantization combination is unsupported and provide the recommended image/configuration.
+
+The same model can run through the OpenAI-compatible API with vLLM on the same server. A small vision request benchmark used one inline 1x1 PNG image, temperature=0 , max_tokens=64 , 64 measured requests per worker setting, and 4 warmup requests excluded from timing.
+
+ Results:
+
+ Framework 
+ w1 QPS 
+ w2 QPS 
+ w4 QPS 
+ w8 QPS 
+ Abnormal outputs 
+
+ vLLM 
+ 6.37 
+ 10.77 
+ 21.73 
+ 41.51 
+ 0 
+
+ TensorRT-LLM 
+ N/A 
+ N/A 
+ N/A 
+ N/A 
+ 0 
+
+ This suggests the model files are usable and the failure is specific to TensorRT-LLM runtime/configuration/support.
+
+ actual behavior
+
+ With release:1.3.0rc22 
+
+ The service fails before becoming ready. The default path enters FlashInfer/TRTLLM-gen FMHA and fails with Unsupported architecture :
+
+ Model init total -- 21.36s
+[TRT-LLM] [W] [_torch] KVCacheV2Scheduler only supports MAX_UTILIZATION for now, got GUARANTEED_NO_EVICT, setting to MAX_UTILIZATION
+flashinfer.jit: Fetching .../fmha/trtllm-gen/checksums.txt
+flashinfer.jit: File downloaded successfully ...
+flashinfer.jit: Fetching .../fmha/trtllm-gen/include/flashInferMetaInfo.h
+flashinfer.jit: File downloaded successfully ...
+[TRT-LLM] [E] [executor] Failed to initialize executor on rank 0:
+Error in function 'TllmGenFmhaRunner' at
+/usr/local/lib/python3.12/dist-packages/flashinfer/data/include/flashinfer/trtllm/fmha/fmhaRunner.cuh:37:
+Unsupported architecture
+
+ The full traceback ends with:
+
+ File "/usr/local/lib/python3.12/dist-packages/flashinfer/prefill.py", line 264, in _paged_run
+ op.trtllm_paged_attention_context(
+File "python/tvm_ffi/cython/function.pxi", line 923, in tvm_ffi.core.Function.__call__
+RuntimeError: Error in function 'TllmGenFmhaRunner' at
+/usr/local/lib/python3.12/dist-packages/flashinfer/data/include/flashinfer/trtllm/fmha/fmhaRunner.cuh:37:
+Unsupported architecture
+
+ Then the server exits:
+
+ [TRT-LLM] [E] [executor] Executor worker died during initialization.
+RuntimeError: Executor worker died during initialization
+
+ Workarounds Tried
+
+ I tried forcing different attention backends and explicit KV cache limits:
+
+ max_input_len : 2048 
+ attn_backend : VANILLA 
+ kv_cache_config :
+ max_tokens : 32768 
+
+ max_input_len : 2048 
+ attn_backend : TRTLLM 
+ kv_cache_config :
+ max_tokens : 32768 
+
+ The recorded result was that these avoided the first TllmGenFmhaRunner failure, but still entered flashinfer.py and failed with a metadata mismatch:
+
+ swap_paged_kv_indices_for_layer missing on Vanilla/TrtllmAttentionMetadata
+
+ additional notes
+
+ I also pulled nvcr.io/nvidia/tensorrt-llm/devel:1.3.0rc22 , but it is not a drop-in replacement for the release image:
+
+ which trtllm-serve -> not found
+python3 importlib.util.find_spec("tensorrt_llm") -> None
+bash: line 1: trtllm-serve: command not found
+
+ The /workspace directory in the devel image contained README/tutorial/docker example files, but no TensorRT-LLM source checkout.
+
+ Source Build Attempt From Devel Image
+
+ I uploaded a TensorRT-LLM source checkout under:
+
+ /root/workspace/test_script/build/TensorRT-LLM
+
+ The README in the checkout identifies the release as 1.3.0rc22 . I attempted to build for:
+
+ --cuda_architectures=120-real
+
+ Important observations:
+
+ -- TensorRT LLM version: 1.3.0rc22
+-- CUDA compiler: /usr/local/cuda/bin/nvcc
+-- The CUDA compiler identification is NVIDIA 13.2.78 with host compiler GNU 13.3.0
+-- GPU architectures: 120
+-- Excluding SM 80
+-- Excluding SM 86
+-- Excluding SM 89
+-- Excluding SM 90
+-- Excluding SM 100
+-- Excluding SM 103
+-- Excluding SM 100F
+
+ So CMake did accept SM120 at configure time.
+
+ Build attempts:
+
+ Full build_wheel.py with requirements-dev.txt : container exited with code 137 during pip dependency installation.
+
+ Runtime-only requirements: container also exited with code 137 during pip dependency installation.
+
+ No-requirements build using preinstalled packages plus Conan: reached CMake configure and accepted SM120, but FetchContent[pybind11] GitHub clone hung/killed.
+
+ GitHub mirror/ghproxy: git ls-remote worked, but actual git clone still exited 137.
+
+ Minimal URL/tarball build with BUILD_DEEP_EP=OFF , BUILD_DEEP_GEMM=OFF , BUILD_FLASH_MLA=OFF , and pip-installed nanobind : nanobind resolved, but CUTLASS tarball download failed:
+
+ -- FetchContent[cutlass]: clone start
+-- Using src='https://ghproxy.net/https://github.com/NVIDIA/cutlass/archive/v4.4.2.tar.gz'
+CMake Error at .../download-cutlass-populate.cmake:163 (message):
+ error: downloading 'https://ghproxy.net/https://github.com/NVIDIA/cutlass/archive/v4.4.2.tar.gz' failed
+ status_string: "Stream error in the HTTP/2 framing layer"
+...
+HTTP/2 stream 1 was not closed cleanly: INTERNAL_ERROR (err 2)
+...
+CMake Error at /usr/local/cmake/share/cmake-4.0/Modules/FetchContent.cmake:1918 (message):
+ Build step for cutlass failed: 2
+
+ No usable TensorRT-LLM image with trtllm-serve was produced.
+
+ Questions
+
+ Is RTX PRO 5000 Blackwell / SM120 officially supported by nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc22 for Gemma NVFP4?
+
+ Is TllmGenFmhaRunner ... Unsupported architecture expected on SM120 in this image, or is this a missing FlashInfer/TRTLLM-gen FMHA cubin/kernel support issue?
+
+ What is the recommended attention backend and trtllm-serve configuration for Gemma NVFP4 on SM120?
+
+ Is the swap_paged_kv_indices_for_layer metadata mismatch with VANILLA / TRTLLM attention backends a known issue in 1.3.0rc22 ?
+
+ Which image should be used to build and run TensorRT-LLM for SM120 + Gemma NVFP4? Is there a newer internal/nightly image or documented source build path that includes all required dependencies?
+
+ Are there any required flags for NVFP4 acceleration on Blackwell that are not automatically enabled by trtllm-serve ?
+
+ Before submitting a new issue...
+
+ Make sure you already searched for relevant issues, and checked the documentation and examples for answers to frequently asked questions.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ Customized kernels <NV>Specialized/modified CUDA kernels in TRTLLM for LLM ops, beyond standard TRT. Dev & perf. <NV>Specialized/modified CUDA kernels in TRTLLM for LLM ops, beyond standard TRT. Dev & perf. bug Something isn't working Something isn't working 
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

@@ -1,0 +1,482 @@
+TITLE: DeepSeek-V4-Flash NVFP4 baseline aborts in AttentionOp on RTX PRO 6000 Blackwell: Deepseek should be supported by fmha · Issue #18039 · NVIDIA/TensorRT-LLM · GitHub
+CREATED_AT: 2026-08-20T21:24:48Z | 2026-08-20T21:25:11Z | 2026-08-20T21:25:19Z | 2026-08-20T21:25:20Z
+LABELS: Pytorch
+STATE_REASON: COMPLETED
+
+--- COMMENT 1 ---
+## Summary
+
+`nvidia/DeepSeek-V4-Flash-NVFP4` loads successfully with `trtllm-serve` on a 4x RTX PRO 6000 Blackwell AWS `g7e.24xlarge`, but the server aborts during attention warmup before the OpenAI API becomes usable.
+
+This is with MTP/speculative decoding disabled. MTP was also tested separately and hits the known-looking DeepSeek-V4 cache-manager failure tracked in #17024, but this issue is for the non-MTP baseline crash.
+
+## Environment
+
+- TensorRT-LLM image: `nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc24`
+- TensorRT-LLM version in logs: `1.3.0rc24`
+- Container base banner: NVIDIA Release 26.05, PyTorch `2.12.0a0+5aff392`
+- Host: AWS EC2 `g7e.24xlarge`
+- GPUs: 4x `NVIDIA RTX PRO 6000 Blackwell Server Edition`
+- Driver: `595.91.07`
+- CUDA: `13.2`
+- Model: `nvidia/DeepSeek-V4-Flash-NVFP4`
+- Model config: `model_type=deepseek_v4`, `architectures=['DeepseekV4ForCausalLM']`, `num_hidden_layers=43`, `num_nextn_predict_layers=1`, `max_position_embeddings=1048576`
+- Quantization: NVFP4 routed MoE experts (`moe_quant_algo=NVFP4`), mixed precision, `torch_dtype=bfloat16`
+
+## Launch Command
+
+```bash
+trtllm-serve serve nvidia/DeepSeek-V4-Flash-NVFP4 \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --backend pytorch \
+  --tp_size 4 \
+  --ep_size 4 \
+  --pp_size 1 \
+  --max_batch_size 4 \
+  --max_seq_len 32768 \
+  --kv_cache_free_gpu_memory_fraction 0.85
+```
+
+I also reproduced it without `--max_seq_len 32768`; in that case TRT inferred `max_seq_len=1048576`, but the same fatal assertion occurred. Capping context only reduced the warmup shape; it did not fix the abort.
+
+## What Works
+
+- Image starts.
+- Model downloads completely (`46/46` shards, about `157 GB`).
+- TRT-LLM detects DeepSeek-V4 and NVFP4:
+  - `Detected DeepSeek-V4 routed MoE ... using NVFP4 for routed experts`
+- Model weights load on all 4 GPUs.
+- Baseline uses `TorchSampler`:
+  - `[TRT-LLM] [I] [_torch][RANK 0] Using Sampler: TorchSampler`
+
+## Failure
+
+After model init and during warmup, all ranks abort in `AttentionOp::initialize()`:
+
+```text
+terminate called after throwing an instance of 'tensorrt_llm::_v1::common::TllmException'
+  what():  [TensorRT-LLM][ERROR] Assertion failed: Deepseek should be supported by fmha in generation part. (../tensorrt_llm/common/attentionOp.cpp:3187)
+
+1  tensorrt_llm::_v1::common::throwRuntimeError(char const*, int, char const*)
+2  tensorrt_llm::_v1::common::op::AttentionOp::initialize()
+3  /usr/local/lib/python3.12/dist-packages/tensorrt_llm/libs/libth_common.so
+4  tensorrt_llm::_v1::torch_ext::attention(...)
+```
+
+Immediately before the abort, the attention metadata dump includes a combination that seems suspicious for DeepSeek-V4 generation:
+
+```text
+FlashAttention = 1
+useSparseMLA = false
+useTllmGenSparseAttention = false
+fusesDsv4InvRopeFp8Quant = false
+```
+
+The OpenAI server never becomes usable:
+
+```bash
+curl http://localhost:8000/v1/models
+# curl: (56) Recv failure: Connection reset by peer
+```
+
+GPU memory drops back down after the worker aborts.
+
+## MTP Note
+
+MTP/speculative decoding was also tested with:
+
+```yaml
+speculative_config:
+  decoding_type: MTP
+  max_draft_len: 1
+```
+
+and with:
+
+```yaml
+speculative_config:
+  decoding_type: MTP
+  max_draft_len: 1
+  use_mtp_vanilla: true
+```
+
+Both hit:
+
+```text
+AttributeError: 'DeepseekV4CacheManager' object has no attribute '_num_tables'
+```
+
+That appears to be the same issue as #17024. This issue is separate because the non-MTP baseline also cannot serve due to the FMHA assertion above.
+
+## Ask
+
+Is `nvidia/DeepSeek-V4-Flash-NVFP4` expected to work in TensorRT-LLM PyTorch backend on 4x RTX PRO 6000 Blackwell (`SM120`) with `tp=4, ep=4`?
+
+If yes, what config is required to force the correct DeepSeek-V4 generation FMHA / sparse MLA attention path? If no, is there a recommended TensorRT-LLM image, branch, or backend for DeepSeek-V4-Flash NVFP4 on this GPU family?
+
+--- COMMENT 2 ---
+Closing this out; I’m going to continue debugging/patching locally instead of using this as an upstream support request.
+
+=== PAGE TEXT (non-comment) ===
+DeepSeek-V4-Flash NVFP4 baseline aborts in AttentionOp on RTX PRO 6000 Blackwell: Deepseek should be supported by fmha · Issue #18039 · NVIDIA/TensorRT-LLM · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ NVIDIA
+ 
+ / 
+ 
+ TensorRT-LLM 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 2.7k 
+
+ Star
+ 14.6k 
+
+ Code 
+
+ Issues 
+ 587 
+
+ Pull requests 
+ 875 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ DeepSeek-V4-Flash NVFP4 baseline aborts in AttentionOp on RTX PRO 6000 Blackwell: Deepseek should be supported by fmha #18039 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Closed 
+
+ Closed 
+ DeepSeek-V4-Flash NVFP4 baseline aborts in AttentionOp on RTX PRO 6000 Blackwell: Deepseek should be supported by fmha #18039 
+
+ Copy link 
+
+ Labels
+ Pytorch <NV>Pytorch backend related issues <NV>Pytorch backend related issues 
+
+ Description
+ 
+ rohash123 
+ opened on Aug 20, 2026 
+
+ Issue body actions 
+
+ Summary
+
+ nvidia/DeepSeek-V4-Flash-NVFP4 loads successfully with trtllm-serve on a 4x RTX PRO 6000 Blackwell AWS g7e.24xlarge , but the server aborts during attention warmup before the OpenAI API becomes usable.
+
+ This is with MTP/speculative decoding disabled. MTP was also tested separately and hits the known-looking DeepSeek-V4 cache-manager failure tracked in #17024 , but this issue is for the non-MTP baseline crash.
+
+ Environment
+
+ TensorRT-LLM image: nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc24 
+
+ TensorRT-LLM version in logs: 1.3.0rc24 
+
+ Container base banner: NVIDIA Release 26.05, PyTorch 2.12.0a0+5aff392 
+
+ Host: AWS EC2 g7e.24xlarge 
+
+ GPUs: 4x NVIDIA RTX PRO 6000 Blackwell Server Edition 
+
+ Driver: 595.91.07 
+
+ CUDA: 13.2 
+
+ Model: nvidia/DeepSeek-V4-Flash-NVFP4 
+
+ Model config: model_type=deepseek_v4 , architectures=['DeepseekV4ForCausalLM'] , num_hidden_layers=43 , num_nextn_predict_layers=1 , max_position_embeddings=1048576 
+
+ Quantization: NVFP4 routed MoE experts ( moe_quant_algo=NVFP4 ), mixed precision, torch_dtype=bfloat16 
+
+ Launch Command
+
+ trtllm-serve serve nvidia/DeepSeek-V4-Flash-NVFP4 \
+ --host 0.0.0.0 \
+ --port 8000 \
+ --backend pytorch \
+ --tp_size 4 \
+ --ep_size 4 \
+ --pp_size 1 \
+ --max_batch_size 4 \
+ --max_seq_len 32768 \
+ --kv_cache_free_gpu_memory_fraction 0.85
+
+ I also reproduced it without --max_seq_len 32768 ; in that case TRT inferred max_seq_len=1048576 , but the same fatal assertion occurred. Capping context only reduced the warmup shape; it did not fix the abort.
+
+ What Works
+
+ Image starts.
+
+ Model downloads completely ( 46/46 shards, about 157 GB ).
+
+ TRT-LLM detects DeepSeek-V4 and NVFP4:
+ 
+ Detected DeepSeek-V4 routed MoE ... using NVFP4 for routed experts 
+
+ Model weights load on all 4 GPUs.
+
+ Baseline uses TorchSampler :
+ 
+ [TRT-LLM] [I] [_torch][RANK 0] Using Sampler: TorchSampler 
+
+ Failure
+
+ After model init and during warmup, all ranks abort in AttentionOp::initialize() :
+
+ terminate called after throwing an instance of 'tensorrt_llm::_v1::common::TllmException'
+ what(): [TensorRT-LLM][ERROR] Assertion failed: Deepseek should be supported by fmha in generation part. (../tensorrt_llm/common/attentionOp.cpp:3187)
+
+1 tensorrt_llm::_v1::common::throwRuntimeError(char const*, int, char const*)
+2 tensorrt_llm::_v1::common::op::AttentionOp::initialize()
+3 /usr/local/lib/python3.12/dist-packages/tensorrt_llm/libs/libth_common.so
+4 tensorrt_llm::_v1::torch_ext::attention(...)
+
+ Immediately before the abort, the attention metadata dump includes a combination that seems suspicious for DeepSeek-V4 generation:
+
+ FlashAttention = 1
+useSparseMLA = false
+useTllmGenSparseAttention = false
+fusesDsv4InvRopeFp8Quant = false
+
+ The OpenAI server never becomes usable:
+
+ curl http://localhost:8000/v1/models
+ # curl: (56) Recv failure: Connection reset by peer 
+
+ GPU memory drops back down after the worker aborts.
+
+ MTP Note
+
+ MTP/speculative decoding was also tested with:
+
+ speculative_config :
+ decoding_type : MTP 
+ max_draft_len : 1 
+
+ and with:
+
+ speculative_config :
+ decoding_type : MTP 
+ max_draft_len : 1 
+ use_mtp_vanilla : true 
+
+ Both hit:
+
+ AttributeError: 'DeepseekV4CacheManager' object has no attribute '_num_tables'
+
+ That appears to be the same issue as #17024 . This issue is separate because the non-MTP baseline also cannot serve due to the FMHA assertion above.
+
+ Ask
+
+ Is nvidia/DeepSeek-V4-Flash-NVFP4 expected to work in TensorRT-LLM PyTorch backend on 4x RTX PRO 6000 Blackwell ( SM120 ) with tp=4, ep=4 ?
+
+ If yes, what config is required to force the correct DeepSeek-V4 generation FMHA / sparse MLA attention path? If no, is there a recommended TensorRT-LLM image, branch, or backend for DeepSeek-V4-Flash NVFP4 on this GPU family?
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ Pytorch <NV>Pytorch backend related issues <NV>Pytorch backend related issues 
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

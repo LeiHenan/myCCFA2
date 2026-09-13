@@ -1,0 +1,352 @@
+TITLE: [Performance]: Fuse local NVFP4 tail after NCCL fallback · Issue #17900 · NVIDIA/TensorRT-LLM · GitHub
+CREATED_AT: 2026-08-18T13:56:16Z | 2026-08-18T13:56:34Z
+LABELS: Model optimization
+
+--- COMMENT 1 ---
+## Proposal to improve performance
+
+On topologies without CUDA P2P support, `AllReduce::fallbackRunSubsequentOps` completes the collective with NCCL and then launches separate residual/RMSNorm and NVFP4 quantization kernels. For the NVFP4 residual-RMSNorm patterns on Blackwell, the existing `residualRmsNormFp4Quant` kernel can perform that local tail in one launch.
+
+The proposed change would use that fused local kernel after the NCCL collective when all of the following are true:
+
+- the fusion pattern is NVFP4 residual + RMSNorm, with or without a returned high-precision norm output;
+- the GPU is SM 10.x or SM 12.x;
+- tensors are contiguous FP16/BF16 with matching dtypes;
+- the per-tensor scale is a contiguous FP32 scalar;
+- there is no bias and the hidden dimension is divisible by 16.
+
+Every unsupported case keeps the current separated fallback path. The change does not alter NCCL itself or the P2P/custom-all-reduce paths.
+
+## Performance result
+
+On four RTX 5060 Ti GPUs (SM120, no CUDA P2P), the local tail at FP16 shape `[64, 8192]` improved from 0.103 ms for the separated sequence to 0.039 ms for the fused kernel: 62.1% lower latency, or 2.64x throughput for this component.
+
+A TensorRT-LLM PyTorch-backend E2E run with `NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4`, TP4/EP1 and NCCL all-reduce completed 25/25 non-empty requests. This E2E result validates the candidate path but is not presented as a model-level before/after speedup.
+
+## Correctness and build validation
+
+- SM120 source build completed with the candidate files compiled and linked.
+- Upstream multi-GPU pytest selection: 6 passed across hidden sizes 128/7168 and sequence lengths 16/256/8192. The node reported no P2P support, exercising the NCCL fallback topology.
+- Four-rank directed test of `RESIDUAL_RMS_NORM_OUT_QUANT_NVFP4`: residual max error 0, RMSNorm max error 0.00390, expected packed NVFP4 output shape.
+- Pre-commit passed for both changed C++ files.
+
+An unrelated SM120 paired-FP8 PTX build compatibility workaround was needed elsewhere in the checkout to complete the full source build; that workaround is intentionally not part of the proposed change.
+
+## Environment
+
+- GPU: 4x NVIDIA GeForce RTX 5060 Ti (SM120)
+- Python: 3.12
+- CUDA: 13.0
+- TensorRT: 11.2.1.2
+- PyTorch: 2.12
+- NCCL: 2.29.7
+- TensorRT-LLM base commit: `0eeda343df8cf44e743d00d1b666b08a43fde83e`
+
+I searched existing and closed issues for NCCL fallback, NVFP4, and RMSNorm combinations and did not find an issue covering this local tail fusion.
+
+=== PAGE TEXT (non-comment) ===
+[Performance]: Fuse local NVFP4 tail after NCCL fallback · Issue #17900 · NVIDIA/TensorRT-LLM · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ NVIDIA
+ 
+ / 
+ 
+ TensorRT-LLM 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 2.7k 
+
+ Star
+ 14.6k 
+
+ Code 
+
+ Issues 
+ 587 
+
+ Pull requests 
+ 875 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [Performance]: Fuse local NVFP4 tail after NCCL fallback #17900 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Open 
+ #17901 
+
+ Open 
+ [Performance]: Fuse local NVFP4 tail after NCCL fallback #17900 
+ #17901 
+
+ Copy link 
+
+ Labels
+ Model optimization <NV>Model-specific performance optimizations and tuning <NV>Model-specific performance optimizations and tuning 
+
+ Description
+ 
+ 0z5a 
+ opened on Aug 18, 2026 
+
+ Issue body actions 
+
+ Proposal to improve performance
+
+ On topologies without CUDA P2P support, AllReduce::fallbackRunSubsequentOps completes the collective with NCCL and then launches separate residual/RMSNorm and NVFP4 quantization kernels. For the NVFP4 residual-RMSNorm patterns on Blackwell, the existing residualRmsNormFp4Quant kernel can perform that local tail in one launch.
+
+ The proposed change would use that fused local kernel after the NCCL collective when all of the following are true:
+
+ the fusion pattern is NVFP4 residual + RMSNorm, with or without a returned high-precision norm output;
+
+ the GPU is SM 10.x or SM 12.x;
+
+ tensors are contiguous FP16/BF16 with matching dtypes;
+
+ the per-tensor scale is a contiguous FP32 scalar;
+
+ there is no bias and the hidden dimension is divisible by 16.
+
+ Every unsupported case keeps the current separated fallback path. The change does not alter NCCL itself or the P2P/custom-all-reduce paths.
+
+ Performance result
+
+ On four RTX 5060 Ti GPUs (SM120, no CUDA P2P), the local tail at FP16 shape [64, 8192] improved from 0.103 ms for the separated sequence to 0.039 ms for the fused kernel: 62.1% lower latency, or 2.64x throughput for this component.
+
+ A TensorRT-LLM PyTorch-backend E2E run with NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4 , TP4/EP1 and NCCL all-reduce completed 25/25 non-empty requests. This E2E result validates the candidate path but is not presented as a model-level before/after speedup.
+
+ Correctness and build validation
+
+ SM120 source build completed with the candidate files compiled and linked.
+
+ Upstream multi-GPU pytest selection: 6 passed across hidden sizes 128/7168 and sequence lengths 16/256/8192. The node reported no P2P support, exercising the NCCL fallback topology.
+
+ Four-rank directed test of RESIDUAL_RMS_NORM_OUT_QUANT_NVFP4 : residual max error 0, RMSNorm max error 0.00390, expected packed NVFP4 output shape.
+
+ Pre-commit passed for both changed C++ files.
+
+ An unrelated SM120 paired-FP8 PTX build compatibility workaround was needed elsewhere in the checkout to complete the full source build; that workaround is intentionally not part of the proposed change.
+
+ Environment
+
+ GPU: 4x NVIDIA GeForce RTX 5060 Ti (SM120)
+
+ Python: 3.12
+
+ CUDA: 13.0
+
+ TensorRT: 11.2.1.2
+
+ PyTorch: 2.12
+
+ NCCL: 2.29.7
+
+ TensorRT-LLM base commit: 0eeda343df8cf44e743d00d1b666b08a43fde83e 
+
+ I searched existing and closed issues for NCCL fallback, NVFP4, and RMSNorm combinations and did not find an issue covering this local tail fusion.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ Model optimization <NV>Model-specific performance optimizations and tuning <NV>Model-specific performance optimizations and tuning 
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

@@ -1,0 +1,561 @@
+TITLE: [Bug] Qwen3.8-Flash-Next on sm_120 (RTX PRO 6000 Blackwell): QSA decode kernel gated to sm_100, plus contradictory SSM dtype checks · Issue #36701 · sgl-project/sglang · GitHub
+CREATED_AT: 2026-08-27T12:35:40Z | 2026-08-27T13:01:57Z | 2026-08-27T14:52:51Z
+STATE_REASON: COMPLETED
+
+--- COMMENT 1 ---
+## Summary
+
+On **sm_120** (RTX PRO 6000 Blackwell / GB202), `Qwen3.8-Flash-Next` cannot start: QSA decode crashes inside the flash-attn-4 CuTe fallback. The root cause is that the working trtllm-gen decode kernel is gated behind `is_sm100_supported()`, even though it imports and runs fine on sm_120.
+
+A second, independent problem makes the `flashinfer` linear-attention backend unusable on sm_120 due to two contradictory dtype checks.
+
+Patching the first gate and switching linear attention to `triton` gives a fully working server, including NEXTN/MTP speculative decoding at **249 tok/s** single-stream.
+
+## Environment
+
+| | |
+|---|---|
+| GPUs | 4× NVIDIA RTX PRO 6000 Blackwell Server Edition, **compute capability 12.0 (sm_120)**, 96 GB each |
+| Driver / CUDA | 580.126.09 / CUDA 13.0 |
+| Image | `lmsysorg/sglang:qwen38flashnext` |
+| SGLang | `0.0.0.dev1+gd91c3682b` (commit `d91c3682b0b429e4c70df63cd57f819588ce29b0`, 2026-08-16) |
+| flashinfer | 0.6.17 · flash-attn-4 4.0.0b19 · torch 2.13.0+cu130 |
+| Model | `Qwen/Qwen3.8-Flash-Next-FP8` (also reproduced with NVFP4 builds) |
+
+---
+
+## Issue 1 — QSA decode kernel gated to sm_100, fallback is broken on sm_120
+
+`python/sglang/srt/layers/attention/qwen_sparse_attn_backend.py`:
+
+```python
+@lru_cache(maxsize=1)
+def _resolve_trtllm_sparse_decode():
+    from sglang.srt.utils import is_sm100_supported
+
+    if not is_sm100_supported():
+        return None
+    try:
+        from flashinfer.decode import trtllm_batch_decode_with_kv_cache
+    ...
+```
+
+On sm_120 this returns `None`, so `_forward_paged_attention` takes the `_resolve_flash_attn_varlen_func()` path. Since only `flash-attn-4` is installed (no FA2), that resolves to `flash_attn.cute.interface`, which dies at the first decode:
+
+```
+File ".../layers/attention/qwen_sparse_attn_backend.py", line 1658, in forward_decode
+File ".../layers/attention/qwen_sparse_attn_backend.py", line 1741, in _forward_paged_attention
+File ".../layers/attention/qwen_sparse_attn_backend.py", line 86, in flash_attn_varlen_func
+cutlass._mlir._mlir_libs._site_initialize.<locals>.MLIRError: Operation creation failed:
+error: unknown: expects `coord` and shape of view are weakly congruent,
+       but got '!cute.layout<"(?,?):(?{i64 div=8},1)">', '!cute.coord<"(_,_,?)">'
+```
+
+**The gated kernel is available on this hardware.** Verified inside the same container, on the same GPUs:
+
+```
+trtllm_batch_decode_with_kv_cache: IMPORT OK
+device: NVIDIA RTX PRO 6000 Blackwell Server Edition | capability: (12, 0)
+```
+
+Relaxing the gate to also accept sm_120 resolves it completely:
+
+```python
+    from sglang.srt.utils import is_sm100_supported, is_sm120_supported
+
+    if not (is_sm100_supported() or is_sm120_supported()):
+        return None
+```
+
+With that change the server starts and serves correctly (`--page-size 64` is required for this path).
+
+Note this is not quantization-specific — it reproduces identically with FP8 and NVFP4, at `--tp 2` and `--tp 4 --ep 4`, and is unaffected by `--attention-backend`, `--moe-runner-backend`, or `--fp4-gemm-backend`.
+
+## Issue 2 — Contradictory SSM dtype requirements make `flashinfer` linear attention unusable on sm_120
+
+Two checks disagree about which dtype sm_120 should use:
+
+**a)** SGLang rejects float32 with the flashinfer backend:
+```
+ValueError: --linear-attn-decode-backend flashinfer on SM100+ requires
+            --mamba-ssm-dtype bfloat16, got 'float32'
+```
+
+**b)** `flashinfer/gdn_prefill.py::chunk_gated_delta_rule` only permits bfloat16 when compute capability is **exactly** 10:
+```python
+state_checkpoint_dtypes: tuple[torch.dtype, ...] = (torch.float32,)
+if q.is_cuda and get_compute_capability(q.device)[0] == 10:
+    state_checkpoint_dtypes = _SM100_STATE_DTYPES
+if state_checkpoints.dtype not in state_checkpoint_dtypes:
+    raise ValueError(...)
+```
+giving, with `--mamba-ssm-dtype bfloat16`:
+```
+ValueError: state_checkpoints must have dtype float32, got torch.bfloat16
+```
+
+sm_120 satisfies neither branch: `"SM100+"` in (a) treats 12.0 as ≥ 10.0, while (b) requires `== 10`. The flashinfer linear-attn backend is therefore unreachable on sm_120; `--linear-attn-prefill-backend triton --linear-attn-decode-backend triton --mamba-ssm-dtype float32` is the only working combination, presumably at some performance cost.
+
+## Issue 3 — NVFP4 + expert parallelism: `w13_input_scale` not sharded
+
+With `--tp 4 --ep 4` on an NVFP4 checkpoint, `modelopt_quant.py::_compute_gemm1_alphas` multiplies an unsharded scale by a sharded one:
+
+```
+File ".../layers/quantization/modelopt_quant.py", line 2450, in process_weights_after_loading
+    g1_alphas, g1_alphas_up = _compute_gemm1_alphas(
+File ".../layers/quantization/modelopt_quant.py", line 2119, in _compute_gemm1_alphas
+    g1_alphas = (w13_input_scale * gate_scale).to(torch.float32)
+RuntimeError: The size of tensor a (512) must match the size of tensor b (128) at non-singleton dimension 0
+```
+
+512 = `num_experts`, 128 = experts per EP rank, so `w13_input_scale` appears not to be sliced for expert parallelism.
+
+Separately, NVFP4 at `--tp 4` (without EP) fails earlier because `moe_intermediate_size=640` does not shard 4 ways for the swizzled block-scale layout:
+```
+AssertionError: The intermediate size required padding, but padding is also implemented for gated activations
+```
+(That message reads like it should say "is **not** implemented".)
+
+## Working configuration on sm_120 (after the Issue 1 patch)
+
+```bash
+python3 -m sglang.launch_server --model-path /model \
+  --tp 4 --ep 4 --context-length 131072 --mem-fraction-static 0.85 \
+  --chunked-prefill-size 8192 --page-size 64 \
+  --linear-attn-prefill-backend triton --linear-attn-decode-backend triton \
+  --linear-attn-verify-backend triton --mamba-ssm-dtype float32 \
+  --speculative-algorithm NEXTN --speculative-num-steps 3 \
+  --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 \
+  --reasoning-parser auto --disable-custom-all-reduce
+```
+
+Measured on 4× RTX PRO 6000 (unique prompts, ~1.8K in / 256 out, `ignore_eos`):
+
+| Concurrency | FP8 | FP8 + MTP |
+|---|---|---|
+| 1 | 107 tok/s | **249 tok/s** |
+| 8 | 78 | 108 |
+| 32 | 39 | 44 |
+| peak aggregate | 1,338 tok/s @128 | 1,097 tok/s @48 |
+
+Zero errors across ~1,000 requests in both configurations.
+
+## Suggested fixes
+
+1. Extend the `_resolve_trtllm_sparse_decode()` gate to sm_120 (or gate on kernel availability rather than a hardcoded SM check).
+2. Reconcile the two SSM-state dtype checks so sm_120 has a valid combination.
+3. Slice `w13_input_scale` by EP rank in `_compute_gemm1_alphas`.
+4. Fix the wording of the gated-activation padding assertion.
+
+I'm happy to test patches on this hardware.
+
+--- COMMENT 2 ---
+Both halves of this are known upstream, and the first has an open fix.
+
+Issue 1 is #36531 / #36558, fixed by PR #36556. That PR does at the resolver exactly what your local patch does (the gate becomes family-12 rather than sm_100), and it additionally replaces the pip `flash_attn.cute` varlen fallback with an SGLang-owned FA4 dispatcher, so the path you crashed in is routed around as well. Verified A/B on this hardware class (single RTX PRO 6000, sm_120, same image): base crashes with your exact `MLIRError ... weakly congruent` signature, and with only the PR's backend hunk applied it boots and serves; the PR's test file goes 2 failed / 53 passed to 55 passed on GB10 as well. Your gate patch reaching the working trtllm decode path is consistent with all of that, so tracking the PR beats carrying a fork.
+
+One caveat worth knowing since you run NEXTN: there is an open report of sparse-regime output corruption on the other SM12x part (#36558: GB10 / DGX Spark, long contexts, generations become unbroken runs of token id 0, sticky until restart; exact threshold not yet pinned down by its author). On sm_120 it did not reproduce here: with the PR applied and real weights, QSA decode output is byte-identical to a `--decode-attention-backend flashinfer` override at 2,125 / 21,170 / 43,317 prompt tokens (TP=1, NEXTN off, temperature 0). Your working server is another sm_120-clean signal, but if you serve long contexts a spot check is cheap, and per-arch gating is being discussed on the PR before it lands.
+
+On issue 2, a datapoint rather than a fix: on this box the flashinfer linear-attention decode backend does work on sm_120 when the SSM dtype is pinned explicitly. `--linear-attn-prefill-backend triton --linear-attn-decode-backend flashinfer --mamba-ssm-dtype bfloat16` boots and serves on the same image with `RadixArk/Qwen3.8-Flash-Next-NVFP4`; without the explicit `--mamba-ssm-dtype bfloat16` the launch dies in validation before touching the GPU. The contradictory-checks report is #36532. Switching linear attention to triton is equally valid; the explicit dtype just keeps the flashinfer decode path available.
+
+--- COMMENT 3 ---
+Thanks, closing this now, thanks your time :)
+
+=== PAGE TEXT (non-comment) ===
+[Bug] Qwen3.8-Flash-Next on sm_120 (RTX PRO 6000 Blackwell): QSA decode kernel gated to sm_100, plus contradictory SSM dtype checks · Issue #36701 · sgl-project/sglang · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ sgl-project
+ 
+ / 
+ 
+ sglang 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 8.8k 
+
+ Star
+ 35.9k 
+
+ Code 
+
+ Issues 
+ 891 
+
+ Pull requests 
+ 4.4k 
+
+ Discussions 
+
+ Actions 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Security and quality
+
+ Insights
+
+ [Bug] Qwen3.8-Flash-Next on sm_120 (RTX PRO 6000 Blackwell): QSA decode kernel gated to sm_100, plus contradictory SSM dtype checks #36701 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Closed 
+
+ Closed 
+ [Bug] Qwen3.8-Flash-Next on sm_120 (RTX PRO 6000 Blackwell): QSA decode kernel gated to sm_100, plus contradictory SSM dtype checks #36701 
+
+ Copy link 
+
+ Description
+ 
+ DeanoC 
+ opened on Aug 27, 2026 
+
+ Issue body actions 
+
+ Summary
+
+ On sm_120 (RTX PRO 6000 Blackwell / GB202), Qwen3.8-Flash-Next cannot start: QSA decode crashes inside the flash-attn-4 CuTe fallback. The root cause is that the working trtllm-gen decode kernel is gated behind is_sm100_supported() , even though it imports and runs fine on sm_120.
+
+ A second, independent problem makes the flashinfer linear-attention backend unusable on sm_120 due to two contradictory dtype checks.
+
+ Patching the first gate and switching linear attention to triton gives a fully working server, including NEXTN/MTP speculative decoding at 249 tok/s single-stream.
+
+ Environment
+
+ GPUs 
+ 4× NVIDIA RTX PRO 6000 Blackwell Server Edition, compute capability 12.0 (sm_120) , 96 GB each 
+
+ Driver / CUDA 
+ 580.126.09 / CUDA 13.0 
+
+ Image 
+ lmsysorg/sglang:qwen38flashnext 
+
+ SGLang 
+ 0.0.0.dev1+gd91c3682b (commit d91c3682b0b429e4c70df63cd57f819588ce29b0 , 2026-08-16) 
+
+ flashinfer 
+ 0.6.17 · flash-attn-4 4.0.0b19 · torch 2.13.0+cu130 
+
+ Model 
+ Qwen/Qwen3.8-Flash-Next-FP8 (also reproduced with NVFP4 builds) 
+
+ Issue 1 — QSA decode kernel gated to sm_100, fallback is broken on sm_120
+
+ python/sglang/srt/layers/attention/qwen_sparse_attn_backend.py :
+
+ @ lru_cache ( maxsize = 1 ) 
+ def _resolve_trtllm_sparse_decode ():
+ from sglang . srt . utils import is_sm100_supported 
+
+ if not is_sm100_supported ():
+ return None 
+ try :
+ from flashinfer . decode import trtllm_batch_decode_with_kv_cache 
+ ...
+
+ On sm_120 this returns None , so _forward_paged_attention takes the _resolve_flash_attn_varlen_func() path. Since only flash-attn-4 is installed (no FA2), that resolves to flash_attn.cute.interface , which dies at the first decode:
+
+ File ".../layers/attention/qwen_sparse_attn_backend.py", line 1658, in forward_decode
+File ".../layers/attention/qwen_sparse_attn_backend.py", line 1741, in _forward_paged_attention
+File ".../layers/attention/qwen_sparse_attn_backend.py", line 86, in flash_attn_varlen_func
+cutlass._mlir._mlir_libs._site_initialize.<locals>.MLIRError: Operation creation failed:
+error: unknown: expects `coord` and shape of view are weakly congruent,
+ but got '!cute.layout<"(?,?):(?{i64 div=8},1)">', '!cute.coord<"(_,_,?)">'
+
+ The gated kernel is available on this hardware. Verified inside the same container, on the same GPUs:
+
+ trtllm_batch_decode_with_kv_cache: IMPORT OK
+device: NVIDIA RTX PRO 6000 Blackwell Server Edition | capability: (12, 0)
+
+ Relaxing the gate to also accept sm_120 resolves it completely:
+
+ from sglang . srt . utils import is_sm100_supported , is_sm120_supported 
+
+ if not ( is_sm100_supported () or is_sm120_supported ()):
+ return None 
+
+ With that change the server starts and serves correctly ( --page-size 64 is required for this path).
+
+ Note this is not quantization-specific — it reproduces identically with FP8 and NVFP4, at --tp 2 and --tp 4 --ep 4 , and is unaffected by --attention-backend , --moe-runner-backend , or --fp4-gemm-backend .
+
+ Issue 2 — Contradictory SSM dtype requirements make flashinfer linear attention unusable on sm_120
+
+ Two checks disagree about which dtype sm_120 should use:
+
+ a) SGLang rejects float32 with the flashinfer backend:
+
+ ValueError: --linear-attn-decode-backend flashinfer on SM100+ requires
+ --mamba-ssm-dtype bfloat16, got 'float32'
+
+ b) flashinfer/gdn_prefill.py::chunk_gated_delta_rule only permits bfloat16 when compute capability is exactly 10:
+
+ state_checkpoint_dtypes : tuple [ torch . dtype , ...] = ( torch . float32 ,)
+ if q . is_cuda and get_compute_capability ( q . device )[ 0 ] == 10 :
+ state_checkpoint_dtypes = _SM100_STATE_DTYPES 
+ if state_checkpoints . dtype not in state_checkpoint_dtypes :
+ raise ValueError (...)
+
+ giving, with --mamba-ssm-dtype bfloat16 :
+
+ ValueError: state_checkpoints must have dtype float32, got torch.bfloat16
+
+ sm_120 satisfies neither branch: "SM100+" in (a) treats 12.0 as ≥ 10.0, while (b) requires == 10 . The flashinfer linear-attn backend is therefore unreachable on sm_120; --linear-attn-prefill-backend triton --linear-attn-decode-backend triton --mamba-ssm-dtype float32 is the only working combination, presumably at some performance cost.
+
+ Issue 3 — NVFP4 + expert parallelism: w13_input_scale not sharded
+
+ With --tp 4 --ep 4 on an NVFP4 checkpoint, modelopt_quant.py::_compute_gemm1_alphas multiplies an unsharded scale by a sharded one:
+
+ File ".../layers/quantization/modelopt_quant.py", line 2450, in process_weights_after_loading
+ g1_alphas, g1_alphas_up = _compute_gemm1_alphas(
+File ".../layers/quantization/modelopt_quant.py", line 2119, in _compute_gemm1_alphas
+ g1_alphas = (w13_input_scale * gate_scale).to(torch.float32)
+RuntimeError: The size of tensor a (512) must match the size of tensor b (128) at non-singleton dimension 0
+
+ 512 = num_experts , 128 = experts per EP rank, so w13_input_scale appears not to be sliced for expert parallelism.
+
+ Separately, NVFP4 at --tp 4 (without EP) fails earlier because moe_intermediate_size=640 does not shard 4 ways for the swizzled block-scale layout:
+
+ AssertionError: The intermediate size required padding, but padding is also implemented for gated activations
+
+ (That message reads like it should say "is not implemented".)
+
+ Working configuration on sm_120 (after the Issue 1 patch)
+
+ python3 -m sglang.launch_server --model-path /model \
+ --tp 4 --ep 4 --context-length 131072 --mem-fraction-static 0.85 \
+ --chunked-prefill-size 8192 --page-size 64 \
+ --linear-attn-prefill-backend triton --linear-attn-decode-backend triton \
+ --linear-attn-verify-backend triton --mamba-ssm-dtype float32 \
+ --speculative-algorithm NEXTN --speculative-num-steps 3 \
+ --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 \
+ --reasoning-parser auto --disable-custom-all-reduce
+
+ Measured on 4× RTX PRO 6000 (unique prompts, ~1.8K in / 256 out, ignore_eos ):
+
+ Concurrency 
+ FP8 
+ FP8 + MTP 
+
+ 1 
+ 107 tok/s 
+ 249 tok/s 
+
+ 8 
+ 78 
+ 108 
+
+ 32 
+ 39 
+ 44 
+
+ peak aggregate 
+ 1,338 tok/s @128 
+ 1,097 tok/s @48 
+
+ Zero errors across ~1,000 requests in both configurations.
+
+ Suggested fixes
+
+ Extend the _resolve_trtllm_sparse_decode() gate to sm_120 (or gate on kernel availability rather than a hardcoded SM check).
+
+ Reconcile the two SSM-state dtype checks so sm_120 has a valid combination.
+
+ Slice w13_input_scale by EP rank in _compute_gemm1_alphas .
+
+ Fix the wording of the gated-activation padding assertion.
+
+ I'm happy to test patches on this hardware.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ No labels No labels
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

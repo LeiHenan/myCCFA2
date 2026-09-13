@@ -1,0 +1,500 @@
+TITLE: [Perf][Kernel] Adopt PTX 9.4 `ldmatrix.s8.s4` (hardware INT4→INT8 expanding load) in W4A8-INT8 paths · Issue #49529 · vllm-project/vllm · GitHub
+CREATED_AT: 2026-07-23T05:56:11Z | 2026-07-23T05:56:12Z | 2026-07-23T05:56:13Z | 2026-07-23T06:01:49Z
+LABELS: good first issue, performance, quantization
+
+--- COMMENT 1 ---
+## Summary
+
+PTX ISA 9.4 (CUDA 13.4.0 Developer Preview) exposes a new `ldmatrix` variant that performs **in-flight sign extension of packed INT4 to INT8 during the shared-memory matrix load**:
+
+```
+ldmatrix.sync.aligned.m8n16.{x1,x2,x4}{.shared{::cta}}.s8.s4  r, [p];
+```
+
+Source data is densely packed signed 4-bit elements; the hardware expands them to signed 8-bit values in the destination fragment. This can eliminate the register-level INT4→INT8 unpack sequences (`lop3`/`prmt` bit tricks and PRMT LUTs) in our W4A8-INT8 kernels, and potentially the dequant-oriented weight interleaving in repack.
+
+Doc: PTX ISA 9.4, §9.7.16.5.15 (`ldmatrix`), https://docs.nvidia.com/cuda/developer-preview/13.4/parallel-thread-execution/index.html
+
+## Hardware verification (already done)
+
+Verified with `ptxas`/`nvdisasm` from CUDA 13.4.0 preview (`V13.4.46`), no GPU required:
+
+- `ptxas` accepts the instruction for **sm_90a, sm_100a/f, sm_103a, sm_107a/f, sm_110f, sm_120f, sm_121a** (PTX targets per doc: `sm_90a, sm_100f, sm_110f, sm_120f`).
+- SASS is a **single LDSM instruction** on every architecture — no unpack sequence is generated. The encoding is bit-identical across all seven targets (opcode `0x783b` = LDSM, modifier `0x9000/0x9100/0x9200` for x1/x2/x4; cf. `LDSM.16.M88` = `0x0000`, `LDSM.U4x16P64TO8.M816` = `0xa800`, `LDSM.U6x16P32TO8.M816` = `0xb000`).
+- Notably **Hopper (sm_90a) is supported** — the datapath appears to have existed in silicon since GH100; PTX 9.4 merely exposes it. Existing H100/H200 fleets benefit immediately.
+- `nvdisasm` 13.4 does not yet print a mnemonic for this modifier (hex only); expect this to be fixed in the GA release.
+
+## Affected code paths
+
+(vLLM @ `76bf55240`, 2026-07-23)
+
+### 1. Marlin W4A8-INT8 — replaceable (bit-exact)
+
+- `csrc/libtorch_stable/quantization/marlin/dequant.h:494` — `dequant<int32_t, kU4B8>`: unpacks two nibbles per pass with `(q & 0x0F0F0F0F | 0x80808080) - 0x08080808) ^ 0x80808080`, i.e. u4-with-bias-8 → s8.
+- `csrc/libtorch_stable/quantization/marlin/marlin_template.h:945` — `frag_b_quant` is loaded from shared memory with plain 128-bit loads over Marlin's dequant-interleaved layout, then dequanted at `marlin_template.h:1163` (`dequant_data`).
+- `csrc/libtorch_stable/quantization/marlin/gptq_marlin_repack.cu` — repack currently bakes in the dequant interleave.
+
+**Equivalence:** for `kU4B8`, stored nibble `v ∈ [0,15]` yields output `v − 8`. Storing `s4 = v XOR 0x8` at repack time (free) makes `sign_extend(s4) == v − 8` **bit-exact**. The ALU sequence (≈6 ops per 32-bit word × 2 fragments) disappears, and the B-fragment interleave in repack can be dropped in favor of the canonical 8-bit `ldmatrix` tile layout.
+
+### 2. Machete W4A8-INT8 — replaceable (bit-exact)
+
+- `csrc/libtorch_stable/cutlass_extensions/vllm_numeric_conversion.cuh:213` — `NumericArrayConverter<int8_t, vllm_uint4b8_t>` implements the identical `[-8..7]` mapping via a PRMT LUT (`lut_4bit_to_8bit_convert`, line 158). Used by the Machete mainloop's register-transform stage.
+- Replacement means moving the conversion out of the CUTLASS transform pipeline into the smem→rmem copy atom; requires a new copy atom + prepacked-layout adjustment in `machete_prepacked_layout.cuh` rather than a converter swap. Larger change; track separately as phase 2.
+
+### 3. Marlin W4A8-INT8 with runtime zero-point — partially replaceable
+
+- `csrc/libtorch_stable/quantization/marlin/dequant.h:570` — `sub_zp_and_dequant<int32_t, kU4>` (asymmetric AWQ-style zp, see #24722). Pure sign extension can't absorb a runtime zp, but `ldmatrix.s8.s4` + one packed s8 correction add (`zp − 8` per group) still beats the current mask/sub/xor sequence. Lower priority.
+
+### 4. Out of scope
+
+- `cutlass_w4a8/` (W4A8-**FP8**, `MmaType = e4m3`): target type is FP8, not covered by this instruction.
+- `moe/moe_wna16_utils.h`, AWQ/GPTQ FP16 paths: dequant target is FP16/BF16.
+
+## Proposed plan
+
+- [ ] **Phase 0 — layout verification**: confirm the `m8n16.s8.s4` output fragment layout matches `mma.m16n8k32.s8` operand-B fragments (the `m8n16`/`m16n16` 8-bit ldmatrix shapes were introduced in PTX 8.6 for exactly this pairing; verify the s4 source packing order within each 8-byte row against our repack output). Only `m8n16` is available for `.s8.s4` (no `.trans`), so B must be stored K-major in smem.
+- [ ] **Phase 1 — Marlin symmetric path (`kU4B8`)**:
+  - repack: store `v XOR 0x8` nibbles, drop dequant interleave for the `is_a_8bit && !has_zp` configuration;
+  - kernel: replace `frag_b_quant` plain loads + `dequant` with `ldmatrix.m8n16.x4.s8.s4`, guarded by `__CUDA_ARCH_FAMILY_SPECIFIC__` / arch macros for {90a, 100f, 110f, 120f} and `CUDA >= 13.4`;
+  - keep the existing lop3 path as fallback for sm_80/86/89 and older toolkits.
+  - **No on-disk/checkpoint format change**: repack runs at weight-loading time (`process_weights_after_loading` → `ops.gptq_marlin_repack`); both transforms live inside the repack kernel and only affect the in-GPU-memory layout.
+  - The in-memory Marlin layout becomes kernel-variant-dependent (ldmatrix layout vs legacy interleave). Repack must take a layout-variant flag driven by the same arch/toolkit predicate as kernel selection; if repacked-weight caching across processes is ever introduced, the layout needs a version tag.
+- [ ] **Phase 1.5 — benchmark**: microbench LDSM-expand vs LDS+lop3 (MIO-pipe pressure vs ALU pressure; note Marlin is often ALU-bound in the dequant stage at high occupancy), plus end-to-end gptq W4A8-INT8 throughput on H100/H200, B200, RTX 5090.
+- [ ] **Phase 2 — Machete**: smem→rmem copy atom using `ldmatrix.s8.s4`, prepacked layout update.
+- [ ] **Phase 3 — zp path**: evaluate `ldmatrix.s8.s4` + packed correction add for `sub_zp_and_dequant`.
+
+## Caveats
+
+- CUDA 13.4 is currently a **Developer Preview**; land behind a build-time gate and revisit at GA. Instruction availability/targets could still shift (precedent: a→f promotions between 8.6 and 8.8).
+- `nvdisasm` cannot yet name the instruction; debugging SASS requires reading hex until tooling catches up.
+- Ada (sm_89) and Ampere keep the existing path permanently — the instruction is sm_90+ only.
+
+## References
+
+- PTX ISA 9.4 release notes: "Adds support for `.s8.s4` types for `ldmatrix` instruction for `.m8n16` shape" — targets `sm_90a, sm_100f, sm_110f, sm_120f`.
+- Existing sub-byte ldmatrix formats (`.b6x16_p32`, `.b4x16_p64`, unsigned, padded) introduced in PTX 8.6 for the f8f6f4 MMA path — the new `.s8.s4` differs in being **densely packed** and **sign-extending**.
+- #24722 (Marlin W4A8-INT8 dequant tricks this would supersede on sm_90+).
+
+--- COMMENT 2 ---
+Please assign this to me, thanks! @Harry-Chen 
+
+I'm starting with Phase 0 layout verification, then proceed with Phase 1 for the symmetric Marlin `kU4B8` path.
+
+--- COMMENT 3 ---
+Hi, I’m interested in picking up Phase 0 and potentially Phase 1 (the Marlin symmetric path).
+
+My initial plan is to:
+Build a minimal, standalone CUDA/PTX test for the m8n16.x1/x2/x4.s8.s4 variants.
+Dump the destination registers for all 32 lanes using a deterministic packed-S4 input.
+Compare the results against a CPU sign-extension reference.
+Verify that the resulting fragment layout exactly matches the operand-B layout expected by mma.m16n8k32.s8.
+Document the required K-major shared-memory packing.
+If the layout is compatible, proceed with integrating this into a separate Marlin symmetric-path kernel.
+
+I can provide correctness results and local microbenchmarks on an RTX 5060 Ti. However, I will likely need help from the community for performance validation on H100, B200, or RTX 5090 hardware.
+
+--- COMMENT 4 ---
+@WorldExplored @NongFuShangQuan Thanks very much for your interest! I think there will be some time before we have CUDA 13.4 available in our CI environment, so we could always propose the changes and test locally first. You can also discuss to avoid duplicated effort on the same task.
+
+--- COMMENT 5 ---
+@Harry-Chen @WorldExplored @NongFuShangQuan If it's possible, please count me in!!
+
+--- COMMENT 6 ---
+> Hi, I’m interested in picking up Phase 0 and potentially Phase 1 (the Marlin symmetric path).
+> 
+> My initial plan is to: Build a minimal, standalone CUDA/PTX test for the m8n16.x1/x2/x4.s8.s4 variants. Dump the destination registers for all 32 lanes using a deterministic packed-S4 input. Compare the results against a CPU sign-extension reference. Verify that the resulting fragment layout exactly matches the operand-B layout expected by mma.m16n8k32.s8. Document the required K-major shared-memory packing. If the layout is compatible, proceed with integrating this into a separate Marlin symmetric-path kernel.
+> 
+> I can provide correctness results and local microbenchmarks on an RTX 5060 Ti. However, I will likely need help from the community for performance validation on H100, B200, or RTX 5090 hardware.
+
+Hey @NongFuShangQuan thanks for the help, but I plan to do both Phase 0 and 1. If you want, you can make a PR related to 1.5, 2 and 3 If you would like! I am working on the correctness for the results as well.
+
+--- COMMENT 7 ---
+Thanks for clarifying! I’ll avoid duplicating the Phase 0 and Phase 1 work.
+I’d like to take on Phase 1.5, focusing on benchmarking and profiling infrastructure. I can deliver correctness validation, kernel-level microbenchmarks, along with Nsight Compute profiling results on an RTX 5060 Ti (sm_120).
+Once your Phase 1 kernel is ready for benchmarking, could you share a link to your working branch? I can start building out the benchmark harness in parallel.
+
+--- COMMENT 8 ---
+I'll take Phase 3: use `ldmatrix.s8.s4` for the load, then add a per-group correction to handle the runtime zero-point, replacing the current mask/sub/xor path in `sub_zp_and_dequant`.
+
+--- COMMENT 9 ---
+I noticed that the CUDA 13.4 Developer Preview release notes state that performance data collected with the preview must not be published, reported,or compared.
+
+Since Phase 1.5 asks for public benchmark results, should I restrict the current work to correctness and benchmark infrastructure until CUDA 13.4 GA,or is there an approved way to share the requested results?
+
+--- COMMENT 10 ---
+Hi @Harry-Chen, I'd like to work on this issue (Phase 1: Marlin symmetric path).
+
+I've started Phase 0 verification against the current code and confirmed:
+
+1. **Current W4A8 repack layout**: `gptq_marlin_repack.cu` `repack_tile()` uses `pack_idx[8] = {0,4,1,5,2,6,3,7}` (dequant interleave) for `is_a_8bit && num_bits == 4`.
+2. **Current dequant**: `dequant.h:494` `dequant<int32_t, kU4B8>` uses the `((q & 0x0F0F0F0F | 0x80808080) - 0x08080808) ^ 0x80808080` trick to map u4 `v ∈ [0,15]` → s8 `v - 8`.
+3. **Bit-exact equivalence**: storing `s4 = v XOR 0x8` at repack time makes `sign_extend(s4) == v - 8` — exactly what `ldmatrix.s8.s4` provides in hardware. So the register-level dequant sequence (≈6 ops per 32-bit word × 2 fragments) can be eliminated, and the B-fragment dequant interleave in repack can be dropped in favor of the canonical 8-bit `ldmatrix` tile layout, matching what you described.
+
+Plan:
+- **Phase 0 (in progress)**: verify `m8n16.s8.s4` fragment layout vs `mma.m16n8k32.s8` operand-B alignment and the K-major smem requirement; also confirm `v XOR 0x8` compatibility with the `perm` (act_order) repack path.
+- **Phase 1**: add a layout-variant flag to the repack (dense K-major + `v XOR 0x8` for the new layout, gated by the same arch/toolkit predicate as kernel selection) and a `ldmatrix.m8n16.x4.s8.s4` load path in the kernel, guarded by arch macros `{sm_90a, sm_100f, sm_110f, sm_120f}` + CUDA ≥ 13.4, keeping the existing lop3 path as fallback for sm_80/86/89.
+- **Phase 1.5**: microbench LDSM-expand vs LDS+lop3 (MIO-pipe vs ALU pressure) plus end-to-end gptq W4A8-INT8 throughput.
+
+I have access to an RTX 5090 (sm_120f) for verification and benchmarking (one of the Phase 1.5 target machines), and I'll build with CUDA 13.4 preview.
+
+I'll post the Phase 0 fragment-layout verification results here shortly.
+
+--- COMMENT 11 ---
+> I noticed that the CUDA 13.4 Developer Preview release notes state that performance data collected with the preview must not be published, reported,or compared.
+
+Oh I did not notice this.
+
+> Since Phase 1.5 asks for public benchmark results, should I restrict the current work to correctness and benchmark infrastructure until CUDA 13.4 GA,or is there an approved way to share the requested results?
+
+If so, we can postpone publishing the benchmark until GA. You can email me the results privately instead. cc @SayHelloToWorld if you are interested.
+
+--- COMMENT 12 ---
+Hi @Harry-Chen, I have an initial Phase 1.5 benchmark harness prepared against  #50096 (https://github.com/vllm-project/vllm/pull/50096). If necessary, I'm happy to reach out over email - given the CUDA 13.4 Developer Preview restrictions, I will wait for GA before collecting or reporting performance data.
+I’m also interested in contributing Phase 2. I'll would begin with the prepacked-layout and ldmatrix.s8.s4 copy-atom design, then I'll ensure bit-exact correctness coverage. I’d welcome any guidance on preferred sequencing or any design constraints.
+
+=== PAGE TEXT (non-comment) ===
+[Perf][Kernel] Adopt PTX 9.4 `ldmatrix.s8.s4` (hardware INT4→INT8 expanding load) in W4A8-INT8 paths · Issue #49529 · vllm-project/vllm · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ vllm-project
+ 
+ / 
+ 
+ vllm 
+
+ Public 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 22.1k 
+
+ Star
+ 91.6k 
+
+ Code 
+
+ Issues 
+ 2.4k 
+
+ Pull requests 
+ 5k+ 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 76 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [Perf][Kernel] Adopt PTX 9.4 ldmatrix.s8.s4 (hardware INT4→INT8 expanding load) in W4A8-INT8 paths #49529 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Open 
+ Feature 
+
+ Open 
+ [Perf][Kernel] Adopt PTX 9.4 ldmatrix.s8.s4 (hardware INT4→INT8 expanding load) in W4A8-INT8 paths #49529 
+ Feature
+
+ Copy link 
+
+ Labels
+ performance Performance-related issues Performance-related issues quantization 
+
+ Description
+ 
+ Harry-Chen 
+ opened on Jul 23, 2026 
+
+ Issue body actions 
+
+ Summary
+
+ PTX ISA 9.4 (CUDA 13.4.0 Developer Preview) exposes a new ldmatrix variant that performs in-flight sign extension of packed INT4 to INT8 during the shared-memory matrix load :
+
+ ldmatrix.sync.aligned.m8n16.{x1,x2,x4}{.shared{::cta}}.s8.s4 r, [p];
+
+ Source data is densely packed signed 4-bit elements; the hardware expands them to signed 8-bit values in the destination fragment. This can eliminate the register-level INT4→INT8 unpack sequences ( lop3 / prmt bit tricks and PRMT LUTs) in our W4A8-INT8 kernels, and potentially the dequant-oriented weight interleaving in repack.
+
+ Doc: PTX ISA 9.4, §9.7.16.5.15 ( ldmatrix ), https://docs.nvidia.com/cuda/developer-preview/13.4/parallel-thread-execution/index.html 
+
+ Hardware verification (already done)
+
+ Verified with ptxas / nvdisasm from CUDA 13.4.0 preview ( V13.4.46 ), no GPU required:
+
+ ptxas accepts the instruction for sm_90a, sm_100a/f, sm_103a, sm_107a/f, sm_110f, sm_120f, sm_121a (PTX targets per doc: sm_90a, sm_100f, sm_110f, sm_120f ).
+
+ SASS is a single LDSM instruction on every architecture — no unpack sequence is generated. The encoding is bit-identical across all seven targets (opcode 0x783b = LDSM, modifier 0x9000/0x9100/0x9200 for x1/x2/x4; cf. LDSM.16.M88 = 0x0000 , LDSM.U4x16P64TO8.M816 = 0xa800 , LDSM.U6x16P32TO8.M816 = 0xb000 ).
+
+ Notably Hopper (sm_90a) is supported — the datapath appears to have existed in silicon since GH100; PTX 9.4 merely exposes it. Existing H100/H200 fleets benefit immediately.
+
+ nvdisasm 13.4 does not yet print a mnemonic for this modifier (hex only); expect this to be fixed in the GA release.
+
+ Affected code paths
+
+ (vLLM @ 76bf55240 , 2026-07-23)
+
+ 1. Marlin W4A8-INT8 — replaceable (bit-exact)
+
+ csrc/libtorch_stable/quantization/marlin/dequant.h:494 — dequant<int32_t, kU4B8> : unpacks two nibbles per pass with (q & 0x0F0F0F0F | 0x80808080) - 0x08080808) ^ 0x80808080 , i.e. u4-with-bias-8 → s8.
+
+ csrc/libtorch_stable/quantization/marlin/marlin_template.h:945 — frag_b_quant is loaded from shared memory with plain 128-bit loads over Marlin's dequant-interleaved layout, then dequanted at marlin_template.h:1163 ( dequant_data ).
+
+ csrc/libtorch_stable/quantization/marlin/gptq_marlin_repack.cu — repack currently bakes in the dequant interleave.
+
+ Equivalence: for kU4B8 , stored nibble v ∈ [0,15] yields output v − 8 . Storing s4 = v XOR 0x8 at repack time (free) makes sign_extend(s4) == v − 8 bit-exact . The ALU sequence (≈6 ops per 32-bit word × 2 fragments) disappears, and the B-fragment interleave in repack can be dropped in favor of the canonical 8-bit ldmatrix tile layout.
+
+ 2. Machete W4A8-INT8 — replaceable (bit-exact)
+
+ csrc/libtorch_stable/cutlass_extensions/vllm_numeric_conversion.cuh:213 — NumericArrayConverter<int8_t, vllm_uint4b8_t> implements the identical [-8..7] mapping via a PRMT LUT ( lut_4bit_to_8bit_convert , line 158). Used by the Machete mainloop's register-transform stage.
+
+ Replacement means moving the conversion out of the CUTLASS transform pipeline into the smem→rmem copy atom; requires a new copy atom + prepacked-layout adjustment in machete_prepacked_layout.cuh rather than a converter swap. Larger change; track separately as phase 2.
+
+ 3. Marlin W4A8-INT8 with runtime zero-point — partially replaceable
+
+ csrc/libtorch_stable/quantization/marlin/dequant.h:570 — sub_zp_and_dequant<int32_t, kU4> (asymmetric AWQ-style zp, see [Kernel][Quantization] add w4a8 support for marlin kernel #24722 ). Pure sign extension can't absorb a runtime zp, but ldmatrix.s8.s4 + one packed s8 correction add ( zp − 8 per group) still beats the current mask/sub/xor sequence. Lower priority.
+
+ 4. Out of scope
+
+ cutlass_w4a8/ (W4A8- FP8 , MmaType = e4m3 ): target type is FP8, not covered by this instruction.
+
+ moe/moe_wna16_utils.h , AWQ/GPTQ FP16 paths: dequant target is FP16/BF16.
+
+ Proposed plan
+
+ Phase 0 — layout verification : confirm the m8n16.s8.s4 output fragment layout matches mma.m16n8k32.s8 operand-B fragments (the m8n16 / m16n16 8-bit ldmatrix shapes were introduced in PTX 8.6 for exactly this pairing; verify the s4 source packing order within each 8-byte row against our repack output). Only m8n16 is available for .s8.s4 (no .trans ), so B must be stored K-major in smem.
+
+ Phase 1 — Marlin symmetric path ( kU4B8 ) :
+ 
+ repack: store v XOR 0x8 nibbles, drop dequant interleave for the is_a_8bit && !has_zp configuration;
+
+ kernel: replace frag_b_quant plain loads + dequant with ldmatrix.m8n16.x4.s8.s4 , guarded by __CUDA_ARCH_FAMILY_SPECIFIC__ / arch macros for {90a, 100f, 110f, 120f} and CUDA >= 13.4 ;
+
+ keep the existing lop3 path as fallback for sm_80/86/89 and older toolkits.
+
+ No on-disk/checkpoint format change : repack runs at weight-loading time ( process_weights_after_loading → ops.gptq_marlin_repack ); both transforms live inside the repack kernel and only affect the in-GPU-memory layout.
+
+ The in-memory Marlin layout becomes kernel-variant-dependent (ldmatrix layout vs legacy interleave). Repack must take a layout-variant flag driven by the same arch/toolkit predicate as kernel selection; if repacked-weight caching across processes is ever introduced, the layout needs a version tag.
+
+ Phase 1.5 — benchmark : microbench LDSM-expand vs LDS+lop3 (MIO-pipe pressure vs ALU pressure; note Marlin is often ALU-bound in the dequant stage at high occupancy), plus end-to-end gptq W4A8-INT8 throughput on H100/H200, B200, RTX 5090.
+
+ Phase 2 — Machete : smem→rmem copy atom using ldmatrix.s8.s4 , prepacked layout update.
+
+ Phase 3 — zp path : evaluate ldmatrix.s8.s4 + packed correction add for sub_zp_and_dequant .
+
+ Caveats
+
+ CUDA 13.4 is currently a Developer Preview ; land behind a build-time gate and revisit at GA. Instruction availability/targets could still shift (precedent: a→f promotions between 8.6 and 8.8).
+
+ nvdisasm cannot yet name the instruction; debugging SASS requires reading hex until tooling catches up.
+
+ Ada (sm_89) and Ampere keep the existing path permanently — the instruction is sm_90+ only.
+
+ References
+
+ PTX ISA 9.4 release notes: "Adds support for .s8.s4 types for ldmatrix instruction for .m8n16 shape" — targets sm_90a, sm_100f, sm_110f, sm_120f .
+
+ Existing sub-byte ldmatrix formats ( .b6x16_p32 , .b4x16_p64 , unsigned, padded) introduced in PTX 8.6 for the f8f6f4 MMA path — the new .s8.s4 differs in being densely packed and sign-extending .
+
+ [Kernel][Quantization] add w4a8 support for marlin kernel #24722 (Marlin W4A8-INT8 dequant tricks this would supersede on sm_90+).
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ performance Performance-related issues Performance-related issues quantization 
+
+ Type
+
+ Feature 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

@@ -1,0 +1,339 @@
+TITLE: [Bug] --moe-runner-backend deep_gemm accepted for DSV4.1 MXFP4 experts, then fails in CUDA graph capture (layout.hpp:108, sm_121) · Issue #39226 · sgl-project/sglang · GitHub
+CREATED_AT: 2026-09-12T17:00:08Z
+
+--- COMMENT 1 ---
+## Describe the bug
+
+`--moe-runner-backend deep_gemm` is an accepted value, passes argument validation, loads 75 GB of weights for four minutes, and only then fails — during CUDA graph capture — on a DeepGEMM scale-layout assertion. On a 4× DGX Spark (GB10, **sm_121**, TP4/EP2) serving DeepSeek-V4.1-Flash, whose routed experts are **MXFP4**:
+
+```
+File "sglang/srt/layers/moe/moe_runner/deep_gemm.py", line 368, in _run_contiguous_gemm
+    deep_gemm_wrapper.grouped_gemm_nt_f8f8bf16_contig(
+File "sglang/srt/layers/deep_gemm_wrapper/entrypoint.py", line 157, in grouped_gemm_nt_f8f8bf16_contig
+    deep_gemm.m_grouped_fp8_gemm_nt_contiguous(
+File "deep_gemm/__init__.py", line 174, in m_grouped_fp8_fp4_gemm_nt_contiguous
+RuntimeError: Assertion error (deep_gemm/.../utils/layout.hpp:108):
+  sf.size(-1) == ceil_div(k, gran_k * (sf_dtype == torch::...))
+
+Exception: Capture cuda graph failed: Assertion error (... layout.hpp:108) ...
+RuntimeError: Server failed to become healthy; inspect container logs
+```
+
+DeepGEMM expects a scale-factor tensor whose last dimension matches its packing convention; DSV4.1's MXFP4 expert scales do not carry that shape. The combination is simply unsupported.
+
+## Why this is worth a guard rather than a doc note
+
+The same codebase already rejects incompatible combinations **at argument resolution**, with a message that says what to do — for example FlashInfer allreduce fusion raises `ValueError: FlashInfer allreduce fusion requires SM90 or SM10X NVIDIA GPUs.` before anything loads.
+
+Here the cost of finding out is a full weight load plus graph capture, and the error surfaces as a device-side assertion several frames below the flag that caused it. A reader of the traceback has no reason to connect `layout.hpp:108` to `--moe-runner-backend`.
+
+A check at resolution time — "backend `deep_gemm` does not support this model's MXFP4 expert scale layout" — would turn eight minutes and an opaque assertion into an immediate, actionable message.
+
+## Related, and why this is not a duplicate
+
+- **#39063 / #39065** are the closest existing work: `should_deepgemm_weight_requant_ue8m0` returns False for all SM120 weights, so **blockwise FP8** MoE scales are never UE8M0-requantized and DeepGEMM asserts. That path runs through `Fp8MoEMethod.process_weights_after_loading`. **DSV4.1's experts are MXFP4 and go through `quantization/mxfp4.py` instead**, so that fix does not reach this case — I checked before filing.
+- **#35388** reports the same DeepGEMM entry point failing on GB300/sm_103, but on the *format* assertion (`smxx_layout.cuh:131`, the power-of-two check) rather than this *shape* one.
+- **#39193** (mine) is the same family again: non-power-of-two scales reaching `fp8_einsum`, silently truncated rather than rejected.
+
+Four separate reports now cluster around DeepGEMM scale-factor handling on Blackwell. A shared front-end check for "does this backend accept this model's scale layout" would cover all of them.
+
+## Environment
+
+- 4× NVIDIA DGX Spark (GB10, compute capability 12.1), TP4 / EP2, 200G RoCE
+- DeepSeek-V4.1-Flash, MXFP4 routed experts (384 + 1 shared, top-6), DSpark speculative decoding
+- The working configuration is `--moe-runner-backend flashinfer_mxfp4`; the boot log shows the live path as "Preparing DSv4 MXFP4 experts for FlashInfer SM120 CUTLASS W4A8"
+
+## Reproduction
+
+Serve DeepSeek-V4.1-Flash on an sm_120/sm_121 fleet with `--moe-runner-backend deep_gemm` added. The boot reaches weight loading and fails in CUDA graph capture with the assertion above. Removing the flag boots normally.
+
+=== PAGE TEXT (non-comment) ===
+[Bug] --moe-runner-backend deep_gemm accepted for DSV4.1 MXFP4 experts, then fails in CUDA graph capture (layout.hpp:108, sm_121) · Issue #39226 · sgl-project/sglang · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ sgl-project
+ 
+ / 
+ 
+ sglang 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 8.8k 
+
+ Star
+ 35.9k 
+
+ Code 
+
+ Issues 
+ 891 
+
+ Pull requests 
+ 4.4k 
+
+ Discussions 
+
+ Actions 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Security and quality
+
+ Insights
+
+ [Bug] --moe-runner-backend deep_gemm accepted for DSV4.1 MXFP4 experts, then fails in CUDA graph capture (layout.hpp:108, sm_121) #39226 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Open 
+
+ Open 
+ [Bug] --moe-runner-backend deep_gemm accepted for DSV4.1 MXFP4 experts, then fails in CUDA graph capture (layout.hpp:108, sm_121) #39226 
+
+ Copy link 
+
+ Description
+ 
+ knapcio 
+ opened on Sep 12, 2026 
+
+ Issue body actions 
+
+ Describe the bug
+
+ --moe-runner-backend deep_gemm is an accepted value, passes argument validation, loads 75 GB of weights for four minutes, and only then fails — during CUDA graph capture — on a DeepGEMM scale-layout assertion. On a 4× DGX Spark (GB10, sm_121 , TP4/EP2) serving DeepSeek-V4.1-Flash, whose routed experts are MXFP4 :
+
+ File "sglang/srt/layers/moe/moe_runner/deep_gemm.py", line 368, in _run_contiguous_gemm
+ deep_gemm_wrapper.grouped_gemm_nt_f8f8bf16_contig(
+File "sglang/srt/layers/deep_gemm_wrapper/entrypoint.py", line 157, in grouped_gemm_nt_f8f8bf16_contig
+ deep_gemm.m_grouped_fp8_gemm_nt_contiguous(
+File "deep_gemm/__init__.py", line 174, in m_grouped_fp8_fp4_gemm_nt_contiguous
+RuntimeError: Assertion error (deep_gemm/.../utils/layout.hpp:108):
+ sf.size(-1) == ceil_div(k, gran_k * (sf_dtype == torch::...))
+
+Exception: Capture cuda graph failed: Assertion error (... layout.hpp:108) ...
+RuntimeError: Server failed to become healthy; inspect container logs
+
+ DeepGEMM expects a scale-factor tensor whose last dimension matches its packing convention; DSV4.1's MXFP4 expert scales do not carry that shape. The combination is simply unsupported.
+
+ Why this is worth a guard rather than a doc note
+
+ The same codebase already rejects incompatible combinations at argument resolution , with a message that says what to do — for example FlashInfer allreduce fusion raises ValueError: FlashInfer allreduce fusion requires SM90 or SM10X NVIDIA GPUs. before anything loads.
+
+ Here the cost of finding out is a full weight load plus graph capture, and the error surfaces as a device-side assertion several frames below the flag that caused it. A reader of the traceback has no reason to connect layout.hpp:108 to --moe-runner-backend .
+
+ A check at resolution time — "backend deep_gemm does not support this model's MXFP4 expert scale layout" — would turn eight minutes and an opaque assertion into an immediate, actionable message.
+
+ Related, and why this is not a duplicate
+
+ [Bug] SM120 grouped FP8 DeepGEMM weight preparation skips UE8M0 requantization #39063 / [Bugfix] Fix SM120 DeepGEMM grouped FP8 weight requantization #39065 are the closest existing work: should_deepgemm_weight_requant_ue8m0 returns False for all SM120 weights, so blockwise FP8 MoE scales are never UE8M0-requantized and DeepGEMM asserts. That path runs through Fp8MoEMethod.process_weights_after_loading . DSV4.1's experts are MXFP4 and go through quantization/mxfp4.py instead , so that fix does not reach this case — I checked before filing.
+
+ [Bug] deepep FP8 MoE on GB300/sm_103 crashes in DeepGEMM m_grouped_fp8_fp4_gemm_nt_contiguous — UE8M0 scale-format mismatch (CUDA 719 / smxx_layout.cuh:131 assert) #35388 reports the same DeepGEMM entry point failing on GB300/sm_103, but on the format assertion ( smxx_layout.cuh:131 , the power-of-two check) rather than this shape one.
+
+ [Bug] DeepSeek-V4.1 fp8 wo_a absorb GEMM is silently ~25% wrong when DEEPGEMM_SCALE_UE8M0 is false (SM121) #39193 (mine) is the same family again: non-power-of-two scales reaching fp8_einsum , silently truncated rather than rejected.
+
+ Four separate reports now cluster around DeepGEMM scale-factor handling on Blackwell. A shared front-end check for "does this backend accept this model's scale layout" would cover all of them.
+
+ Environment
+
+ 4× NVIDIA DGX Spark (GB10, compute capability 12.1), TP4 / EP2, 200G RoCE
+
+ DeepSeek-V4.1-Flash, MXFP4 routed experts (384 + 1 shared, top-6), DSpark speculative decoding
+
+ The working configuration is --moe-runner-backend flashinfer_mxfp4 ; the boot log shows the live path as "Preparing DSv4 MXFP4 experts for FlashInfer SM120 CUTLASS W4A8"
+
+ Reproduction
+
+ Serve DeepSeek-V4.1-Flash on an sm_120/sm_121 fleet with --moe-runner-backend deep_gemm added. The boot reaches weight loading and fails in CUDA graph capture with the assertion above. Removing the flag boots normally.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ No labels No labels
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.
