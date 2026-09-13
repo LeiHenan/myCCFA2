@@ -33,7 +33,7 @@ def check(dossier, gates, through=None, repo=None, verbose=True):
             rows.append((sid, st["name"], state, "—", "—"))
             continue
         text, sections, boxes = lib.parse_artifact(path)
-        missing = [s for s in st["sections"] if s not in sections]
+        missing = [s for s in st["sections"] if not lib.has_section(s, sections)]
         todo, absent, matched = [], [], set()
         for item in st["checklist"]:
             key = " ".join(item.split())

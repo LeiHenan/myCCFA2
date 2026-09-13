@@ -1,3 +1,4 @@
+STATUS: killed（S3 占位核查判死 2026-09-13，见 30_occupancy.md）
 # S0 立项准备（Intake） — 混合模型（SSM/线性注意力）服务：状态不是分页 KV
 
 **候选**：`hybrid-state-serving` ｜ **成本上限**：0 GPU·h

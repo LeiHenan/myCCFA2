@@ -56,6 +56,17 @@ def parse_artifact(path):
     return text, sections, boxes
 
 
+def has_section(required, sections):
+    """小节名匹配：允许在必需名后追加『（说明）』『：』『 — 』等修饰
+    （写产物时自然会加说明，例如 `## 最近邻（≥3，标注读到的深度）`）。"""
+    for sec in sections:
+        if sec == required:
+            return True
+        if any(sec.startswith(required + sep) for sep in ("（", "(", "：", ":", " —", " -", " ")):
+            return True
+    return False
+
+
 def match_box(item, boxes):
     """清单项与产物里的勾选行做前缀匹配（允许产物里在清单项后补写说明）。"""
     key = " ".join(item.split())
