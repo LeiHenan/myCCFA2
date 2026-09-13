@@ -75,11 +75,14 @@ def summarize(outs):
     ct, cf = collections.Counter(texts), collections.Counter(fps)
     top_t, n_t = ct.most_common(1)[0]
     top_f, n_f = cf.most_common(1)[0]
+    # ⚠️ 指标教训：`all_fp_same` 用"众数出现次数 == 总数"来判，**当每个输出都唯一时它恒为 True**，
+    #    会把"全不同"误报成"全相同"（初版即犯此错）。唯一性必须用 `unique_fp`/`unique_text` 看。
+    all_fp_same = (len(fps) == n_f)
     return {"total": len(outs), "unique_text": len(ct), "unique_fp": len(cf),
             "divergence_text": 1 - n_t / len(texts),
             "divergence_fp": 1 - n_f / len(fps),
             "modal_fp": top_f,
-            "all_fp_same": len(cf) == 1, "modal_len": collections.Counter(o["n_out"] for o in outs).most_common(1)[0][0],
+            "all_fp_same": all_fp_same, "modal_len": collections.Counter(o["n_out"] for o in outs).most_common(1)[0][0],
             "sample_text": (top_t or "")[:60]}
 
 
@@ -121,7 +124,11 @@ def selftest():
     # 全部一致
     outs2 = [{"text": "A", "n_out": 3, "fp": "x"} for _ in range(4)]
     s2 = summarize(outs2)
-    assert s2["unique_text"] == 1 and s2["divergence_text"] == 0.0, s2
+    assert s2["unique_text"] == 1 and s2["divergence_text"] == 0.0 and s2["all_fp_same"], s2
+    # **全不同**时 all_fp_same 必须为 False（初版此处误报 True，是本次抓到的指标 bug）
+    outs3 = [{"text": f"A{i}", "n_out": 3, "fp": f"x{i}"} for i in range(4)]
+    s3 = summarize(outs3)
+    assert s3["unique_fp"] == 4 and not s3["all_fp_same"], s3
     print("selftest ✔ 指纹/唯一计数/divergence/两种一致情形")
     return 0
 
