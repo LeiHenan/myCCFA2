@@ -24,7 +24,7 @@
 用**同一批工作量的墙钟**作为吞吐口径，并用 /metrics 的 generation_tokens 确认两边做了一样多的活。
 """
 from __future__ import annotations
-import argparse, json, sys, threading, time, urllib.request
+import argparse, json, sys, time, urllib.error, urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def post(base, model, prompt, max_tokens, temperature, seed=None, timeout=900.0):
@@ -36,8 +36,13 @@ def post(base, model, prompt, max_tokens, temperature, seed=None, timeout=900.0)
                                  data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     t0 = time.perf_counter()
-    with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310
-        payload = json.loads(r.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310
+            payload = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        # 把服务端返回的正文带出来 —— 只统计"错了几个"而不打印原因，是上一版真正的缺陷
+        detail = e.read().decode("utf-8", "replace")[:600]
+        raise RuntimeError(f"HTTP {e.code}: {detail}") from None
     return {"wall_s": time.perf_counter() - t0,
             "gen": (payload.get("usage") or {}).get("completion_tokens"),
             "finish": payload["choices"][0].get("finish_reason")}
@@ -102,6 +107,9 @@ def main() -> int:
                 rows.append({"error": f"{type(exc).__name__}: {exc}"})
     wall = time.perf_counter() - t0
     ok = [r for r in rows if "error" not in r]
+    if not ok:
+        for r in rows[:2]:
+            print("  ERR:", str(r.get("error"))[:400], flush=True)
     gen = sum(r.get("gen") or 0 for r in ok)
     res = {"arm": "seeded" if a.seeded else "unseeded", "n": len(prompts),
            "concurrency": a.concurrency, "temperature": a.temperature,
