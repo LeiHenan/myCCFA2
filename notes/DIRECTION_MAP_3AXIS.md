@@ -58,9 +58,72 @@ vLLM 文档声称 *"algorithmically validated to be lossless"* —— **只在�
 
 ---
 
-## 二、KV Cache（子代理地图）
+## 二、KV Cache（子代理地图：3,541 行，591 个不同 URL）
 
-状态：**仍在运行**。到位后并入本文件。
+主交付：`KV_CACHE_GAP_MAP.md`（3,541 行 / 514 KB）。原始证据在 `evidence/kv-gapmap/`（S1–S14.md + S1–S14.verify.md +
+`_index.jsonl` 697 个证据块 + `_in_A..D.tsv`）。
+**证据分层**：以下**全部是子代理材料**（含一层对抗验证），**我尚未逐条亲验**。按 FILTER §7，进入 S1 的量级主张
+**要么我亲自复现、要么标"未取证"**。
+
+### 2.1 规模与可靠性（决定我该信多少）
+
+| 段 | 条数 | 形态 |
+|---|---|---|
+| **A 已闭合** | 131 | 7 列表格（含 artifact URL 与 merged/shipped 状态） |
+| **B 仍开放** | 116 | 每条带 WHO / URL / **提问者原话** / 缺什么 |
+| **C 试过被放弃** | 185 | 六个子题（闭而未合 27 / wontfix 29 / 陈旧关闭 45 / 撤回 22 / **实测负结果 56** / 被自身局限推翻的论文 6） |
+| **D 硬件排除** | 94 | D.1 >1 GPU (47) · D.2 >96 GB (2) · D.3 多节点/NVLink/IB (26) · D.4 存储网络 (12) · D.5 边界 (7) |
+
+**这层对抗验证挣到了它的成本（我据此调整信任度）**：一条标 OPEN 的其实已被 merge 的 PR 修掉（vLLM #46971 ← #46972）；
+一条标 ABANDONED 的产物其实仍开着（Dynamo #13794 ⇒ 移入 B95）；一条"3 个 PR 已 merge"覆盖了一个**未 merge** 的 PR（#54307）；
+**一条硬件引文被静默编辑过** —— CacheGen 的 *"an NVIDIA A40 GPU server **with four GPUs**"* 在引号内被删掉"四张 GPU"，
+从单卡翻成多卡（该论文因此移入 D 段）；**6 条 ABANDONED 因"只有陈旧机器人通知、无人话"而被整条丢弃**；
+两个验证者还发现某段的中心方法学主张（"PR 评论体不渲染"）**是假的**，它此前掩盖了约 5 条真实的维护者关闭理由。
+
+**引文保真度（子代理自审，未被掩饰）**：对 C 段 40 条做盲抽样回源机械比对 ⇒ **28/40 (70%) 在原 URL 逐字复现**，
+6/40 是"真实引文嵌在检索到的框架文字里"，6/40 是转述/复合。因此 **185 条里有 74 条明确标注
+`STATED REASON (composite: …)`**，其余 111 条才是单一连续引文。⇒ **任何 C 段的"理由"在用之前必须先看标签**。
+
+### 2.2 我按 FILTER §0 的初筛（**只筛"本机可达"**）
+
+先压掉三类（不逐条讨论）：
+
+- **需要 hybrid Mamba/GDN 模型**（B1、B2、B4–B16、B19、B20、B80、B105、B112、B115）：我们的目标是 **Qwen3-4B（dense 全注意力）**，
+  这类格子要引入一个全新的模型族才谈得上测。**不是"不可做"，是"不在现有半径内"** —— 若要打开，需单独立项并先算下载/适配成本。
+- **需要多卡 / 多节点 / 存储网络**（B63–B68、B81–B87、B95、B96–B102）：本机 1 卡，直接排除（与 D 段 94 条一致）。
+- **需要 MLA / DeepSeek 系模型**（B54–B57、B59、B69、B70）：Qwen3-4B 不是 MLA；且 B55/B56 已记录 MLA 在 **SM120 上本身就有问题**
+  （*"Why can a NoPE MLA model not be served at all on SM120"*）⇒ 打开它等于先修硬件适配。
+
+**剩下的、我这台机器够得着的格子，收敛到一个簇（这是本节最重要的结论）**：
+
+| 格 | 一句话问题 | 与我已有资产的关系 |
+|---|---|---|
+| **B108** | 前缀缓存在 vLLM 的 **batch-invariant 模式**下**仍不支持**；跟踪 issue #27433 把"Prefix caching support"列为 **help-wanted 未打勾**，实现 PR **#46592 自 2026-06-24 起等待 code-owner 评审**；机制是 cache 命中长度不同 ⇒ prefill 被切成任意 chunk 边界（`VLLM_BATCH_INVARIANT_CANONICAL_PREFILL_CHUNK_BLOCKS`） | **我的 decision #116–#120 全部是在"前缀缓存关掉"下做的**（`--no-enable-prefix-caching` / `--disable-radix-cache`）⇒ **我在 p15/p16 里从未测过这个组合** |
+| **B109** | vLLM V1 **基础调度器**的 KV block 生命周期 bug：`temperature=0` 同一 prompt **10/10 产生完全不同的输出**，且**在不开前缀缓存时也复现**（记者："points to a separate block lifecycle bug in the base scheduler's non-APC path"）；候选 TOCTOU 补丁 PR #37164 仍开着 | **与我 p15 测到的现象（BI=0 时 n=8 → unique 3/8）高度重合** —— 可能是同一现象的**上游正式拼写** |
+| **B116** | **缓存复用本身改变确定性输出**：vLLM #54490/#54487（**2026-08-31 开，很新**）*"The minimal accepted prefix-cache configuration produces different text for two identical long-prompt requests, while the no-prefix baseline passes"* + *"The cache should preserve request semantics or reject the unsupported interaction"*；llama.cpp #28368 把同一问题延伸到 **logprob 位稳定性**（*"cache_prompt reuse changes computed logprobs on a plain (non-hybrid) transformer"*） | **我有现成仪器**（`probe_determinism.py` / `probe_repeat_once.py` / `compare_across.py`），且"同 prompt 两次、冷/热缓存对比"是**分钟级**实验 |
+| **B107** | **EAGLE/MTP 的前缀缓存"末块丢弃"导致每次命中都要重算**（hybrid Qwen3.8 GDN 布局上 1,648 token/次）；姊妹 issue #51771 把"EAGLE/MTP block drop + prefix caching"记为 **untested** | **正是我三个方向的交集**（投机解码 × KV cache × 推理加速），且**我有 dflash2 与 eagle3** ⇒ 可在 dense Qwen3-4B 上直接测"开投机时一次缓存命中是否仍要重算" |
+| **B114** | SGLang **radix cache + 确定性推理**路线图**两项未打勾**：*"FlashInfer Support"* 与 *"**Making Prefill with Radix Cache has the same output as Prefill without Radix cache**"*（issue 页面状态 COMPLETED 但复选框未勾 —— 记账不一致，能力问题仍在） | **我有 SGLang 0.5.19 + `--enable-deterministic-inference` 的现成 rig**（decision #117）；且我当时已撞到相邻限制：SGLang 的 `speculative_hook.py:770-776` 在 FlashInfer 下**直接抛错** |
+
+**次一级（记下但排后）**：B21（空闲链表把命中块与未命中块交错 ⇒ 命中块先被逐出，PR #55998 只有单测、**无端到端命中率测量**）、
+B22（cache-aware 准入排序，PR #54625；**前身机制的事后复盘只测到 +0.2%** ⇒ 门槛已知、偏低）、
+B24（HBM `BlockPool` 无策略旋钮、请求优先级不影响 KV 保留；`gpu_eviction_policy` 不存在）、
+B75（该抢占谁、选错要付多少）、B78（**KV 的 TTL/过期概念在两家引擎里都不存在**）、
+B88/B103/B104（前缀缓存效果的**测量方法学**与 agent 负载下的可复现命中率）、B3（共享前缀短于 block 时命中恒为 0 —— 但属"找 bug"路线，见 decision #76 的告诫）。
+
+### 2.3 合并后我**必须承认的一处自我矛盾**（比地图本身更重要）
+
+我在 decision #117–#119 里把"批不变性"这条线索关掉，理由是：**开关有效 ⇒ 干预点就是开开关 ⇒ 不存在更省的等价方案**。
+但这份 KV 地图显示：**那个"有效的开关"，在与"前缀缓存"组合时是"设计完成但未 ship"的**
+（B108：跟踪 issue 把它列为 help-wanted 未打勾，实现 PR 等待评审逾两个月），
+而**前缀缓存恰是 vLLM 0.29 的默认值**（我已亲验：`config/cache.py:138` `enable_prefix_caching: bool = True`，
+且服务日志里有 `enable_prefix_caching=True`）。
+⇒ **我此前"开关有效"的结论，是在"前缀缓存关闭"这个非默认条件下得到的**；在**默认配置**下它是否仍有效，
+**上游自己把它标为未支持/未测**（B108），且**至少有三条独立的新报告说缓存复用会改变确定性输出**（B116，#54490/#54487，2026-08-31）。
+**这不是"我已经做过 X"，而是"我做过 X 的那个条件不是默认条件"** —— 按 FILTER §3，这正是"差异轴是条件性"的形状。
+**待我用零卡源码核 + 一次分钟级实验判定 B108 到底是"报错"还是"静默失效"**（见 §三 待筛表新增行）。
+
+**段 D（硬件排除）与段 C（185 条被放弃）的价值**：它们不是候选，而是**墓碑**——避免我重复追已被硬件或已被他人否掉的路。
+按 FILTER §0.2，我应把这两段的高频结论并进 `notes/OCCUPANCY_LEDGER.md`（待办）。
 
 ---
 
@@ -68,14 +131,21 @@ vLLM 文档声称 *"algorithmically validated to be lossless"* —— **只在�
 
 | 格 | 类型 | 一句话问题 | 我的初判 |
 |---|---|---|---|
-| **C-DSD** | 被放弃/负结果 | 已 ship 的动态投机调度在 K=0 表下仍付 12–25% 税（"表的**存在**即触发"） | **最接近可测**：默认关闭 ⇒ 可用我们已有仪器构造 K=0 表做**独立复现**；但需先答 FILTER §3（差异轴是否条件性）——若只是"vLLM 的 bug 且已有人报"，则价值有限 |
+| **C-DSD** | 被放弃/负结果 | 已 ship 的动态投机调度在 K=0 表下仍付 12–25% 税（"表的**存在**即触发） | **正在测**（p20，见 §四）：默认关闭 ⇒ 可用已有仪器构造 K=0 表做独立复现 |
+| **B108** | 开放（help-wanted） | **默认的前缀缓存 + batch-invariant 模式**：跟踪 issue 把"Prefix caching support"列为未打勾，实现 PR 等待评审逾两月 | **新增头号待判**：我 p15/p16 全部在"前缀缓存关闭"下做的 ⇒ 这只差**一次分钟级实验 + 零卡源码核**就能判定是"报错"还是"静默失效" |
+| **B116** | 开放（**2026-08-31 新开**） | **缓存复用本身改变确定性输出**（vLLM #54490/#54487；llama.cpp 侧连 logprob 都不稳） | **新增**：仪器现成（同 prompt 两次 / 冷热对比），分钟级可测 |
+| **B109** | 开放（bug） | V1 **基础调度器** KV block 生命周期 bug：T=0 同 prompt **10/10 输出完全不同**，**不开前缀缓存也复现** | **新增**：与我 p15 的 `unique 3/8 @BI=0` 高度重合 ⇒ 可能是同一现象的上游正式拼写（需辨明是否同一根因） |
+| **B107** | 开放（untested） | EAGLE/MTP 前缀缓存"末块丢弃"⇒ 每次命中仍要重算 1,648 token | **新增**：**三个方向的交集**，且我**已有 dflash2 + eagle3** ⇒ dense Qwen3-4B 上可直接测 |
+| **B114** | 开放（路线图未勾） | SGLang radix cache + 确定性推理：*"Making Prefill with Radix Cache has the same output as Prefill without Radix cache"* **未打勾** | **新增**：SGLang 0.5.19 rig 现成；我此前已撞到相邻限制（FlashInfer 下 `speculative_hook.py:770-776` 直接抛错） |
 | **C-NVFP4-KV** | 被放弃（零评论） | 同硬件 issue：NVFP4 KV cache 下投机 draft-extend/verify 必崩 | 硬件一致，但**需引入 NVFP4 轴**（我们全程 bf16 KV）⇒ 半径与收益待估 |
 | **B-observability** | 开放 | 引擎不导出"调度刻意 K=0"与"未在投机"的区分 | 🔴 **不可立项**：他人正在做（PR #54748 / RFC #54749） |
-| **B-draft_model** | 开放（能力） | 我们**没有**小 drafter ⇒ 三种投机方法（dflash/NGRAM/draft_model）的同台对照从未在本机做过 | ⚠️ 属"能力补齐"而非"缺口"；需 FILTER §3 条件性理由 |
+| **B-draft_model** | 开放（能力） | 我们**没有**小 drafter ⇒ 三种投机方法同台对照从未在本机做过 | ⚠️ 属"能力补齐"而非"缺口"（EAGLE3 已下载 ⇒ 能力已补） |
 | **A-grammar-lossless** | 已发表证明 | 语法掩码下投机不保持"语法条件分布" | ⚠️ 纯理论/正确性，**不是优化类**；且已发表 |
 
-**淘汰（本轮）**：B-observability（他人正在做）。
-**待定**：C-DSD、C-NVFP4-KV、B-draft_model、A-grammar-lossless。
+**淘汰（本轮）**：B-observability（他人正在做）；§2.2 压掉的三类（hybrid 模型族 / 多卡 / MLA）。
+**待判（按"先便宜后贵"排序）**：**B108 → B116 → B114 → B109 → B107 → C-DSD → C-NVFP4-KV → B-draft_model**。
+**排序理由**：B108/B116/B114 是**分钟级、零新能力、零新模型**就能判定的（仪器我全有），
+而 C-DSD / C-NVFP4-KV 需要新配置或新硬件轴。**便宜的先杀掉** —— 这是 decision #118 教我的顺序（假设 → 廉价否证 → 不花 GPU）。
 
 ---
 
