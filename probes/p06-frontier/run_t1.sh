@@ -8,7 +8,12 @@
 #   CONCS="1 2 4"  CTXS="32768" REPS=3 bash run_t1.sh     # 32 GB 卡：32k 只能到 bs=4（KV 4.5 GiB/请求）
 #
 # 设计要点（均为 2026-09-12 审计后的修正，见 decision #53/#54）：
-#   1. **必须** `DATASET=custom`（真实文本）：`--dataset-name random` 会让接受率恒为 1.00（零接受）。
+#   1. **必须** `DATASET=custom`（真实文本）—— ⚠️ **2026-09-13 更正**：原注释写
+#      "`--dataset-name random` 会让接受率恒为 1.00"，该说法**已被实测证伪**（p08 ground truth：
+#      random 的接受长度 2.12 反而**低于**真实文本的 2.93，差 −27.5%；随机上下文是分布外噪声
+#      ⇒ 草稿更不易被接受）。**仍必须用 custom**，但理由是"随机输入不代表真实负载"，
+#      而不是"接受率会恒为 1"。证据：candidates/specbench-methodology/60_decision.md、
+#      results/p08-specbench/2026-09-13/consistency.md。
 #   2. **必须** `--disable-shuffle`：否则每次 rep 的 prompt 顺序不同 + vLLM 默认开 prefix caching
 #      ⇒ 同格重复之间的 tok/s 极差可达 10%，会把 3–5% 的真实差异淹掉（实测）。
 #   3. 变体路径**必须含 `dflash`**（vLLM 0.29 仅凭路径串推断投机方法），且必须 `--prune-weights` 生成。

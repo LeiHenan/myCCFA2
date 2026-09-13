@@ -64,7 +64,7 @@ def counters(path):
     return out or None
 
 
-def check_cell(rec, gamma, tol=(0.03, 0.05, 0.10)):
+def check_cell(rec, gamma, tol=(0.03, 0.05, 0.10), prev=None):
     """→ (结果 dict, 违规列表)"""
     d = rec["bench"]
     acc = _f(d.get("spec_decode_acceptance_length"))
@@ -88,13 +88,22 @@ def check_cell(rec, gamma, tol=(0.03, 0.05, 0.10)):
         r["I2_ok"] = acc <= gamma + 1 + 1e-9
         if not r["I2_ok"]:
             bad.append(f"I2 违反：accept_len {acc:.2f} > γ+1 = {gamma + 1}")
-    # I3
+    # I3：⚠️ /metrics 是**累计计数器**（跨 rep 累加），bench.json 是**本次运行**的值
+    # ⇒ 必须用「本次 − 上次」的增量。初版直接拿累计值比，导致 random+t0.7 的 4 个格假报警，
+    #    而 custom 因为每次 draft 数几乎相同而侥幸通过 —— 这是**仪器自身的 bug**，已修正。
     c = counters(rec["metrics"])
-    if c and c.get("drafts") and acc:
-        derived = 1 + c["accepted"] / c["drafts"]
+    if c and acc:
+        base_d = (prev or {}).get("drafts", 0.0)
+        base_a = (prev or {}).get("accepted", 0.0)
+        dd = c.get("drafts", 0.0) - base_d
+        da = c.get("accepted", 0.0) - base_a
+        r["drafts_delta"] = dd
+      # 增量才算本次运行
+        derived = 1 + (da / dd if dd else 0.0)
         err = abs(derived - acc) / acc
         r["I3_derived"] = round(derived, 3)
         r["I3_err_pct"] = round(err * 100, 2)
+        r["I3_delta_used"] = dd
         if err > tol[1]:
             bad.append(f"I3 违反：bench.json {acc:.2f} vs /metrics 推出 {derived:.2f}（误差 {err * 100:.1f}%）")
     # I4
@@ -118,8 +127,15 @@ def analyze(root, gamma=7):
     if not cells:
         return {"error": f"{root}/bs*/ 下没有可识别的 bench.json（文件名需含 custom|random 与 t<温度>）"}
     rows = []
-    for (ds, temp, conc, rep), rec in sorted(cells.items()):
-        r, bad = check_cell(rec, gamma)
+    prev_by_group = {}
+    for (ds, temp, conc, rep), rec in sorted(cells.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2], kv[0][3])):
+        grp = (ds, temp)      # ⚠️ 分组键必须是 **serve 会话**（数据集×温度），不是 (…, conc)：
+                              # 一个 serve 会话内先跑 bs=1 再跑 bs=32，计数器跨并发累加，
+                              # 按 conc 分组会让 bs=32 的第 1 个 rep 拿累计值当增量（假报警，实测 11.6%）
+        r, bad = check_cell(rec, gamma, prev=prev_by_group.get(grp))
+        c = counters(rec["metrics"])
+        if c:
+            prev_by_group[grp] = c          # 同一 serve 会话内累计 ⇒ 下个 rep 用增量
         r.update({"dataset": ds, "temp": temp, "conc": conc, "rep": rep, "violations": bad})
         rows.append(r)
     # 判据①：判别力
@@ -144,8 +160,8 @@ def analyze(root, gamma=7):
     v.append(f"**判据②（I1 在所有格成立）**：" + ("✅ 全部成立" if not i1_bad
              else f"❌ {len(i1_bad)} 格违反（最大误差 {max(r['I1_err_pct'] for r in i1_bad):.1f}%）⇒ 恒等式需修正"))
     i3_bad = [r for r in rows if r["dataset"] == "custom" and r.get("I3_err_pct", 0) > 5]
-    v.append("**I3（两条独立路径一致）**：" + ("✅ custom 格全部一致" if not i3_bad
-             else f"⚠️ {len(i3_bad)} 格不一致"))
+    v.append("**I3（两条独立路径一致，**按计数器增量**）**：" + ("✅ 全部格一致（误差 ≤5%）" if not i3_bad
+             else f"⚠️ {len(i3_bad)} 格不一致（最大 {max(r['I3_err_pct'] for r in i3_bad):.1f}%）"))
     # 判据③：温度
     for ds in ("custom", "random"):
         t0 = [r["accept_len"] for r in rows if r["dataset"] == ds and r["temp"] == 0 and r["accept_len"]]
@@ -155,7 +171,11 @@ def analyze(root, gamma=7):
             v.append(f"**判据③（温度 ⇒ 接受率）** {ds}：temp=0 **{m0:.2f}** vs temp=0.7 **{m7:.2f}**"
                      f" ⇒ **{(m0 / m7 - 1) * 100:+.1f}%**" + ("（≥8% ⇒ 温度是接受率的混淆变量）" if m0 / m7 - 1 >= 0.08 else ""))
     pre = [r for r in rows if r.get("violations")]
-    tail = "（全部为 I4/I2 报警 ⇒ 与「无效协议」一致）" if pre else ""
+    kinds = {}
+    for r in pre:
+        for x in r["violations"]:
+            kinds[x.split()[0]] = kinds.get(x.split()[0], 0) + 1
+    tail = ("（类型：" + "、".join(f"{k}×{n}" for k, n in sorted(kinds.items())) + "）") if pre else ""
     v.append(f"**违规计数**：{len(pre)}/{len(rows)} 格有违规" + tail)
     return {"rows": rows, "verdicts": v}
 
