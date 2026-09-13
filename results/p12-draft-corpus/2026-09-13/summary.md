@@ -83,3 +83,27 @@ for t in probe analyze verdict corpus_client build_corpus; do
 仅 **Qwen3-4B + NGRAM（γ=7）+ ctx 4096 + 串行 + radix cache 关闭 + 同模型续写语料**。
 **未测**：并发 > 1、ctx ≠ 4096、其他模型/家族、EAGLE/MTP/dflash、外部分布/跨模型语料、语料规模中间点、
 配额 1/2/4/5/6、**真正的跨进程/跨副本状态恢复**（下一阶段）、多卡/跨机。
+
+---
+
+# R 阶段（同日晚追加）：语料恢复的成本与等价性
+
+**预登记**：`notes/prereg/sglang-draft-corpus-r.md`（采数前冻结，commit `3c590b4`）｜**成本 ≈0.15 GPU·h**
+**原始数据**：`/root/ccfa_results/2026-09-13/p12_restore/`（`R_*.jsonl`、`*.serve.log`、`restore_cost.jsonl`）
+**判定**：**R1 ✅ / R2 ✅ / R3 ✅ / 跨进程 ✅**（冷启动对照逐位复现 1.836007）
+
+| 臂 | 首通 accept | 语料 | cost_restore |
+|---|---|---|---|
+| `R_gen` / `R_cold` | 1.836007 | 无 | — （`cost_gen` = **25.058 s**） |
+| `R_regen` | 6.678743 | 重新生成 4127 tok | — |
+| `R_restore_docs` | **6.678743** | 落盘 documents 4127 tok | **0.0539 s** |
+| `R_restore_combo` | **6.946652** | prompt 原文 + 续写 = 135231 tok | **0.4067 s** |
+| `R_restore_xproc` | **6.678743** | 同一落盘文件，**另一全新进程** | **0.0625 s** |
+
+**派生量**：恢复/生成成本比 = **1.62%**（**60×** 便宜）；恢复等价性 = **0.000%**；
+合并语料增益 = **+4.0%**；恢复后达稳态 **93.0%**（母阶段 86.2%）。
+
+**源码级边界**：`NgramCorpus` 的 14 个方法中**无任何导出/序列化接口**
+（`srt/speculative/cpp_ngram/ngram_corpus.py:15-153`）⇒ **trie 不可导出，跨副本只能共享语料文本**。
+
+**未测**：跨机/网络传输、并发 >1、真实流量下的整机收益（"从 0 学" vs "继承 warm 副本"）。
