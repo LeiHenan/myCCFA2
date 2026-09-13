@@ -15,8 +15,9 @@ GATES = os.path.join(HERE, "gates.json")
 SECTION_RE = re.compile(r"^##\s+(.+?)\s*$", re.M)
 BOX_RE = re.compile(r"^-\s+\[( |x|X)\]\s+(.*)$", re.M)
 PAIN_RE = re.compile(r"^#{2,3}\s*(P\d+[^\n]*)$", re.M)
-# 必须 re.M（痛点块是多行字符串）；`\*{0,2}` 兼容 `- **证据**：` 这类加粗写法
-EVID_RE = re.compile(r"证据\*{0,2}\s*[：:]\s*(.*)$", re.M)
+# 必须 re.M（痛点块是多行字符串）；允许标签与冒号之间夹短修饰：
+#   `- **证据**：` / `- **证据（可复现）**：` / `- 证据（零卡）：`
+EVID_RE = re.compile(r"证据[^\n：:]{0,24}[：:]\s*(.*)$", re.M)
 
 
 def load_gates(path=GATES):
