@@ -1,0 +1,337 @@
+TITLE: [Bugfix] Preserve NVFP4 AWQ prescaling in MLP fusion and Marlin paths by whzzt · Pull Request #38864 · sgl-project/sglang · GitHub
+
+--- COMMENT 1 ---
+Motivation
+
+ NVFP4_AWQ requires per-input-channel activation prescaling to compensate for the channel scaling applied to weights during quantization. Skipping this step changes the computation and can silently produce incorrect outputs. The scalar activation/global scale does not replace this channel-wise scale.
+
+ Three optimized paths bypass the required prescale:
+
+ Qwen3.5's SiLU/FP4 fusion passes prequantized activations to the down projection, bypassing its normal prescaling step.
+
+ DeepSeek's shared-expert GEMM/SwiGLU/FP4 fusion bypasses both the gate/up and down-projection prescales.
+
+ The common ModelOpt Marlin linear method returns before applying the loaded prescale. This also affects ordinary attention output and MLP down projections, independently of fusion.
+
+ NVFP4_AWQ support was added in #31825 ; the Qwen fusion introduced in #34859 bypasses that existing scaling requirement. The fused interfaces used here cannot consume the channel scale, so the affected AWQ paths need to retain the existing unfused computation.
+
+ Modifications
+
+ Keep the existing unfused computation when a fused operation would bypass an AWQ prescale. For Qwen3.5, this checks the down projection because gate/up still runs through its normal linear method. For the DeepSeek shared-expert fusion, both gate/up and down must be checked because the fused operation bypasses both linear methods.
+
+ Apply the loaded channel prescale before the common Marlin linear operation. This fixes the underlying linear method for all models using this path, including attention output projections as well as MLP down projections.
+
+ FlashInfer #4537 has a related fused-prescale implementation, but it is not exposed through the interface used here.
+
+ Accuracy Tests
+
+ Compare MLP outputs with identical weights and inputs against unfused execution, and check Marlin outputs against an independently dequantized weight reference with explicit prescaling. Include identity-scale AWQ and plain NVFP4 controls.
+
+ GPU 
+ Tests 
+ After fix 
+
+ RTX PRO 6000 (SM120) 
+ Qwen fusion and Marlin 
+ 21 passed; 5 SM100-only DeepSeek tests skipped 
+
+ B200 (SM100) 
+ DeepSeek shared-expert fusion 
+ 5 test methods / 10 numerical subcases passed; no skips 
+
+ The AWQ regression cases fail before the fix; identity-scale AWQ and plain NVFP4 controls pass before and after.
+
+ Speed Tests and Profiling
+
+ Layer CUDA graph latency in μs, TP=1. Batch size counts input token rows. Each value is the median of 18 samples from two runs in opposite order, with nine samples per run and 100 calls per sample.
+
+ DeepSeek shared expert on B200: BF16, hidden size 7168, intermediate size 2048, synthetic AWQ weights.
+
+ Batch size (tokens) 
+ Before 
+ After 
+ Correct unfused reference 
+
+ 1 
+ 16.42 
+ 20.52 
+ 20.50 
+
+ 32 
+ 16.42 
+ 24.59 
+ 24.59 
+
+ 256 
+ 16.44 
+ 28.73 
+ 28.73 
+
+ 1024 
+ 30.74 
+ 59.76 
+ 59.51 
+
+ Qwen3.5 MLP on RTX PRO 6000: BF16, hidden size 5120, intermediate size 17408, FlashInfer CUTLASS, real AWQ checkpoint weights.
+
+ Batch size (tokens) 
+ Before 
+ After 
+ Correct unfused reference 
+
+ 1 
+ 170.27 
+ 166.69 
+ 171.72 
+
+ 32 
+ 161.88 
+ 160.37 
+ 164.81 
+
+ 256 
+ 167.01 
+ 186.46 
+ 185.47 
+
+ 1024 
+ 487.03 
+ 537.57 
+ 533.38 
+
+ Marlin on RTX PRO 6000, real checkpoint weights. Each cell is before → after; matrix dimensions are output × input.
+
+ Projection 
+ Batch 1 
+ Batch 32 
+ Batch 256 
+ Batch 1024 
+
+ Llama3.1 attention output, 4096 × 4096, FP16 
+ 10.26 → 12.30 
+ 26.59 → 28.59 
+ 34.86 → 37.78 
+ 102.41 → 108.68 
+
+ Qwen2.5 MLP down, 3584 × 18944, FP16 
+ 18.45 → 20.49 
+ 38.96 → 41.11 
+ 106.51 → 114.68 
+ 376.01 → 413.63 
+
+ Qwen3.5 MLP down, 5120 × 17408, BF16 
+ 20.48 → 20.51 
+ 38.92 → 40.98 
+ 135.11 → 141.41 
+ 503.54 → 546.93 
+
+ Checklist
+
+ Code formatted.
+
+ Unit tests added.
+
+ No documentation update is needed.
+
+ Accuracy and speed benchmark results provided.
+
+ Follow the SGLang code style.
+
+ Assisted-by: OpenAI Codex
+
+ CI States
+
+ Latest PR Test (Base): ❌ Run #34466357072 
+
+Latest PR Test (Extra): ❌ Run #34466356738 
+
+Latest PR Test (AMD ROCm 10): ❌ Run #34466357022
+
+=== PAGE TEXT (non-comment) ===
+[Bugfix] Preserve NVFP4 AWQ prescaling in MLP fusion and Marlin paths by whzzt · Pull Request #38864 · sgl-project/sglang · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ sgl-project
+ 
+ / 
+ 
+ sglang 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 8.8k 
+
+ Star
+ 35.9k 
+
+ Code 
+
+ Issues 
+ 891 
+
+ Pull requests 
+ 4.4k 
+
+ Discussions 
+
+ Actions 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Security and quality
+
+ Insights
+
+ [Bugfix] Preserve NVFP4 AWQ prescaling in MLP fusion and Marlin paths - # 38864 
+ # 38864 
+
+ Open 
+ whzzt wants to merge 1 commit into sgl-project:main sgl-project/sglang:main from whzzt:fix/nvfp4-awq-prescale whzzt/sglang:fix/nvfp4-awq-prescale Copy head branch name to clipboard 
+
+ Conversation Commits 1 ( 1 ) Checks Files changed 
+
+ Open 
+ [Bugfix] Preserve NVFP4 AWQ prescaling in MLP fusion and Marlin paths # 38864 whzzt wants to merge 1 commit into sgl-project:main sgl-project/sglang:main from whzzt:fix/nvfp4-awq-prescale whzzt/sglang:fix/nvfp4-awq-prescale Copy head branch name to clipboard 
+
+ Conversation
+
+ whzzt 
+
+ commented
+
+ Sep 10, 2026 
+
+ • 
+
+ edited by github-actions
+ Bot 
+
+ Loading 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Copy link
+
+ Copy Markdown

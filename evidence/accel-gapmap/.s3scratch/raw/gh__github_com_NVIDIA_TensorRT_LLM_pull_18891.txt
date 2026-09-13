@@ -1,0 +1,362 @@
+TITLE: [Bug]: Guided decoding restarts its grammar after KV-cache recomputation · Issue #18891 · NVIDIA/TensorRT-LLM · GitHub
+CREATED_AT: 2026-09-08T10:34:04Z | 2026-09-08T11:00:07Z
+
+--- COMMENT 1 ---
+## System Info
+
+- TensorRT-LLM `1.3.0rc26.dev202609050001`, source `17803f6c0cbe8d9fed3ccf46a295b867e3493d3e`.
+- The same matcher-history omission remains in main `3fed8e7103e3c549c56a5053f286bdcff9572706` and `v1.3.0rc25`; Reproduced on the development revision above; main and `v1.3.0rc25` were not executed.
+- RTX 5070 Laptop, SM120, 8 GiB, driver 610.57.04; Linux x86_64.
+- Python 3.12.3, PyTorch 2.12.0+cu130, FlashInfer 0.6.18, XGrammar 0.1.32, Transformers 5.5.4; CUDA 13.0.
+- [Environment and worker logs](https://github.com/1sgtpepper/TensorRT-LLM/actions/runs/34020490545).
+
+## Information
+
+- [ ] The official example scripts
+- [x] My own modified scripts
+
+## Tasks
+
+- [ ] An officially supported task in the `examples` folder (such as GLUE/SQuAD, ...)
+- [x] My own task or dataset (give details below)
+
+## Reproduction
+
+Guided decoding loses committed grammar progress when the `MAX_UTILIZATION` scheduler pauses a request for KV-cache recomputation.
+
+Run the following script against the TensorRT-LLM version above:
+
+```sh
+curl -fL https://raw.githubusercontent.com/1sgtpepper/TensorRT-LLM/173a17d744f64d17f7aa62d07acab323e9f10c3a/.github/guided_worker.py -o guided_worker.py
+export TLLM_WORKER_USE_SINGLE_PROCESS=1
+export TLLM_DEBUG_MODE=1
+python guided_worker.py --kv-tokens 512 --output ample.json
+python guided_worker.py --kv-tokens 128 --output pressure.json
+```
+
+The script uses the public LLM API, a one-layer Llama with random weights, a local character tokenizer and two 95-token requests constrained to `a{31}b{32}c{32}`. It downloads no weights. Overlap and CUDA graphs are disabled; the real scheduler chooses when to pause.
+
+## Expected behavior
+
+Both requests return 31 `a` tokens, 32 `b` tokens and 32 `c` tokens, including after recomputation.
+
+## actual behavior
+
+With capacity 512, both outputs are correct and neither request pauses. With capacity 128, the scheduler pauses the second request after 64 committed tokens. It then emits 31 `a` tokens instead of the remaining 31 `c` tokens, failing with `Real worker lost guided output progress`.
+
+## additional notes
+
+`GuidedRequest.from_llm_request` omits the committed output prefix when a matcher must be rebuilt. Replaying that prefix restores the correct continuation at the same 64-token pause. Restoring the old code restores identical incorrect token IDs.
+
+The linked logs were recorded without `TLLM_DEBUG_MODE=1`; the reproduction commands enable it.
+
+## Before submitting a new issue...
+
+- [x] Make sure you already searched for relevant issues, and checked the [documentation](https://nvidia.github.io/TensorRT-LLM/) and [examples](https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples) for answers to frequently asked questions.
+
+--- COMMENT 2 ---
+I’ve started [a fix](https://github.com/1sgtpepper/TensorRT-LLM/tree/fix/guided-recompute-history) that restores grammar history after recomputation, which I’m sharing here before opening a PR, as the guide suggests.
+
+=== PAGE TEXT (non-comment) ===
+[Bug]: Guided decoding restarts its grammar after KV-cache recomputation · Issue #18891 · NVIDIA/TensorRT-LLM · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ NVIDIA
+ 
+ / 
+ 
+ TensorRT-LLM 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 2.7k 
+
+ Star
+ 14.6k 
+
+ Code 
+
+ Issues 
+ 587 
+
+ Pull requests 
+ 875 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [Bug]: Guided decoding restarts its grammar after KV-cache recomputation #18891 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Open 
+
+ Open 
+ [Bug]: Guided decoding restarts its grammar after KV-cache recomputation #18891 
+
+ Copy link 
+
+ Description
+ 
+ 1sgtpepper 
+ opened on Sep 8, 2026 
+
+ Issue body actions 
+
+ System Info
+
+ TensorRT-LLM 1.3.0rc26.dev202609050001 , source 17803f6c0cbe8d9fed3ccf46a295b867e3493d3e .
+
+ The same matcher-history omission remains in main 3fed8e7103e3c549c56a5053f286bdcff9572706 and v1.3.0rc25 ; Reproduced on the development revision above; main and v1.3.0rc25 were not executed.
+
+ RTX 5070 Laptop, SM120, 8 GiB, driver 610.57.04; Linux x86_64.
+
+ Python 3.12.3, PyTorch 2.12.0+cu130, FlashInfer 0.6.18, XGrammar 0.1.32, Transformers 5.5.4; CUDA 13.0.
+
+ Environment and worker logs .
+
+ Information
+
+ The official example scripts
+
+ My own modified scripts
+
+ Tasks
+
+ An officially supported task in the examples folder (such as GLUE/SQuAD, ...)
+
+ My own task or dataset (give details below)
+
+ Reproduction
+
+ Guided decoding loses committed grammar progress when the MAX_UTILIZATION scheduler pauses a request for KV-cache recomputation.
+
+ Run the following script against the TensorRT-LLM version above:
+
+ curl -fL https://raw.githubusercontent.com/1sgtpepper/TensorRT-LLM/173a17d744f64d17f7aa62d07acab323e9f10c3a/.github/guided_worker.py -o guided_worker.py
+ export TLLM_WORKER_USE_SINGLE_PROCESS=1
+ export TLLM_DEBUG_MODE=1
+python guided_worker.py --kv-tokens 512 --output ample.json
+python guided_worker.py --kv-tokens 128 --output pressure.json
+
+ The script uses the public LLM API, a one-layer Llama with random weights, a local character tokenizer and two 95-token requests constrained to a{31}b{32}c{32} . It downloads no weights. Overlap and CUDA graphs are disabled; the real scheduler chooses when to pause.
+
+ Expected behavior
+
+ Both requests return 31 a tokens, 32 b tokens and 32 c tokens, including after recomputation.
+
+ actual behavior
+
+ With capacity 512, both outputs are correct and neither request pauses. With capacity 128, the scheduler pauses the second request after 64 committed tokens. It then emits 31 a tokens instead of the remaining 31 c tokens, failing with Real worker lost guided output progress .
+
+ additional notes
+
+ GuidedRequest.from_llm_request omits the committed output prefix when a matcher must be rebuilt. Replaying that prefix restores the correct continuation at the same 64-token pause. Restoring the old code restores identical incorrect token IDs.
+
+ The linked logs were recorded without TLLM_DEBUG_MODE=1 ; the reproduction commands enable it.
+
+ Before submitting a new issue...
+
+ Make sure you already searched for relevant issues, and checked the documentation and examples for answers to frequently asked questions.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ No labels No labels
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

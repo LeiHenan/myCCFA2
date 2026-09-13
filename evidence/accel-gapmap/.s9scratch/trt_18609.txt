@@ -1,0 +1,520 @@
+TITLE: [Bug]: Whisper (PyTorch backend) fails with RuntimeError: bad optional access in the capacity scheduler — TensorRT-LLM 1.3.0rc25, RTX 5070 Ti (sm_120) · Issue #18609 · NVIDIA/TensorRT-LLM · GitHub
+CREATED_AT: 2026-09-02T19:34:27Z | 2026-09-02T19:34:28Z | 2026-09-02T19:34:48Z | 2026-09-03T00:03:29Z
+LABELS: Pytorch, bug
+
+--- COMMENT 1 ---
+### System Info
+
+X86
+Sm120
+Whisper large v3
+
+### Who can help?
+
+_No response_
+
+### Information
+
+- [ ] The official example scripts
+- [ ] My own modified scripts
+
+### Tasks
+
+- [ ] An officially supported task in the `examples` folder (such as GLUE/SQuAD, ...)
+- [ ] My own task or dataset (give details below)
+
+### Reproduction
+
+[Unable to encode/decode ](scheduler.py:462  schedule_request -> self.impl(...)  -> RuntimeError: bad optional access)
+
+### Expected behavior
+
+Active endpoint 
+
+### actual behavior
+
+HTTP 404
+
+### additional notes
+
+Whisper support missing 
+
+### Before submitting a new issue...
+
+- [x] Make sure you already searched for relevant issues, and checked the [documentation](https://nvidia.github.io/TensorRT-LLM/) and [examples](https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples) for answers to frequently asked questions.
+
+--- COMMENT 2 ---
+Whisper (PyTorch backend) fails with `RuntimeError: bad optional access` in the capacity scheduler — TensorRT-LLM 1.3.0rc25, RTX 5070 Ti (sm_120)
+
+## Summary
+
+`openai/whisper-large-v3` loads successfully under the PyTorch backend in
+TensorRT-LLM 1.3.0rc25, but **every generation request fails** with
+`RuntimeError: bad optional access` raised from the C++ capacity scheduler,
+before the model forward pass is reached.
+
+The failure is identical whether the request arrives over `trtllm-serve`'s
+`/v1/chat/completions` or through the Python `LLM` API directly, which rules out
+the OpenAI serving layer as the cause.
+
+## Environment
+
+| | |
+|---|---|
+| Container | `nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc25` |
+| TensorRT-LLM | 1.3.0rc25 |
+| PyTorch | 2.12.0a0+5aff3928d8.nv26.05 |
+| CUDA (torch) | 13.2 |
+| GPU | NVIDIA GeForce RTX 5070 Ti, 16303 MiB |
+| Compute capability | 12.0 (sm_120) |
+| Driver | 610.43.02 |
+| Host OS | Linux 7.0.0-30-generic x86_64 |
+| Model | `openai/whisper-large-v3` (HF safetensors, fp16) |
+
+`torch.cuda.get_arch_list()` reports `sm_120` and `compute_120` are compiled in,
+so this does not appear to be a missing-architecture problem.
+
+## Reproduction
+
+Minimal script (the `__main__` guard is required — the LLM API re-executes the
+module in MPI workers):
+
+```python
+import time, wave
+import numpy as np
+
+def main():
+    from tensorrt_llm import LLM, SamplingParams
+    from tensorrt_llm.llmapi import KvCacheConfig
+
+    with wave.open("clip30.wav", "rb") as w:          # 30 s, 16 kHz, mono
+        sr, n = w.getframerate(), w.getnframes()
+        raw = w.readframes(n)
+    audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+
+    llm = LLM(model="openai/whisper-large-v3", backend="pytorch",
+              max_batch_size=8, max_seq_len=448,
+              kv_cache_config=KvCacheConfig(free_gpu_memory_fraction=0.16,
+                                            cross_kv_cache_fraction=0.5))
+    print("LLM constructed OK")
+
+    outs = llm.generate([{"prompt": "", "multi_modal_data": {"audio": (audio, sr)}}],
+                        SamplingParams(max_tokens=220, temperature=0.0))
+    print(outs[0].outputs[0].text)
+
+if __name__ == "__main__":
+    main()
+```
+
+Run:
+
+```
+docker run --rm --gpus '"device=0"' -v ~/.cache/huggingface:/root/.cache/huggingface \
+  --entrypoint bash nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc25 \
+  -c 'python -u /opt/direct_test.py'
+```
+
+## Expected
+
+A transcript of the 30-second audio clip.
+
+## Actual
+
+The model constructs successfully, then generation fails:
+
+```
+LLM constructed OK
+[TRT-LLM] [W] [thop][RANK 0] Attention workspace size is not enough,
+    increase the size from 0 bytes to 33576192 bytes
+[TRT-LLM] [E] [_torch] Error in event loop: bad optional access
+[TRT-LLM] [E] [_torch] Traceback (most recent call last):
+  File ".../tensorrt_llm/_torch/pyexecutor/py_executor.py", line 1159, in _event_loop_wrapper
+    self.event_loop()
+  File ".../tensorrt_llm/_torch/pyexecutor/py_executor.py", line 5007, in _executor_loop_overlap
+    scheduled_batch, iter_stats = self._prepare_and_schedule_batch()
+  File ".../tensorrt_llm/_torch/pyexecutor/py_executor.py", line 3797, in _prepare_and_schedule_batch
+    scheduled_batch, ... = self._schedule(
+  File ".../tensorrt_llm/_torch/pyexecutor/scheduler/scheduler.py", line 6247, in _schedule
+    scheduler_output = self.scheduler.schedule_request(
+  File ".../tensorrt_llm/_torch/pyexecutor/scheduler/scheduler.py", line 547, in schedule_request
+    self.capacity_scheduler.schedule_request(active_requests)
+  File ".../tensorrt_llm/_torch/pyexecutor/scheduler/scheduler.py", line 462, in schedule_request
+    return self.impl(
+RuntimeError: bad optional access
+```
+
+The exception originates in the C++ capacity scheduler (`self.impl(...)`), i.e.
+**during scheduling, before the model forward pass**. This suggests an optional
+field required for encoder-decoder requests (an encoder output length or similar)
+is unset by the time the scheduler inspects the request.
+
+The preceding `Attention workspace size is not enough, increase the size from
+0 bytes` warning may be related — a workspace sized at 0 bytes looks like the same
+class of uninitialised state.
+
+## What was ruled out
+
+- **Not the serving layer.** The same error occurs via the Python `LLM` API with no
+  HTTP, no chat template and no OpenAI content parsing involved.
+- **Not the input format.** Passing a bare `ndarray` produces a clear, different
+  error (`Unsupported audio item for Whisper: expected a file path/URL, an
+  (array, sample_rate) tuple, or a dict with 'array'/'sampling_rate'`), so the
+  `(array, sample_rate)` form is being accepted by the input processor.
+- **Not a missing GPU architecture.** `sm_120`/`compute_120` are in
+  `torch.cuda.get_arch_list()`, and the model loads and allocates KV cache normally
+  (self 0.90 GiB + cross 0.83 GiB at `free_gpu_memory_fraction=0.16`,
+  `cross_kv_cache_fraction=0.5`).
+- **Not KV misconfiguration.** Omitting `cross_kv_cache_fraction` fails earlier and
+  explicitly (`ValueError: Encoder-decoder models require
+  kv_cache_config.cross_kv_cache_fraction to be set`), so that path is correct here.
+
+## Secondary observations
+
+1. `trtllm-serve` exposes **no** `/v1/audio/transcriptions` or `/v1/audio/translations`
+   route (both return 404); Whisper is only reachable via `/v1/chat/completions`.
+2. No Whisper chat template ships in `examples/serve/chat_templates/`, so an audio
+   chat request fails with `No chat template found for the given tokenizer and tools`
+   until the user supplies one via `--chat_template`.
+3. The container ships no Whisper examples, tests or documentation — only
+   `tensorrt_llm/_torch/models/modeling_whisper.py`.
+4. The legacy TensorRT-engine Whisper example was removed after v1.2.1, and the
+   PyTorch implementation is absent from v1.2.1, so no release currently provides a
+   working Whisper path.
+
+## References
+
+- [modeling_whisper.py (main)](https://github.com/NVIDIA/TensorRT-LLM/blob/main/tensorrt_llm/_torch/models/modeling_whisper.py)
+- [Legacy Whisper example, last present in v1.2.1](https://github.com/NVIDIA/TensorRT-LLM/blob/v1.2.1/examples/models/core/whisper/README.md)
+- [TensorRT-LLM release container](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/tensorrt-llm/containers/release)
+- [openai/whisper-large-v3](https://huggingface.co/openai/whisper-large-v3)
+
+--- COMMENT 3 ---
+Thank you for responding.
+
+I don't have write access to this repository, so GitHub won't let me assign
+the issue. Could you please self-assign or have another maintainer assign
+it to you? Thanks!
+
+Ravo42
+
+On Fri, Sep 4, 2026 at 3:48 AM Chandan Kumar ***@***.***>
+wrote:
+
+> *modelpath-dev* left a comment (NVIDIA/TensorRT-LLM#18609)
+> <https://github.com/NVIDIA/TensorRT-LLM/issues/18609#issuecomment-5538034934>
+>
+> I'll work on this. Could you assign it to me?
+>
+> I'll pin a regression test (or stabilize the flake) and keep the change
+> small.
+>
+> —
+> Reply to this email directly, view it on GitHub
+> <https://github.com/NVIDIA/TensorRT-LLM/issues/18609?email_source=notifications&email_token=CNJNBL7BVUCT25MGR3MSKXD5NJ6XTA5CNFSNUABFM5UWIORPF5TWS5BNNB2WEL2JONZXKZKDN5WW2ZLOOQXTKNJTHAYDGNBZGM2KM4TFMFZW63VGMF2XI2DPOKSWK5TFNZ2KYZTPN52GK4S7MNWGSY3L#issuecomment-5538034934>,
+> or unsubscribe
+> <https://github.com/notifications/unsubscribe-auth/CNJNBL5HTMQXDL5M5CGLOS35NJ6XTAVCNFSNUABFKJSXA33TNF2G64TZHM3DOOJTGY3DANJRHNEXG43VMU5TKMZSHAZTIOJWGY42C5QC>
+> .
+> Triage notifications, keep track of coding agent tasks and review pull
+> requests on the go with GitHub Mobile for iOS
+> <https://github.com/notifications/mobile/ios/CNJNBL236HVSNC4Q2CGKGJT5NJ6XTA5CNFSNUABFM5UWIORPF5TWS5BNNB2WEL2JONZXKZKDN5WW2ZLOOQXTKNJTHAYDGNBZGM2KM4TFMFZW63VGMF2XI2DPOKSWK5TFNZ2KUZTPN52GK4S7NFXXG>
+> and Android
+> <https://github.com/notifications/mobile/android/CNJNBLZILNYB3PTGTZIF5BD5NJ6XTA5CNFSNUABFM5UWIORPF5TWS5BNNB2WEL2JONZXKZKDN5WW2ZLOOQXTKNJTHAYDGNBZGM2KM4TFMFZW63VGMF2XI2DPOKSWK5TFNZ2K4ZTPN52GK4S7MFXGI4TPNFSA>.
+> Download it today!
+> You are receiving this because you authored the thread.Message ID:
+> ***@***.***>
+>
+
+=== PAGE TEXT (non-comment) ===
+[Bug]: Whisper (PyTorch backend) fails with RuntimeError: bad optional access in the capacity scheduler — TensorRT-LLM 1.3.0rc25, RTX 5070 Ti (sm_120) · Issue #18609 · NVIDIA/TensorRT-LLM · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ NVIDIA
+ 
+ / 
+ 
+ TensorRT-LLM 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 2.7k 
+
+ Star
+ 14.6k 
+
+ Code 
+
+ Issues 
+ 587 
+
+ Pull requests 
+ 875 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [Bug]: Whisper (PyTorch backend) fails with RuntimeError: bad optional access in the capacity scheduler — TensorRT-LLM 1.3.0rc25, RTX 5070 Ti (sm_120) #18609 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Open 
+
+ Open 
+ [Bug]: Whisper (PyTorch backend) fails with RuntimeError: bad optional access in the capacity scheduler — TensorRT-LLM 1.3.0rc25, RTX 5070 Ti (sm_120) #18609 
+
+ Copy link 
+
+ Labels
+ Pytorch <NV>Pytorch backend related issues <NV>Pytorch backend related issues bug Something isn't working Something isn't working 
+
+ Description
+ 
+ ravo42-maker 
+ opened on Sep 2, 2026 
+
+ Issue body actions 
+
+ System Info
+
+ X86
+
+Sm120
+
+Whisper large v3
+
+ Who can help?
+
+ No response 
+
+ Information
+
+ The official example scripts
+
+ My own modified scripts
+
+ Tasks
+
+ An officially supported task in the examples folder (such as GLUE/SQuAD, ...)
+
+ My own task or dataset (give details below)
+
+ Reproduction
+
+ [Unable to encode/decode ](scheduler.py:462 schedule_request -> self.impl(...) -> RuntimeError: bad optional access)
+
+ Expected behavior
+
+ Active endpoint
+
+ actual behavior
+
+ HTTP 404
+
+ additional notes
+
+ Whisper support missing
+
+ Before submitting a new issue...
+
+ Make sure you already searched for relevant issues, and checked the documentation and examples for answers to frequently asked questions.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ Pytorch <NV>Pytorch backend related issues <NV>Pytorch backend related issues bug Something isn't working Something isn't working 
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

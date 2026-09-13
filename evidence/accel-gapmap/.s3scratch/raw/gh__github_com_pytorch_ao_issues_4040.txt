@@ -1,0 +1,1337 @@
+TITLE: [RFC] Random Hadamard Transform API for NVFP4 Quantization · Issue #4040 · pytorch/ao · GitHub
+CREATED_AT: 2026-03-10T16:31:09Z | 2026-03-10T16:35:50Z | 2026-03-10T16:42:38Z | 2026-03-10T16:43:21Z
+LABELS: nvfp4
+STATE_REASON: COMPLETED
+
+--- COMMENT 1 ---
+Quantizing activations to NVFP4 (E2M1, 4-bit) is highly sensitive to outlier values. A handful of large activations can dominate the per-block scale, wasting precision for the rest of the elements. The Random Hadamard Transform (RHT) addresses this by randomizing the direction of each column before quantization, spreading outlier energy broadly and producing a more Gaussian-like distribution that quantizes cleanly at low bit widths.
+
+RHT is only applied to  **wgrad linear** GEMM during NVFP4 training. The weight gradient is `dW = dY^T @ X`, where `X` is the input activation with shape `(M, N)` = `(batch*seq, hidden_dim)`.
+
+During NVFP4 training, operands can be quantized in two orientations. After transposing, `X^T` has shape `(N, M)` = `(hidden_dim, batch*seq)`. *Columnwise* scales have shape `(N, M//16)`: one FP8 scale per group of 16 consecutive token positions, so scales vary over the M (token/sequence) dimension. *Rowwise* scales have shape `(M, N//16)`: one scale per group of 16 consecutive feature dimensions, so scales vary over the N `hidden_dim` dimension. 
+
+Activations frequently contain "massive values" at specific token positions (e.g. attention-sink tokens like BOS). These appear as outlier *columns* in `X^T`. And an outlier column inflates the FP8 scale for its entire 16-token group, wasting quantization precision for the remaining tokens. The (16 x 16) hadamard transform fixes this by reshaping `X^T` into groups of 16 along M and applying H16, spreading each token's outlier energy uniformly.
+
+Rowwise scales vary over the N `hidden_dim` dimension. `hidden_dim` outliers are naturally isolated from other features. Applying hadamard transform would provide minimal benfit while adding an extra kernel, so it is only applied to the columnwise quantization path.
+
+This RFC proposes three functions. `triton_rht_amax` that applies RHT to X^T and calculates global amax. `triton_rht` that applies RHT to X^T without quantization. `triton_rht_quantize` that fuses the Hadamard transform on X^T with the NVFP4 quantization epilogue in a single kernel.
+
+---
+
+### Background
+
+<details>
+
+The RHT operation is defined as:
+
+```
+RHT(X) = X * diag(sign) * H16
+```
+
+where `sign` is a random ±1 vector and `H16` is the normalized 16×16 Hadamard matrix:
+
+```
+H16[r][c] = 0.25 * (-1)^popcount(r & c)
+```
+
+Multiplying by `diag(sign)` randomly flips column signs. Multiplying by `H16` then mixes each group of 16 elements into all 16 outputs. Together, these two steps rotate the input into a basis where energy is spread more evenly, so that no single NVFP4 quantization bucket is dominated by one outlier.
+
+#### PyTorch Reference Implementation
+
+```python
+def rht_reference(A: torch.Tensor) -> torch.Tensor:
+    """Reference RHT: applies sign flip then H16 mix, returns (N, M) bfloat16."""
+    # Sign vector is hardcoded from Transformer Engine.
+    # [1, 1, 1, -1, 1, -1, -1, -1, -1, -1, -1, 1, -1, 1, -1, -1]
+    sign = rht_utils.get_wgrad_sign_vector(A)          # (M,) ±1 float32
+    H16  = rht_utils.get_hadamard_matrix()             # (16, 16) float32
+    # Transpose, reshape into groups of 16, apply sign+H16, reshape back
+    x = A.t().contiguous()                             # (N, M)
+    x = x.reshape(-1, 16)                             # (N*M//16, 16)
+    x = x * sign.reshape(-1, 16)                      # column sign flip
+    x = x @ H16                                       # Hadamard mix
+    return x.reshape(A.shape[1], A.shape[0]).to(torch.bfloat16)
+```
+
+</details>
+
+---
+
+### End-to-End Data Flow
+
+The RHT and Nvfp4 quantization sequence for weight gradient input arguments:
+
+```python
+# Step 1: Apply RHT to X^T, capture post-RHT amax
+x_t_global_amax = triton_rht_amax(x)
+
+# Step 2 — Two paths for columnwise NVFP4 quantization:
+if eligible_for_rht_cast_fusion:
+    # A single fused kernel: RHT + quantization
+    triton_rht_quantize(x, global_amax=x_t_global_amax)
+else:
+    # Apply RHT to X^T, write BF16 intermediate to global memory
+    x_t_rht = triton_rht(x)
+    per_tensor_scale = x_t_global_amax / (F8E4M3_MAX * F4_E2M1_MAX)
+    # Quantize using amax from step 1
+    triton_quantize_nvfp4(x_t_rht, per_tensor_scale)
+```
+
+**Step 1** Applies RHT to the transposed input `X^T` and writes the post-RHT amax.
+
+**Step 2a (fast path)** reads `global_amax`, then recomputes `RHT(X^T)` internally as part of a single fused GEMM + quantization epilogue kernel.
+
+**Step 2b (fallback)** reapplies `triton_rht` to produce a BF16 intermediate, then calls `n` for columnwise quantization.
+
+On both paths, `RHT(X^T)` is evaluated **twice in total**: once to measure the global amax, and again to produce the quantized columnwise output.
+
+---
+
+### Prior Art
+
+<details>
+
+TransformerEngine (TE) exposes equivalent operations in its C ABI at git tag `v2.12`.
+All three functions are marked **experimental/unstable** in the header:
+[`transformer_engine/common/include/transformer_engine/hadamard_transform.h`](https://github.com/NVIDIA/TransformerEngine/blob/v2.12/transformer_engine/common/include/transformer_engine/hadamard_transform.h)
+
+#### Mapping to TE equivalents
+
+| This RFC | TE equivalent |
+|---|---|
+| `triton_rht(A)` | `nvte_hadamard_transform` |
+| `triton_rht_amax(A)` | `nvte_hadamard_transform_amax` |
+| `triton_rht_quantize(A)` | `nvte_hadamard_transform_cast_fusion_columnwise` |
+
+---
+
+#### `triton_rht` vs `nvte_hadamard_transform`
+
+TE signature:
+```c
+void nvte_hadamard_transform(const NVTETensor input, NVTETensor output,
+                             int random_sign_mask, int random_sign_mask_t,
+                             cudaStream_t stream);
+```
+
+- TE generates diag(sign) * H16 on-the-fly inside the kernel. It uses an Ampere generation matrix multiplication.
+- Triton kernel takes a plain `torch.Tensor`. The `diag(sign) @ H16` matrix is cached, amortizing the setup cost across calls. It is an NTT matrix multiplication kernel.
+- TE requires an explicit `cudaStream_t`; ours uses the PyTorch default CUDA stream.
+- Output: both produce a `(N, M)` bfloat16 transposed result.
+
+---
+
+#### `triton_rht_amax` vs `nvte_hadamard_transform_amax`
+
+TE signature:
+```c
+void nvte_hadamard_transform_amax(const NVTETensor input, NVTETensor output,
+                                  int random_sign_mask, int random_sign_mask_t,
+                                  cudaStream_t stream);
+```
+
+- TE writes both a rowwise amax (plain input) and a columnwise amax (transposed RHT input) into the output tensor's metadata fields — a dual-purpose operation.
+- Proposed `triton_rht_amax` returns a single scalar `float32` (the post-RHT global amax only); simpler contract.
+- TE diag(sign) matrix is represented as a pair of integer sign masks
+- Triton uses the cached `diag(sign) @ H16` matrix and does not require explicit sign masks.
+- TE requires an explicit `cudaStream_t`; ours uses the PyTorch default stream.
+
+---
+
+#### `triton_rht_quantize` vs `nvte_hadamard_transform_cast_fusion_columnwise`
+
+TE signature:
+```c
+void nvte_hadamard_transform_cast_fusion_columnwise(const NVTETensor input,
+                                                    NVTETensor output,
+                                                    const NVTETensor hadamard_matrix,
+                                                    const NVTEQuantizationConfig quant_config,
+                                                    cudaStream_t stream);
+```
+
+- TE takes an explicit `hadamard_matrix` tensor and a `NVTEQuantizationConfig` struct (allowing arbitrary quantization recipes).
+- Proposed API hardcodes H16 (cached internally) and always targets NVFP4 E2M1; the quantization recipe is not configurable.
+- TE returns packed data inside the opaque `NVTETensor`; our API returns two explicit tensors: `(N, M//2) uint8` packed FP4 codes and `(N, M//16) float8_e4m3fn` scale factors.
+- TE requires an explicit `cudaStream_t`; ours uses the PyTorch default stream.
+- **The fused path requires the input tensor rows % 64 == 0 and cols % 128 == 0.**
+
+---
+
+#### Tradeoffs summary
+
+| Dimension | This RFC | TransformerEngine |
+|---|---|---|
+| Interface | PyTorch-native tensors, implicit stream | C ABI, explicit stream + NVTETensor |
+| Sign mask | Cached internally (wgrad seed) | Caller-supplied 16-bit integers |
+| Hadamard matrix | Hardcoded H16 (cached) | Caller-supplied NVTETensor |
+| Quant config | Hardcoded NVFP4 E2M1 | Configurable NVTEQuantizationConfig |
+| Outputs | Explicit typed tensors | Embedded in NVTETensor metadata |
+| API stability | Stable Python API | Marked experimental/unstable in C header |
+| Flexibility | Low (opinionated defaults) | High (general purpose) |
+
+</details>
+
+---
+
+### API Proposals
+
+#### `triton_rht_amax`
+
+**Signature:**
+```python
+triton_rht_amax(A: torch.Tensor) -> torch.Tensor
+```
+
+Applies RHT to `A` and returns the global absolute maximum of the post-RHT output without materializing the full `(N, M)` intermediate tensor. Equivalent to `rht_reference(A).abs().max().float()` but fused: post-RHT values are reduced tile-by-tile inside the kernel and never written to DRAM.
+
+**Args:**
+- `A`: `(M, N)` `bfloat16` tensor, row-major. `M` must be divisible by 16.
+
+**Returns:**
+- Scalar `float32` tensor containing `max(abs(RHT(A)))`.
+
+**Raises:**
+- `NotImplementedError`: If hardware is pre-SM90.
+- `AssertionError`: If `A` is not `bfloat16`, not 2-D, not contiguous, or `M % 16 != 0`.
+
+**Kernel parameters:**
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| `BLOCK_M` | 128 | wgmma tile granularity |
+| `BLOCK_N` | 64 | wgmma tile granularity |
+| `GROUP_SIZE_N` | 8 | L2-cache-friendly tile grouping |
+| `NUM_STAGES` | 3 | prefetch 2 K-tiles ahead |
+
+Reduction is per-CTA: each CTA accumulates a running `cumulative_max` across all tiles it owns, then issues a single `tl.atomic_max` into a scalar output buffer.
+
+---
+
+#### `triton_rht`
+
+**Signature:**
+```python
+triton_rht(A: torch.Tensor) -> torch.Tensor
+```
+
+Computes the 16×16 Randomized Hadamard Transform. Equivalent to
+`nvte_hadamard_transform` with `kReturnTransposed=True`.
+
+Formula: `C = (A.T.reshape(-1, 16)) @ (diag(s) * H16)` where `H16[r,c] = (-1)^popcount(r & c) * 0.25` and `s` is the wgrad sign vector from `rht_utils.get_wgrad_sign_vector`.
+
+**Args:**
+- `A`: `(M, N)` `bfloat16` tensor, row-major. `M` must be divisible by 16.
+
+**Returns:**
+- `(N, M)` `bfloat16` tensor, row-major.
+
+**Raises:**
+- `NotImplementedError`: If hardware is pre-SM90.
+- `AssertionError`: If `A` is not `bfloat16`, not 2-D, not contiguous, or `M % 16 != 0`.
+
+**Kernel parameters:** Same as `triton_rht_amax` (`BLOCK_M=128`, `BLOCK_N=64`, `GROUP_SIZE_N=8`, `NUM_STAGES=3`). The epilogue writes `(BLOCK_N, BLOCK_M)` tiles to a `(N, M)` output tensor via TMA store.
+
+---
+
+#### `triton_rht_quantize`
+
+**Signature:**
+```python
+triton_rht_quantize(A: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]
+```
+
+Fuses RHT and NVFP4 E2M1 columnwise quantization in a single persistent kernel. Matches `nvte_hadamard_transform_cast_fusion_columnwise` on Blackwell (SM100+).
+
+Internally calls `triton_rht_amax` first to obtain the global amax, then runs a second persistent pass that recomputes `RHT(A.T)` and applies the NVFP4 quantization epilogue: per-vector amax → global/per-vector FP8 scale → FP4 clamp/pack.
+
+**Args:**
+- `A`: `(M, N)` `bfloat16` tensor, row-major. `M` must be divisible by 16.
+
+**Returns:**
+- `(N, M//2)` `uint8` tensor: packed FP4 E2M1 codes (columnwise layout,
+  two nibbles per byte).
+- `(N, M//16)` `float8_e4m3fn` tensor: per-vector decode scale factors.
+
+**Raises:**
+- `NotImplementedError`: If hardware is pre-SM100.
+- `AssertionError`: If `A` is not `bfloat16`, not 2-D, not contiguous, or `M % 16 != 0`.
+
+**Kernel parameters:**
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| `BLOCK_M` | 256 | `BLOCK_M//2` must be ≥ 16 bytes for `uint8` TMA stride alignment |
+| `BLOCK_N` | 64 | wgmma tile granularity |
+| `GROUP_SIZE_N` | 8 | L2-cache-friendly tile grouping |
+| `NUM_STAGES` | 3 | prefetch 2 K-tiles ahead |
+
+Note: `BLOCK_M=256` (vs. 128 for the other two kernels) is required because the packed `uint8` output tensor has stride `M//2` bytes; for `BLOCK_M < 256` this stride is less than 16 bytes, violating the TMA `TensorDescriptor` alignment constraint.
+
+---
+
+### Configurable Hadamard Matrix Size
+
+<details>
+
+Both paths currently hardcoded H16 as the Hadamard matrix and fixed random sign vector. LruCache is used to amortize the cost of generating the random sign vector * (16, 16) Hadamard matrix across all hadamard transform calls.
+
+**Open Question** Should we support larger (or smaller) Hadamard matrix sizes, e.g., H4 or H128? Perhaps `triton_rht_quantize` uses H16 for the best balance of quality and compute cost, while `triton_rht` and `triton_rht_amax` could support a configurable size to allow users to experiment with different tradeoffs?
+
+#### Motivation for Larger (or Smaller) Sizes
+
+Ablation results from arxiv:2509.25149 (§"Hadamard matrix size") show:
+- At **1.2B parameter scale**: virtually no perplexity difference between H2, H4, H16, and H128.
+- At **12B parameter scale**: H4 induces a measurable loss increase; H128 gives a minor quality benefit over H16; H16 is the practical sweet spot balancing quality and compute cost.
+- Larger matrices spread outliers more broadly (closer to a true Gaussian rotation) but increase compute and memory cost proportionally.
+
+</details>
+
+---
+
+### Test Plan
+
+**Correctness:**
+
+Three test functions, one per kernel, parametrized identically to `test_triton_nvfp4_quantize_equivalence` in torchao:
+
+```
+M     ∈ {64, 128, 256, 512, 32, 96, 160}
+N     ∈ {128, 256, 512, 1024, 100, 200, 384}
+dtype ∈ {torch.float32, torch.bfloat16}
+```
+`triton_rht_quantize` additionally parametrizes over `use_per_tensor_scale ∈ {False, True}`.
+
+---
+
+#### `test_triton_rht`
+
+```python
+@pytest.mark.parametrize("M", [64, 128, 256, 512, 32, 96, 160], ids=lambda m: f"M{m}")
+@pytest.mark.parametrize("N", [128, 256, 512, 1024, 100, 200, 384], ids=lambda n: f"N{n}")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=["fp32", "bf16"])
+@torch.no_grad()
+def test_triton_rht(M, N, dtype):
+    torch.manual_seed(42)
+    A = torch.randn(M, N, dtype=dtype, device="cuda")
+
+    ref = rht_reference(A)               # (N, M) bfloat16, PyTorch eager
+    out = triton_rht(A)                  # (N, M) bfloat16, Triton kernel
+
+    # Bitwise equivalence: every element must match exactly.
+    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+```
+
+---
+
+#### `test_triton_rht_amax`
+
+```python
+@pytest.mark.parametrize("M", [64, 128, 256, 512, 32, 96, 160], ids=lambda m: f"M{m}")
+@pytest.mark.parametrize("N", [128, 256, 512, 1024, 100, 200, 384], ids=lambda n: f"N{n}")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=["fp32", "bf16"])
+@torch.no_grad()
+def test_triton_rht_amax(M, N, dtype):
+    torch.manual_seed(42)
+    A = torch.randn(M, N, dtype=dtype, device="cuda")
+
+    ref_amax = rht_reference(A).abs().max().float()   # scalar float32
+    out_amax = triton_rht_amax(A)                     # scalar float32
+
+    # Bitwise equivalence: reduction must produce the identical float32 value.
+    torch.testing.assert_close(out_amax, ref_amax, atol=0, rtol=0)
+```
+
+---
+
+#### `test_triton_rht_quantize`
+
+```python
+@pytest.mark.parametrize("M", [64, 128, 256, 512, 32, 96, 160], ids=lambda m: f"M{m}")
+@pytest.mark.parametrize("N", [128, 256, 512, 1024, 100, 200, 384], ids=lambda n: f"N{n}")
+@pytest.mark.parametrize("use_per_tensor_scale", [False, True],
+                         ids=["block_scale", "tensor_scale"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=["fp32", "bf16"])
+@torch.no_grad()
+def test_triton_rht_quantize(M, N, use_per_tensor_scale, dtype):
+    torch.manual_seed(42)
+    A = torch.randn(M, N, dtype=dtype, device="cuda")
+
+    ref_codes, ref_scales = rht_quantize_reference(A)   # (N, M//2) uint8, (N, M//16) fp8
+    out_codes, out_scales = triton_rht_quantize(A)      # same shapes
+
+    # 1. Bitwise equivalence: packed FP4 codes and FP8 scale factors must match exactly.
+    torch.testing.assert_close(out_codes, ref_codes, atol=0, rtol=0)
+    torch.testing.assert_close(out_scales, ref_scales, atol=0, rtol=0)
+
+    # 2. SQNR: dequantize the Triton output and measure reconstruction quality
+    #    against the original bfloat16 input (not against the reference output).
+    #    RHT + NVFP4 is expected to yield ≥ 20 dB even at 4-bit resolution.
+    out_dequant = nvfp4_dequantize(out_codes, out_scales)   # (N, M) bfloat16
+    A_t = A.t().contiguous()                                # (N, M) bfloat16
+
+    signal_power = A_t.float().pow(2).mean()
+    noise_power  = (out_dequant.float() - A_t.float()).pow(2).mean()
+    sqnr = 10 * torch.log10(signal_power / noise_power)
+
+    SQNR_THRESHOLD = 20.0   # dB; conservative floor for 4-bit RHT quantization
+    assert sqnr >= SQNR_THRESHOLD, (
+        f"SQNR {sqnr:.2f} dB < {SQNR_THRESHOLD} dB "
+        f"for M={M}, N={N}, use_per_tensor_scale={use_per_tensor_scale}, dtype={dtype}"
+    )
+```
+
+**Performance:**
+- Shape grid: `M ∈ {16, 64, 256, 1024, 8192}`, `N ∈ {128, 256, 512, 1024, 2048,
+  4096, 8192, 16384, 32768}` (45 combinations per kernel).
+- Methodology: `pytest-benchmark` with `warmup_rounds=5`, `rounds=20`, `iterations=1` (matches `benchmarks/test_bench_rht.py` and `benchmarks/test_bench_quantize.py`).
+
+---
+
+### Preliminary Results
+* All results are bitwise accurate between PyTorch reference, OAI Triton, and Transformer Engine.
+* OAI Triton kernels have **not** been autotuned yet.
+
+<details>
+
+Benchmarks run on `gb200` (Grace Blackwell, SM100),
+`M=8192`, `N ∈ {128 … 32768}`, `bfloat16` inputs.
+Three implementations compared: PyTorch (eager reference), OAI Triton (this RFC),
+Transformer Engine (TE).
+
+**`nvte_hadamard_transform` — RHT latency**
+
+<img width="1350" height="750" alt="Image" src="https://github.com/user-attachments/assets/1d012afc-7685-4bfe-8386-4e32ee95868a" />
+
+OAI Triton stays flat at ~0.04 ms regardless of N, saturating SM compute. PyTorch scales from 0.09 ms (N=128) to 0.24 ms (N=32768). Transformer Engine matches Triton for small N but diverges sharply at N > 4096, reaching 0.32 ms at N=32768. This kernel uses `nvte_hadamard_transform`, which is an Ampere-style kernel so it has poor scaling.
+
+---
+
+**`nvte_hadamard_transform_amax` — fused RHT + global amax**
+
+<img width="1350" height="750" alt="Image" src="https://github.com/user-attachments/assets/cee52015-a949-44a0-abad-8f5f0c248032" />
+
+OAI Triton is flat at ~0.055 ms across all N: the fused reduction adds negligible overhead over the raw RHT pass. TE grows from 0.08 ms to 0.15 ms. PyTorch (eager RHT + `.abs().max()`) spikes to 0.72 ms at N=32768 due to the extra memory round-trip for the intermediate tensor.
+
+---
+
+**`nvte_hadamard_transform_cast_fusion_columnwise` — fused RHT + NVFP4 quantize (all three)**
+
+<img width="1350" height="750" alt="Image" src="https://github.com/user-attachments/assets/57f57a59-7c3d-4bc6-bca4-b51fe72a4c90" />
+
+PyTorch reference (non-fused RHT → quantize) is 6–80× slower than the fused paths, reaching 11 ms at N=32768. Both OAI Triton and TE stay below 0.15 ms across the full N sweep, confirming that fusion eliminates the dominant memory bottleneck.
+
+---
+
+**`nvte_hadamard_transform_cast_fusion_columnwise` — OAI Triton vs. TE only (zoomed)**
+
+<img width="1350" height="750" alt="Image" src="https://github.com/user-attachments/assets/fca90ecd-c621-4167-82ca-e13618c98810" />
+
+OAI Triton ranges 0.099–0.123 ms; TE ranges 0.115–0.130 ms. Triton is faster by roughly 10–15% at all tested N values. Both are effectively compute-bound and insensitive to N in this range, consistent with the persistent warp-specialized TMA kernel design.
+
+</details>
+
+--- COMMENT 2 ---
+fyi @drisspg @slayton58
+
+--- COMMENT 3 ---
+cc: @jbschlosser @vkuzo @ngimel @supriyar @Priyadlfw @ptrblck @eqy
+
+--- COMMENT 4 ---
+cc @howardzhang-cv
+
+--- COMMENT 5 ---
+This is great @rdspring1, thanks for the detailed RFC! 
+
+Question on the e2e data flow you're proposing:
+
+```python
+# Step 1: Apply RHT to X^T, capture post-RHT amax
+x_t_global_amax = hadamard_transform_amax(X^T)
+
+# Step 2 — Two paths for columnwise NVFP4 quantization:
+if eligible_for_rht_cast_fusion:
+    # A single fused kernel: RHT + quantization
+    triton_rht_quantize(X, global_amax=x_t_global_amax)
+else:
+    # Apply RHT to X^T, write BF16 intermediate to global memory
+    x_t_rht = triton_rht(X)
+    # Quantize using amax from step 1
+    triton_quantize_nvfp4(x_t_rht)
+```
+
+- How is `eligible_for_rht_cast_fusion` determined?
+- `x_t_global_amax` seems to only be needed if `eligible_for_rht_cast_fusion` - why is it computed unconditionally before both paths? 
+
+Also:
+
+>Open Question Should we support larger (or smaller) Hadamard matrix sizes, e.g., H4 or H128? Perhaps triton_rht_quantize uses H16 for the best balance of quality and compute cost, while triton_rht and triton_rht_amax could support a configurable size to allow users to experiment with different tradeoffs?
+
+As you noted 16 seems to be the sweet spot for a practical perf vs accuracy trade-off, so I am fine with sticking with H16 for now, especially for the initial prototype. Longer term it would be interesting to make the Hadamard matrix size configurable for research use cases.
+
+--- COMMENT 6 ---
+Few questions:
+* How do you propose handling different domain sizes for global amax? We may want per-row, per-tile or similar instead of just per-tensor.
+* What about stochastic rounding? 
+* How is all of this going to tie in with PyTorch's RNG?
+* What about sharing of RHT sign vectors? The NVFP4 pre-training paper uses a single random sign vector over all linears - how would this be exposed?
+
+--- COMMENT 7 ---
+> How is eligible_for_rht_cast_fusion determined?
+
+For TransformerEngine, the requirements for rht + nvfp4 quantize fusion are:
+  1. dtype = BF16
+  2. rows (M) divisible by 64 — the batch/sequence dimension
+  3. cols (N) divisible by 128 — the feature/hidden dimension
+  4. Hadamard matrix is a 16×16 BF16 tensor, passed explicitly
+  5. Output scales in compact (non-swizzled) format
+  6. Architecture: SM100+ (Blackwell), CUDA 12.8+ — implicit from the CUTLASS SM100 UMMA MMA instructions used internally
+
+> Why is it computed unconditionally before both paths?
+
+It was included in the comment but not as an argument in the pseudo-code.
+
+```python
+# Step 1: Apply RHT to X^T, capture post-RHT amax
+x_t_global_amax = triton_rht_amax(x)
+
+# Step 2 — Two paths for columnwise NVFP4 quantization:
+if eligible_for_rht_cast_fusion:
+    # A single fused kernel: RHT + quantization
+    triton_rht_quantize(x, global_amax=x_t_global_amax)
+else:
+    # Apply RHT to X^T, write BF16 intermediate to global memory
+    x_t_rht = triton_rht(x)
+    per_tensor_scale = x_t_global_amax / (F8E4M3_MAX * F4_E2M1_MAX)
+    # Quantize using amax from step 1
+    triton_quantize_nvfp4(x_t_rht, per_tensor_scale)
+```
+
+--- COMMENT 8 ---
+> How do you propose handling different domain sizes for global amax? We may want per-row, per-tile or similar instead of just per-tensor.
+
+<details>
+
+```python
+def triton_rht_amax(                                                                           
+   input: torch.Tensor,
+    *,
+    domain: Literal["global", "row", "tile"] = "global",
+    tile_shape: Optional[Tuple[int, int]] = None,
+ ) -> torch.Tensor:
+   r"""
+   Computes the maximum value of ``input`` over a specified domain.
+   - "global": scalar, current behavior
+   - "row": one amax per row, returns [M] for rowwise quant or [N] for columnwise quant
+   - "tile": one amax per tile, returns [M//tile_m, N//tile_n]
+   """
+```
+
+`triton_rht_quantize` and `triton_quantize_nvfp4` accept the resulting tensor unchanged. The kernels detect the shape and load the appropriate global scale per thread block tile. Scalar load for "global", row-indexed load for "row", and 2D-indexed load for "tile". The quantization arithmetic is identical across all three. Only the load pattern and broadcast shape change.
+
+NVFP4 `scaled_mm` requires changes for per-row or per-tile global amax. NVFP4 requires the global amax as a scalar alpha in the CUTLASS epilogue to recover correct values: Y = acc * 1/(global_scale_x * global_scale_w)
+
+With per-row or per-tile global scales, this becomes an element-wise outer product `1/(gs_x[i] * gs_w[j])` which CUTLASS `LinearCombination` cannot express. A CuTe DSL kernel is required to modify the epilogue and apply per-row/per-tile inverse scales in registers. This is analogous to how the Triton FP8 rowwise GEMM handles `a_scale[:, None] * b_scale[None, :]`.
+
+For `wgrad (grad_output_fp4 @ X_fp4 → BF16)`, this applies even though the output is BF16 — the global scale correction is still required for numerical correctness. Without a CuTe DSL epilogue, the only alternative is a two-step approach: run `f4 @ f4 = bf16` with `alpha=1`, then apply a separate per-row/per-tile rescaling kernel.
+
+The "global" default preserves the current known recipe. "row" and "tile" are opt-in for users who observe dynamic range issues in training, with the understanding that convergence behavior at finer granularities is not yet validated.
+
+</details>
+
+> What about stochastic rounding?
+> How is all of this going to tie in with PyTorch's RNG?
+
+Proposal: 
+Add `rounding_mode` and `rand_bits` arguments to `triton_rht_quantize` kernel:
+* `rounding_mode`: Rounding mode for FP4 conversion (RN or RS).
+* `rand_bits`: Optional int32 tensor for stochastic rounding randomness. This is required when rounding_mode is RS. The caller is responsible for generating this, keeping RNG concerns (seeding, CUDA graph safety) outside this function.
+
+> What about sharing of RHT sign vectors? The NVFP4 pre-training paper uses a single random sign vector over all linears - how would this be exposed?
+
+TransformerEngine hardcodes a fixed sign vector and the H16 matrix. The `diag(sign) * H16` result is cached using a `@lru_cache`. Then, this result is used globally across all wgrad RHT. IIUC, if you apply RHT to `dgrad` or `fwd`, you will need another sign vector for each one at minimum. `triton_rht_amax`, `triton_rht`, and ` triton_rht_quantize` will need an argument for `diag(sign) * H16`. For nn.Module integration, register it as a buffer (register_buffer), not a parameter, so it's saved with the checkpoint but not updated by the optimizer.
+
+**Critical invariant:** `triton_rht_amax` and `triton_rht_quantize` within the same gradient step must receive the same sign vector — the amax pass measures the global max for a specific rotation, and the quantize pass must apply the identical rotation.
+
+```python
+sign_vector = create_rht_sign_vector(…)
+rht = diag(sign_vector) @ H16  # TE caches this with @lru_cache
+global_amax = triton_rht_amax(x, rht)
+nvfp4_x_t, scale_factors = trition_rht_quantize(x, rht)
+```
+
+--- COMMENT 9 ---
+> different scale domains
+
+`torch.nn.functional.ScalingType` already encodes the relevant options. Not sure why we need the extra information on how these affect scaled_mm calls, or the need for kernels - that's orthogonal to the question as asked.  
+
+> rand_bits: Optional int32 tensor for stochastic rounding randomness. This is required when rounding_mode is RS. The caller is responsible for generating this, keeping RNG concerns (seeding, CUDA graph safety) outside this function.
+
+There's performance implications (alongside memory ones) here -- we should quantify those and how much we care about them. It's trading compute-work in a fused kernel (hammering the ALU), with potentially overlapped compute work to generate RNG, and additional BW to read those random numbers. I suspect fusing RNG into the kernel will be faster.
+
+> Shared RHT sign vectors
+
+I don't mind too too much _how_ this is exposed as long as it _is_ exposed. I don't want to be held to what TE thinks is the correct granularity.
+
+--- COMMENT 10 ---
+> There's performance implications (alongside memory ones) here -- we should quantify those and how much we care about them. It's trading compute-work in a fused kernel (hammering the ALU), with potentially overlapped compute work to generate RNG, and additional BW to read those random numbers. I suspect fusing RNG into the kernel will be faster.
+
+@slayton58 
+- I believe I'm using triton's Philox in my RS kernel: https://github.com/pytorch/ao/pull/3384/changes#diff-4d934a52f70a6d2fcfdbb5a2ac09e89f91c0851aa11dc0d184a69f1a9a5a448aR618-R619, and rand_bits here might be a misnomer (i.e for the eager path, we are generating all the rand_bits at once - and I believe torch.Generator's interface might be lacking right now to unify the approach for both path, may be need @jbschlosser's work here: https://github.com/pytorch/pytorch/pull/177231 ). My assumption is we will compose the RHT kernel with the RS kernel and torch.compile will fuse them?
+- Or are you suggesting a solution similar to this kernel in MSLK where the RNG is fused explicitly and there seems to be a more custom way of generating the randoms: https://github.com/meta-pytorch/MSLK/blob/main/mslk/quantize/triton/fp4_quantize.py#L723-L741 ?
+- All existing approaches do seem to agree that the random generation should happen inside the kernel than outside:
+  - TE's JAX approach here: https://github.com/NVIDIA/TransformerEngine/blob/06a23e364009a09c34bb51bdd1e0c24247f7f4d3/transformer_engine/jax/quantize/quantizer.py#L655-L666
+  - TE's PyTorch approach here: https://github.com/NVIDIA/TransformerEngine/blob/3e61687a7b3c42225d610f24e9a37cac366641e4/transformer_engine/common/hadamard_transform/hadamard_transform_cast_fusion.cu#L514-L524
+
+--- COMMENT 11 ---
+@rdspring1 @danielvegamyhre - the RFC spec is solid. the key thing for triton_rht_amax is that you never need to materialize the (N, M) BF16 intermediate -- the wgmma tiles can reduce to a per-CTA max and do a single atomic_max into the output scalar, so DRAM traffic is just the input read plus one scalar write. for triton_rht_quantize the TMA store alignment constraint at BLOCK_M=256 makes sense for uint8 stride. re the open question on configurable Hadamard matrix size -- since the ablation shows H16 is the sweet spot at 12B+ scale, I would hardcode H16 initially and defer H4/H128 to follow-on work. fewer code paths to validate and the SQNR threshold test already covers quality. happy to raise a PR implementing all three kernels.
+
+--- COMMENT 12 ---
+The TE team pointed me to [row_cast_col_hadamard_transform_cast_fusion.cu](https://github.com/NVIDIA/TransformerEngine/blob/main/transformer_engine/common/hadamard_transform/row_cast_col_hadamard_transform_cast_fusion.cu). The upshot is that it fuses `nvfp4_quantize(X)` with `nvfp4_quantize(RHT(X.t()))`, so a single kernel can produce the quantized tensors needed for both the forward and backward paths. That means we can store the inputs in NVFP4 rather than BF16.
+
+I’m preparing a stack of PRs for `triton_rht_quantize_row_col` and `triton_rht_amax` now and will update the RFC accordingly.
+
+At the moment, my E2E `NVFP4LinearTriton` is 148 µs (~9%) slower than the TE equivalent `NVFP4LinearTE` (1.782 ms vs. 1.634 ms), and I’m investigating the remaining gap.
+
+QQ: Is there a preferred way to check stochastic rounding, given that we can’t do bitwise checks yet without a stateless RNG API?
+
+<details>
+<summary> Pytorch autograd function sketch</summary>
+
+```python
+class NVFP4LinearTriton(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        M, K = input.shape
+        # swizzle_scale_factors=True: both x_scales and x_row_sf come out in
+        # shaped SWIZZLE_32_4_4 layout — no ao_to_blocked needed downstream.
+        (
+            x_codes,
+            x_scales,
+            x_amax,
+            x_row_fp4,
+            x_row_sf,
+            x_row_amax,
+        ) = triton_rht_quantize_row_col(
+            input.contiguous(),
+            stochastic_rounding=True,
+            compute_rowwise=True,
+            swizzle_scale_factors=True,
+        )
+        ctx.save_for_backward(x_codes, x_scales, x_amax, weight)
+        # nvfp4 quantize weight and apply torch.scaled_mm
+        return fwd(x_row_fp4, x_row_sf, x_row_amax, weight)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        grad_output = grad_output.contiguous()
+        x_codes, x_scales, x_amax, weight = ctx.saved_tensors
+
+        # nvfp4 quantize grad_output and weight and apply torch.scaled_mm
+        grad_input = dgrad(grad_output, weight)
+
+        # dy: triton col-only, row-major (N, M//16) scales — ao_to_blocked in wgrad_triton_x
+        # x:  triton shaped-swizzle scales saved from forward — flatten in wgrad_triton_x
+        dy_codes, dy_scales, dy_amax, _, _, _ = triton_rht_quantize_row_col(
+            grad_output, stochastic_rounding=True, compute_rowwise=False
+        )
+        grad_weight = wgrad(
+            dy_codes, dy_scales, dy_amax, x_codes, x_scales, x_amax
+        )
+        return grad_input, grad_weight
+```
+
+</details>
+
+=== PAGE TEXT (non-comment) ===
+[RFC] Random Hadamard Transform API for NVFP4 Quantization · Issue #4040 · pytorch/ao · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ pytorch
+ 
+ / 
+ 
+ ao 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 620 
+
+ Star
+ 3k 
+
+ Code 
+
+ Issues 
+ 300 
+
+ Pull requests 
+ 484 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [RFC] Random Hadamard Transform API for NVFP4 Quantization #4040 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Closed 
+
+ Closed 
+ [RFC] Random Hadamard Transform API for NVFP4 Quantization #4040 
+
+ Copy link 
+
+ Assignees
+
+ Labels
+ nvfp4 
+
+ Milestone
+ NVFP4 Training
+
+ Description
+ 
+ rdspring1 
+ opened on Mar 10, 2026 
+
+ Issue body actions 
+
+ Quantizing activations to NVFP4 (E2M1, 4-bit) is highly sensitive to outlier values. A handful of large activations can dominate the per-block scale, wasting precision for the rest of the elements. The Random Hadamard Transform (RHT) addresses this by randomizing the direction of each column before quantization, spreading outlier energy broadly and producing a more Gaussian-like distribution that quantizes cleanly at low bit widths.
+
+ RHT is only applied to wgrad linear GEMM during NVFP4 training. The weight gradient is dW = dY^T @ X , where X is the input activation with shape (M, N) = (batch*seq, hidden_dim) .
+
+ During NVFP4 training, operands can be quantized in two orientations. After transposing, X^T has shape (N, M) = (hidden_dim, batch*seq) . Columnwise scales have shape (N, M//16) : one FP8 scale per group of 16 consecutive token positions, so scales vary over the M (token/sequence) dimension. Rowwise scales have shape (M, N//16) : one scale per group of 16 consecutive feature dimensions, so scales vary over the N hidden_dim dimension.
+
+ Activations frequently contain "massive values" at specific token positions (e.g. attention-sink tokens like BOS). These appear as outlier columns in X^T . And an outlier column inflates the FP8 scale for its entire 16-token group, wasting quantization precision for the remaining tokens. The (16 x 16) hadamard transform fixes this by reshaping X^T into groups of 16 along M and applying H16, spreading each token's outlier energy uniformly.
+
+ Rowwise scales vary over the N hidden_dim dimension. hidden_dim outliers are naturally isolated from other features. Applying hadamard transform would provide minimal benfit while adding an extra kernel, so it is only applied to the columnwise quantization path.
+
+ This RFC proposes three functions. triton_rht_amax that applies RHT to X^T and calculates global amax. triton_rht that applies RHT to X^T without quantization. triton_rht_quantize that fuses the Hadamard transform on X^T with the NVFP4 quantization epilogue in a single kernel.
+
+ Background
+
+ Details 
+ The RHT operation is defined as:
+
+ RHT(X) = X * diag(sign) * H16
+
+ where sign is a random ±1 vector and H16 is the normalized 16×16 Hadamard matrix:
+
+ H16[r][c] = 0.25 * (-1)^popcount(r & c)
+
+ Multiplying by diag(sign) randomly flips column signs. Multiplying by H16 then mixes each group of 16 elements into all 16 outputs. Together, these two steps rotate the input into a basis where energy is spread more evenly, so that no single NVFP4 quantization bucket is dominated by one outlier.
+
+ PyTorch Reference Implementation
+
+ def rht_reference ( A : torch . Tensor ) -> torch . Tensor :
+ """Reference RHT: applies sign flip then H16 mix, returns (N, M) bfloat16.""" 
+ # Sign vector is hardcoded from Transformer Engine. 
+ # [1, 1, 1, -1, 1, -1, -1, -1, -1, -1, -1, 1, -1, 1, -1, -1] 
+ sign = rht_utils . get_wgrad_sign_vector ( A ) # (M,) ±1 float32 
+ H16 = rht_utils . get_hadamard_matrix () # (16, 16) float32 
+ # Transpose, reshape into groups of 16, apply sign+H16, reshape back 
+ x = A . t (). contiguous () # (N, M) 
+ x = x . reshape ( - 1 , 16 ) # (N*M//16, 16) 
+ x = x * sign . reshape ( - 1 , 16 ) # column sign flip 
+ x = x @ H16 # Hadamard mix 
+ return x . reshape ( A . shape [ 1 ], A . shape [ 0 ]). to ( torch . bfloat16 )
+
+ End-to-End Data Flow
+
+ The RHT and Nvfp4 quantization sequence for weight gradient input arguments:
+
+ # Step 1: Apply RHT to X^T, capture post-RHT amax 
+ x_t_global_amax = triton_rht_amax ( x )
+
+ # Step 2 — Two paths for columnwise NVFP4 quantization: 
+ if eligible_for_rht_cast_fusion :
+ # A single fused kernel: RHT + quantization 
+ triton_rht_quantize ( x , global_amax = x_t_global_amax )
+ else :
+ # Apply RHT to X^T, write BF16 intermediate to global memory 
+ x_t_rht = triton_rht ( x )
+ per_tensor_scale = x_t_global_amax / ( F8E4M3_MAX * F4_E2M1_MAX )
+ # Quantize using amax from step 1 
+ triton_quantize_nvfp4 ( x_t_rht , per_tensor_scale )
+
+ Step 1 Applies RHT to the transposed input X^T and writes the post-RHT amax.
+
+ Step 2a (fast path) reads global_amax , then recomputes RHT(X^T) internally as part of a single fused GEMM + quantization epilogue kernel.
+
+ Step 2b (fallback) reapplies triton_rht to produce a BF16 intermediate, then calls n for columnwise quantization.
+
+ On both paths, RHT(X^T) is evaluated twice in total : once to measure the global amax, and again to produce the quantized columnwise output.
+
+ Prior Art
+
+ Details 
+ TransformerEngine (TE) exposes equivalent operations in its C ABI at git tag v2.12 .
+
+All three functions are marked experimental/unstable in the header:
+
+ transformer_engine/common/include/transformer_engine/hadamard_transform.h 
+
+ Mapping to TE equivalents
+
+ This RFC 
+ TE equivalent 
+
+ triton_rht(A) 
+ nvte_hadamard_transform 
+
+ triton_rht_amax(A) 
+ nvte_hadamard_transform_amax 
+
+ triton_rht_quantize(A) 
+ nvte_hadamard_transform_cast_fusion_columnwise 
+
+ triton_rht vs nvte_hadamard_transform 
+
+ TE signature:
+
+ void nvte_hadamard_transform ( const NVTETensor input , NVTETensor output ,
+ int random_sign_mask , int random_sign_mask_t ,
+ cudaStream_t stream );
+
+ TE generates diag(sign) * H16 on-the-fly inside the kernel. It uses an Ampere generation matrix multiplication.
+
+ Triton kernel takes a plain torch.Tensor . The diag(sign) @ H16 matrix is cached, amortizing the setup cost across calls. It is an NTT matrix multiplication kernel.
+
+ TE requires an explicit cudaStream_t ; ours uses the PyTorch default CUDA stream.
+
+ Output: both produce a (N, M) bfloat16 transposed result.
+
+ triton_rht_amax vs nvte_hadamard_transform_amax 
+
+ TE signature:
+
+ void nvte_hadamard_transform_amax ( const NVTETensor input , NVTETensor output ,
+ int random_sign_mask , int random_sign_mask_t ,
+ cudaStream_t stream );
+
+ TE writes both a rowwise amax (plain input) and a columnwise amax (transposed RHT input) into the output tensor's metadata fields — a dual-purpose operation.
+
+ Proposed triton_rht_amax returns a single scalar float32 (the post-RHT global amax only); simpler contract.
+
+ TE diag(sign) matrix is represented as a pair of integer sign masks
+
+ Triton uses the cached diag(sign) @ H16 matrix and does not require explicit sign masks.
+
+ TE requires an explicit cudaStream_t ; ours uses the PyTorch default stream.
+
+ triton_rht_quantize vs nvte_hadamard_transform_cast_fusion_columnwise 
+
+ TE signature:
+
+ void nvte_hadamard_transform_cast_fusion_columnwise ( const NVTETensor input ,
+ NVTETensor output ,
+ const NVTETensor hadamard_matrix ,
+ const NVTEQuantizationConfig quant_config ,
+ cudaStream_t stream );
+
+ TE takes an explicit hadamard_matrix tensor and a NVTEQuantizationConfig struct (allowing arbitrary quantization recipes).
+
+ Proposed API hardcodes H16 (cached internally) and always targets NVFP4 E2M1; the quantization recipe is not configurable.
+
+ TE returns packed data inside the opaque NVTETensor ; our API returns two explicit tensors: (N, M//2) uint8 packed FP4 codes and (N, M//16) float8_e4m3fn scale factors.
+
+ TE requires an explicit cudaStream_t ; ours uses the PyTorch default stream.
+
+ The fused path requires the input tensor rows % 64 == 0 and cols % 128 == 0. 
+
+ Tradeoffs summary
+
+ Dimension 
+ This RFC 
+ TransformerEngine 
+
+ Interface 
+ PyTorch-native tensors, implicit stream 
+ C ABI, explicit stream + NVTETensor 
+
+ Sign mask 
+ Cached internally (wgrad seed) 
+ Caller-supplied 16-bit integers 
+
+ Hadamard matrix 
+ Hardcoded H16 (cached) 
+ Caller-supplied NVTETensor 
+
+ Quant config 
+ Hardcoded NVFP4 E2M1 
+ Configurable NVTEQuantizationConfig 
+
+ Outputs 
+ Explicit typed tensors 
+ Embedded in NVTETensor metadata 
+
+ API stability 
+ Stable Python API 
+ Marked experimental/unstable in C header 
+
+ Flexibility 
+ Low (opinionated defaults) 
+ High (general purpose) 
+
+ API Proposals
+
+ triton_rht_amax 
+
+ Signature: 
+
+ triton_rht_amax ( A : torch . Tensor ) - > torch . Tensor 
+
+ Applies RHT to A and returns the global absolute maximum of the post-RHT output without materializing the full (N, M) intermediate tensor. Equivalent to rht_reference(A).abs().max().float() but fused: post-RHT values are reduced tile-by-tile inside the kernel and never written to DRAM.
+
+ Args: 
+
+ A : (M, N) bfloat16 tensor, row-major. M must be divisible by 16.
+
+ Returns: 
+
+ Scalar float32 tensor containing max(abs(RHT(A))) .
+
+ Raises: 
+
+ NotImplementedError : If hardware is pre-SM90.
+
+ AssertionError : If A is not bfloat16 , not 2-D, not contiguous, or M % 16 != 0 .
+
+ Kernel parameters: 
+
+ Parameter 
+ Value 
+ Rationale 
+
+ BLOCK_M 
+ 128 
+ wgmma tile granularity 
+
+ BLOCK_N 
+ 64 
+ wgmma tile granularity 
+
+ GROUP_SIZE_N 
+ 8 
+ L2-cache-friendly tile grouping 
+
+ NUM_STAGES 
+ 3 
+ prefetch 2 K-tiles ahead 
+
+ Reduction is per-CTA: each CTA accumulates a running cumulative_max across all tiles it owns, then issues a single tl.atomic_max into a scalar output buffer.
+
+ triton_rht 
+
+ Signature: 
+
+ triton_rht ( A : torch . Tensor ) - > torch . Tensor 
+
+ Computes the 16×16 Randomized Hadamard Transform. Equivalent to
+
+ nvte_hadamard_transform with kReturnTransposed=True .
+
+ Formula: C = (A.T.reshape(-1, 16)) @ (diag(s) * H16) where H16[r,c] = (-1)^popcount(r & c) * 0.25 and s is the wgrad sign vector from rht_utils.get_wgrad_sign_vector .
+
+ Args: 
+
+ A : (M, N) bfloat16 tensor, row-major. M must be divisible by 16.
+
+ Returns: 
+
+ (N, M) bfloat16 tensor, row-major.
+
+ Raises: 
+
+ NotImplementedError : If hardware is pre-SM90.
+
+ AssertionError : If A is not bfloat16 , not 2-D, not contiguous, or M % 16 != 0 .
+
+ Kernel parameters: Same as triton_rht_amax ( BLOCK_M=128 , BLOCK_N=64 , GROUP_SIZE_N=8 , NUM_STAGES=3 ). The epilogue writes (BLOCK_N, BLOCK_M) tiles to a (N, M) output tensor via TMA store.
+
+ triton_rht_quantize 
+
+ Signature: 
+
+ triton_rht_quantize ( A : torch . Tensor ) - > tuple [ torch . Tensor , torch . Tensor ]
+
+ Fuses RHT and NVFP4 E2M1 columnwise quantization in a single persistent kernel. Matches nvte_hadamard_transform_cast_fusion_columnwise on Blackwell (SM100+).
+
+ Internally calls triton_rht_amax first to obtain the global amax, then runs a second persistent pass that recomputes RHT(A.T) and applies the NVFP4 quantization epilogue: per-vector amax → global/per-vector FP8 scale → FP4 clamp/pack.
+
+ Args: 
+
+ A : (M, N) bfloat16 tensor, row-major. M must be divisible by 16.
+
+ Returns: 
+
+ (N, M//2) uint8 tensor: packed FP4 E2M1 codes (columnwise layout,
+
+two nibbles per byte).
+
+ (N, M//16) float8_e4m3fn tensor: per-vector decode scale factors.
+
+ Raises: 
+
+ NotImplementedError : If hardware is pre-SM100.
+
+ AssertionError : If A is not bfloat16 , not 2-D, not contiguous, or M % 16 != 0 .
+
+ Kernel parameters: 
+
+ Parameter 
+ Value 
+ Rationale 
+
+ BLOCK_M 
+ 256 
+ BLOCK_M//2 must be ≥ 16 bytes for uint8 TMA stride alignment 
+
+ BLOCK_N 
+ 64 
+ wgmma tile granularity 
+
+ GROUP_SIZE_N 
+ 8 
+ L2-cache-friendly tile grouping 
+
+ NUM_STAGES 
+ 3 
+ prefetch 2 K-tiles ahead 
+
+ Note: BLOCK_M=256 (vs. 128 for the other two kernels) is required because the packed uint8 output tensor has stride M//2 bytes; for BLOCK_M < 256 this stride is less than 16 bytes, violating the TMA TensorDescriptor alignment constraint.
+
+ Configurable Hadamard Matrix Size
+
+ Details 
+ Both paths currently hardcoded H16 as the Hadamard matrix and fixed random sign vector. LruCache is used to amortize the cost of generating the random sign vector * (16, 16) Hadamard matrix across all hadamard transform calls.
+
+ Open Question Should we support larger (or smaller) Hadamard matrix sizes, e.g., H4 or H128? Perhaps triton_rht_quantize uses H16 for the best balance of quality and compute cost, while triton_rht and triton_rht_amax could support a configurable size to allow users to experiment with different tradeoffs?
+
+ Motivation for Larger (or Smaller) Sizes
+
+ Ablation results from arxiv:2509.25149 (§"Hadamard matrix size") show:
+
+ At 1.2B parameter scale : virtually no perplexity difference between H2, H4, H16, and H128.
+
+ At 12B parameter scale : H4 induces a measurable loss increase; H128 gives a minor quality benefit over H16; H16 is the practical sweet spot balancing quality and compute cost.
+
+ Larger matrices spread outliers more broadly (closer to a true Gaussian rotation) but increase compute and memory cost proportionally.
+
+ Test Plan
+
+ Correctness: 
+
+ Three test functions, one per kernel, parametrized identically to test_triton_nvfp4_quantize_equivalence in torchao:
+
+ M ∈ {64, 128, 256, 512, 32, 96, 160}
+N ∈ {128, 256, 512, 1024, 100, 200, 384}
+dtype ∈ {torch.float32, torch.bfloat16}
+
+ triton_rht_quantize additionally parametrizes over use_per_tensor_scale ∈ {False, True} .
+
+ test_triton_rht 
+
+ @ pytest . mark . parametrize ( "M" , [ 64 , 128 , 256 , 512 , 32 , 96 , 160 ], ids = lambda m : f"M { m } " ) 
+ @ pytest . mark . parametrize ( "N" , [ 128 , 256 , 512 , 1024 , 100 , 200 , 384 ], ids = lambda n : f"N { n } " ) 
+ @ pytest . mark . parametrize ( "dtype" , [ torch . float32 , torch . bfloat16 ], ids = [ "fp32" , "bf16" ]) 
+ @ torch . no_grad () 
+ def test_triton_rht ( M , N , dtype ):
+ torch . manual_seed ( 42 )
+ A = torch . randn ( M , N , dtype = dtype , device = "cuda" )
+
+ ref = rht_reference ( A ) # (N, M) bfloat16, PyTorch eager 
+ out = triton_rht ( A ) # (N, M) bfloat16, Triton kernel 
+
+ # Bitwise equivalence: every element must match exactly. 
+ torch . testing . assert_close ( out , ref , atol = 0 , rtol = 0 )
+
+ test_triton_rht_amax 
+
+ @ pytest . mark . parametrize ( "M" , [ 64 , 128 , 256 , 512 , 32 , 96 , 160 ], ids = lambda m : f"M { m } " ) 
+ @ pytest . mark . parametrize ( "N" , [ 128 , 256 , 512 , 1024 , 100 , 200 , 384 ], ids = lambda n : f"N { n } " ) 
+ @ pytest . mark . parametrize ( "dtype" , [ torch . float32 , torch . bfloat16 ], ids = [ "fp32" , "bf16" ]) 
+ @ torch . no_grad () 
+ def test_triton_rht_amax ( M , N , dtype ):
+ torch . manual_seed ( 42 )
+ A = torch . randn ( M , N , dtype = dtype , device = "cuda" )
+
+ ref_amax = rht_reference ( A ). abs (). max (). float () # scalar float32 
+ out_amax = triton_rht_amax ( A ) # scalar float32 
+
+ # Bitwise equivalence: reduction must produce the identical float32 value. 
+ torch . testing . assert_close ( out_amax , ref_amax , atol = 0 , rtol = 0 )
+
+ test_triton_rht_quantize 
+
+ @ pytest . mark . parametrize ( "M" , [ 64 , 128 , 256 , 512 , 32 , 96 , 160 ], ids = lambda m : f"M { m } " ) 
+ @ pytest . mark . parametrize ( "N" , [ 128 , 256 , 512 , 1024 , 100 , 200 , 384 ], ids = lambda n : f"N { n } " ) 
+ @ pytest . mark . parametrize ( "use_per_tensor_scale" , [ False , True ], 
+ ids = [ "block_scale" , "tensor_scale" ]) 
+ @ pytest . mark . parametrize ( "dtype" , [ torch . float32 , torch . bfloat16 ], ids = [ "fp32" , "bf16" ]) 
+ @ torch . no_grad () 
+ def test_triton_rht_quantize ( M , N , use_per_tensor_scale , dtype ):
+ torch . manual_seed ( 42 )
+ A = torch . randn ( M , N , dtype = dtype , device = "cuda" )
+
+ ref_codes , ref_scales = rht_quantize_reference ( A ) # (N, M//2) uint8, (N, M//16) fp8 
+ out_codes , out_scales = triton_rht_quantize ( A ) # same shapes 
+
+ # 1. Bitwise equivalence: packed FP4 codes and FP8 scale factors must match exactly. 
+ torch . testing . assert_close ( out_codes , ref_codes , atol = 0 , rtol = 0 )
+ torch . testing . assert_close ( out_scales , ref_scales , atol = 0 , rtol = 0 )
+
+ # 2. SQNR: dequantize the Triton output and measure reconstruction quality 
+ # against the original bfloat16 input (not against the reference output). 
+ # RHT + NVFP4 is expected to yield ≥ 20 dB even at 4-bit resolution. 
+ out_dequant = nvfp4_dequantize ( out_codes , out_scales ) # (N, M) bfloat16 
+ A_t = A . t (). contiguous () # (N, M) bfloat16 
+
+ signal_power = A_t . float (). pow ( 2 ). mean ()
+ noise_power = ( out_dequant . float () - A_t . float ()). pow ( 2 ). mean ()
+ sqnr = 10 * torch . log10 ( signal_power / noise_power )
+
+ SQNR_THRESHOLD = 20.0 # dB; conservative floor for 4-bit RHT quantization 
+ assert sqnr >= SQNR_THRESHOLD , (
+ f"SQNR { sqnr :.2f } dB < { SQNR_THRESHOLD } dB " 
+ f"for M= { M } , N= { N } , use_per_tensor_scale= { use_per_tensor_scale } , dtype= { dtype } " 
+ )
+
+ Performance: 
+
+ Shape grid: M ∈ {16, 64, 256, 1024, 8192} , N ∈ {128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768} (45 combinations per kernel).
+
+ Methodology: pytest-benchmark with warmup_rounds=5 , rounds=20 , iterations=1 (matches benchmarks/test_bench_rht.py and benchmarks/test_bench_quantize.py ).
+
+ Preliminary Results
+
+ All results are bitwise accurate between PyTorch reference, OAI Triton, and Transformer Engine.
+
+ OAI Triton kernels have not been autotuned yet.
+
+ Details 
+ Benchmarks run on gb200 (Grace Blackwell, SM100),
+
+ M=8192 , N ∈ {128 … 32768} , bfloat16 inputs.
+
+Three implementations compared: PyTorch (eager reference), OAI Triton (this RFC),
+
+Transformer Engine (TE).
+
+ nvte_hadamard_transform — RHT latency 
+
+ OAI Triton stays flat at ~0.04 ms regardless of N, saturating SM compute. PyTorch scales from 0.09 ms (N=128) to 0.24 ms (N=32768). Transformer Engine matches Triton for small N but diverges sharply at N > 4096, reaching 0.32 ms at N=32768. This kernel uses nvte_hadamard_transform , which is an Ampere-style kernel so it has poor scaling.
+
+ nvte_hadamard_transform_amax — fused RHT + global amax 
+
+ OAI Triton is flat at ~0.055 ms across all N: the fused reduction adds negligible overhead over the raw RHT pass. TE grows from 0.08 ms to 0.15 ms. PyTorch (eager RHT + .abs().max() ) spikes to 0.72 ms at N=32768 due to the extra memory round-trip for the intermediate tensor.
+
+ nvte_hadamard_transform_cast_fusion_columnwise — fused RHT + NVFP4 quantize (all three) 
+
+ PyTorch reference (non-fused RHT → quantize) is 6–80× slower than the fused paths, reaching 11 ms at N=32768. Both OAI Triton and TE stay below 0.15 ms across the full N sweep, confirming that fusion eliminates the dominant memory bottleneck.
+
+ nvte_hadamard_transform_cast_fusion_columnwise — OAI Triton vs. TE only (zoomed) 
+
+ OAI Triton ranges 0.099–0.123 ms; TE ranges 0.115–0.130 ms. Triton is faster by roughly 10–15% at all tested N values. Both are effectively compute-bound and insensitive to N in this range, consistent with the persistent warp-specialized TMA kernel design.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ rdspring1
+
+ Labels
+
+ nvfp4 
+
+ Type
+
+ No type 
+
+ Projects
+
+ PyTorch + CUDA
+ 
+ Status Done 
+
+ Show more project fields 
+
+ Milestone
+
+ NVFP4 Training No due date 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

@@ -1,0 +1,1731 @@
+TITLE: FP4 Baseline Benchmarking - MoE (No Rotations) · Issue #3001 · vllm-project/llm-compressor · GitHub
+CREATED_AT: 2026-08-06T01:49:46Z | 2026-08-06T01:49:48Z | 2026-08-06T01:49:49Z | 2026-08-06T01:50:51Z
+LABELS: documentation, keep-open, nvfp4
+
+--- COMMENT 1 ---
+# Qwen3-30B-A3B NVFP4 Evaluation Results (MoE, reasoning)
+
+## Setup
+
+**Baseline** — `Qwen/Qwen3-30B-A3B` (BF16)
+
+**Variants** — 12 NVFP4 W4A4 models, all `nvfp4-pack-quantized`, group_size 16, `tensor_group` strategy:
+
+- All 48 `mlp.gate` routers and `lm_head` left unquantized.
+- GPTQ variants additionally use `actorder: static` on weights.
+- `-ultrachat` variants are calibrated on UltraChat; all others on the default perfect-blend mix.
+- Plain `NVFP4` is round-to-nearest on the weights — its calibration pass only fits the activation global scales.
+
+**Seeds** — 1234, 2345, 3456. aime25 additionally uses 4567, 5678, 6789, 7890, 8901.
+
+**Sampling** — temperature 0.6, top_p 0.95, top_k 20
+
+**Serving** — vLLM v0.28.0, TP=1 (one GPU per model), max-model-len 40960, no YaRN, `--reasoning-parser qwen3`
+
+**Harness** — eval-agent `--category reasoning`, num_concurrent 32
+
+**Recovery** — seed-mean(quantized) / seed-mean(BF16), per task, on the metric listed for that task. Every score in this document is a mean over seeds.
+
+## Recommended models
+
+Ranked by mean recovery over the five non-gsm8k tasks (mmlu_pro_chat, ifeval, math_500, gpqa_diamond, aime25).
+
+| Rank | Model | Mean recovery (5 tasks) | Worst task | Tasks &ge; 0.99 |
+|------|-------|-------------------------|------------|-----------------|
+| 1 | `NVFP4-GPTQ-AWQ-ultrachat` | 0.9849 | 0.9536 (gpqa_diamond) | 2 / 5 |
+| 2 | `NVFP4-AWQ` | 0.9811 | 0.9459 (gpqa_diamond) | 2 / 5 |
+| 3 | `NVFP4-GPTQ-ultrachat` | 0.9800 | 0.9588 (aime25) | 2 / 5 |
+
+- `NVFP4-GPTQ-AWQ-ultrachat` — **Default pick.** Best mean of any variant, and best mean rank across the five tasks (4.2 of 12). Holds the best aime25 in the sweep (0.9882) and 2nd-best mmlu_pro (0.9986); its softest column is math_500 (0.9883, rank 10 of 12), which is the one thing 2 covers better.
+- `NVFP4-AWQ` — **Math-heavy workloads.** Best math_500 anywhere (1.0262) and best ifeval of the three (0.9969), but the weakest mmlu_pro of the three by a wide margin (0.9601 vs 0.9986) — do not ship it where knowledge/multiple-choice matters.
+- `NVFP4-GPTQ-ultrachat` — **Highest floor.** Its worst task (0.9588) is the best worst-task of all 12 variants, and it holds the best gpqa in the sweep (0.9742). Pick it when the requirement is "nothing regresses badly" rather than a peak on any one task.
+
+Caveats: 2 and 3 are separated by 0.0011 mean recovery, which is inside the noise on every task that drives it — treat them as tied on aggregate and choose on the profile above. Dropping gsm8k is what promotes `NVFP4-AWQ` into the top three; on gsm8k it is the third-weakest variant (0.9754), so keep it out of the running if gsm8k-style CoT arithmetic ever matters. `NVFP4-GPTQ-AWQ-ultrachat` leads with or without gsm8k.
+
+## Takeaways
+
+- **`NVFP4-GPTQ-AWQ-ultrachat` is the pick** — best mean recovery (0.9885), wins gsm8k (1.0067) and aime25 (0.9882).
+- **The BF16 gap is concentrated in gpqa_diamond and aime25.** Mean recovery across the 12 variants: gpqa 0.9439 and aime25 0.9451 — 5.6 and 5.5 pts short of BF16 — vs mmlu_pro 0.9787, gsm8k 0.9813, ifeval 0.9934 and math_500 1.0010 (no loss). Those two are the only tasks where NVFP4 gives up real ground, and they are the worst task for 11 of 12 variants.
+- **GPTQ is what closes that gap.** On gpqa the top four variants are all GPTQ recipes (0.9742 / 0.9639 / 0.9588 / 0.9536, vs 0.9510 for the best non-GPTQ), and a GPTQ recipe tops aime25 too (0.9882, though 2 there is plain AWQ at 0.9765). Mean rank of the 6 GPTQ vs 6 non-GPTQ variants is 4.8 vs 8.2 on gpqa and 5.7 vs 7.3 on aime25. The individual deltas sit inside those tasks' noise floors (±0.0490, ±0.0807), but the ranking is consistent across both — the one exception is `GPTQ+SmoothQuant`, last on both (0.9046, 0.9059).
+- **GPTQ's other effects:** its one resolvable win elsewhere is gsm8k (+0.0280 averaged over the 6 recipe pairs, positive in 6 of 6, 2.5x the noise floor); it costs mmlu_pro (−0.0102, ~3x that task's floor) and math_500 (−0.0131).
+- **UltraChat vs perfect-blend is a wash on average (+0.0038) but directional per task:** clearly better on mmlu_pro (+0.0231, positive for all 6 recipes), clearly worse on math_500 (−0.0148). Use UltraChat unless math is the target.
+- **Calibration matters most for the smoothing recipes.** GPTQ+AWQ swings 0.9720 → 0.9885 on calibration alone — largest spread in the sweep. GPTQ is indifferent (0.0004). RTN is the recipe UltraChat hurts most (−0.0130), which fits: it has no per-channel scales to fit.
+- **Recipe order:** GPTQ+AWQ (0.9902) > AWQ (0.9888) ≈ GPTQ (0.9886) > GPTQ+SmoothQuant (0.9808) > RTN (0.9775) > SmoothQuant (0.9739). AWQ and GPTQ tie on average but fail differently — AWQ owns math_500 (1.0262) and is weak on gpqa (0.9485); GPTQ has the higher floor (0.9706).
+- **SmoothQuant is the weakest family, and GPTQ repairs it.** Its gsm8k collapse (0.9227, the worst gsm8k cell in the sweep) goes to 0.9913 with GPTQ on top — it pushes difficulty from activations into weights, and GPTQ cleans those up.
+- **RTN is the bar.** 0.9775 with no weight-side algorithm at all; `NVFP4-ultrachat` holds the best mmlu_pro result anywhere (0.9997). A calibrated recipe that does not clear 0.9775 is not paying for itself.
+- **Read gpqa and aime25 loosely.** Their seed-noise floors are ±0.0490 and ±0.0807, so most gaps in those two columns are unresolvable at these seed counts. Recoveries >1.0 (6 on math_500) are "no measurable loss," not gains; only AWQ on math_500 clears its floor.
+
+## Metrics
+
+One metric per task everywhere in this document — the strict / exact-match variant wherever the harness emits more than one. *Noise floor* = ~95% threshold for a difference between two seed-means, in recovery points; smaller gaps are not evidence.
+
+| Task | Metric | Samples | Seeds | Noise floor |
+|------|--------|---------|-------|-------------|
+| gsm8k_platinum_cot_llama | `exact_match,strict-match` | 1,209 | 3 | ±0.0111 |
+| mmlu_pro_chat | `exact_match,custom-extract` | 12,032 | 3 | ±0.0036 |
+| ifeval | `inst_level_strict_acc,none` | 541 | 3 | ±0.0125 |
+| math_500 | `pass@k:k=1&n=1` | 500 | 3 | ±0.0177 |
+| gpqa_diamond | `gpqa_pass@k:k=1` | 198 | 3 | ±0.0490 |
+| aime25 | `pass@k:k=1&n=1` | 30 | 8 | ±0.0807 |
+
+## Recovery vs BF16
+
+Bold = top two quantized variants on that task.
+
+| Model | gsm8k | mmlu_pro_chat | ifeval | math_500 | gpqa_diamond | aime25 |
+|-------|-------|---------------|--------|----------|--------------|--------|
+| NVFP4 | 0.9852 | 0.9967 | 0.9911 | 1.0015 | 0.9227 | 0.9647 |
+| NVFP4-GPTQ | **1.0006** | 0.9719 | 0.9875 | 1.0138 | 0.9459 | 0.9706 |
+| NVFP4-AWQ | 0.9754 | 0.9601 | 0.9969 | **1.0262** | 0.9459 | **0.9765** |
+| NVFP4-GPTQ-AWQ | 0.9922 | 0.9437 | 0.9924 | 0.9869 | **0.9639** | 0.9529 |
+| NVFP4-GPTQ-SmoothQuant | 0.9913 | 0.9675 | **1.0049** | 1.0058 | 0.9046 | 0.9059 |
+| NVFP4-SmoothQuant | 0.9227 | 0.9631 | 0.9933 | 1.0160 | 0.9407 | 0.9118 |
+| NVFP4-ultrachat | 0.9794 | **0.9997** | 0.9857 | 0.9898 | 0.9175 | 0.9118 |
+| NVFP4-GPTQ-ultrachat | 0.9928 | 0.9772 | 0.9951 | 0.9949 | **0.9742** | 0.9588 |
+| NVFP4-AWQ-ultrachat | 0.9864 | 0.9982 | 0.9951 | 0.9934 | 0.9485 | 0.9176 |
+| NVFP4-GPTQ-AWQ-ultrachat | **1.0067** | **0.9986** | 0.9955 | 0.9883 | 0.9536 | **0.9882** |
+| NVFP4-GPTQ-SmoothQuant-ultrachat | 0.9881 | 0.9828 | **0.9982** | 0.9767 | 0.9588 | 0.9412 |
+| NVFP4-SmoothQuant-ultrachat | 0.9545 | 0.9853 | 0.9857 | **1.0182** | 0.9510 | 0.9412 |
+
+| Model | Mean recovery | Worst task | Tasks &ge; 0.99 |
+|-------|---------------|------------|-----------------|
+| NVFP4-GPTQ-AWQ-ultrachat | 0.9885 | 0.9536 (gpqa_diamond) | 3 / 6 |
+| NVFP4-GPTQ-ultrachat | 0.9822 | 0.9588 (aime25) | 3 / 6 |
+| NVFP4-GPTQ | 0.9817 | 0.9459 (gpqa_diamond) | 2 / 6 |
+| NVFP4-AWQ | 0.9802 | 0.9459 (gpqa_diamond) | 2 / 6 |
+| NVFP4 | 0.9770 | 0.9227 (gpqa_diamond) | 3 / 6 |
+| NVFP4-GPTQ-SmoothQuant-ultrachat | 0.9743 | 0.9412 (aime25) | 1 / 6 |
+| NVFP4-AWQ-ultrachat | 0.9732 | 0.9176 (aime25) | 3 / 6 |
+| NVFP4-SmoothQuant-ultrachat | 0.9726 | 0.9412 (aime25) | 1 / 6 |
+| NVFP4-GPTQ-AWQ | 0.9720 | 0.9437 (mmlu_pro_chat) | 2 / 6 |
+| NVFP4-ultrachat | 0.9640 | 0.9118 (aime25) | 1 / 6 |
+| NVFP4-GPTQ-SmoothQuant | 0.9634 | 0.9046 (gpqa_diamond) | 3 / 6 |
+| NVFP4-SmoothQuant | 0.9579 | 0.9118 (aime25) | 2 / 6 |
+
+## UltraChat vs perfect-blend
+
+Same recipe and seeds, calibration set only. **recovery(ultrachat) − recovery(perfect-blend)**; bold = exceeds that task's noise floor.
+
+| Recipe | gsm8k | mmlu_pro | ifeval | math_500 | gpqa | aime25 | Mean |
+|--------|-------|----------|--------|----------|------|--------|------|
+| RTN | -0.0058 | +0.0030 | -0.0054 | -0.0117 | -0.0052 | -0.0529 | -0.0130 |
+| GPTQ | -0.0078 | **+0.0053** | +0.0076 | **-0.0190** | +0.0284 | -0.0118 | +0.0004 |
+| AWQ | +0.0110 | **+0.0381** | -0.0018 | **-0.0328** | +0.0026 | -0.0588 | -0.0070 |
+| GPTQ+AWQ | **+0.0145** | **+0.0549** | +0.0031 | +0.0015 | -0.0103 | +0.0353 | +0.0165 |
+| SmoothQuant | **+0.0319** | **+0.0222** | -0.0076 | +0.0022 | +0.0103 | +0.0294 | +0.0147 |
+| GPTQ+SmoothQuant | -0.0032 | **+0.0153** | -0.0067 | **-0.0292** | **+0.0541** | +0.0353 | +0.0109 |
+| **Mean** | +0.0068 | +0.0231 | -0.0018 | -0.0148 | +0.0133 | -0.0039 | +0.0038 |
+
+## Algorithm families
+
+Best of the two calibration variants per recipe, per task:
+
+| Recipe | gsm8k | mmlu_pro | ifeval | math_500 | gpqa | aime25 | Mean | Worst | Calib. spread |
+|--------|-------|----------|--------|----------|------|--------|------|-------|---------------|
+| RTN | 0.9852 | 0.9997 | 0.9911 | 1.0015 | 0.9227 | 0.9647 | 0.9775 | 0.9227 | 0.0130 |
+| GPTQ | 1.0006 | 0.9772 | 0.9951 | 1.0138 | 0.9742 | 0.9706 | 0.9886 | 0.9706 | 0.0004 |
+| AWQ | 0.9864 | 0.9982 | 0.9969 | 1.0262 | 0.9485 | 0.9765 | 0.9888 | 0.9485 | 0.0070 |
+| GPTQ+AWQ | 1.0067 | 0.9986 | 0.9955 | 0.9883 | 0.9639 | 0.9882 | 0.9902 | 0.9639 | 0.0165 |
+| SmoothQuant | 0.9545 | 0.9853 | 0.9933 | 1.0182 | 0.9510 | 0.9412 | 0.9739 | 0.9412 | 0.0147 |
+| GPTQ+SmoothQuant | 0.9913 | 0.9828 | 1.0049 | 1.0058 | 0.9588 | 0.9412 | 0.9808 | 0.9412 | 0.0109 |
+
+### Effect of adding GPTQ
+
+**recovery(with GPTQ) − recovery(without)**, holding the rest of the recipe and the calibration set fixed; bold = exceeds that task's noise floor.
+
+| Base recipe / calibration | gsm8k | mmlu_pro | ifeval | math_500 | gpqa | aime25 |
+|---------------------------|-------|----------|--------|----------|------|--------|
+| none / perfect-blend | **+0.0154** | **-0.0247** | -0.0036 | +0.0124 | +0.0232 | +0.0059 |
+| none / ultrachat | **+0.0133** | **-0.0225** | +0.0094 | +0.0051 | **+0.0567** | +0.0471 |
+| AWQ / perfect-blend | **+0.0168** | **-0.0164** | -0.0045 | **-0.0394** | +0.0180 | -0.0235 |
+| AWQ / ultrachat | **+0.0203** | +0.0004 | +0.0004 | -0.0051 | +0.0052 | +0.0706 |
+| SmoothQuant / perfect-blend | **+0.0687** | **+0.0044** | +0.0116 | -0.0102 | -0.0361 | -0.0059 |
+| SmoothQuant / ultrachat | **+0.0336** | -0.0025 | **+0.0125** | **-0.0415** | +0.0077 | +0.0000 |
+| **Mean** | +0.0280 | -0.0102 | +0.0043 | -0.0131 | +0.0125 | +0.0157 |
+
+## Per-task detail
+
+### gsm8k_platinum_cot_llama
+`exact_match,strict-match` · noise floor ±0.0111
+
+| Model | Mean | Seed 1234 | Seed 2345 | Seed 3456 | Recovery |
+|-------|------|-----------|-----------|-----------|----------|
+| Qwen/Qwen3-30B-A3B (BF16) | 0.9518 | 0.9479 | 0.9570 | 0.9504 | - |
+| NVFP4-GPTQ-AWQ-ultrachat | 0.9581 | 0.9628 | 0.9529 | 0.9586 | **1.0067** |
+| NVFP4-GPTQ | 0.9523 | 0.9545 | 0.9537 | 0.9487 | 1.0006 |
+| NVFP4-GPTQ-ultrachat | 0.9449 | 0.9479 | 0.9487 | 0.9380 | 0.9928 |
+| NVFP4-GPTQ-AWQ | 0.9443 | 0.9471 | 0.9438 | 0.9421 | 0.9922 |
+| NVFP4-GPTQ-SmoothQuant | 0.9435 | 0.9462 | 0.9429 | 0.9413 | 0.9913 |
+| NVFP4-GPTQ-SmoothQuant-ultrachat | 0.9404 | 0.9537 | 0.9289 | 0.9388 | 0.9881 |
+| NVFP4-AWQ-ultrachat | 0.9388 | 0.9396 | 0.9313 | 0.9454 | 0.9864 |
+| NVFP4 | 0.9377 | 0.9421 | 0.9404 | 0.9305 | 0.9852 |
+| NVFP4-ultrachat | 0.9322 | 0.9280 | 0.9289 | 0.9396 | 0.9794 |
+| NVFP4-AWQ | 0.9283 | 0.9280 | 0.9280 | 0.9289 | 0.9754 |
+| NVFP4-SmoothQuant-ultrachat | 0.9085 | 0.9148 | 0.9016 | 0.9090 | 0.9545 |
+| NVFP4-SmoothQuant | 0.8781 | 0.8668 | 0.8801 | 0.8875 | 0.9227 |
+
+### mmlu_pro_chat
+`exact_match,custom-extract` · noise floor ±0.0036
+
+| Model | Mean | Seed 1234 | Seed 2345 | Seed 3456 | Recovery |
+|-------|------|-----------|-----------|-----------|----------|
+| Qwen/Qwen3-30B-A3B (BF16) | 0.7541 | 0.7547 | 0.7529 | 0.7547 | - |
+| NVFP4-ultrachat | 0.7538 | 0.7546 | 0.7520 | 0.7549 | **0.9997** |
+| NVFP4-GPTQ-AWQ-ultrachat | 0.7530 | 0.7553 | 0.7532 | 0.7507 | 0.9986 |
+| NVFP4-AWQ-ultrachat | 0.7527 | 0.7527 | 0.7514 | 0.7541 | 0.9982 |
+| NVFP4 | 0.7516 | 0.7531 | 0.7525 | 0.7491 | 0.9967 |
+| NVFP4-SmoothQuant-ultrachat | 0.7430 | 0.7440 | 0.7418 | 0.7431 | 0.9853 |
+| NVFP4-GPTQ-SmoothQuant-ultrachat | 0.7411 | 0.7415 | 0.7406 | 0.7412 | 0.9828 |
+| NVFP4-GPTQ-ultrachat | 0.7369 | 0.7360 | 0.7373 | 0.7374 | 0.9772 |
+| NVFP4-GPTQ | 0.7329 | 0.7300 | 0.7321 | 0.7366 | 0.9719 |
+| NVFP4-GPTQ-SmoothQuant | 0.7296 | 0.7296 | 0.7311 | 0.7281 | 0.9675 |
+| NVFP4-SmoothQuant | 0.7262 | 0.7284 | 0.7252 | 0.7251 | 0.9631 |
+| NVFP4-AWQ | 0.7240 | 0.7250 | 0.7232 | 0.7239 | 0.9601 |
+| NVFP4-GPTQ-AWQ | 0.7116 | 0.7118 | 0.7117 | 0.7114 | 0.9437 |
+
+### ifeval
+`inst_level_strict_acc,none` · noise floor ±0.0125
+
+| Model | Mean | Seed 1234 | Seed 2345 | Seed 3456 | Recovery |
+|-------|------|-----------|-----------|-----------|----------|
+| Qwen/Qwen3-30B-A3B (BF16) | 0.8933 | 0.8849 | 0.9053 | 0.8897 | - |
+| NVFP4-GPTQ-SmoothQuant | 0.8977 | 0.8993 | 0.9077 | 0.8861 | **1.0049** |
+| NVFP4-GPTQ-SmoothQuant-ultrachat | 0.8917 | 0.8933 | 0.8897 | 0.8921 | 0.9982 |
+| NVFP4-AWQ | 0.8905 | 0.8897 | 0.8993 | 0.8825 | 0.9969 |
+| NVFP4-GPTQ-AWQ-ultrachat | 0.8893 | 0.8945 | 0.8825 | 0.8909 | 0.9955 |
+| NVFP4-GPTQ-ultrachat | 0.8889 | 0.8861 | 0.8897 | 0.8909 | 0.9951 |
+| NVFP4-AWQ-ultrachat | 0.8889 | 0.8873 | 0.8909 | 0.8885 | 0.9951 |
+| NVFP4-SmoothQuant | 0.8873 | 0.8825 | 0.8873 | 0.8921 | 0.9933 |
+| NVFP4-GPTQ-AWQ | 0.8865 | 0.8933 | 0.8813 | 0.8849 | 0.9924 |
+| NVFP4 | 0.8853 | 0.8957 | 0.8777 | 0.8825 | 0.9911 |
+| NVFP4-GPTQ | 0.8821 | 0.8801 | 0.8861 | 0.8801 | 0.9875 |
+| NVFP4-ultrachat | 0.8805 | 0.8825 | 0.8717 | 0.8873 | 0.9857 |
+| NVFP4-SmoothQuant-ultrachat | 0.8805 | 0.8825 | 0.8741 | 0.8849 | 0.9857 |
+
+### math_500
+`pass@k:k=1&n=1` · noise floor ±0.0177
+
+| Model | Mean | Seed 1234 | Seed 2345 | Seed 3456 | Recovery |
+|-------|------|-----------|-----------|-----------|----------|
+| Qwen/Qwen3-30B-A3B (BF16) | 0.9147 | 0.9160 | 0.9220 | 0.9060 | - |
+| NVFP4-AWQ | 0.9387 | 0.9440 | 0.9320 | 0.9400 | **1.0262** |
+| NVFP4-SmoothQuant-ultrachat | 0.9313 | 0.9360 | 0.9360 | 0.9220 | 1.0182 |
+| NVFP4-SmoothQuant | 0.9293 | 0.9220 | 0.9260 | 0.9400 | 1.0160 |
+| NVFP4-GPTQ | 0.9273 | 0.9240 | 0.9280 | 0.9300 | 1.0138 |
+| NVFP4-GPTQ-SmoothQuant | 0.9200 | 0.9080 | 0.9220 | 0.9300 | 1.0058 |
+| NVFP4 | 0.9160 | 0.9060 | 0.9160 | 0.9260 | 1.0015 |
+| NVFP4-GPTQ-ultrachat | 0.9100 | 0.9020 | 0.9060 | 0.9220 | 0.9949 |
+| NVFP4-AWQ-ultrachat | 0.9087 | 0.9100 | 0.9040 | 0.9120 | 0.9934 |
+| NVFP4-ultrachat | 0.9053 | 0.9180 | 0.8820 | 0.9160 | 0.9898 |
+| NVFP4-GPTQ-AWQ-ultrachat | 0.9040 | 0.9080 | 0.9020 | 0.9020 | 0.9883 |
+| NVFP4-GPTQ-AWQ | 0.9027 | 0.9080 | 0.9140 | 0.8860 | 0.9869 |
+| NVFP4-GPTQ-SmoothQuant-ultrachat | 0.8933 | 0.8960 | 0.8880 | 0.8960 | 0.9767 |
+
+### gpqa_diamond
+`gpqa_pass@k:k=1` · noise floor ±0.0490
+
+| Model | Mean | Seed 1234 | Seed 2345 | Seed 3456 | Recovery |
+|-------|------|-----------|-----------|-----------|----------|
+| Qwen/Qwen3-30B-A3B (BF16) | 0.6532 | 0.6465 | 0.6364 | 0.6768 | - |
+| NVFP4-GPTQ-ultrachat | 0.6364 | 0.6515 | 0.6263 | 0.6313 | **0.9742** |
+| NVFP4-GPTQ-AWQ | 0.6296 | 0.6212 | 0.6414 | 0.6263 | 0.9639 |
+| NVFP4-GPTQ-SmoothQuant-ultrachat | 0.6263 | 0.6465 | 0.6212 | 0.6111 | 0.9588 |
+| NVFP4-GPTQ-AWQ-ultrachat | 0.6229 | 0.6263 | 0.6212 | 0.6212 | 0.9536 |
+| NVFP4-SmoothQuant-ultrachat | 0.6212 | 0.6212 | 0.6111 | 0.6313 | 0.9510 |
+| NVFP4-AWQ-ultrachat | 0.6195 | 0.6162 | 0.6263 | 0.6162 | 0.9485 |
+| NVFP4-GPTQ | 0.6178 | 0.6465 | 0.6061 | 0.6010 | 0.9459 |
+| NVFP4-AWQ | 0.6178 | 0.5859 | 0.6111 | 0.6566 | 0.9459 |
+| NVFP4-SmoothQuant | 0.6145 | 0.5909 | 0.6212 | 0.6313 | 0.9407 |
+| NVFP4 | 0.6027 | 0.6162 | 0.5859 | 0.6061 | 0.9227 |
+| NVFP4-ultrachat | 0.5993 | 0.5808 | 0.6263 | 0.5909 | 0.9175 |
+| NVFP4-GPTQ-SmoothQuant | 0.5909 | 0.5909 | 0.5657 | 0.6162 | 0.9046 |
+
+### aime25
+`pass@k:k=1&n=1` · noise floor ±0.0807
+
+| Model | Mean | Seed 1234 | Seed 2345 | Seed 3456 | Seed 4567 | Seed 5678 | Seed 6789 | Seed 7890 | Seed 8901 | Recovery |
+|-------|------|-----------|-----------|-----------|-----------|-----------|-----------|-----------|-----------|----------|
+| Qwen/Qwen3-30B-A3B (BF16) | 0.7083 | 0.7000 | 0.6000 | 0.6667 | 0.7333 | 0.6667 | 0.7667 | 0.8000 | 0.7333 | - |
+| NVFP4-GPTQ-AWQ-ultrachat | 0.7000 | 0.7333 | 0.7333 | 0.6667 | 0.7000 | 0.6000 | 0.7333 | 0.7667 | 0.6667 | **0.9882** |
+| NVFP4-AWQ | 0.6917 | 0.6333 | 0.7333 | 0.7000 | 0.7333 | 0.7000 | 0.6333 | 0.7333 | 0.6667 | 0.9765 |
+| NVFP4-GPTQ | 0.6875 | 0.7333 | 0.6667 | 0.7333 | 0.6667 | 0.7333 | 0.5667 | 0.7000 | 0.7000 | 0.9706 |
+| NVFP4 | 0.6833 | 0.6333 | 0.7333 | 0.7333 | 0.6333 | 0.7000 | 0.6333 | 0.6667 | 0.7333 | 0.9647 |
+| NVFP4-GPTQ-ultrachat | 0.6792 | 0.7333 | 0.7333 | 0.6667 | 0.6333 | 0.6667 | 0.7000 | 0.7333 | 0.5667 | 0.9588 |
+| NVFP4-GPTQ-AWQ | 0.6750 | 0.7333 | 0.7000 | 0.5667 | 0.7000 | 0.6667 | 0.7333 | 0.6667 | 0.6333 | 0.9529 |
+| NVFP4-GPTQ-SmoothQuant-ultrachat | 0.6667 | 0.6333 | 0.6667 | 0.6667 | 0.7333 | 0.6667 | 0.7333 | 0.5667 | 0.6667 | 0.9412 |
+| NVFP4-SmoothQuant-ultrachat | 0.6667 | 0.7333 | 0.7000 | 0.7333 | 0.6667 | 0.6333 | 0.6667 | 0.5333 | 0.6667 | 0.9412 |
+| NVFP4-AWQ-ultrachat | 0.6500 | 0.7000 | 0.6667 | 0.5667 | 0.7333 | 0.6000 | 0.7333 | 0.5667 | 0.6333 | 0.9176 |
+| NVFP4-SmoothQuant | 0.6458 | 0.6667 | 0.6667 | 0.7667 | 0.5667 | 0.5667 | 0.5667 | 0.6333 | 0.7333 | 0.9118 |
+| NVFP4-ultrachat | 0.6458 | 0.6667 | 0.7000 | 0.6333 | 0.6667 | 0.7000 | 0.5333 | 0.6333 | 0.6333 | 0.9118 |
+| NVFP4-GPTQ-SmoothQuant | 0.6417 | 0.6667 | 0.6667 | 0.6000 | 0.6333 | 0.6333 | 0.7000 | 0.6333 | 0.6000 | 0.9059 |
+
+=== PAGE TEXT (non-comment) ===
+FP4 Baseline Benchmarking - MoE (No Rotations) · Issue #3001 · vllm-project/llm-compressor · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ vllm-project
+ 
+ / 
+ 
+ llm-compressor 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 661 
+
+ Star
+ 3.8k 
+
+ Code 
+
+ Issues 
+ 42 
+
+ Pull requests 
+ 74 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Wiki 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Wiki
+
+ Security and quality
+
+ Insights
+
+ FP4 Baseline Benchmarking - MoE (No Rotations) #3001 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Open 
+ Task 
+
+ Open 
+ FP4 Baseline Benchmarking - MoE (No Rotations) #3001 
+ Task
+
+ Copy link 
+
+ Assignees
+
+ Labels
+ documentation Improvements or additions to documentation Improvements or additions to documentation keep-open nvfp4 For any PR / issue related to NVFP4 support For any PR / issue related to NVFP4 support 
+
+ Description
+ 
+ dsikka 
+ opened on Aug 6, 2026 
+
+ Issue body actions 
+
+ Qwen3-30B-A3B NVFP4 Evaluation Results (MoE, reasoning)
+
+ Setup
+
+ Baseline — Qwen/Qwen3-30B-A3B (BF16)
+
+ Variants — 12 NVFP4 W4A4 models, all nvfp4-pack-quantized , group_size 16, tensor_group strategy:
+
+ All 48 mlp.gate routers and lm_head left unquantized.
+
+ GPTQ variants additionally use actorder: static on weights.
+
+ -ultrachat variants are calibrated on UltraChat; all others on the default perfect-blend mix.
+
+ Plain NVFP4 is round-to-nearest on the weights — its calibration pass only fits the activation global scales.
+
+ Seeds — 1234, 2345, 3456. aime25 additionally uses 4567, 5678, 6789, 7890, 8901.
+
+ Sampling — temperature 0.6, top_p 0.95, top_k 20
+
+ Serving — vLLM v0.28.0, TP=1 (one GPU per model), max-model-len 40960, no YaRN, --reasoning-parser qwen3 
+
+ Harness — eval-agent --category reasoning , num_concurrent 32
+
+ Recovery — seed-mean(quantized) / seed-mean(BF16), per task, on the metric listed for that task. Every score in this document is a mean over seeds.
+
+ Recommended models
+
+ Ranked by mean recovery over the five non-gsm8k tasks (mmlu_pro_chat, ifeval, math_500, gpqa_diamond, aime25).
+
+ Rank 
+ Model 
+ Mean recovery (5 tasks) 
+ Worst task 
+ Tasks ≥ 0.99 
+
+ 1 
+ NVFP4-GPTQ-AWQ-ultrachat 
+ 0.9849 
+ 0.9536 (gpqa_diamond) 
+ 2 / 5 
+
+ 2 
+ NVFP4-AWQ 
+ 0.9811 
+ 0.9459 (gpqa_diamond) 
+ 2 / 5 
+
+ 3 
+ NVFP4-GPTQ-ultrachat 
+ 0.9800 
+ 0.9588 (aime25) 
+ 2 / 5 
+
+ NVFP4-GPTQ-AWQ-ultrachat — Default pick. Best mean of any variant, and best mean rank across the five tasks (4.2 of 12). Holds the best aime25 in the sweep (0.9882) and 2nd-best mmlu_pro (0.9986); its softest column is math_500 (0.9883, rank 10 of 12), which is the one thing 2 covers better.
+
+ NVFP4-AWQ — Math-heavy workloads. Best math_500 anywhere (1.0262) and best ifeval of the three (0.9969), but the weakest mmlu_pro of the three by a wide margin (0.9601 vs 0.9986) — do not ship it where knowledge/multiple-choice matters.
+
+ NVFP4-GPTQ-ultrachat — Highest floor. Its worst task (0.9588) is the best worst-task of all 12 variants, and it holds the best gpqa in the sweep (0.9742). Pick it when the requirement is "nothing regresses badly" rather than a peak on any one task.
+
+ Caveats: 2 and 3 are separated by 0.0011 mean recovery, which is inside the noise on every task that drives it — treat them as tied on aggregate and choose on the profile above. Dropping gsm8k is what promotes NVFP4-AWQ into the top three; on gsm8k it is the third-weakest variant (0.9754), so keep it out of the running if gsm8k-style CoT arithmetic ever matters. NVFP4-GPTQ-AWQ-ultrachat leads with or without gsm8k.
+
+ Takeaways
+
+ NVFP4-GPTQ-AWQ-ultrachat is the pick — best mean recovery (0.9885), wins gsm8k (1.0067) and aime25 (0.9882).
+
+ The BF16 gap is concentrated in gpqa_diamond and aime25. Mean recovery across the 12 variants: gpqa 0.9439 and aime25 0.9451 — 5.6 and 5.5 pts short of BF16 — vs mmlu_pro 0.9787, gsm8k 0.9813, ifeval 0.9934 and math_500 1.0010 (no loss). Those two are the only tasks where NVFP4 gives up real ground, and they are the worst task for 11 of 12 variants.
+
+ GPTQ is what closes that gap. On gpqa the top four variants are all GPTQ recipes (0.9742 / 0.9639 / 0.9588 / 0.9536, vs 0.9510 for the best non-GPTQ), and a GPTQ recipe tops aime25 too (0.9882, though 2 there is plain AWQ at 0.9765). Mean rank of the 6 GPTQ vs 6 non-GPTQ variants is 4.8 vs 8.2 on gpqa and 5.7 vs 7.3 on aime25. The individual deltas sit inside those tasks' noise floors (±0.0490, ±0.0807), but the ranking is consistent across both — the one exception is GPTQ+SmoothQuant , last on both (0.9046, 0.9059).
+
+ GPTQ's other effects: its one resolvable win elsewhere is gsm8k (+0.0280 averaged over the 6 recipe pairs, positive in 6 of 6, 2.5x the noise floor); it costs mmlu_pro (−0.0102, ~3x that task's floor) and math_500 (−0.0131).
+
+ UltraChat vs perfect-blend is a wash on average (+0.0038) but directional per task: clearly better on mmlu_pro (+0.0231, positive for all 6 recipes), clearly worse on math_500 (−0.0148). Use UltraChat unless math is the target.
+
+ Calibration matters most for the smoothing recipes. GPTQ+AWQ swings 0.9720 → 0.9885 on calibration alone — largest spread in the sweep. GPTQ is indifferent (0.0004). RTN is the recipe UltraChat hurts most (−0.0130), which fits: it has no per-channel scales to fit.
+
+ Recipe order: GPTQ+AWQ (0.9902) > AWQ (0.9888) ≈ GPTQ (0.9886) > GPTQ+SmoothQuant (0.9808) > RTN (0.9775) > SmoothQuant (0.9739). AWQ and GPTQ tie on average but fail differently — AWQ owns math_500 (1.0262) and is weak on gpqa (0.9485); GPTQ has the higher floor (0.9706).
+
+ SmoothQuant is the weakest family, and GPTQ repairs it. Its gsm8k collapse (0.9227, the worst gsm8k cell in the sweep) goes to 0.9913 with GPTQ on top — it pushes difficulty from activations into weights, and GPTQ cleans those up.
+
+ RTN is the bar. 0.9775 with no weight-side algorithm at all; NVFP4-ultrachat holds the best mmlu_pro result anywhere (0.9997). A calibrated recipe that does not clear 0.9775 is not paying for itself.
+
+ Read gpqa and aime25 loosely. Their seed-noise floors are ±0.0490 and ±0.0807, so most gaps in those two columns are unresolvable at these seed counts. Recoveries >1.0 (6 on math_500) are "no measurable loss," not gains; only AWQ on math_500 clears its floor.
+
+ Metrics
+
+ One metric per task everywhere in this document — the strict / exact-match variant wherever the harness emits more than one. Noise floor = ~95% threshold for a difference between two seed-means, in recovery points; smaller gaps are not evidence.
+
+ Task 
+ Metric 
+ Samples 
+ Seeds 
+ Noise floor 
+
+ gsm8k_platinum_cot_llama 
+ exact_match,strict-match 
+ 1,209 
+ 3 
+ ±0.0111 
+
+ mmlu_pro_chat 
+ exact_match,custom-extract 
+ 12,032 
+ 3 
+ ±0.0036 
+
+ ifeval 
+ inst_level_strict_acc,none 
+ 541 
+ 3 
+ ±0.0125 
+
+ math_500 
+ pass@k:k=1&n=1 
+ 500 
+ 3 
+ ±0.0177 
+
+ gpqa_diamond 
+ gpqa_pass@k:k=1 
+ 198 
+ 3 
+ ±0.0490 
+
+ aime25 
+ pass@k:k=1&n=1 
+ 30 
+ 8 
+ ±0.0807 
+
+ Recovery vs BF16
+
+ Bold = top two quantized variants on that task.
+
+ Model 
+ gsm8k 
+ mmlu_pro_chat 
+ ifeval 
+ math_500 
+ gpqa_diamond 
+ aime25 
+
+ NVFP4 
+ 0.9852 
+ 0.9967 
+ 0.9911 
+ 1.0015 
+ 0.9227 
+ 0.9647 
+
+ NVFP4-GPTQ 
+ 1.0006 
+ 0.9719 
+ 0.9875 
+ 1.0138 
+ 0.9459 
+ 0.9706 
+
+ NVFP4-AWQ 
+ 0.9754 
+ 0.9601 
+ 0.9969 
+ 1.0262 
+ 0.9459 
+ 0.9765 
+
+ NVFP4-GPTQ-AWQ 
+ 0.9922 
+ 0.9437 
+ 0.9924 
+ 0.9869 
+ 0.9639 
+ 0.9529 
+
+ NVFP4-GPTQ-SmoothQuant 
+ 0.9913 
+ 0.9675 
+ 1.0049 
+ 1.0058 
+ 0.9046 
+ 0.9059 
+
+ NVFP4-SmoothQuant 
+ 0.9227 
+ 0.9631 
+ 0.9933 
+ 1.0160 
+ 0.9407 
+ 0.9118 
+
+ NVFP4-ultrachat 
+ 0.9794 
+ 0.9997 
+ 0.9857 
+ 0.9898 
+ 0.9175 
+ 0.9118 
+
+ NVFP4-GPTQ-ultrachat 
+ 0.9928 
+ 0.9772 
+ 0.9951 
+ 0.9949 
+ 0.9742 
+ 0.9588 
+
+ NVFP4-AWQ-ultrachat 
+ 0.9864 
+ 0.9982 
+ 0.9951 
+ 0.9934 
+ 0.9485 
+ 0.9176 
+
+ NVFP4-GPTQ-AWQ-ultrachat 
+ 1.0067 
+ 0.9986 
+ 0.9955 
+ 0.9883 
+ 0.9536 
+ 0.9882 
+
+ NVFP4-GPTQ-SmoothQuant-ultrachat 
+ 0.9881 
+ 0.9828 
+ 0.9982 
+ 0.9767 
+ 0.9588 
+ 0.9412 
+
+ NVFP4-SmoothQuant-ultrachat 
+ 0.9545 
+ 0.9853 
+ 0.9857 
+ 1.0182 
+ 0.9510 
+ 0.9412 
+
+ Model 
+ Mean recovery 
+ Worst task 
+ Tasks ≥ 0.99 
+
+ NVFP4-GPTQ-AWQ-ultrachat 
+ 0.9885 
+ 0.9536 (gpqa_diamond) 
+ 3 / 6 
+
+ NVFP4-GPTQ-ultrachat 
+ 0.9822 
+ 0.9588 (aime25) 
+ 3 / 6 
+
+ NVFP4-GPTQ 
+ 0.9817 
+ 0.9459 (gpqa_diamond) 
+ 2 / 6 
+
+ NVFP4-AWQ 
+ 0.9802 
+ 0.9459 (gpqa_diamond) 
+ 2 / 6 
+
+ NVFP4 
+ 0.9770 
+ 0.9227 (gpqa_diamond) 
+ 3 / 6 
+
+ NVFP4-GPTQ-SmoothQuant-ultrachat 
+ 0.9743 
+ 0.9412 (aime25) 
+ 1 / 6 
+
+ NVFP4-AWQ-ultrachat 
+ 0.9732 
+ 0.9176 (aime25) 
+ 3 / 6 
+
+ NVFP4-SmoothQuant-ultrachat 
+ 0.9726 
+ 0.9412 (aime25) 
+ 1 / 6 
+
+ NVFP4-GPTQ-AWQ 
+ 0.9720 
+ 0.9437 (mmlu_pro_chat) 
+ 2 / 6 
+
+ NVFP4-ultrachat 
+ 0.9640 
+ 0.9118 (aime25) 
+ 1 / 6 
+
+ NVFP4-GPTQ-SmoothQuant 
+ 0.9634 
+ 0.9046 (gpqa_diamond) 
+ 3 / 6 
+
+ NVFP4-SmoothQuant 
+ 0.9579 
+ 0.9118 (aime25) 
+ 2 / 6 
+
+ UltraChat vs perfect-blend
+
+ Same recipe and seeds, calibration set only. recovery(ultrachat) − recovery(perfect-blend) ; bold = exceeds that task's noise floor.
+
+ Recipe 
+ gsm8k 
+ mmlu_pro 
+ ifeval 
+ math_500 
+ gpqa 
+ aime25 
+ Mean 
+
+ RTN 
+ -0.0058 
+ +0.0030 
+ -0.0054 
+ -0.0117 
+ -0.0052 
+ -0.0529 
+ -0.0130 
+
+ GPTQ 
+ -0.0078 
+ +0.0053 
+ +0.0076 
+ -0.0190 
+ +0.0284 
+ -0.0118 
+ +0.0004 
+
+ AWQ 
+ +0.0110 
+ +0.0381 
+ -0.0018 
+ -0.0328 
+ +0.0026 
+ -0.0588 
+ -0.0070 
+
+ GPTQ+AWQ 
+ +0.0145 
+ +0.0549 
+ +0.0031 
+ +0.0015 
+ -0.0103 
+ +0.0353 
+ +0.0165 
+
+ SmoothQuant 
+ +0.0319 
+ +0.0222 
+ -0.0076 
+ +0.0022 
+ +0.0103 
+ +0.0294 
+ +0.0147 
+
+ GPTQ+SmoothQuant 
+ -0.0032 
+ +0.0153 
+ -0.0067 
+ -0.0292 
+ +0.0541 
+ +0.0353 
+ +0.0109 
+
+ Mean 
+ +0.0068 
+ +0.0231 
+ -0.0018 
+ -0.0148 
+ +0.0133 
+ -0.0039 
+ +0.0038 
+
+ Algorithm families
+
+ Best of the two calibration variants per recipe, per task:
+
+ Recipe 
+ gsm8k 
+ mmlu_pro 
+ ifeval 
+ math_500 
+ gpqa 
+ aime25 
+ Mean 
+ Worst 
+ Calib. spread 
+
+ RTN 
+ 0.9852 
+ 0.9997 
+ 0.9911 
+ 1.0015 
+ 0.9227 
+ 0.9647 
+ 0.9775 
+ 0.9227 
+ 0.0130 
+
+ GPTQ 
+ 1.0006 
+ 0.9772 
+ 0.9951 
+ 1.0138 
+ 0.9742 
+ 0.9706 
+ 0.9886 
+ 0.9706 
+ 0.0004 
+
+ AWQ 
+ 0.9864 
+ 0.9982 
+ 0.9969 
+ 1.0262 
+ 0.9485 
+ 0.9765 
+ 0.9888 
+ 0.9485 
+ 0.0070 
+
+ GPTQ+AWQ 
+ 1.0067 
+ 0.9986 
+ 0.9955 
+ 0.9883 
+ 0.9639 
+ 0.9882 
+ 0.9902 
+ 0.9639 
+ 0.0165 
+
+ SmoothQuant 
+ 0.9545 
+ 0.9853 
+ 0.9933 
+ 1.0182 
+ 0.9510 
+ 0.9412 
+ 0.9739 
+ 0.9412 
+ 0.0147 
+
+ GPTQ+SmoothQuant 
+ 0.9913 
+ 0.9828 
+ 1.0049 
+ 1.0058 
+ 0.9588 
+ 0.9412 
+ 0.9808 
+ 0.9412 
+ 0.0109 
+
+ Effect of adding GPTQ
+
+ recovery(with GPTQ) − recovery(without) , holding the rest of the recipe and the calibration set fixed; bold = exceeds that task's noise floor.
+
+ Base recipe / calibration 
+ gsm8k 
+ mmlu_pro 
+ ifeval 
+ math_500 
+ gpqa 
+ aime25 
+
+ none / perfect-blend 
+ +0.0154 
+ -0.0247 
+ -0.0036 
+ +0.0124 
+ +0.0232 
+ +0.0059 
+
+ none / ultrachat 
+ +0.0133 
+ -0.0225 
+ +0.0094 
+ +0.0051 
+ +0.0567 
+ +0.0471 
+
+ AWQ / perfect-blend 
+ +0.0168 
+ -0.0164 
+ -0.0045 
+ -0.0394 
+ +0.0180 
+ -0.0235 
+
+ AWQ / ultrachat 
+ +0.0203 
+ +0.0004 
+ +0.0004 
+ -0.0051 
+ +0.0052 
+ +0.0706 
+
+ SmoothQuant / perfect-blend 
+ +0.0687 
+ +0.0044 
+ +0.0116 
+ -0.0102 
+ -0.0361 
+ -0.0059 
+
+ SmoothQuant / ultrachat 
+ +0.0336 
+ -0.0025 
+ +0.0125 
+ -0.0415 
+ +0.0077 
+ +0.0000 
+
+ Mean 
+ +0.0280 
+ -0.0102 
+ +0.0043 
+ -0.0131 
+ +0.0125 
+ +0.0157 
+
+ Per-task detail
+
+ gsm8k_platinum_cot_llama
+
+ exact_match,strict-match · noise floor ±0.0111
+
+ Model 
+ Mean 
+ Seed 1234 
+ Seed 2345 
+ Seed 3456 
+ Recovery 
+
+ Qwen/Qwen3-30B-A3B (BF16) 
+ 0.9518 
+ 0.9479 
+ 0.9570 
+ 0.9504 
+ - 
+
+ NVFP4-GPTQ-AWQ-ultrachat 
+ 0.9581 
+ 0.9628 
+ 0.9529 
+ 0.9586 
+ 1.0067 
+
+ NVFP4-GPTQ 
+ 0.9523 
+ 0.9545 
+ 0.9537 
+ 0.9487 
+ 1.0006 
+
+ NVFP4-GPTQ-ultrachat 
+ 0.9449 
+ 0.9479 
+ 0.9487 
+ 0.9380 
+ 0.9928 
+
+ NVFP4-GPTQ-AWQ 
+ 0.9443 
+ 0.9471 
+ 0.9438 
+ 0.9421 
+ 0.9922 
+
+ NVFP4-GPTQ-SmoothQuant 
+ 0.9435 
+ 0.9462 
+ 0.9429 
+ 0.9413 
+ 0.9913 
+
+ NVFP4-GPTQ-SmoothQuant-ultrachat 
+ 0.9404 
+ 0.9537 
+ 0.9289 
+ 0.9388 
+ 0.9881 
+
+ NVFP4-AWQ-ultrachat 
+ 0.9388 
+ 0.9396 
+ 0.9313 
+ 0.9454 
+ 0.9864 
+
+ NVFP4 
+ 0.9377 
+ 0.9421 
+ 0.9404 
+ 0.9305 
+ 0.9852 
+
+ NVFP4-ultrachat 
+ 0.9322 
+ 0.9280 
+ 0.9289 
+ 0.9396 
+ 0.9794 
+
+ NVFP4-AWQ 
+ 0.9283 
+ 0.9280 
+ 0.9280 
+ 0.9289 
+ 0.9754 
+
+ NVFP4-SmoothQuant-ultrachat 
+ 0.9085 
+ 0.9148 
+ 0.9016 
+ 0.9090 
+ 0.9545 
+
+ NVFP4-SmoothQuant 
+ 0.8781 
+ 0.8668 
+ 0.8801 
+ 0.8875 
+ 0.9227 
+
+ mmlu_pro_chat
+
+ exact_match,custom-extract · noise floor ±0.0036
+
+ Model 
+ Mean 
+ Seed 1234 
+ Seed 2345 
+ Seed 3456 
+ Recovery 
+
+ Qwen/Qwen3-30B-A3B (BF16) 
+ 0.7541 
+ 0.7547 
+ 0.7529 
+ 0.7547 
+ - 
+
+ NVFP4-ultrachat 
+ 0.7538 
+ 0.7546 
+ 0.7520 
+ 0.7549 
+ 0.9997 
+
+ NVFP4-GPTQ-AWQ-ultrachat 
+ 0.7530 
+ 0.7553 
+ 0.7532 
+ 0.7507 
+ 0.9986 
+
+ NVFP4-AWQ-ultrachat 
+ 0.7527 
+ 0.7527 
+ 0.7514 
+ 0.7541 
+ 0.9982 
+
+ NVFP4 
+ 0.7516 
+ 0.7531 
+ 0.7525 
+ 0.7491 
+ 0.9967 
+
+ NVFP4-SmoothQuant-ultrachat 
+ 0.7430 
+ 0.7440 
+ 0.7418 
+ 0.7431 
+ 0.9853 
+
+ NVFP4-GPTQ-SmoothQuant-ultrachat 
+ 0.7411 
+ 0.7415 
+ 0.7406 
+ 0.7412 
+ 0.9828 
+
+ NVFP4-GPTQ-ultrachat 
+ 0.7369 
+ 0.7360 
+ 0.7373 
+ 0.7374 
+ 0.9772 
+
+ NVFP4-GPTQ 
+ 0.7329 
+ 0.7300 
+ 0.7321 
+ 0.7366 
+ 0.9719 
+
+ NVFP4-GPTQ-SmoothQuant 
+ 0.7296 
+ 0.7296 
+ 0.7311 
+ 0.7281 
+ 0.9675 
+
+ NVFP4-SmoothQuant 
+ 0.7262 
+ 0.7284 
+ 0.7252 
+ 0.7251 
+ 0.9631 
+
+ NVFP4-AWQ 
+ 0.7240 
+ 0.7250 
+ 0.7232 
+ 0.7239 
+ 0.9601 
+
+ NVFP4-GPTQ-AWQ 
+ 0.7116 
+ 0.7118 
+ 0.7117 
+ 0.7114 
+ 0.9437 
+
+ ifeval
+
+ inst_level_strict_acc,none · noise floor ±0.0125
+
+ Model 
+ Mean 
+ Seed 1234 
+ Seed 2345 
+ Seed 3456 
+ Recovery 
+
+ Qwen/Qwen3-30B-A3B (BF16) 
+ 0.8933 
+ 0.8849 
+ 0.9053 
+ 0.8897 
+ - 
+
+ NVFP4-GPTQ-SmoothQuant 
+ 0.8977 
+ 0.8993 
+ 0.9077 
+ 0.8861 
+ 1.0049 
+
+ NVFP4-GPTQ-SmoothQuant-ultrachat 
+ 0.8917 
+ 0.8933 
+ 0.8897 
+ 0.8921 
+ 0.9982 
+
+ NVFP4-AWQ 
+ 0.8905 
+ 0.8897 
+ 0.8993 
+ 0.8825 
+ 0.9969 
+
+ NVFP4-GPTQ-AWQ-ultrachat 
+ 0.8893 
+ 0.8945 
+ 0.8825 
+ 0.8909 
+ 0.9955 
+
+ NVFP4-GPTQ-ultrachat 
+ 0.8889 
+ 0.8861 
+ 0.8897 
+ 0.8909 
+ 0.9951 
+
+ NVFP4-AWQ-ultrachat 
+ 0.8889 
+ 0.8873 
+ 0.8909 
+ 0.8885 
+ 0.9951 
+
+ NVFP4-SmoothQuant 
+ 0.8873 
+ 0.8825 
+ 0.8873 
+ 0.8921 
+ 0.9933 
+
+ NVFP4-GPTQ-AWQ 
+ 0.8865 
+ 0.8933 
+ 0.8813 
+ 0.8849 
+ 0.9924 
+
+ NVFP4 
+ 0.8853 
+ 0.8957 
+ 0.8777 
+ 0.8825 
+ 0.9911 
+
+ NVFP4-GPTQ 
+ 0.8821 
+ 0.8801 
+ 0.8861 
+ 0.8801 
+ 0.9875 
+
+ NVFP4-ultrachat 
+ 0.8805 
+ 0.8825 
+ 0.8717 
+ 0.8873 
+ 0.9857 
+
+ NVFP4-SmoothQuant-ultrachat 
+ 0.8805 
+ 0.8825 
+ 0.8741 
+ 0.8849 
+ 0.9857 
+
+ math_500
+
+ pass@k:k=1&n=1 · noise floor ±0.0177
+
+ Model 
+ Mean 
+ Seed 1234 
+ Seed 2345 
+ Seed 3456 
+ Recovery 
+
+ Qwen/Qwen3-30B-A3B (BF16) 
+ 0.9147 
+ 0.9160 
+ 0.9220 
+ 0.9060 
+ - 
+
+ NVFP4-AWQ 
+ 0.9387 
+ 0.9440 
+ 0.9320 
+ 0.9400 
+ 1.0262 
+
+ NVFP4-SmoothQuant-ultrachat 
+ 0.9313 
+ 0.9360 
+ 0.9360 
+ 0.9220 
+ 1.0182 
+
+ NVFP4-SmoothQuant 
+ 0.9293 
+ 0.9220 
+ 0.9260 
+ 0.9400 
+ 1.0160 
+
+ NVFP4-GPTQ 
+ 0.9273 
+ 0.9240 
+ 0.9280 
+ 0.9300 
+ 1.0138 
+
+ NVFP4-GPTQ-SmoothQuant 
+ 0.9200 
+ 0.9080 
+ 0.9220 
+ 0.9300 
+ 1.0058 
+
+ NVFP4 
+ 0.9160 
+ 0.9060 
+ 0.9160 
+ 0.9260 
+ 1.0015 
+
+ NVFP4-GPTQ-ultrachat 
+ 0.9100 
+ 0.9020 
+ 0.9060 
+ 0.9220 
+ 0.9949 
+
+ NVFP4-AWQ-ultrachat 
+ 0.9087 
+ 0.9100 
+ 0.9040 
+ 0.9120 
+ 0.9934 
+
+ NVFP4-ultrachat 
+ 0.9053 
+ 0.9180 
+ 0.8820 
+ 0.9160 
+ 0.9898 
+
+ NVFP4-GPTQ-AWQ-ultrachat 
+ 0.9040 
+ 0.9080 
+ 0.9020 
+ 0.9020 
+ 0.9883 
+
+ NVFP4-GPTQ-AWQ 
+ 0.9027 
+ 0.9080 
+ 0.9140 
+ 0.8860 
+ 0.9869 
+
+ NVFP4-GPTQ-SmoothQuant-ultrachat 
+ 0.8933 
+ 0.8960 
+ 0.8880 
+ 0.8960 
+ 0.9767 
+
+ gpqa_diamond
+
+ gpqa_pass@k:k=1 · noise floor ±0.0490
+
+ Model 
+ Mean 
+ Seed 1234 
+ Seed 2345 
+ Seed 3456 
+ Recovery 
+
+ Qwen/Qwen3-30B-A3B (BF16) 
+ 0.6532 
+ 0.6465 
+ 0.6364 
+ 0.6768 
+ - 
+
+ NVFP4-GPTQ-ultrachat 
+ 0.6364 
+ 0.6515 
+ 0.6263 
+ 0.6313 
+ 0.9742 
+
+ NVFP4-GPTQ-AWQ 
+ 0.6296 
+ 0.6212 
+ 0.6414 
+ 0.6263 
+ 0.9639 
+
+ NVFP4-GPTQ-SmoothQuant-ultrachat 
+ 0.6263 
+ 0.6465 
+ 0.6212 
+ 0.6111 
+ 0.9588 
+
+ NVFP4-GPTQ-AWQ-ultrachat 
+ 0.6229 
+ 0.6263 
+ 0.6212 
+ 0.6212 
+ 0.9536 
+
+ NVFP4-SmoothQuant-ultrachat 
+ 0.6212 
+ 0.6212 
+ 0.6111 
+ 0.6313 
+ 0.9510 
+
+ NVFP4-AWQ-ultrachat 
+ 0.6195 
+ 0.6162 
+ 0.6263 
+ 0.6162 
+ 0.9485 
+
+ NVFP4-GPTQ 
+ 0.6178 
+ 0.6465 
+ 0.6061 
+ 0.6010 
+ 0.9459 
+
+ NVFP4-AWQ 
+ 0.6178 
+ 0.5859 
+ 0.6111 
+ 0.6566 
+ 0.9459 
+
+ NVFP4-SmoothQuant 
+ 0.6145 
+ 0.5909 
+ 0.6212 
+ 0.6313 
+ 0.9407 
+
+ NVFP4 
+ 0.6027 
+ 0.6162 
+ 0.5859 
+ 0.6061 
+ 0.9227 
+
+ NVFP4-ultrachat 
+ 0.5993 
+ 0.5808 
+ 0.6263 
+ 0.5909 
+ 0.9175 
+
+ NVFP4-GPTQ-SmoothQuant 
+ 0.5909 
+ 0.5909 
+ 0.5657 
+ 0.6162 
+ 0.9046 
+
+ aime25
+
+ pass@k:k=1&n=1 · noise floor ±0.0807
+
+ Model 
+ Mean 
+ Seed 1234 
+ Seed 2345 
+ Seed 3456 
+ Seed 4567 
+ Seed 5678 
+ Seed 6789 
+ Seed 7890 
+ Seed 8901 
+ Recovery 
+
+ Qwen/Qwen3-30B-A3B (BF16) 
+ 0.7083 
+ 0.7000 
+ 0.6000 
+ 0.6667 
+ 0.7333 
+ 0.6667 
+ 0.7667 
+ 0.8000 
+ 0.7333 
+ - 
+
+ NVFP4-GPTQ-AWQ-ultrachat 
+ 0.7000 
+ 0.7333 
+ 0.7333 
+ 0.6667 
+ 0.7000 
+ 0.6000 
+ 0.7333 
+ 0.7667 
+ 0.6667 
+ 0.9882 
+
+ NVFP4-AWQ 
+ 0.6917 
+ 0.6333 
+ 0.7333 
+ 0.7000 
+ 0.7333 
+ 0.7000 
+ 0.6333 
+ 0.7333 
+ 0.6667 
+ 0.9765 
+
+ NVFP4-GPTQ 
+ 0.6875 
+ 0.7333 
+ 0.6667 
+ 0.7333 
+ 0.6667 
+ 0.7333 
+ 0.5667 
+ 0.7000 
+ 0.7000 
+ 0.9706 
+
+ NVFP4 
+ 0.6833 
+ 0.6333 
+ 0.7333 
+ 0.7333 
+ 0.6333 
+ 0.7000 
+ 0.6333 
+ 0.6667 
+ 0.7333 
+ 0.9647 
+
+ NVFP4-GPTQ-ultrachat 
+ 0.6792 
+ 0.7333 
+ 0.7333 
+ 0.6667 
+ 0.6333 
+ 0.6667 
+ 0.7000 
+ 0.7333 
+ 0.5667 
+ 0.9588 
+
+ NVFP4-GPTQ-AWQ 
+ 0.6750 
+ 0.7333 
+ 0.7000 
+ 0.5667 
+ 0.7000 
+ 0.6667 
+ 0.7333 
+ 0.6667 
+ 0.6333 
+ 0.9529 
+
+ NVFP4-GPTQ-SmoothQuant-ultrachat 
+ 0.6667 
+ 0.6333 
+ 0.6667 
+ 0.6667 
+ 0.7333 
+ 0.6667 
+ 0.7333 
+ 0.5667 
+ 0.6667 
+ 0.9412 
+
+ NVFP4-SmoothQuant-ultrachat 
+ 0.6667 
+ 0.7333 
+ 0.7000 
+ 0.7333 
+ 0.6667 
+ 0.6333 
+ 0.6667 
+ 0.5333 
+ 0.6667 
+ 0.9412 
+
+ NVFP4-AWQ-ultrachat 
+ 0.6500 
+ 0.7000 
+ 0.6667 
+ 0.5667 
+ 0.7333 
+ 0.6000 
+ 0.7333 
+ 0.5667 
+ 0.6333 
+ 0.9176 
+
+ NVFP4-SmoothQuant 
+ 0.6458 
+ 0.6667 
+ 0.6667 
+ 0.7667 
+ 0.5667 
+ 0.5667 
+ 0.5667 
+ 0.6333 
+ 0.7333 
+ 0.9118 
+
+ NVFP4-ultrachat 
+ 0.6458 
+ 0.6667 
+ 0.7000 
+ 0.6333 
+ 0.6667 
+ 0.7000 
+ 0.5333 
+ 0.6333 
+ 0.6333 
+ 0.9118 
+
+ NVFP4-GPTQ-SmoothQuant 
+ 0.6417 
+ 0.6667 
+ 0.6667 
+ 0.6000 
+ 0.6333 
+ 0.6333 
+ 0.7000 
+ 0.6333 
+ 0.6000 
+ 0.9059 
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ dsikka
+
+ Labels
+
+ documentation Improvements or additions to documentation Improvements or additions to documentation keep-open nvfp4 For any PR / issue related to NVFP4 support For any PR / issue related to NVFP4 support 
+
+ Type
+
+ Task 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

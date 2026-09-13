@@ -1,0 +1,397 @@
+TITLE: [nvfp4_training] Support NVFP4 GroupedExperts on Blackwell by rdspring1 · Pull Request #4598 · pytorch/ao · GitHub
+STATE-TOKEN: open
+STATE-TOKEN: small
+STATE-TOKEN: closed
+STATE-TOKEN: small
+STATE-TOKEN: closed
+STATE-TOKEN: small
+STATE-TOKEN: closed
+STATE-TOKEN: small
+
+--- COMMENT 1 ---
+Summary
+
+ This PR adds a differentiable NVFP4 grouped GEMM stack for Mixture-of-Experts training on Blackwell (SM100+). It provides a single autograd entry point, _to_nvfp4_then_scaled_grouped_mm , whose forward, dgrad, and wgrad each fuse a per-group randomized Hadamard transform (RHT) with NVFP4 quantization (E2M1 4-bit codes + per-16 E4M3 block scales + a per-tensor scale) and feed torch.nn.functional.scaled_grouped_mm .
+
+ Three grouped Triton kernels do the quantization work. All group-aware via cumulative token-end offsets (jagged expert groups, 128-row aligned). _NVFP4GroupedMM ( nvfp4_training/nvfp4_grouped_mm.py ) wires the kernels into an autograd.Function with same training recipe as Linear kernels.
+
+ triton_group_rht_amax — per-group row/col amax after RHT.
+
+ triton_group_rht_quantize_row_col — fused rowwise + columnwise NVFP4 activation quantization.
+
+ triton_group_weight_quantize_2d — per-expert 2D NVFP4 weight quantization (W and Wᵀ).
+
+ triton_group_weight_amax — per-group amax
+
+ Kernels
+
+ 1. triton_group_rht_amax ( group_hadamard_amax_triton.py )
+
+ Computes, per expert group g , col_amax[g] = max|RHT(Aᵀ)| and row_amax[g] = max|A| without materializing the transformed output. These become the per-tensor NVFP4 scales for the row and col quantizer.
+
+ Two Triton kernels. 
+
+ A persistent per-group-CTA kernel (warp-specialized, TMA descriptor for the 16×16 Hadamard matrix, elementwise cumulative max with a single atomic_max per CTA) recovers single-tensor bandwidth for large groups.
+
+ A tiled kernel handles small groups. The wrapper picks between them by average group size and SM occupancy.
+
+ Group membership via binary search over cumulative token-end offsets
+
+ 128-row-aligned boundaries so a tile never straddles two experts.
+
+ Autotune key ["N"] (per-tile occupancy tracks N , not total token count — keeps CUDA-graph capture warm under variable token counts).
+
+ triton_group_rht_amax — DSV3 671B (E=128), effective memory bandwidth 
+
+ Projection 
+ M 
+ N 
+ time (µs) 
+ GB/s 
+ % peak 
+
+ gate/up (w1/w3) 
+ 2048 
+ 7168 
+ 2068.51 
+ 1816.81 
+ 22.9% 
+
+ down (w2) 
+ 7168 
+ 2048 
+ 2064.38 
+ 1820.44 
+ 23.0% 
+
+ 2. triton_group_rht_quantize_row_col ( group_rht_quantize_row_col_triton.py )
+
+ Fuses two NVFP4 quantizations in one 128×128 tile per CTA:
+
+ Rowwise — raw A , scaled by row_amax[g] → row FP4 codes + swizzled FP8 scales (forward-GEMM LHS).
+
+ Columnwise — RHT of Aᵀ , scaled by col_amax[g] → col FP4 codes + swizzled FP8 scales (saved for wgrad).
+
+ Optional Philox stochastic rounding driven by a caller-owned 4-element rng_state (col/row seed+offset), advanced by the caller so it stays CUDA-graph-safe across replays.
+
+ num_warps pinned at 4 (register-heavy body over-subscribes at 8); autotune key ["N", "STOCHASTIC_ROUNDING"] .
+
+ triton_group_rht_quantize_row_col — DSV3 671B (E=128), effective memory bandwidth 
+ Device peak memory bandwidth: 7928.1 GB/s (GB200)
+
+ Projection 
+ M 
+ N 
+ Rounding 
+ time (µs) 
+ GB/s 
+ % peak 
+
+ gate/up (w1/w3) 
+ 2048 
+ 7168 
+ rtne 
+ 2635.78 
+ 2227.82 
+ 28.1% 
+
+ gate/up (w1/w3) 
+ 2048 
+ 7168 
+ rs 
+ 5411.82 
+ 1085.04 
+ 13.7% 
+
+ down (w2) 
+ 7168 
+ 2048 
+ rtne 
+ 2614.05 
+ 2246.33 
+ 28.3% 
+
+ down (w2) 
+ 7168 
+ 2048 
+ rs 
+ 5400.75 
+ 1087.26 
+ 13.7% 
+
+ rtne = round-to-nearest-even (forward path); rs = stochastic rounding (backward path). RS roughly halves bandwidth due to the per-element Philox draws.
+
+ 3. triton_group_weight_quantize_2d ( group_quantize_2d_triton.py )
+
+ Per-expert 16×16-block NVFP4 quantization of both W and Wᵀ (no RHT), scaled by a per-expert amax.
+
+ Grid (M//128, N//128, E) , one tile per CTA, with int64 per-expert base pointers so large E·M·N weights address correctly.
+
+ Autotune key ["M", "N"] (weight dims are fixed at model-definition time, so keying on them is safe and re-tunes nothing per step).
+
+ triton_group_weight_quantize_2d — DSV3 671B (E=128), effective memory bandwidth 
+
+ Projection 
+ M 
+ N 
+ time (µs) 
+ GB/s 
+ % peak 
+
+ gate/up (w1/w3) 
+ 2048 
+ 7168 
+ 2628.61 
+ 2233.89 
+ 28.2% 
+
+ down (w2) 
+ 7168 
+ 2048 
+ 2606.08 
+ 2253.20 
+ 28.4% 
+
+ 4. triton_group_weight_amax (group_weight_amax_triton.py)
+
+ Computes, per expert group g , amax[g] = max|A| . It is equivalent to x.float().abs().max() and torch.linalg.vector_norm(dtype=torch.float) .
+
+ triton_group_weight_amax performance 
+
+ shape 
+ MB 
+ eager .float().abs().max() 
+ vector_norm 
+ triton E=1 
+ main/triton 
+
+ 671B expert 2048×7168 
+ 29 
+ 67.2 
+ 15.2 
+ 10.5 
+ 6.39x 
+
+ Llama 3 8B gate/up 14336×4096 
+ 117 
+ 274.5 
+ 42.0 
+ 26.8 
+ 10.26x 
+
+ Llama 3 70B gate/up 28672×8192 
+ 470 
+ 1038.1 
+ 132.3 
+ 81.8 
+ 12.69x 
+
+ Benchmark Details
+
+ Shapes from deepseek_v3_shapes.py . 671B uses 256 experts at EP=2 → 128 local experts, dim=7168 , moe_hidden=2048 .
+
+ GB/s is measured byte traffic (bf16 read + FP4 code writes + FP8 scale writes) over median kernel time.
+
+ GroupedExperts — the TorchTitan integration vehicle
+
+ The kernels are consumed by a GroupedExperts nn.Module in nvfp4_training/nvfp4_single_gpu_example.py ). It holds expert weights w1/w2/w3 and calls _to_nvfp4_then_scaled_grouped_mm for the gate, up, and down projections with SiLU(gate) * up .
+
+ gate = _to_nvfp4_then_scaled_grouped_mm ( x , self . w1 , sign_vector , sr_seed , offs = offsets )
+ up = _to_nvfp4_then_scaled_grouped_mm ( x , self . w3 , sign_vector , sr_seed , offs = offsets )
+ hidden = F . silu ( gate ) * up 
+ out = _to_nvfp4_then_scaled_grouped_mm ( hidden , self . w2 , sign_vector , sr_seed , offs = offsets )
+
+--- COMMENT 2 ---
+great work! We can iterate in future PRs, this is in a good place to land. Thank you!
+
+=== PAGE TEXT (non-comment) ===
+[nvfp4_training] Support NVFP4 GroupedExperts on Blackwell by rdspring1 · Pull Request #4598 · pytorch/ao · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ pytorch
+ 
+ / 
+ 
+ ao 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 620 
+
+ Star
+ 3k 
+
+ Code 
+
+ Issues 
+ 300 
+
+ Pull requests 
+ 484 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [nvfp4_training] Support NVFP4 GroupedExperts on Blackwell - # 4598 
+ # 4598 
+
+ Merged 
+ vkuzo merged 42 commits into pytorch:main pytorch/ao:main from rdspring1:nvfp4_moe rdspring1/ao:nvfp4_moe Copy head branch name to clipboard 
+
+ Aug 19, 2026 
+
+ Conversation Commits 42 ( 42 ) Checks Files changed 
+
+ Merged 
+ [nvfp4_training] Support NVFP4 GroupedExperts on Blackwell # 4598 vkuzo merged 42 commits into pytorch:main pytorch/ao:main from rdspring1:nvfp4_moe rdspring1/ao:nvfp4_moe Copy head branch name to clipboard 
+
+ Conversation
+
+ rdspring1 
+
+ commented
+
+ Jul 24, 2026 
+
+ • 
+
+ edited
+
+ Loading 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Copy link
+
+ Copy Markdown
+
+ Contributor

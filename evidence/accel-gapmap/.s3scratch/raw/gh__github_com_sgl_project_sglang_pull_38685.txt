@@ -1,0 +1,266 @@
+TITLE: [Feature] Add flashinfer_b12x NVFP4 backend and tiny_gemm decode path for SM120/SM121 (RTX 5000) by zachma082 · Pull Request #38685 · sgl-project/sglang · GitHub
+
+--- COMMENT 1 ---
+Motivation
+
+ SM120/SM121 (Blackwell consumer / RTX PRO, e.g. RTX 5000 48G) has no dedicated NVFP4 GEMM backend, and Qwen3.5 GatedDeltaNet 's tiny decode b/a GEMM ( M<=8, N=48, K=5120 , bf16) runs through the generic in_proj_ba linear, under-utilizing the GPU at small batch.
+
+ Modifications
+
+ A. flashinfer_b12x NVFP4 GEMM backend (SM120/SM121, CUDA 13+) 
+
+ arg_groups/choices.py + arg_groups/fields/exec_.py : register flashinfer_b12x in FP4_GEMM_RUNNER_BACKEND_CHOICES and the --fp4-gemm-backend help.
+
+ layers/quantization/fp4_utils.py : add FLASHINFER_B12X to Fp4GemmRunnerBackend .
+
+ test/.../test_nvfp4_linear_backends.py : add test_flashinfer_b12x (SM120/121 only, k % 32 == 0 shapes); _run_backend gains a shapes arg.
+
+ B. tiny_gemm decode path for Qwen3.5 GatedDeltaNet (default OFF) 
+
+ models/qwen3_5.py : _use_tiny_ba gate on SGLANG_OPT_TINY_BA + CC major == 12 + non-deterministic; _forward_ba_proj dispatches to the upstream tiny_gemm_bf16 kernel for the matched shape, else falls back to in_proj_ba ; _forward_input_proj gains is_decode from _forward .
+
+ Accuracy Tests
+
+ tiny_gemm computes the same bf16 GEMM as in_proj_ba for the matched shape (numerically equivalent); gated OFF by default.
+
+ Follow-up: flashinfer_b12x vs flashinfer_cutlass accuracy comparison.
+
+ Speed Tests and Profiling
+
+ RTX 5000 (SM120), Qwen3.5 GatedDeltaNet decode, SGLANG_OPT_TINY_BA=1 (tiny_ba) vs default path:
+
+ Metric 
+ Original path 
+ tiny_ba 
+ Change 
+
+ Output throughput (tok/s) 
+ 219.34 
+ 228.20 
+ +4.04% 
+
+ Mean TPOT (ms) 
+ 15.055 
+ 14.366 
+ -4.57% 
+
+ Mean E2E latency (ms) 
+ 9,333.95 
+ 8,971.45 
+ -3.88% 
+
+ Mean TTFT (ms) 
+ 1,641.06 
+ 1,630.43 
+ -0.65% 
+
+ Decode throughput +4%, TPOT/E2E latency -4%; TTFT essentially unchanged (decode-only optimization, prefill untouched).
+
+ Follow-up: flashinfer_b12x vs flashinfer_cutlass NVFP4 benchmark.
+
+ Checklist
+
+ pre-commit (isort / ruff / ruff-format / codespell) pass
+
+ unit test test_flashinfer_b12x added
+
+ flashinfer_b12x accuracy/benchmark (follow-up)
+
+ SGLang code style guidance
+
+ CI States
+
+ Latest PR Test (Base): ❌ Run #34352803443 
+
+Latest PR Test (Extra): ❌ Run #34352803104 
+
+Latest PR Test (AMD ROCm 10): ❌ Run #34352803367
+
+=== PAGE TEXT (non-comment) ===
+[Feature] Add flashinfer_b12x NVFP4 backend and tiny_gemm decode path for SM120/SM121 (RTX 5000) by zachma082 · Pull Request #38685 · sgl-project/sglang · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ sgl-project
+ 
+ / 
+ 
+ sglang 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 8.8k 
+
+ Star
+ 35.9k 
+
+ Code 
+
+ Issues 
+ 891 
+
+ Pull requests 
+ 4.4k 
+
+ Discussions 
+
+ Actions 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Security and quality
+
+ Insights
+
+ [Feature] Add flashinfer_b12x NVFP4 backend and tiny_gemm decode path for SM120/SM121 (RTX 5000) - # 38685 
+ # 38685 
+
+ Open 
+ zachma082 wants to merge 2 commits into sgl-project:main sgl-project/sglang:main from zachma082:tiny_gemm_rtx5000_48G zachma082/sglang:tiny_gemm_rtx5000_48G Copy head branch name to clipboard 
+
+ Conversation Commits 2 ( 2 ) Checks Files changed 
+
+ Open 
+ [Feature] Add flashinfer_b12x NVFP4 backend and tiny_gemm decode path for SM120/SM121 (RTX 5000) # 38685 zachma082 wants to merge 2 commits into sgl-project:main sgl-project/sglang:main from zachma082:tiny_gemm_rtx5000_48G zachma082/sglang:tiny_gemm_rtx5000_48G Copy head branch name to clipboard 
+
+ Conversation
+
+ zachma082 
+
+ commented
+
+ Sep 9, 2026 
+
+ • 
+
+ edited by github-actions
+ Bot 
+
+ Loading 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Copy link
+
+ Copy Markdown

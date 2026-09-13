@@ -1,0 +1,328 @@
+TITLE: [#15853][fix] Gate B12x MoE on CUDA13 CuTe DSL by mihai-chiorean · Pull Request #15851 · NVIDIA/TensorRT-LLM · GitHub
+STATE-TOKEN: open
+STATE-TOKEN: small
+STATE-TOKEN: merged
+STATE-TOKEN: small
+
+--- COMMENT 1 ---
+Fixes #15853 
+
+ Summary
+
+ enable the SM120/SM121 B12x NVFP4 MoE path only when the active CuTe DSL native payload reports CUDA 13 or newer
+
+ fall back to CUTLASS with an actionable warning for CUDA 12.x / missing CuTe DSL payloads, avoiding the ptxas _mma.block_scale failure
+
+ add selector tests for SM120 and SM121 CUDA12, missing CUDA version, and CUDA13 behavior
+
+ Validation
+
+ Focused pytest: 36 passed 
+
+ Focused touched-file pre-commit: passed
+
+ Full-model Qwen3.6 NVFP4 with CUDA13 CuTe DSL + B12x selected: coherent
+
+ Perf reference, Qwen3.6 NVFP4, TRTLLM attention, FP8 KV, fixed 128-token output:
+ 
+ batch1: 16.19 ms TPOT / 61.78 tok/s
+
+ batch4 steady: 24.39 ms/request / 164.03 tok/s aggregate
+
+ batch8: 35.81 ms/request / 224.58 tok/s aggregate
+
+ MTP validation on the same B12x path:
+ 
+ batch1: 16.55 ms TPOT / 60.46 tok/s, 81.56% draft acceptance
+
+ batch4 steady: 23.50 ms/request / 170.20 tok/s aggregate, 77.99% draft acceptance
+
+ Notes
+
+ The root cause was package payload ordering: nvidia-cutlass-dsl-libs-cu13==4.5.0 was installed, but the active files came from nvidia-cutlass-dsl-libs-base==4.5.0 , so CuTe DSL reported CUDA 12.9 and generated PTX without kind::mxf4nvf4 . Reinstalling the cu13 libs after base made CuTe DSL report CUDA 13.1 and the B12x path compiled and ran on SM121.
+
+ The same CUDA 12.x lowering failure was reproduced for an SM120 target, so the guard applies to the whole current B12x SM12x support set.
+
+ MTP did not require an additional code change here; it works once the B12x path is available and acceptance is read from iteration stats rather than request-level perf metrics.
+
+ Summary
+
+ Added SM120/SM121 runtime gating for the B12x CuTe DSL NVFP4 MoE backend.
+
+ Requires the active CuTe DSL payload to report CUDA 13 or newer.
+
+ Falls back to CutlassFusedMoE with an actionable warning for CUDA 12.x or unavailable payload versions.
+
+ Preserved dispatch for other quantization algorithms.
+
+ Added selector coverage for supported SMs, CUDA 12, CUDA 13, missing versions, malformed versions, and missing cutlass .
+
+ Dev Engineer Review
+
+ The implementation uses the public cutlass.CUDA_VERSION.major API.
+
+ Runtime checks handle missing imports and malformed version objects safely.
+
+ can_implement delegates to get_runtime_disable_reason() .
+
+ The exact QuantAlgo.NVFP4 check prevents regressions for other NVFP4-family modes.
+
+ The fallback bypasses the unsupported FlashInfer probe.
+
+ No configuration or test-list files changed.
+
+ No correctness or performance issues identified.
+
+ QA Engineer Review
+
+ Modified test file: tests/unittest/_torch/modules/moe/test_cute_dsl_b12x_moe_backend.py .
+
+ Added and updated tests for CUDA-version discovery, missing and invalid cutlass.CUDA_VERSION , valid CUDA versions, missing cutlass , CUDA 12 fallback, CUDA 13 selection, non-NVFP4 dispatch, and missing FlashInfer fallback.
+
+ The focused suite passed 37 tests.
+
+ No matching test-db/ or qa/ coverage entry was identified.
+
+ Verdict: needs follow-up.
+
+--- COMMENT 2 ---
+Actionable comments posted: 1 
+
+ 🧹 Nitpick comments (4) 
+ 
+ tests/unittest/_torch/modules/moe/test_cute_dsl_b12x_moe_backend.py (3) 
+ 181-191 : 📐 Maintainability & Code Quality | 🔵 Trivial | ⚡ Quick win 
+
+ Duplicate test: test_get_moe_cls_cutedsl_selects_b12x_on_supported_sm vs test_get_moe_cls_cutedsl_selects_b12x_on_supported_sm_with_cuda13 . 
+
+ These two tests are functionally identical (same SM parametrize, same CUDA-major=13 mock, same assertion cls is CuteDslB12xFusedMoE ). Suggest consolidating into a single test.
+
+ Also applies to: 208-218
+
+ 🤖 Prompt for AI Agents 
+ Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+In `@tests/unittest/_torch/modules/moe/test_cute_dsl_b12x_moe_backend.py` around
+lines 181 - 191, The test
+`test_get_moe_cls_cutedsl_selects_b12x_on_supported_sm` duplicates
+`test_get_moe_cls_cutedsl_selects_b12x_on_supported_sm_with_cuda13` with the
+same `sm_version` parametrization, the same
+`CuteDslB12xFusedMoE._get_cutlass_dsl_cuda_major` mock returning 13, and the
+same `get_moe_cls(cfg)` assertion. Consolidate the two into a single test by
+keeping one representative name and removing the redundant copy, while
+preserving the shared setup around `ModelConfig`, `QuantConfig`,
+`QuantAlgo.NVFP4`, and the `get_moe_cls` assertion.
+
+--- COMMENT 3 ---
+LGTM. Better land after #12704
+
+--- COMMENT 4 ---
+Actionable comments posted: 1 
+
+ 🤖 Prompt for all review comments with AI agents 
+ Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+Inline comments:
+In `@tests/unittest/_torch/modules/moe/test_cute_dsl_b12x_moe_backend.py`:
+- Around line 219-229: Parameterize
+test_get_moe_cls_cutedsl_falls_back_to_cutlass_on_supported_sm_with_cuda12 over
+CUDA major values 12 and None, pass the parameter through the
+_get_cutlass_dsl_cuda_major mock, and keep asserting CutlassFusedMoE for both
+cases. Run the relevant tests under tests/unittest/.
+
+=== PAGE TEXT (non-comment) ===
+[#15853][fix] Gate B12x MoE on CUDA13 CuTe DSL by mihai-chiorean · Pull Request #15851 · NVIDIA/TensorRT-LLM · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ NVIDIA
+ 
+ / 
+ 
+ TensorRT-LLM 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 2.7k 
+
+ Star
+ 14.6k 
+
+ Code 
+
+ Issues 
+ 587 
+
+ Pull requests 
+ 875 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [#15853][fix] Gate B12x MoE on CUDA13 CuTe DSL - # 15851 
+ # 15851 
+
+ Open 
+ mihai-chiorean wants to merge 5 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from mihai-chiorean:fix/b12x-sm121-cuda13-guard mihai-chiorean/TensorRT-LLM-FlashNext:fix/b12x-sm121-cuda13-guard Copy head branch name to clipboard 
+
+ Conversation Commits 5 ( 5 ) Checks Files changed 
+
+ Open 
+ [#15853][fix] Gate B12x MoE on CUDA13 CuTe DSL # 15851 mihai-chiorean wants to merge 5 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from mihai-chiorean:fix/b12x-sm121-cuda13-guard mihai-chiorean/TensorRT-LLM-FlashNext:fix/b12x-sm121-cuda13-guard Copy head branch name to clipboard 
+
+ Conversation
+
+ mihai-chiorean 
+
+ commented
+
+ Jul 1, 2026 
+
+ • 
+
+ edited by coderabbitai
+ Bot 
+
+ Loading 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Copy link
+
+ Copy Markdown
+
+ Contributor

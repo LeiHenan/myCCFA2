@@ -1,0 +1,508 @@
+TITLE: [Performance]: Defer dynamic NVFP4 scale finalization for fused GELU MLPs · Issue #18787 · NVIDIA/TensorRT-LLM · GitHub
+CREATED_AT: 2026-09-07T02:30:44Z | 2026-09-07T02:30:57Z | 2026-09-07T05:48:19Z | 2026-09-07T07:06:04Z
+LABELS: Customized kernels
+STATE_REASON: NOT_PLANNED
+
+--- COMMENT 1 ---
+## Proposal to improve performance
+
+PR #15299 added a fused NVFP4 up-GEMM + bias + tanh-GELU producer, but its
+FP4-output fast path requires a known/static `down_proj.input_scale`. With
+dynamic NVFP4, eligible VisualGen MLPs still produce a full BF16 activation,
+scan that tensor for a global amax, and invoke the generic FP4 quantizer before
+the down projection.
+
+I propose extending the fused GELU producer with deferred dynamic scaling:
+
+- emit scale-invariant packed E2M1 values and raw FP32 per-16 block scales from
+  the producer;
+- use the single shared `trtllm::nvfp4_sfc_finalize` operation proposed in
+  draft PR #18214 to reduce the invocation-local maximum and encode the final
+  E4M3 scale-factor tensor;
+- carry the reciprocal activation scale to the down projection, where it is
+  combined with `weight_scale_2`;
+- retain the existing static-scale path and all unsupported BF16/non-NVFP4
+  fallbacks.
+
+The implementation should not add a second finalizer. It will be coordinated
+with #18214 and must preserve a finite, zero-valued carrier and scale metadata
+for an all-zero tensor.
+
+Related work:
+
+- #11563 introduced dynamic NVFP4 for VisualGen.
+- #15299 is the direct fused-GELU parent and documents the dynamic fallback.
+- #16143 is the analogous static-scale SwiGLU producer-to-FP4 handoff.
+- #15053 provides the native NVFP4 bias epilogue foundation.
+- #16569 is a dynamic FP8 amax-reduction precedent, with a different scale
+  contract.
+- #17693 is the current BF16 GELU sibling path.
+- #18214 proposes the shared, producer-neutral NVFP4 scale finalizer this work
+  should reuse.
+
+## Report of performance regression
+
+This addresses redundant work rather than a release-to-release regression.
+
+On eight B300 SXM6 GPUs, I measured eight independent paired processes at the
+exact Wan 2.2 distilled I2V Ulysses-8 per-rank FFN geometry
+`M=9450, K=5120, N=13824, O=5120`. Each path had 10 warmup cycles and 200
+order-balanced CUDA-event samples. Inputs, weights, and bias were deterministic
+synthetic BF16 tensors; this is exact-shape operator evidence, not a checkpoint
+activation trace.
+
+| CUDA-event device-time scope | Parent process-median time | Deferred process-median time | Primary paired speedup | Median reduction |
+| --- | ---: | ---: | ---: | ---: |
+| Up GEMM + bias + tanh-GELU + dynamic NVFP4 production (FC2 excluded) | 0.613856 ms | 0.332224 ms | **1.889131x** | **47.0654%** |
+| Same scope plus shared NVFP4 FC2 | 0.865312 ms | 0.578688 ms | **1.507831x** | **33.6796%** |
+
+The headline is the median of eight within-GPU paired speedups; the displayed
+times are secondary medians across the eight process medians. Deferred scaling
+was faster in all eight processes for both scopes. All finite-value, padding,
+packed-payload, scale-finalization, all-zero, source-provenance, GPU health,
+Xid, NVLink, and error/retry-counter gates passed. Through the shared FC2,
+candidate versus parent cosine was `0.9974404`, relative L2 was `0.0715540`,
+and norm gain was `1.0001246`; outputs are not byte-identical.
+
+The direct same-source full-model experiment used Wan 2.2 distilled I2V,
+81x720x1280 output, eight B300s, Ulysses 8, eight denoising steps, CFG 1, one
+warmup plus five measured requests in each of two fresh parent and candidate
+processes. Deferred scaling improved wall time from `5.526483 s` to
+`5.472929 s` (`1.009785x`) and denoise time from `4.306233 s` to `4.242023 s`
+(`1.015137x`). All 15 LPIPS edges over 81 frames were evaluated; those values
+are descriptive distances to BF16, not a standalone quality or parity claim.
+
+Planned coverage for the draft implementation includes real SM100/SM103
+kernels through the same down projection, bias/no-bias, rank-2/rank-3 inputs,
+exact and padded/tail shapes, all-zero and finite/extreme values, an independent
+finalizer reference, dynamic/static and unsupported-path fallbacks, fake/meta,
+`torch.compile`, and CUDA graphs.
+
+## Misc discussion on performance
+
+The draft implementation will stay under review as a dependency of #18214
+instead of copying its finalizer. A shape sweep, especially small-M cases, is
+still needed before enabling the path automatically.
+
+## Your current environment
+
+**System Information:**
+
+- GPU models: 8x NVIDIA B300 SXM6 AC
+- Driver: 610.57.04
+- Runtime image: TensorRT-LLM 1.3.0rc24, release 26.05
+- PyTorch: 2.12.0a0+5aff392 (NVIDIA 26.05 image)
+- PR base: current upstream `main` at `564c73dd4a5b77840a5c53c57253d77c6905dd5f`
+
+I searched open and closed TensorRT-LLM issues and PRs for an existing request
+covering this exact dynamic-NVFP4 GELU deferred-scaling path. The PRs above are
+related foundations or precedents, but none implements this proposal.
+
+=== PAGE TEXT (non-comment) ===
+[Performance]: Defer dynamic NVFP4 scale finalization for fused GELU MLPs · Issue #18787 · NVIDIA/TensorRT-LLM · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ NVIDIA
+ 
+ / 
+ 
+ TensorRT-LLM 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 2.7k 
+
+ Star
+ 14.6k 
+
+ Code 
+
+ Issues 
+ 587 
+
+ Pull requests 
+ 875 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [Performance]: Defer dynamic NVFP4 scale finalization for fused GELU MLPs #18787 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Closed as not planned 
+
+ Closed as not planned 
+ [Performance]: Defer dynamic NVFP4 scale finalization for fused GELU MLPs #18787 
+
+ Copy link 
+
+ Labels
+ Customized kernels <NV>Specialized/modified CUDA kernels in TRTLLM for LLM ops, beyond standard TRT. Dev & perf. <NV>Specialized/modified CUDA kernels in TRTLLM for LLM ops, beyond standard TRT. Dev & perf. 
+
+ Description
+ 
+ daichu-nv 
+ opened on Sep 7, 2026 
+
+ Issue body actions 
+
+ Proposal to improve performance
+
+ PR #15299 added a fused NVFP4 up-GEMM + bias + tanh-GELU producer, but its
+
+FP4-output fast path requires a known/static down_proj.input_scale . With
+
+dynamic NVFP4, eligible VisualGen MLPs still produce a full BF16 activation,
+
+scan that tensor for a global amax, and invoke the generic FP4 quantizer before
+
+the down projection.
+
+ I propose extending the fused GELU producer with deferred dynamic scaling:
+
+ emit scale-invariant packed E2M1 values and raw FP32 per-16 block scales from
+
+the producer;
+
+ use the single shared trtllm::nvfp4_sfc_finalize operation proposed in
+
+draft PR [TRTLLM-15835][feat] Unified DiT norm-site producer kernel (AdaLN/RMS x gate/resid x NVFP4-out dispatch) #18214 to reduce the invocation-local maximum and encode the final
+
+E4M3 scale-factor tensor;
+
+ carry the reciprocal activation scale to the down projection, where it is
+
+combined with weight_scale_2 ;
+
+ retain the existing static-scale path and all unsupported BF16/non-NVFP4
+
+fallbacks.
+
+ The implementation should not add a second finalizer. It will be coordinated
+
+with #18214 and must preserve a finite, zero-valued carrier and scale metadata
+
+for an all-zero tensor.
+
+ Related work:
+
+ [None][feat] Add NVFP4 dynamic quantization support for visual_gen models #11563 introduced dynamic NVFP4 for VisualGen.
+
+ [TRTLLM-13370][perf] LTX2 + WAN: Fuse MLP up-GEMM + bias + GELU(tanh) + NVFP4-quant into CuteDSL epilogue #15299 is the direct fused-GELU parent and documents the dynamic fallback.
+
+ [None][perf] Enable FLUX2 VisualGen fused NVFP4 SwiGLU path #16143 is the analogous static-scale SwiGLU producer-to-FP4 handoff.
+
+ [TRTLLM-13264][feat] Add native bias epilogue to NVFP4 GEMM #15053 provides the native NVFP4 bias epilogue foundation.
+
+ [None][perf] Size the per-tensor FP8 dynamic-quant amax grid to the input #16569 is a dynamic FP8 amax-reduction precedent, with a different scale
+
+contract.
+
+ [TRTLLM-15398][perf] VisualGen MLP: cublasLt GELU-tanh epilogue for the unquantized bf16 path #17693 is the current BF16 GELU sibling path.
+
+ [TRTLLM-15835][feat] Unified DiT norm-site producer kernel (AdaLN/RMS x gate/resid x NVFP4-out dispatch) #18214 proposes the shared, producer-neutral NVFP4 scale finalizer this work
+
+should reuse.
+
+ Report of performance regression
+
+ This addresses redundant work rather than a release-to-release regression.
+
+ On eight B300 SXM6 GPUs, I measured eight independent paired processes at the
+
+exact Wan 2.2 distilled I2V Ulysses-8 per-rank FFN geometry
+
+ M=9450, K=5120, N=13824, O=5120 . Each path had 10 warmup cycles and 200
+
+order-balanced CUDA-event samples. Inputs, weights, and bias were deterministic
+
+synthetic BF16 tensors; this is exact-shape operator evidence, not a checkpoint
+
+activation trace.
+
+ CUDA-event device-time scope 
+ Parent process-median time 
+ Deferred process-median time 
+ Primary paired speedup 
+ Median reduction 
+
+ Up GEMM + bias + tanh-GELU + dynamic NVFP4 production (FC2 excluded) 
+ 0.613856 ms 
+ 0.332224 ms 
+ 1.889131x 
+ 47.0654% 
+
+ Same scope plus shared NVFP4 FC2 
+ 0.865312 ms 
+ 0.578688 ms 
+ 1.507831x 
+ 33.6796% 
+
+ The headline is the median of eight within-GPU paired speedups; the displayed
+
+times are secondary medians across the eight process medians. Deferred scaling
+
+was faster in all eight processes for both scopes. All finite-value, padding,
+
+packed-payload, scale-finalization, all-zero, source-provenance, GPU health,
+
+Xid, NVLink, and error/retry-counter gates passed. Through the shared FC2,
+
+candidate versus parent cosine was 0.9974404 , relative L2 was 0.0715540 ,
+
+and norm gain was 1.0001246 ; outputs are not byte-identical.
+
+ The direct same-source full-model experiment used Wan 2.2 distilled I2V,
+
+81x720x1280 output, eight B300s, Ulysses 8, eight denoising steps, CFG 1, one
+
+warmup plus five measured requests in each of two fresh parent and candidate
+
+processes. Deferred scaling improved wall time from 5.526483 s to
+
+ 5.472929 s ( 1.009785x ) and denoise time from 4.306233 s to 4.242023 s 
+
+( 1.015137x ). All 15 LPIPS edges over 81 frames were evaluated; those values
+
+are descriptive distances to BF16, not a standalone quality or parity claim.
+
+ Planned coverage for the draft implementation includes real SM100/SM103
+
+kernels through the same down projection, bias/no-bias, rank-2/rank-3 inputs,
+
+exact and padded/tail shapes, all-zero and finite/extreme values, an independent
+
+finalizer reference, dynamic/static and unsupported-path fallbacks, fake/meta,
+
+ torch.compile , and CUDA graphs.
+
+ Misc discussion on performance
+
+ The draft implementation will stay under review as a dependency of #18214 
+
+instead of copying its finalizer. A shape sweep, especially small-M cases, is
+
+still needed before enabling the path automatically.
+
+ Your current environment
+
+ System Information: 
+
+ GPU models: 8x NVIDIA B300 SXM6 AC
+
+ Driver: 610.57.04
+
+ Runtime image: TensorRT-LLM 1.3.0rc24, release 26.05
+
+ PyTorch: 2.12.0a0+5aff392 (NVIDIA 26.05 image)
+
+ PR base: current upstream main at 564c73dd4a5b77840a5c53c57253d77c6905dd5f 
+
+ I searched open and closed TensorRT-LLM issues and PRs for an existing request
+
+covering this exact dynamic-NVFP4 GELU deferred-scaling path. The PRs above are
+
+related foundations or precedents, but none implements this proposal.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ Customized kernels <NV>Specialized/modified CUDA kernels in TRTLLM for LLM ops, beyond standard TRT. Dev & perf. <NV>Specialized/modified CUDA kernels in TRTLLM for LLM ops, beyond standard TRT. Dev & perf. 
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

@@ -1,0 +1,237 @@
+TITLE: Roderick wu/sanity check fouroversix by Roderick-Wu · Pull Request #3015 · vllm-project/llm-compressor · GitHub
+STATE-TOKEN: closed
+STATE-TOKEN: small
+
+--- COMMENT 1 ---
+for diffing
+
+--- COMMENT 2 ---
+Code Review
+
+ This pull request introduces the FourOverSixObserver for adaptive block scaling in NVFP4 quantization, which selects between M=6 and M=4 scales per block to minimize quantization error. Additionally, it updates the MSE observer and grid search utilities to support range expansion and global scale priors, and registers a new NVFP4ExpandedMSEObserver . The feedback suggests refactoring FourOverSixObserver to override the base class's get_global_scale method, which simplifies get_qparams and avoids duplicating global scale computation logic.
+
+--- COMMENT 3 ---
+The logic for computing the global scale in get_qparams duplicates the structure of get_global_scale from the base Observer class, except for the custom scale_data parameter. Overriding get_global_scale directly in FourOverSixObserver simplifies get_qparams and aligns with the base class design.
+
+ def get_global_scale ( self ) -> torch . Tensor | None :
+ if self . args . strategy != QuantizationStrategy . TENSOR_GROUP :
+ return None 
+
+ all_stats = self . fusion_handler . get_fused_statistics ()
+ global_absmax = all_stats [ 0 ][ "max_vals" ]. max ()
+ for stats in all_stats :
+ global_absmax = torch . max (
+ global_absmax , - stats [ "min_vals" ]. min ()
+ )
+ global_absmax = torch . max (
+ global_absmax , stats [ "max_vals" ]. max ()
+ )
+
+ return generate_gparam (
+ - global_absmax . reshape ( 1 ),
+ global_absmax . reshape ( 1 ),
+ scale_data = _FP8ScaleData256 ,
+ )
+
+ @ torch . no_grad 
+ def get_qparams ( self ) -> QParamsDict :
+ assert (
+ self . has_statistics 
+ ), "No statistics available. Call observer(value) first." 
+
+ global_scale = self . get_global_scale ()
+
+ scale_6 , zero_point = calculate_qparams (
+ min_vals = self . min_vals ,
+ max_vals = self . max_vals ,
+ quantization_args = self . args ,
+ global_scale = global_scale ,
+ )
+
+=== PAGE TEXT (non-comment) ===
+Roderick wu/sanity check fouroversix by Roderick-Wu · Pull Request #3015 · vllm-project/llm-compressor · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ vllm-project
+ 
+ / 
+ 
+ llm-compressor 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 661 
+
+ Star
+ 3.8k 
+
+ Code 
+
+ Issues 
+ 42 
+
+ Pull requests 
+ 74 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Wiki 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Wiki
+
+ Security and quality
+
+ Insights
+
+ Roderick wu/sanity check fouroversix - # 3015 
+ # 3015 
+
+ Closed 
+ Roderick-Wu wants to merge 13 commits into main vllm-project/llm-compressor:main from Roderick-Wu/sanity-check-fouroversix vllm-project/llm-compressor:Roderick-Wu/sanity-check-fouroversix Copy head branch name to clipboard 
+
+ Conversation Commits 13 ( 13 ) Checks Files changed 
+
+ Closed 
+ Roderick wu/sanity check fouroversix # 3015 Roderick-Wu wants to merge 13 commits into main vllm-project/llm-compressor:main from Roderick-Wu/sanity-check-fouroversix vllm-project/llm-compressor:Roderick-Wu/sanity-check-fouroversix Copy head branch name to clipboard 
+
+ Conversation
+
+ Roderick-Wu 
+
+ commented
+
+ Aug 10, 2026 
+
+ Copy link
+
+ Copy Markdown
+
+ Collaborator

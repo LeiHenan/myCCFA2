@@ -1,0 +1,279 @@
+TITLE: [Kernel] Integrate DeepGEMM NVFP4 MegaMoE with fused shared experts by zhou9402 · Pull Request #54520 · vllm-project/vllm · GitHub
+STATE-TOKEN: closed
+STATE-TOKEN: small
+
+--- COMMENT 1 ---
+Summary
+
+ Add a ModelOpt NVFP4 MegaMoE path backed by DeepGEMM, including fused BF16 shared-expert execution.
+
+ Quantize NVFP4 activations and stage activation/scales/top-k directly into the symmetric buffer in one Triton launch.
+
+ Transform routed NVFP4 weights/scales into the DeepGEMM layout.
+
+ Fuse compatible BF16 shared experts; keep the ordinary shared path for unsupported modules.
+
+ Keep symmetric-buffer allocation/rendezvous outside forward and CUDA Graph capture.
+
+ Fail closed for unsupported router semantics, dtype, bias, LoRA, alignment, platform, DBO, or missing DeepGEMM APIs.
+
+ Preserve the existing ModelOpt path unless --moe-backend deep_gemm_mega_moe is selected.
+
+ Requires a DeepGEMM build containing the NVFP4 MegaMoE APIs from the merged deepseek-ai/DeepGEMM#409 .
+
+ Why this is not a duplicate
+
+ The related open Kimi K3 and DeepSeek-V4 changes target model-specific paths; this PR is the only open change integrating NVFP4 MegaMoE with the ModelOpt/RoutedExperts path used by GLM-5.2.
+
+ Design and review fixes
+
+ Replaced scaled_fp4_quant plus temporary tensors and four copy_ calls with direct-to-symmetric-buffer NVFP4 staging.
+
+ Folded FP4 quantization, E4M3 scale packing, top-k conversion, and padding masking into one launch.
+
+ Cached the reciprocal activation global scale outside forward.
+
+ Added fail-closed handling for apply_router_weight_on_input and other unsupported configurations.
+
+ Restricted shared fusion to modules whose semantics are preserved; otherwise shared execution remains unfused.
+
+ Fixed the real startup contract found on GB300: router IDs may be int32 or int64 , while the symmetric topk_idx output is int64 .
+
+ Expanded contract, padding, dtype, H=6144, and CUDA Graph replay tests.
+
+ Test Plan
+
+ Environment
+
+ 8x GB300, two hosts x four GPUs, DP8/EP8 and TP1.
+
+ Model: nvidia/GLM-5.2-NVFP4 .
+
+ CUDA 13, PyTorch 2.13.0+cu130 , FlashInfer 0.6.15.post1 .
+
+ vLLM V2 model runner with compilation mode 0 (no torch.compile ).
+
+ FULL CUDA Graph requested; sparse MLA selects FULL_DECODE_ONLY at runtime.
+
+ Maximum sequences per rank: 1024; maximum batched tokens: 16,384; prefix caching disabled.
+
+ Performance revision: 8d37d14 ; current PR head: 9febe8a2e . Later commits add contract guards and tests, then remove redundant adapter state and over-strict weight-scale validation; they do not change the timed DP8/EP8, TP1 path.
+
+ DeepGEMM revision: 0c067ed4 from the dependent PR.
+
+ Serve recipe
+
+ vllm serve nvidia/GLM-5.2-NVFP4 \
+ --tensor-parallel-size 1 \
+ --data-parallel-size 8 \
+ --enable-expert-parallel \
+ --moe-backend deep_gemm_mega_moe \
+ --trust-remote-code \
+ --kv-cache-dtype fp8_e4m3 \
+ --max-num-seqs 1024 \
+ --max-num-batched-tokens 16384 \
+ --no-enable-prefix-caching \
+ --compilation-config ' {"mode":0,"cudagraph_mode":"FULL"} '
+
+--- COMMENT 2 ---
+Claude Code Review
+
+ This pull request is from a fork — automated review is disabled. A repository maintainer can comment @claude review to run a one-time review.
+
+=== PAGE TEXT (non-comment) ===
+[Kernel] Integrate DeepGEMM NVFP4 MegaMoE with fused shared experts by zhou9402 · Pull Request #54520 · vllm-project/vllm · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ vllm-project
+ 
+ / 
+ 
+ vllm 
+
+ Public 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 22.1k 
+
+ Star
+ 91.6k 
+
+ Code 
+
+ Issues 
+ 2.4k 
+
+ Pull requests 
+ 5k+ 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 76 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [Kernel] Integrate DeepGEMM NVFP4 MegaMoE with fused shared experts - # 54520 
+ # 54520 
+
+ Closed 
+ zhou9402 wants to merge 13 commits into vllm-project:main vllm-project/vllm:main from zhou9402:codex/oss-nvfp4-megamoe zhou9402/vllm:codex/oss-nvfp4-megamoe Copy head branch name to clipboard 
+
+ Conversation Commits 13 ( 13 ) Checks Files changed 
+
+ Closed 
+ [Kernel] Integrate DeepGEMM NVFP4 MegaMoE with fused shared experts # 54520 zhou9402 wants to merge 13 commits into vllm-project:main vllm-project/vllm:main from zhou9402:codex/oss-nvfp4-megamoe zhou9402/vllm:codex/oss-nvfp4-megamoe Copy head branch name to clipboard 
+
+ Conversation
+
+ zhou9402 
+
+ commented
+
+ Aug 31, 2026 
+
+ • 
+
+ edited
+
+ Loading 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Copy link
+
+ Copy Markdown
+
+ Contributor

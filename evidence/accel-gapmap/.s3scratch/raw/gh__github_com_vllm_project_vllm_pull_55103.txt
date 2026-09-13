@@ -1,0 +1,229 @@
+TITLE: [Kernel][Quantization] Cut transient memory in NVFP4 Marlin scale-factor computation by Elevatormusic · Pull Request #55103 · vllm-project/vllm · GitHub
+STATE-TOKEN: merged
+STATE-TOKEN: small
+STATE-TOKEN: open
+STATE-TOKEN: small
+
+--- COMMENT 1 ---
+Purpose
+
+ _nvfp4_compute_scale_factor in marlin_utils_fp4.py finds the largest NVFP4 weight scale by materializing an FP32 copy of the whole scale tensor, a boolean mask, and a gathered copy of the positive entries. The MoE paths ( prepare_nvfp4_moe_layer_for_marlin , prepare_moe_fp4_layer_for_marlin ) call it on the scales of all experts at once , so for a 288-expert model such as GLM-5.3-Flash NVFP4 one call touches about 300M elements and allocates several GiB of transient device memory during weight loading. On unified-memory machines with little headroom at load time (DGX Spark GB10, #50925 ) that spike can fail the load or push the driver into the memory-pressure spiral reported by the community.
+
+ This PR reduces the input tensor directly. The returned factor is unchanged:
+
+ a max commutes with the exact multiplication by 2**7 ;
+
+ non-positive scales never win the max when a positive scale exists, and an all-non-positive tensor still returns 1.0 ;
+
+ an empty tensor returns 1.0 as before.
+
+ One deliberate behavior change: a NaN scale now raises ValueError instead of being silently excluded from the max. Happy to drop that if maintainers prefer the old silent behavior.
+
+ Test Plan
+
+ New tests/kernels/quantization/test_nvfp4_marlin_scale_factor.py : the previous implementation is kept verbatim as the oracle and compared against the new one for fp16/bf16 inputs, 1-D/2-D/3-D shapes, and inputs with zeros, negatives, all zeros, all negative, already-normalized values, and the a_dtype=half early return; plus range, empty-tensor, and NaN tests. A CUDA-only test asserts the call allocates no tensor-sized temporaries on a (288, 512, 256) bf16 input.
+
+ pre-commit (ruff check / ruff format) on the two files.
+
+ pytest tests/kernels/quantization/test_nvfp4_marlin_scale_factor.py -q
+
+--- COMMENT 2 ---
+Claude Code Review
+
+ This pull request is from a fork — automated review is disabled. A repository maintainer can comment @claude review to run a one-time review.
+
+=== PAGE TEXT (non-comment) ===
+[Kernel][Quantization] Cut transient memory in NVFP4 Marlin scale-factor computation by Elevatormusic · Pull Request #55103 · vllm-project/vllm · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ vllm-project
+ 
+ / 
+ 
+ vllm 
+
+ Public 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 22.1k 
+
+ Star
+ 91.6k 
+
+ Code 
+
+ Issues 
+ 2.4k 
+
+ Pull requests 
+ 5k+ 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 76 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [Kernel][Quantization] Cut transient memory in NVFP4 Marlin scale-factor computation - # 55103 
+ # 55103 
+
+ Open 
+ Elevatormusic wants to merge 2 commits into vllm-project:main vllm-project/vllm:main from Elevatormusic:fix/nvfp4-marlin-scale-factor-transient-memory Elevatormusic/vllm:fix/nvfp4-marlin-scale-factor-transient-memory Copy head branch name to clipboard 
+
+ Conversation Commits 2 ( 2 ) Checks Files changed 
+
+ Open 
+ [Kernel][Quantization] Cut transient memory in NVFP4 Marlin scale-factor computation # 55103 Elevatormusic wants to merge 2 commits into vllm-project:main vllm-project/vllm:main from Elevatormusic:fix/nvfp4-marlin-scale-factor-transient-memory Elevatormusic/vllm:fix/nvfp4-marlin-scale-factor-transient-memory Copy head branch name to clipboard 
+
+ Conversation
+
+ Elevatormusic 
+
+ commented
+
+ Sep 3, 2026 
+
+ • 
+
+ edited
+
+ Loading 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Copy link
+
+ Copy Markdown

@@ -1,0 +1,467 @@
+TITLE: ConvRot — Group-wise Regular Hadamard Rotation for W4A4/W8A8 Diffusion Transformer Quantization · Issue #4695 · pytorch/ao · GitHub
+CREATED_AT: 2026-08-05T07:57:08Z | 2026-08-05T07:57:10Z | 2026-08-05T13:19:41Z | 2026-08-05T15:01:28Z
+LABELS: enhancement
+
+--- COMMENT 1 ---
+## Description
+
+I'd like to propose adding ConvRot support to torchao — a group-wise rotation-based quantization method that enables plug-and-play W4A4 inference for Diffusion Transformers (DiTs) without retraining.
+
+**Paper**: https://arxiv.org/abs/2512.03673
+**Original implementation** (runs with [torchao](https://github.com/pytorch/ao) on an NVFP4-capable GPU): https://github.com/feice-huang/ConvRot
+**My implementation**: https://github.com/gaurav-redhat/ConvRot
+
+## Problem
+
+Current rotation-based quantization in torchao (SpinQuant) uses Sylvester-type Hadamard matrices and targets LLMs. This fails for Diffusion Transformers because:
+
+1. **Row-wise outliers** in DiT activations (e.g., FLUX.1 `proj_out` layers) get amplified by Sylvester's all-ones column — outlier amplitude goes from 14.48 → 106.19
+2. **Global rotation** has O(K²) complexity, expensive for large DiT models (12B+ params)
+3. **AdaLN design** in DiTs breaks the fusion strategies that make QuaRot fast for LLMs
+
+## Solution: ConvRot
+
+| Feature | SpinQuant (existing) | ConvRot (proposed) |
+|---------|---------------------|-------------------|
+| Matrix type | Sylvester Hadamard | Regular Hadamard |
+| Column discrepancy | n (worst case) | √n (optimal) |
+| Scope | Global | Group-wise (N₀=256) |
+| Complexity | O(K²) or O(K log K) via FWHT | O(K) |
+| Target | LLMs | Diffusion Transformers |
+| Row-wise outlier handling | Amplifies | Suppresses (16x better) |
+| Implementation | FWHT butterfly ops | Matmul (uses Tensor Cores) |
+
+## Results
+
+Evaluated on SDXL (NVIDIA H200):
+
+| Precision | PSNR↑ | SSIM↑ | LPIPS↓ | Memory Reduction |
+|-----------|-------|-------|--------|-----------------|
+| BF16 (ref) | — | — | — | 1x |
+| **W8A8** | **28.86** | **0.964** | **0.062** | 1.76x |
+| **W4A4 mixed** | **18.99** | **0.799** | **0.292** | 1.75x |
+
+Algorithm correctness verified with 66 unit tests (CPU-only, no GPU required):
+- Regular Hadamard matrices: orthogonality, regularity confirmed for all orders 4^k
+- Outlier suppression: 42–51% reduction in activation max
+- Linear equivalence preserved: error < 2.5e-05
+
+## Proposed API
+
+```python
+from torchao.prototype.convrot import ConvRotConfig
+from torchao.quantization import quantize_
+
+# W8A8 for DiT models
+quantize_(model, ConvRotConfig(precision="w8a8", group_size=256))
+
+# W4A4 with mixed precision (sensitive layers stay W8A8)
+quantize_(model, ConvRotConfig(
+    precision="w4a4",
+    group_size=256,
+    mixed_precision_layers=["attn.to_out", "attn.to_v"],
+))
+
+--- COMMENT 2 ---
+cc @sayakpaul  for thoughts
+
+--- COMMENT 3 ---
+@gaurav-redhat why are we using SDXL for benchmarking a method that seems to have been proposed for DiTs? The table also doesn't provide much information w.r.t other alternatives for better references, latency / throughput numbers, etc. Finally, some visuals after applying the quant method (alongside a comparison with other quant algos available in `torchao`) would be very useful to make an informed decision here.
+
+--- COMMENT 4 ---
+@sayakpaul Thanks for the feedback. SDXL was chosen due to compute constraints and availability in our eval setup.
+I'm working on extending benchmarks to DiT models (FLUX.1, SD3), adding comparisons against other TorchAO quantization methods, and including latency/memory/qualitative metrics.
+Will update this issue as results come in.
+
+--- COMMENT 5 ---
+@sayakpaul Following up with DiT benchmarks as promised.
+
+### What changed
+- Switched primary eval from SDXL (UNet) → **FLUX.1-schnell** (DiT, 12B)
+- Compared against torchao `int8_weight_only` and `int4_weight_only`
+- Added latency, peak memory, model size, and quality metrics (PSNR / SSIM / LPIPS)
+- Added side-by-side visuals
+
+Full write-up + code: https://github.com/gaurav-redhat/ConvRot  
+Comparison grid: https://github.com/gaurav-redhat/ConvRot/blob/main/results/dit_benchmark/comparison_flux-schnell.png
+
+### Quality (vs BF16, FLUX.1-schnell, H200)
+
+| Method | Type | PSNR↑ | SSIM↑ | LPIPS↓ |
+|--------|------|-------|-------|--------|
+| torchao `int8_weight_only` | W8A16 | 29.16 | 0.985 | 0.057 |
+| ConvRot W8A8 | W8A8 | 29.03 | 0.985 | 0.062 |
+| torchao `int4_weight_only` | W4A16 | 21.48 | 0.910 | 0.219 |
+| ConvRot W4A4+Mixed | W4A4 | 17.93 | 0.822 | 0.361 |
+
+### Performance
+
+| Method | DiT size | Reduction | Latency | Peak mem |
+|--------|----------|-----------|---------|----------|
+| BF16 | 22,681 MB | 1.0x | 1.01 s | 33.8 GB |
+| torchao int8wo | 22,681 MB | 1.0x | 1.28 s | 22.8 GB |
+| torchao int4wo | 22,681 MB | 1.0x | 8.82 s | 17.7 GB |
+| ConvRot W8A8 | 11,467 MB | 2.0x | 1.98 s | 22.9 GB |
+| ConvRot W4A4+Mixed | 11,626 MB | 2.0x | 1.98 s | 23.1 GB |
+
+### Notes
+- This is a **reference / correctness** implementation (dequantize-then-matmul). Paper-reported speedups need fused INT4/INT8 kernels.
+- ConvRot W8A8 matches torchao int8wo quality while also quantizing activations (W8A8 vs W8A16).
+- Next: FLUX.1-dev (50 steps), larger prompt set / FID, and more torchao baselines if useful.
+
+Happy to adjust the eval based on what would be most helpful for a torchao integration decision.
+
+--- COMMENT 6 ---
+Thanks for the updates. I don't think the results are convincing, though. Sure, we're getting a 2x speedup but the PSNR, SSIM, LPIPS numbers are significantly worse than int8, for example. Also, on H200, I would assume FP8 would probably have better numbers all around (that would also depend on the model size and input problem size).
+
+=== PAGE TEXT (non-comment) ===
+ConvRot — Group-wise Regular Hadamard Rotation for W4A4/W8A8 Diffusion Transformer Quantization · Issue #4695 · pytorch/ao · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ pytorch
+ 
+ / 
+ 
+ ao 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 620 
+
+ Star
+ 3k 
+
+ Code 
+
+ Issues 
+ 300 
+
+ Pull requests 
+ 484 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ ConvRot — Group-wise Regular Hadamard Rotation for W4A4/W8A8 Diffusion Transformer Quantization #4695 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Open 
+
+ Open 
+ ConvRot — Group-wise Regular Hadamard Rotation for W4A4/W8A8 Diffusion Transformer Quantization #4695 
+
+ Copy link 
+
+ Labels
+ enhancement New feature or request New feature or request 
+
+ Description
+ 
+ gaurav-redhat 
+ opened on Aug 5, 2026 
+
+ Issue body actions 
+
+ Description
+
+ I'd like to propose adding ConvRot support to torchao — a group-wise rotation-based quantization method that enables plug-and-play W4A4 inference for Diffusion Transformers (DiTs) without retraining.
+
+ Paper : https://arxiv.org/abs/2512.03673 
+
+ Original implementation (runs with torchao on an NVFP4-capable GPU): https://github.com/feice-huang/ConvRot 
+
+ My implementation : https://github.com/gaurav-redhat/ConvRot 
+
+ Problem
+
+ Current rotation-based quantization in torchao (SpinQuant) uses Sylvester-type Hadamard matrices and targets LLMs. This fails for Diffusion Transformers because:
+
+ Row-wise outliers in DiT activations (e.g., FLUX.1 proj_out layers) get amplified by Sylvester's all-ones column — outlier amplitude goes from 14.48 → 106.19
+
+ Global rotation has O(K²) complexity, expensive for large DiT models (12B+ params)
+
+ AdaLN design in DiTs breaks the fusion strategies that make QuaRot fast for LLMs
+
+ Solution: ConvRot
+
+ Feature 
+ SpinQuant (existing) 
+ ConvRot (proposed) 
+
+ Matrix type 
+ Sylvester Hadamard 
+ Regular Hadamard 
+
+ Column discrepancy 
+ n (worst case) 
+ √n (optimal) 
+
+ Scope 
+ Global 
+ Group-wise (N₀=256) 
+
+ Complexity 
+ O(K²) or O(K log K) via FWHT 
+ O(K) 
+
+ Target 
+ LLMs 
+ Diffusion Transformers 
+
+ Row-wise outlier handling 
+ Amplifies 
+ Suppresses (16x better) 
+
+ Implementation 
+ FWHT butterfly ops 
+ Matmul (uses Tensor Cores) 
+
+ Results
+
+ Evaluated on SDXL (NVIDIA H200):
+
+ Precision 
+ PSNR↑ 
+ SSIM↑ 
+ LPIPS↓ 
+ Memory Reduction 
+
+ BF16 (ref) 
+ — 
+ — 
+ — 
+ 1x 
+
+ W8A8 
+ 28.86 
+ 0.964 
+ 0.062 
+ 1.76x 
+
+ W4A4 mixed 
+ 18.99 
+ 0.799 
+ 0.292 
+ 1.75x 
+
+ Algorithm correctness verified with 66 unit tests (CPU-only, no GPU required):
+
+ Regular Hadamard matrices: orthogonality, regularity confirmed for all orders 4^k
+
+ Outlier suppression: 42–51% reduction in activation max
+
+ Linear equivalence preserved: error < 2.5e-05
+
+ Proposed API
+
+ from torchao . prototype . convrot import ConvRotConfig 
+ from torchao . quantization import quantize_ 
+
+ # W8A8 for DiT models 
+ quantize_ ( model , ConvRotConfig ( precision = "w8a8" , group_size = 256 ))
+
+ # W4A4 with mixed precision (sensitive layers stay W8A8) 
+ quantize_ ( model , ConvRotConfig (
+ precision = "w4a4" ,
+ group_size = 256 ,
+ mixed_precision_layers = [ "attn.to_out" , "attn.to_v" ],
+))
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ enhancement New feature or request New feature or request 
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

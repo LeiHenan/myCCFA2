@@ -1,0 +1,322 @@
+TITLE: [#14287][feat] Add Qwen3.5/3.6 MoE NVFP4 + MTP support for SM120/SM121 by mihai-chiorean · Pull Request #15680 · NVIDIA/TensorRT-LLM · GitHub
+STATE-TOKEN: small
+STATE-TOKEN: merged
+STATE-TOKEN: small
+
+--- COMMENT 1 ---
+Summary
+
+ Adds PyTorch-backend support for the Qwen3_5MoeForCausalLM / Qwen3.6 MoE family on consumer Blackwell (SM120 RTX PRO 6000, SM121 GB10 / DGX Spark), including the default TRTLLM attention path with MTP speculative decoding and CUDA graphs enabled.
+
+ The target validation model is nvidia/Qwen3.6-35B-A3B-NVFP4 . This PR intentionally stays on the working default runtime path and does not include the experimental FlashInfer fixes.
+
+ The checkpoint uses the modelopt label W4A16_NVFP4 , but the payload behaves as full NVFP4: expert weights and input activations are both 4-bit, per-expert input scales are present, and modelopt exposes this through the NVFP4 config family. This PR treats that label as an alias for QuantAlgo.NVFP4 and routes the model through existing CUTLASS NVFP4 kernels.
+
+ Changes
+
+ Recognize W4A16_NVFP4 as NVFP4 and normalize Qwen3.5/Qwen3.6 per-layer quant config keys, including model.language_model. prefix removal.
+
+ Exclude lm_head from NVFP4 module loading so it can be dequantized and loaded separately.
+
+ Strip stale multimodal/MRoPE fields from the text-only Qwen3.5/Qwen3.6 RoPE config so the text path selects the intended rotary implementation.
+
+ Extend Qwen3.5/Qwen3.6 weight mapping for scalar FP8 scale passthrough, excluded lm_head handling, and BF16 dequantization before packing fused linear-attention buffers with different scales.
+
+ Pass per-layer NVFP4 quant config into Qwen3 Next MoE creation so the loader selects the CUTLASS NVFP4 MoE path instead of BF16 fallback.
+
+ Route Qwen3.5/Qwen3.6 MTP model names through the existing Qwen3 Next MTP speculative-decoding implementation.
+
+ Add focused unit coverage for quant-key normalization, lm_head exclusion, and FP8 per-tensor linear-attention dequant-before-pack behavior.
+
+ Dependencies and related issues
+
+ Closest existing issue: [Feature]: AutoDeploy: MTP for Qwen3.5 MoE Text Model #14287 tracks Qwen3.5 MoE text-model MTP support. This PR covers the PyTorch-backend text/MTP path for the Qwen3.5/Qwen3.6 MoE family.
+
+ Coordinate with [TRTLLM-12500][feat] Add support for Qwen3.5 VL MoE (with the MTP fixes) #14599 before final merge. [TRTLLM-12500][feat] Add support for Qwen3.5 VL MoE (with the MTP fixes) #14599 refactors common Qwen3.5/Qwen3.5-MoE utilities and should reduce or replace part of this PR's config-compat surface after rebase.
+
+ Should land after [#11932][fix] Filter CUTLASS MoE GEMM tile configs by device shared memory on SM121 #12704 for the intended SM120/SM121 performance profile. This PR can load without [#11932][fix] Filter CUTLASS MoE GEMM tile configs by device shared memory on SM121 #12704 , but [#11932][fix] Filter CUTLASS MoE GEMM tile configs by device shared memory on SM121 #12704 avoids poor MoE tactic fallback behavior on GB10 / consumer Blackwell.
+
+ Recommended with [#15791][fix] Enable SM120 skip-softmax FMHA support probe #15759 for SM120/SM121 TRTLLM-attention performance. Without [#15791][fix] Enable SM120 skip-softmax FMHA support probe #15759 , the support probe can miss the skip-softmax FMHA bridge path and fall back to unfused MHA for this shape.
+
+ Related background: 1.3.0rc15 on sm_121a / GB10: MTP path fails — CUTLASS sm_120 grouped-GEMM init → SMEM shortfall → Triton fallback emits .rs PTX rejected by PTXAS #14575 covers a broader GB10 MTP failure stack; this PR does not claim to close the Triton .rs PTX issue from that report.
+
+ Smoke test result: DGX Spark GB10 / SM121
+
+ Configuration: PyTorch backend, single GPU, attn_backend="TRTLLM" , default CUDA graph behavior, max_batch_size=8 , max_seq_len=4096 , and disable_flashinfer_sampling=True for the local Spark environment.
+
+ TRTLLM no-MTP default path: coherent generation, roughly 29 ms TPOT on the validation prompt set.
+
+ TRTLLM + MTP default path: coherent generation, 22.5-22.7 ms TPOT , about 44 tok/s , roughly 1.28x faster than no-MTP.
+
+ Structural MTP confirmation: the draft layer is constructed and separate main/draft KV-cache pools are allocated.
+
+ Representative raw prompt, "The capital of France is" :
+
+ Paris, a city renowned for its iconic landmarks such as the Eiffel Tower, the Louvre Museum, and the Notre-Dame Cathedral...
+
+--- COMMENT 2 ---
+Actionable comments posted: 2 
+
+ 🤖 Prompt for all review comments with AI agents 
+ Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+Inline comments:
+In `@tensorrt_llm/_torch/model_config.py`:
+- Around line 435-453: After the language-model prefix normalization in
+model_config handling, prefixed LM head keys like model.lm_head are not being
+excluded or moved to BF16 because the current lm_head check only matches the
+exact unprefixed name. Update the mixed_quant_configs /
+quant_config.exclude_modules logic in the model configuration path to recognize
+the normalized LM head key alongside the original lm_head name, and remove the
+matching entry from mixed_quant_configs so it bypasses the NVFP4 path and loads
+as BF16.
+
+In `@tensorrt_llm/_torch/models/checkpoints/hf/qwen3_5_weight_mapper.py`:
+- Around line 459-480: Avoid using tensor truthiness when picking scalar
+fallback values in the Qwen3 weight mapper. In the scalar-scale handling inside
+the branch that builds packed weights, update the representative selection in
+the qkv/q/k/v path and the b/a path so it chooses by key presence rather than
+`or`, since 0-D tensors with value 0 can be treated as false. Use the existing
+`tensors` mapping in `qwen3_5_weight_mapper.py` to explicitly prefer
+`"qkv"`/`"b"` when present, otherwise fall back to the other candidate keys
+without relying on boolean evaluation.
+
+--- COMMENT 3 ---
+🩺 Stability & Availability | 🟠 Major | ⚡ Quick win 
+
+ Handle prefixed lm_head keys after language-model normalization. 
+
+ Line 441 can rewrite model.language_model.lm_head to model.lm_head , but Lines 447-453 only remove/exclude exact lm_head . That leaves prefixed LM heads in the per-layer NVFP4 path and prevents excluded-weight dequantization because lm_head does not match model.lm_head .
+
+ Proposed fix 
+ - if mixed_quant_configs and "lm_head" in mixed_quant_configs: 
+ + lm_head_keys = [ 
+ + k for k in mixed_quant_configs 
+ + if k == "lm_head" or k.endswith(".lm_head") 
+ + ] 
+ + if lm_head_keys: 
+ if quant_config.exclude_modules is None:
+ quant_config.exclude_modules = []
+ - if "lm_head" not in quant_config.exclude_modules: 
+ - quant_config.exclude_modules = list( 
+ - quant_config.exclude_modules) + ["lm_head"] 
+ - del mixed_quant_configs["lm_head"] 
+ + lm_head_excludes = ["lm_head", *lm_head_keys] 
+ + quant_config.exclude_modules = list( 
+ + dict.fromkeys(list(quant_config.exclude_modules) + lm_head_excludes) 
+ + ) 
+ + for key in lm_head_keys: 
+ + del mixed_quant_configs[key]
+
+--- COMMENT 4 ---
+🎯 Functional Correctness | 🟡 Minor | ⚡ Quick win 
+
+ 🧩 Analysis chain 
+ 🏁 Script executed:
+
+ python3 - << ' PY ' 
+ from pathlib import Path 
+ 
+ path = Path("tensorrt_llm/_torch/models/checkpoints/hf/qwen3_5_weight_mapper.py") 
+ lines = path.read_text().splitlines() 
+ 
+ for start, end in [(450, 490)]: 
+ print(f"\n--- {path}:{start}-{end} ---") 
+ for i in range(start - 1, min(end, len(lines))): 
+ print(f"{i+1:4d}: {lines[i]}") 
+ PY
+
+=== PAGE TEXT (non-comment) ===
+[#14287][feat] Add Qwen3.5/3.6 MoE NVFP4 + MTP support for SM120/SM121 by mihai-chiorean · Pull Request #15680 · NVIDIA/TensorRT-LLM · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ NVIDIA
+ 
+ / 
+ 
+ TensorRT-LLM 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 2.7k 
+
+ Star
+ 14.6k 
+
+ Code 
+
+ Issues 
+ 587 
+
+ Pull requests 
+ 875 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [#14287][feat] Add Qwen3.5/3.6 MoE NVFP4 + MTP support for SM120/SM121 - # 15680 
+ # 15680 
+
+ Closed 
+ mihai-chiorean wants to merge 13 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from mihai-chiorean:feat/qwen3-5-moe-mtp mihai-chiorean/TensorRT-LLM-FlashNext:feat/qwen3-5-moe-mtp Copy head branch name to clipboard 
+
+ Conversation Commits 13 ( 13 ) Checks Files changed 
+
+ Closed 
+ [#14287][feat] Add Qwen3.5/3.6 MoE NVFP4 + MTP support for SM120/SM121 # 15680 mihai-chiorean wants to merge 13 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from mihai-chiorean:feat/qwen3-5-moe-mtp mihai-chiorean/TensorRT-LLM-FlashNext:feat/qwen3-5-moe-mtp Copy head branch name to clipboard 
+
+ Conversation
+
+ mihai-chiorean 
+
+ commented
+
+ Jun 27, 2026 
+
+ • 
+
+ edited
+
+ Loading 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Copy link
+
+ Copy Markdown
+
+ Contributor

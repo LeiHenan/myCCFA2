@@ -1,0 +1,223 @@
+TITLE: Auto-select flashinfer_mxfp4 for Bailing V3 mixed FP8/MXFP4 checkpoints by JustinTong0323 · Pull Request #38538 · sgl-project/sglang · GitHub
+
+--- COMMENT 1 ---
+Summary
+
+ Mixed FP8/MXFP4 checkpoints (routed experts in e2m1 with e8m0 scales, other linears in FP8 e4m3) currently crash on startup with --moe-runner-backend auto : the FP8 quant config does not select its MXFP4 wrapper, Fp8MoEMethod.create_moe_runner() falls through to the Triton FP8 MoE runner, and decode CUDA-graph warmup dies. An equivalent auto-resolution exists for DeepSeek V4 but nothing covers Bailing models, so every Bailing mixed checkpoint needs an explicit --moe-runner-backend flashinfer_mxfp4 .
+
+ This PR adds a stateless model-override that selects flashinfer_mxfp4 for Bailing V3 architectures only when all of the following hold: outer quantization is FP8, routed_experts_quant_method is mxfp4 ( is_fp4_experts ), the runner is still auto , CUDA is SM90/SM10x/SM120, and A2A is disabled. Explicit runner choices, plain FP8 checkpoints, unsupported GPUs, ROCm, and A2A configurations are untouched.
+
+ Impact
+
+ Affected public checkpoints: inclusionAI/Ling-3.0-flash-fp4 (text) and inclusionAI/Ling-3.0-flash-VL-fp4 (VL); both share the mixed FP8/MXFP4 schema.
+
+ With this PR, both serve with no runner flag; verified on 2×GB300 (VL text + image smoke, finish_reason=stop ) and DGX Spark GB10 TP=1 (SM120 path).
+
+ Without it, the same checkpoints exit 137 during decode graph warmup (traceback through quantization/fp8.py → Triton runner).
+
+ Tests
+
+ New registered CPU unit tests in test/registered/unit/test_model_overrides.py covering: Bailing mixed checkpoint selects MXFP4; ordinary FP8 checkpoint unchanged; explicit runner choice wins; unsupported GPU/A2A leaves auto.
+
+ 92 tests + 31 subtests pass (run on GPU devbox with torch).
+
+ This change is also included in the larger Ling-3.0-flash-VL support PR #38526 ; it is split out here so the FP4 checkpoints work independently of the VL model landing.
+
+ CI States
+
+ Latest PR Test (Base): ❌ Run #34254458317 
+
+Latest PR Test (Extra): ❌ Run #34254457899 
+
+Latest PR Test (AMD ROCm 7.2): ❌ Run #34254458123
+
+=== PAGE TEXT (non-comment) ===
+Auto-select flashinfer_mxfp4 for Bailing V3 mixed FP8/MXFP4 checkpoints by JustinTong0323 · Pull Request #38538 · sgl-project/sglang · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ sgl-project
+ 
+ / 
+ 
+ sglang 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 8.8k 
+
+ Star
+ 35.9k 
+
+ Code 
+
+ Issues 
+ 891 
+
+ Pull requests 
+ 4.4k 
+
+ Discussions 
+
+ Actions 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Security and quality
+
+ Insights
+
+ Auto-select flashinfer_mxfp4 for Bailing V3 mixed FP8/MXFP4 checkpoints - # 38538 
+ # 38538 
+
+ Closed 
+ JustinTong0323 wants to merge 1 commit into sgl-project:main sgl-project/sglang:main from JustinTong0323:bailing-mxfp4-autoselect JustinTong0323/sglang:bailing-mxfp4-autoselect Copy head branch name to clipboard 
+
+ Conversation Commits 1 ( 1 ) Checks Files changed 
+
+ Closed 
+ Auto-select flashinfer_mxfp4 for Bailing V3 mixed FP8/MXFP4 checkpoints # 38538 JustinTong0323 wants to merge 1 commit into sgl-project:main sgl-project/sglang:main from JustinTong0323:bailing-mxfp4-autoselect JustinTong0323/sglang:bailing-mxfp4-autoselect Copy head branch name to clipboard 
+
+ Conversation
+
+ JustinTong0323 
+
+ commented
+
+ Sep 8, 2026 
+
+ • 
+
+ edited by github-actions
+ Bot 
+
+ Loading 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Copy link
+
+ Copy Markdown
+
+ Collaborator

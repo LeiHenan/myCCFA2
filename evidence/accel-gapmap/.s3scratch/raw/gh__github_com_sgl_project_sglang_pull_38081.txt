@@ -1,0 +1,214 @@
+TITLE: [MegaMoE] Experimental nvfp4xnvfp4 MegaMoE for ModelOpt NVFP4 experts by YAMY1234 · Pull Request #38081 · sgl-project/sglang · GitHub
+STATE-TOKEN: open
+STATE-TOKEN: small
+STATE-TOKEN: small
+
+--- COMMENT 1 ---
+Motivation
+
+ Stacked on #38080 (Qwen MegaMoE + online FP8 -> MXFP4 requant); only the top commit belongs to this PR. Marked experimental.
+
+ DeepGEMM 0.1.7 ships an nvfp4xnvfp4 variant of fp8_fp4_mega_moe (e2m1 weights with UE4M3 g16 scales, per-token FP32 activation scales via use_x_scales , per-expert l1_alphas / l2_alphas / l2_act_scales applied in the epilogues). sglang does not use it, so ModelOpt NVFP4 checkpoints such as Qwen3.5-397B-A17B-NVFP4 cannot run --moe-a2a-backend megamoe . This PR wires that kernel so the NVFP4 checkpoint gets the same single-kernel dispatch / GEMM / combine path that the MXFP4 checkpoints have.
+
+ The kernel's Python-side contract (alpha layout, x_scales semantics, recipe=(1, 1, 16) ) is not documented upstream; it was derived from the DeepGEMM sources and validated end to end against the FlashInfer a2a + CuteDSL NVFP4 path (below). Feedback on whether this should wait for a documented DeepGEMM API is welcome.
+
+ Modifications
+
+ layers/moe/mega_moe.py : _mega_moe_mma_type(experts) returns nvfp4xnvfp4 when the expert layer was built for NVFP4 (a checkpoint property, unlike the server-wide MXFP4 W4A8 / W4A4 flag); the symmetric buffer is keyed on that type. run_mega_routed_experts runs deep_gemm.mega_moe_pre_dispatch with group_size=16 and buf_x_scales , and passes recipe=(1, 1, 16) , use_x_scales=True and the alphas to fp8_fp4_mega_moe .
+
+ quantization/modelopt_quant.py : ModelOptNvFp4FusedMoEMethod._build_mega_moe_weights converts the loaded weights with transform_ue4m3_sf_into_required_layout + deep_gemm.transform_weights_for_mega_moe(mma_type="nvfp4xnvfp4") , and builds l1_alphas = (gate, up) from w13_weight_scale_2 (via the existing _compute_gemm1_alphas ), l2_act_scales = 1 / w2_input_scale , l2_alphas = w2_input_scale * w2_weight_scale_2 for the local experts. Under megamoe process_weights_after_loading stops after that, and create_moe_runner skips runner creation because FusedMoE.forward is never reached (the TRT-LLM runner otherwise fails with "requires a fused func for a2a backend megamoe").
+
+ python3 -m sglang.launch_server --model Qwen/Qwen3.5-397B-A17B-NVFP4 \
+ --quantization modelopt_fp4 --tp 4 --dp 4 --ep 4 --enable-dp-attention \
+ --moe-dense-tp-size 1 --moe-a2a-backend megamoe
+
+=== PAGE TEXT (non-comment) ===
+[MegaMoE] Experimental nvfp4xnvfp4 MegaMoE for ModelOpt NVFP4 experts by YAMY1234 · Pull Request #38081 · sgl-project/sglang · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ sgl-project
+ 
+ / 
+ 
+ sglang 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 8.8k 
+
+ Star
+ 35.9k 
+
+ Code 
+
+ Issues 
+ 891 
+
+ Pull requests 
+ 4.4k 
+
+ Discussions 
+
+ Actions 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Security and quality
+
+ Insights
+
+ [MegaMoE] Experimental nvfp4xnvfp4 MegaMoE for ModelOpt NVFP4 experts - # 38081 
+ # 38081 
+
+ Closed 
+ YAMY1234 wants to merge 2 commits into sgl-project:main sgl-project/sglang:main from YAMY1234:megamoe-nvfp4 YAMY1234/sglang:megamoe-nvfp4 Copy head branch name to clipboard 
+
+ Conversation Commits 2 ( 2 ) Checks Files changed 
+
+ Closed 
+ [MegaMoE] Experimental nvfp4xnvfp4 MegaMoE for ModelOpt NVFP4 experts # 38081 YAMY1234 wants to merge 2 commits into sgl-project:main sgl-project/sglang:main from YAMY1234:megamoe-nvfp4 YAMY1234/sglang:megamoe-nvfp4 Copy head branch name to clipboard 
+
+ Conversation
+
+ YAMY1234 
+
+ commented
+
+ Sep 5, 2026 
+
+ • 
+
+ edited by github-actions
+ Bot 
+
+ Loading 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Copy link
+
+ Copy Markdown
+
+ Collaborator

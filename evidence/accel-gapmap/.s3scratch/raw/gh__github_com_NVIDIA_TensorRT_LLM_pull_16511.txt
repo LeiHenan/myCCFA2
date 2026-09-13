@@ -1,0 +1,365 @@
+TITLE: [TRTLLM-12720][feat] Support nvfp4 w4a16 on sm120 by pamelap-nvidia · Pull Request #16511 · NVIDIA/TensorRT-LLM · GitHub
+STATE-TOKEN: small
+
+--- COMMENT 1 ---
+Dev Engineer Review
+
+ The changes add SM120/121 PyTorch support for W4A16 NVFP4 inference across dense linear, LM-head, and MoE paths.
+
+ Adds CUDA-core, Triton, Marlin, CUTLASS, and CuteDSL backend support.
+
+ Updates Marlin build and runtime guards for SM90 and SM120.
+
+ Adds compressed-tensors and ModelOpt configuration handling.
+
+ Adds checkpoint mapping for packed weights and global scales.
+
+ Adds backend-specific derived-state caching and Marlin weight transformation.
+
+ Updates MoE backend selection and W4A16 NVFP4 scale handling.
+
+ Restricts ReLU2 fusion to eligible static NVFP4 activation inputs.
+
+ Clarifies NVFP4 activation-quantization checks in DeepSeek models.
+
+ Adds SM12x support to Marlin GEMM test gating.
+
+ The reported local validation passes 74 merge-focused tests and 69 W4A16/model regression tests. Six CI runs failed or had L0 pipeline failures. Failure analysis and a new NVIDIA-triggered run are required.
+
+ QA Engineer Review
+
+ The PR adds test functions and coverage for:
+
+ Nemotron H MoE, MTP, and checkpoint mapping.
+
+ CuteDSL B12x W4A16 NVFP4 backend selection and scale transformation.
+
+ W4A16 NVFP4 linear, Marlin, Triton, LM-head, fusion, shape, and quantization behavior.
+
+ Model configuration and compressed-tensors parsing.
+
+ Marlin SM90/SM12x GEMM gating.
+
+ MoE activation-quantization behavior.
+
+ No files under tests/integration/test_lists/ , test-db/ , qa/ , or waives.txt were modified. Coverage registration for the added test functions is not shown.
+
+ Verdict: needs follow-up.
+
+ Summary
+
+ Adds end-to-end support for W4A16 NVFP4 checkpoints (packed FP4 weights + per-group FP8
+
+scales, high-precision activations ) in the PyTorch backend, targeting Qwen3.5/3.6 and
+
+Nemotron-H NVFP4 exports on SM120/121 (RTX 5090/6000, GB10) and Hopper.
+
+ The core problem this solves: TRT-LLM previously conflated "has NVFP4 weights" with
+
+"quantizes activations to NVFP4". W4A16 breaks that assumption — it has FP4 weights but
+
+consumes BF16/FP16 activations and has no calibrated input_scale . Every FP4 fusion site
+
+keyed on has_nvfp4 would therefore feed an Fp4QuantizedTensor into a layer that can't
+
+consume one, or read a None activation scale.
+
+ Changes
+
+ Activation-quantization capability, made explicit 
+
+ New LinearMethodBase.quantizes_nvfp4_activations ClassVar, surfaced as
+
+ Linear.has_nvfp4_activation_quantization and MoE.has_nvfp4_activation_quantization .
+
+ Linear 
+
+ W4A16NVFP4LinearMethod : on-the-fly Triton weight dequant. Leaves input_scale /
+
+ inv_input_scale / alpha as None from create_weights onward; the parent
+
+ process_weights_after_loading_* now skip scales whose destination was never allocated.
+
+ MarlinNVFP4LinearMethod : Marlin-backed W4A16, selected by default for BF16 on
+
+SM90/120/121. Handles its own K->64 / N->128 padding.
+
+ Per-block scales stay in swizzled layout; the unswizzled view is a derived non-persistent
+
+buffer, which also makes the GMS cache_derived_state refresh idempotent (the previous
+
+in-place unswizzle would double-apply on re-materialization).
+
+ MoE 
+
+ CuteDslB12xFusedMoE accepts W4A16_NVFP4 and stays on the b12x path for both prefill
+
+and decode ( quant_mode="w4a16" ); falls back to CUTLASS for EP / attention-DP or
+
+non-SM120/121.
+
+ W4A16NVFP4CutlassFusedMoEMethod on the CUTLASS path; shared per-layer quant-config
+
+lookup so mixed-precision checkpoints resolve expert configs correctly.
+
+ Nemotron-H: promotes experts to W4A4 NVFP4 on non-CuteDSL backends, and routes BF16 MTP
+
+body sublayers to CUTLASS.
+
+ C++ 
+
+ Build the dense Marlin NVFP4 GEMM/repack kernels for 120f in addition to 90 ; relax the
+
+runtime SM asserts to 9.x || 12.x . No kernel logic changes.
+
+ No LLM API surface change — llm_args.py is untouched, so no golden-manifest
+
+regeneration.
+
+ Behavior changes for existing users
+
+ Hopper NVFP4 BF16 linears now use the Marlin GEMM backend by default (previously opt-in
+
+via nvfp4_gemm_config.allowed_backends: [..., marlin] ). Attention FP4 output and the
+
+torch.compile inplace op are disabled on those layers as a consequence.
+
+ MoE backend AUTO resolves to CUTEDSL for W4A16 NVFP4 on SM120/121.
+
+ Test coverage
+
+ test_w4a16_nvfp4_linear.py (new) covers method selection across SM90/100/120/121 and dtype,
+
+the Marlin-vs-Triton numerical match on GPU (including K/N padding shapes), scale-cache buffer
+
+semantics, the mixed-precision use_fused_gemm_allreduce rebind, and every fusion gate that
+
+changed. Plus new checkpoint-parsing tests ( test_model_config.py ,
+
+ test_quant_config_utils.py , test_kv_cache_dtype_override.py ), Nemotron-H MoE/MTP config
+
+tests, the weight-mapper tests, and W4A16 cases added to the b12x MoE backend suite.
+
+ PR Checklist
+
+ Please review the following before submitting your PR:
+
+ PR description clearly explains what and why. If using CodeRabbit's summary, please make sure it makes sense.
+
+ PR Follows TRT-LLM CODING GUIDELINES to the best of your knowledge.
+
+ Test cases are provided for new code paths (see test instructions )
+
+ If PR introduces API changes, an appropriate PR label is added - either api-compatible or api-breaking . For api-breaking , include BREAKING in the PR title.
+
+ Any new dependencies have been scanned for license and vulnerabilities
+
+ CODEOWNERS updated if ownership changes
+
+ Documentation updated as needed
+
+ Update tava architecture diagram if there is a significant design change in PR.
+
+ The reviewers assigned automatically/manually are appropriate for the PR.
+
+ Please check this after reviewing the above items as appropriate for this PR.
+
+ GitHub Bot Help
+
+ To see a list of available CI bot commands, please comment /bot help .
+
+=== PAGE TEXT (non-comment) ===
+[TRTLLM-12720][feat] Support nvfp4 w4a16 on sm120 by pamelap-nvidia · Pull Request #16511 · NVIDIA/TensorRT-LLM · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ NVIDIA
+ 
+ / 
+ 
+ TensorRT-LLM 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 2.7k 
+
+ Star
+ 14.6k 
+
+ Code 
+
+ Issues 
+ 587 
+
+ Pull requests 
+ 875 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [TRTLLM-12720][feat] Support nvfp4 w4a16 on sm120 - # 16511 
+ # 16511 
+
+ Merged 
+ pamelap-nvidia merged 31 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from pamelap-nvidia:qwen3_6_nvfp4_w4a16 pamelap-nvidia/TensorRT-LLM:qwen3_6_nvfp4_w4a16 Copy head branch name to clipboard 
+
+ Aug 7, 2026 
+
+ Conversation Commits 31 ( 31 ) Checks Files changed 
+
+ Merged 
+ [TRTLLM-12720][feat] Support nvfp4 w4a16 on sm120 # 16511 pamelap-nvidia merged 31 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from pamelap-nvidia:qwen3_6_nvfp4_w4a16 pamelap-nvidia/TensorRT-LLM:qwen3_6_nvfp4_w4a16 Copy head branch name to clipboard 
+
+ Conversation
+
+ pamelap-nvidia 
+
+ commented
+
+ Jul 16, 2026 
+
+ • 
+
+ edited
+
+ Loading 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Copy link
+
+ Copy Markdown
+
+ Collaborator

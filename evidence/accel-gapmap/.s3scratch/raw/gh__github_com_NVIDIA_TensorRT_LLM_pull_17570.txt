@@ -1,0 +1,339 @@
+TITLE: [https://nvbugs/5986434][fix] Fall back from TRTLLM MoE backend on pre-Blackwell GPUs by moraxu · Pull Request #17570 · NVIDIA/TensorRT-LLM · GitHub
+
+--- COMMENT 1 ---
+Dev Engineer Review
+
+ get_moe_cls now gates TRTLLMGenFusedMoE on SM100 and SM103.
+
+ Unsupported architectures fall back to CutlassFusedMoE with a warning.
+
+ _SUPPORTED_SM_VERSIONS centralizes the supported architectures.
+
+ Existing quantization and FlashInfer checks remain unchanged.
+
+ The change prevents unsupported TRTLLM-Gen kernel selection.
+
+ CI test lists correctly register both backend-selection tests for B200 and B300.
+
+ QA Engineer Review
+
+ Added test_get_moe_cls_trtllm_falls_back_to_cutlass_on_unsupported_sm .
+
+ Added test_get_moe_cls_trtllm_selects_trtllm_gen_on_blackwell .
+
+ The tests cover fallback on SM90 and SM120.
+
+ The tests cover TRTLLM-Gen selection on SM100 and SM103.
+
+ Both tests are covered in tests/integration/test_lists/test-db/l0_b200.yml .
+
+ Both tests are covered in tests/integration/test_lists/test-db/l0_b300.yml .
+
+ Verdict: sufficient 
+
+ Description
+
+ Problem. Setting moe_config.backend: TRTLLM on a pre-Blackwell GPU (e.g. DeepSeek-R1 FP8 on 8xH200) fails at engine init, because create_moe.get_moe_cls selects TRTLLMGenFusedMoE based on quantization alone while the TRTLLM-Gen MoE kernels only exist for SM100/SM103:
+
+ On 1.3.0rc7 (nvbug 5986434) every rank dies with a cryptic IndexError: list assignment index out of range in AutoTuner._find_nearest_profile : the trtllm::fp8_block_scale_moe_runner op declares ConstraintSpec(input_idx=3, dim_idx=1) for Blackwell's 2-D hidden_states_scale layout, but Hopper's 1x128 activation quantization produces a rank-1 scale, so the profile-normalization write goes out of bounds. The [Autotuner] Autotuning process ends line in the reported log is printed during exception unwind, which is why the crash appears in the same second.
+
+ Since the [#12230][fix] Add bounds checking in autotuner _find_nearest_profile for SM121 #12310 bounds guard (1.3.0rc19+), the same config instead fails with No kernel found for the given options ... mUseDeepSeekFp8: 1 from trtllmGenKernels/batchedGemm/KernelRunner.cpp — the cubins genuinely don't exist on SM90.
+
+ Fix. Gate the TRTLLM branch of get_moe_cls on the SM versions the backend supports and fall back to CutlassFusedMoE with a warning, mirroring the existing DENSEGEMM / MEGAMOE_* fallback pattern. CutlassFusedMoE is also what AUTO resolves to for these quantizations on non-SM100 GPUs ( ModelConfig.resolve_moe_backend ). The supported-SM set is hoisted into TRTLLMGenFusedMoE._SUPPORTED_SM_VERSIONS (previously hardcoded inline in can_implement ), following the DenseGEMMFusedMoE._SUPPORTED_SM_VERSIONS precedent already read by the factory.
+
+ Verification on 8xH200 NVL (SM90), DeepSeek-R1 FP8, exact config from the bug (TP8/EP1, MTP num_nextn_predict_layers=3 , FP8 KV cache, CUDA graphs bs 1–128 with padding, autotuner enabled):
+
+ release:1.3.0rc7 container: reproduces the reported crash byte-for-byte on all 8 ranks.
+
+ Current main without this change: No kernel found during the first warmup forward.
+
+ Current main with this change: per-layer fallback warning, both autotuner passes and all CUDA graph captures complete, trtllm-serve reaches Application startup complete , and completions return correct output with avg_decoded_tokens_per_iter = 3.0 (MTP-3 active). Also verified with DeepSeek-V3-Lite FP8 on 1 GPU.
+
+ Test Coverage
+
+ New: tests/unittest/_torch/modules/moe/test_moe_backend.py::test_get_moe_cls_trtllm_falls_back_to_cutlass_on_unsupported_sm (SM 89/90/120, mocked get_sm_version ).
+
+ New: tests/unittest/_torch/modules/moe/test_moe_backend.py::test_get_moe_cls_trtllm_selects_trtllm_gen_on_blackwell (SM 100/103 selection unchanged).
+
+ Existing -k "get_moe_cls" selection tests pass (9 passed locally).
+
+ Manual end-to-end verification on 8xH200 as described above.
+
+ PR Checklist
+
+ Please review the following before submitting your PR:
+
+ PR description clearly explains what and why. If using CodeRabbit's summary, please make sure it makes sense.
+
+ PR Follows TRT-LLM CODING GUIDELINES to the best of your knowledge.
+
+ Test cases are provided for new code paths (see test instructions )
+
+ If PR introduces API changes, an appropriate PR label is added - either api-compatible or api-breaking . For api-breaking , include BREAKING in the PR title.
+
+ Any new dependencies have been scanned for license and vulnerabilities
+
+ CODEOWNERS updated if ownership changes
+
+ Documentation updated as needed
+
+ Update tava architecture diagram if there is a significant design change in PR.
+
+ The reviewers assigned automatically/manually are appropriate for the PR.
+
+ Please check this after reviewing the above items as appropriate for this PR.
+
+ GitHub Bot Help
+
+ To see a list of available CI bot commands, please comment /bot help .
+
+ 🤖 Generated with Claude Code
+
+--- COMMENT 2 ---
+Actionable comments posted: 2 
+
+ 🤖 Prompt for all review comments with AI agents 
+ Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+Inline comments:
+In `@tensorrt_llm/_torch/modules/fused_moe/create_moe.py`:
+- Around line 161-173: Update the unsupported-SM fallback in the MoE backend
+factory to validate `CutlassFusedMoE` with `can_implement()` for the requested
+quantization and configuration before returning it. If CUTLASS cannot implement
+the configuration, select another compatible backend through its capability
+checks; otherwise raise a clear unsupported-configuration error instead of
+returning `CutlassFusedMoE` unconditionally.
+
+In `@tests/unittest/_torch/modules/moe/test_moe_backend.py`:
+- Around line 411-435: Register both
+test_get_moe_cls_trtllm_falls_back_to_cutlass_on_unsupported_sm and
+test_get_moe_cls_trtllm_selects_trtllm_gen_on_blackwell explicitly in the test
+entries for l0_b200.yml and l0_b300.yml. Keep the existing TRTLLM test entries
+intact and ensure the new entries invoke these exact test functions so CI
+collects them.
+
+--- COMMENT 3 ---
+The gate is in the right place — ConfigurableMoE routes through get_moe_cls , so every construction path picks it up — but the fallback only changes the class , not model_config.moe_backend , and a fair number of sites branch on that string:
+
+ modeling_gpt_oss.py:174 — routing output_dtype=bfloat16 when the string is TRTLLM . CutlassFusedMoE.input_requirement.routing_scales_dtype is float32 and moe_scheduler.py:407 asserts rather than casts, so GptOss + explicit TRTLLM on Hopper/SM120 still fails, just with a different message. The fallback doesn't rescue that model.
+
+ modeling_deepseekv3.py:872 — gate e_score_correction_bias stays bf16, so the fallback run doesn't numerically match a real CUTLASS run (works via promotion, which is why the H200 run looked fine).
+
+ model_config.py:492 — FP8-block-scales exclude_modules still gets the TRTLLM-specific list.
+
+ Also modeling_qwen3_moe.py:333 , modeling_glm.py:722 , modeling_deepseekv3.py:1546 / deepseekv4.py:2159 ( do_finalize fusion, reachable on SM120+NVFP4).
+
+ Gating in ModelConfig.resolve_moe_backend (or rewriting moe_backend to CUTLASS on fallback) keeps the string and the class in agreement. The new tests assert class identity only; a case covering one string-driven consumer would catch this.
+
+--- COMMENT 4 ---
+Returning CutlassFusedMoE here without updating model_config.moe_backend leaves the rest of the stack configured for TRTLLM-Gen. The concrete failure: modeling_gpt_oss.py:174 picks output_dtype=torch.bfloat16 for the routing method whenever the string is "TRTLLM" , and moe_scheduler.py:407 asserts float32 for Cutlass instead of casting — so GptOss with an explicit TRTLLM backend on SM90/SM120 still dies at init after this change.
+
+ Suggest doing the SM gate in ModelConfig.resolve_moe_backend (or normalizing model_config.moe_backend = "CUTLASS" when falling back here) so the resolved name and the instantiated class agree for every string-based consumer.
+
+--- COMMENT 5 ---
+Please do not add additional fallbacks here.
+
+ Fallbacks will soon be deprecated. Users should explicitly set CUTLASS rather than relying on fallbacks provided by TRTLLM.
+
+ The new MOE design should honor user‑provided configurations and throw an error when unsupported settings are encountered.
+
+ Please update the test case and close this PR.
+
+--- COMMENT 6 ---
+Two more hardcoded copies of this set remain in the same file: _validate_backend_local_activation ( get_sm_version() not in {100, 103} ) and the sm_version >= 120 raise in __init__ . Worth pointing both at _SUPPORTED_SM_VERSIONS while you're consolidating, otherwise the next SM addition has to find three sites.
+
+=== PAGE TEXT (non-comment) ===
+[https://nvbugs/5986434][fix] Fall back from TRTLLM MoE backend on pre-Blackwell GPUs by moraxu · Pull Request #17570 · NVIDIA/TensorRT-LLM · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ NVIDIA
+ 
+ / 
+ 
+ TensorRT-LLM 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 2.7k 
+
+ Star
+ 14.6k 
+
+ Code 
+
+ Issues 
+ 587 
+
+ Pull requests 
+ 875 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [https://nvbugs/5986434][fix] Fall back from TRTLLM MoE backend on pre-Blackwell GPUs - # 17570 
+ # 17570 
+
+ Closed 
+ moraxu wants to merge 2 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from moraxu:dev-mguzek-nvbug-5986434-deepseek-moe-fix moraxu/TensorRT-LLM:dev-mguzek-nvbug-5986434-deepseek-moe-fix Copy head branch name to clipboard 
+
+ Conversation Commits 2 ( 2 ) Checks Files changed 
+
+ Closed 
+ [https://nvbugs/5986434][fix] Fall back from TRTLLM MoE backend on pre-Blackwell GPUs # 17570 moraxu wants to merge 2 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from moraxu:dev-mguzek-nvbug-5986434-deepseek-moe-fix moraxu/TensorRT-LLM:dev-mguzek-nvbug-5986434-deepseek-moe-fix Copy head branch name to clipboard 
+
+ Conversation
+
+ moraxu 
+
+ commented
+
+ Aug 12, 2026 
+
+ • 
+
+ edited by coderabbitai
+ Bot 
+
+ Loading 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Copy link
+
+ Copy Markdown
+
+ Collaborator

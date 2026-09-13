@@ -1,0 +1,293 @@
+TITLE: [https://nvbugs/6652876][fix] Fix SM120 FP8 autotuner scale profiles by yuxianq · Pull Request #18124 · NVIDIA/TensorRT-LLM · GitHub
+
+--- COMMENT 1 ---
+Dev Engineer Review
+
+ Added an SM120-specific FP8 block-scaling GEMM constraint.
+
+ Varies activation-scale dimension 0 and pads the M dimension to a multiple of 4.
+
+ Preserved SM100 and SM90 layout behavior.
+
+ Removed the LagunaXS NVFP4 and RTXPro6000D LagunaXS FP8 waiver entries.
+
+ Pre-commit checks and Python compilation pass.
+
+ The local autotuner unit test is blocked by an installed TensorRT-LLM binding mismatch.
+
+ QA Engineer Review
+
+ Modified only tests/integration/test_lists/waives.txt .
+
+ Removed the LagunaXS NVFP4 waiver.
+
+ Removed the RTXPro6000D LagunaXS FP8 waiver.
+
+ No test-db/ or qa/ files were modified.
+
+ Verdict: needs follow-up because CBTS coverage data is unavailable.
+
+ Description
+
+ SM120 FP8 block-scaling GEMM activation scales store the token dimension on
+
+dimension 0 and require it to be padded to four rows. The autotuner previously
+
+reused the SM100 constraint, which varied dimension 1 instead. During the
+
+generation warmup this produced undersized synthetic activation-scale buffers
+
+and could make the SM120 TMA scale load raise a Warp MMU fault.
+
+ Specialize the SM120 constraint to vary activation-scale dimension 0 with the
+
+required four-row padding while preserving the existing SM100 and SM90
+
+layouts. The Laguna XS FP8 and NVFP4 waivers are removed so CI validates the
+
+ordered suite again; the observed NVFP4 timeout followed the FP8 worker failure
+
+and stale prefetched-session handoff.
+
+ Test Coverage
+
+ pre-commit run --files tensorrt_llm/_torch/custom_ops/torch_custom_ops.py tests/integration/test_lists/waives.txt 
+
+ python3 -m py_compile tensorrt_llm/_torch/custom_ops/torch_custom_ops.py 
+
+ Restored CI coverage for:
+ 
+ accuracy/test_llm_api_pytorch.py::TestLagunaXS::test_fp8 on RTXPro6000D
+
+ accuracy/test_llm_api_pytorch.py::TestLagunaXS::test_nvfp4 
+
+ Local tests/unittest/_torch/misc/test_autotuner.py execution is blocked by
+
+an installed TensorRT-LLM binding mismatch with latest main
+
+( IKvCacheColdPageCodec is missing); the source compiles and all repository
+
+pre-commit checks pass.
+
+ PR Checklist
+
+ Please review the following before submitting your PR:
+
+ PR description clearly explains what and why. If using CodeRabbit's summary, please make sure it makes sense.
+
+ PR Follows TRT-LLM CODING GUIDELINES to the best of your knowledge.
+
+ Test cases are provided for new code paths (see test instructions )
+
+ If PR introduces API changes, an appropriate PR label is added - either api-compatible or api-breaking . For api-breaking , include BREAKING in the PR title.
+
+ Any new dependencies have been scanned for license and vulnerabilities
+
+ CODEOWNERS updated if ownership changes
+
+ Documentation updated as needed
+
+ Update tava architecture diagram if there is a significant design change in PR.
+
+ The reviewers assigned automatically/manually are appropriate for the PR.
+
+ Please check this after reviewing the above items as appropriate for this PR.
+
+ GitHub Bot Help
+
+ To see a list of available CI bot commands, please comment /bot help .
+
+=== PAGE TEXT (non-comment) ===
+[https://nvbugs/6652876][fix] Fix SM120 FP8 autotuner scale profiles by yuxianq · Pull Request #18124 · NVIDIA/TensorRT-LLM · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ NVIDIA
+ 
+ / 
+ 
+ TensorRT-LLM 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 2.7k 
+
+ Star
+ 14.6k 
+
+ Code 
+
+ Issues 
+ 587 
+
+ Pull requests 
+ 875 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [https://nvbugs/6652876][fix] Fix SM120 FP8 autotuner scale profiles - # 18124 
+ # 18124 
+
+ Closed 
+ yuxianq wants to merge 2 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from yuxianq:fix/laguna-sm120-fp8-autotuner yuxianq/TensorRT-LLM:fix/laguna-sm120-fp8-autotuner Copy head branch name to clipboard 
+
+ Conversation Commits 2 ( 2 ) Checks Files changed 
+
+ Closed 
+ [https://nvbugs/6652876][fix] Fix SM120 FP8 autotuner scale profiles # 18124 yuxianq wants to merge 2 commits into NVIDIA:main NVIDIA/TensorRT-LLM:main from yuxianq:fix/laguna-sm120-fp8-autotuner yuxianq/TensorRT-LLM:fix/laguna-sm120-fp8-autotuner Copy head branch name to clipboard 
+
+ Conversation
+
+ yuxianq 
+
+ commented
+
+ Aug 24, 2026 
+
+ • 
+
+ edited by coderabbitai
+ Bot 
+
+ Loading 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Copy link
+
+ Copy Markdown
+
+ Collaborator

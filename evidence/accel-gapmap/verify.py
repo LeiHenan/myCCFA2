@@ -85,14 +85,14 @@ def check(url, quote, verbose=True):
     return best
 
 
-BLOCK = re.compile(r"^### ([ABCD]\d+\.\d+)\s*\|\s*(CLOSED|OPEN|ABANDONED|HARDWARE-RULED-OUT)\s*(.*)$")
+BLOCK = re.compile(r"^### ([ABCDE]\d+\.\d+)\s*\|\s*(CLOSED|OPEN|ABANDONED|HARDWARE-RULED-OUT|NEVER-DISCUSSED)\s*(.*)$")
 FIELD = re.compile(r"^([A-Z][A-Z0-9 _\(\)/\.\->\+]*?):\s?(.*)$")
 
 
 def parse(verbose=True):
     recs = []
     for fn in sorted(os.listdir(HERE)):
-        if not re.match(r"^S\d+\.md$", fn):
+        if not re.match(r"^[SE]\d+\.md$", fn):
             continue
         cur = None
         for line in open(os.path.join(HERE, fn), encoding="utf-8", errors="replace"):
@@ -133,6 +133,8 @@ def quote_of(rec):
         return rec.get("STATED_REASON")
     if rec["section"] == "HARDWARE-RULED-OUT":
         return rec.get("HARDWARE_QUOTE")
+    if rec["section"] == "NEVER-DISCUSSED":
+        return rec.get("GAP")
     return rec.get("QUOTE")
 
 

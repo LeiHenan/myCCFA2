@@ -1,0 +1,382 @@
+TITLE: [Usage]: How to use TensorRT LLM to perform MoE NVFP4 | ATTN FP8 inference testing for the Deepseek R1 671B model? · Issue #10306 · NVIDIA/TensorRT-LLM · GitHub
+CREATED_AT: 2025-12-26T03:00:12Z | 2025-12-26T03:00:14Z | 2025-12-26T03:00:26Z | 2026-08-20T21:10:14Z
+LABELS: Inference runtime, question
+STATE_REASON: COMPLETED
+
+--- COMMENT 1 ---
+### System Info
+
+GB200 和 GB300、H20 × 8 or  16
+
+
+### How would you like to use TensorRT-LLM
+
+How to use TensorRT LLM to perform MoE NVFP4 | ATTN FP8 inference testing for the Deepseek R1 671B model?
+
+Are these operations below normal?  Are these operations feasible?
+
+1. Perform quantization calibration + engine building
+```
+python quantize.py \\
+  --model_dir /path/to/your_moe_model \\  # MoE 模型路径
+  --qformat nvfp4 \\                     # 专家层量化格式（NVFP4）
+  --attn_qformat fp8 \\                  # 注意力层量化格式（FP8）
+  --kv_cache_dtype fp8 \\                # KV 缓存用 FP8（可选）
+  --moe_num_experts 8 \\                 # MoE 专家数量（匹配模型）
+  --moe_top_k 2 \\                       # 每个 Token 选择的 Top-k 专家
+  --calib_size 512 \\                    # 校准数据量（推荐 512）
+  --output_dir /path/to/nvfp4_fp8_ckpt  # 输出量化权重目录
+```
+
+AND
+
+```
+trtllm-build \\
+  --checkpoint_dir /path/to/nvfp4_fp8_ckpt \\  # 输入量化权重
+  --output_dir /path/to/moe_fp8_engine \\      # 输出引擎目录
+  --use_fp8_context_fmha enable \\             # 开启 FP8 FMHA（上下文阶段）
+  --moe_plugin auto \\                         # 启用 MoE 定制化 Kernel
+  --moe_num_experts 8 \\                       # 匹配模型专家数
+  --moe_top_k 2 \\                             # 匹配校准阶段的 Top-k
+  --dtype bfloat16 \\                          # 基础精度（兼容低精度量化）
+  --tp_size 2 \\                               # 张量并行度（按需设置）
+
+```
+
+2. Perform service startup + inference testing
+
+```
+trtllm-serve serve /data2/DeepSeek-R1-671B-NVFP4-FP8 \\  # 替换为量化引擎的路径
+  --tokenizer /data2/DeepSeek-R1-671B \\  # tokenizer路径不变，复用原模型的
+  --host 0.0.0.0 \\
+  --port 8000 \\
+  --tp_size 8 \\
+  --ep_size 8 \\
+  --max_batch_size 64 \\
+  --max_seq_len 4096 \\
+  --max_num_tokens 16384 \\
+  --kv_cache_free_gpu_memory_fraction 0.9 \\
+  --trust_remote_code \\
+  --reasoning_parser deepseek-r1 \\
+  --backend tensorrtllm \\  # 关键：改为tensorrtllm后端，适配编译后的引擎
+  --enable_chunked_prefill \\
+  --quant_mode fp8 \\  # 声明量化模式，和量化策略对应
+  --moe_num_experts 8  # 补充MoE专家数，和量化/构建阶段一致（根据你的模型调整）
+```
+
+
+
+### Before submitting a new issue...
+
+- [x] Make sure you already searched for relevant issues, and checked the [documentation](https://nvidia.github.io/TensorRT-LLM/) and [examples](https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples) for answers to frequently asked questions.
+
+--- COMMENT 2 ---
+Sorry we never replied to this one. Closing as stale since the TensorRT engine-build path is deprecated in favor of the PyTorch backend. Please open a new issue if the problem persists in the latest version.
+
+=== PAGE TEXT (non-comment) ===
+[Usage]: How to use TensorRT LLM to perform MoE NVFP4 | ATTN FP8 inference testing for the Deepseek R1 671B model? · Issue #10306 · NVIDIA/TensorRT-LLM · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ NVIDIA
+ 
+ / 
+ 
+ TensorRT-LLM 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 2.7k 
+
+ Star
+ 14.6k 
+
+ Code 
+
+ Issues 
+ 587 
+
+ Pull requests 
+ 875 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ [Usage]: How to use TensorRT LLM to perform MoE NVFP4 | ATTN FP8 inference testing for the Deepseek R1 671B model? #10306 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Closed 
+
+ Closed 
+ [Usage]: How to use TensorRT LLM to perform MoE NVFP4 | ATTN FP8 inference testing for the Deepseek R1 671B model? #10306 
+
+ Copy link 
+
+ Labels
+ Inference runtime <NV>General operational aspects of TRTLLM execution not in other categories. <NV>General operational aspects of TRTLLM execution not in other categories. question Further information is requested Further information is requested 
+
+ Description
+ 
+ Alan-D-Chen 
+ opened on Dec 26, 2025 
+
+ Issue body actions 
+
+ System Info
+
+ GB200 和 GB300、H20 × 8 or 16
+
+ How would you like to use TensorRT-LLM
+
+ How to use TensorRT LLM to perform MoE NVFP4 | ATTN FP8 inference testing for the Deepseek R1 671B model?
+
+ Are these operations below normal? Are these operations feasible?
+
+ Perform quantization calibration + engine building
+
+ python quantize.py \\
+ --model_dir /path/to/your_moe_model \\ # MoE 模型路径
+ --qformat nvfp4 \\ # 专家层量化格式（NVFP4）
+ --attn_qformat fp8 \\ # 注意力层量化格式（FP8）
+ --kv_cache_dtype fp8 \\ # KV 缓存用 FP8（可选）
+ --moe_num_experts 8 \\ # MoE 专家数量（匹配模型）
+ --moe_top_k 2 \\ # 每个 Token 选择的 Top-k 专家
+ --calib_size 512 \\ # 校准数据量（推荐 512）
+ --output_dir /path/to/nvfp4_fp8_ckpt # 输出量化权重目录
+
+ AND
+
+ trtllm-build \\
+ --checkpoint_dir /path/to/nvfp4_fp8_ckpt \\ # 输入量化权重
+ --output_dir /path/to/moe_fp8_engine \\ # 输出引擎目录
+ --use_fp8_context_fmha enable \\ # 开启 FP8 FMHA（上下文阶段）
+ --moe_plugin auto \\ # 启用 MoE 定制化 Kernel
+ --moe_num_experts 8 \\ # 匹配模型专家数
+ --moe_top_k 2 \\ # 匹配校准阶段的 Top-k
+ --dtype bfloat16 \\ # 基础精度（兼容低精度量化）
+ --tp_size 2 \\ # 张量并行度（按需设置）
+
+ Perform service startup + inference testing
+
+ trtllm-serve serve /data2/DeepSeek-R1-671B-NVFP4-FP8 \\ # 替换为量化引擎的路径
+ --tokenizer /data2/DeepSeek-R1-671B \\ # tokenizer路径不变，复用原模型的
+ --host 0.0.0.0 \\
+ --port 8000 \\
+ --tp_size 8 \\
+ --ep_size 8 \\
+ --max_batch_size 64 \\
+ --max_seq_len 4096 \\
+ --max_num_tokens 16384 \\
+ --kv_cache_free_gpu_memory_fraction 0.9 \\
+ --trust_remote_code \\
+ --reasoning_parser deepseek-r1 \\
+ --backend tensorrtllm \\ # 关键：改为tensorrtllm后端，适配编译后的引擎
+ --enable_chunked_prefill \\
+ --quant_mode fp8 \\ # 声明量化模式，和量化策略对应
+ --moe_num_experts 8 # 补充MoE专家数，和量化/构建阶段一致（根据你的模型调整）
+
+ Before submitting a new issue...
+
+ Make sure you already searched for relevant issues, and checked the documentation and examples for answers to frequently asked questions.
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ Inference runtime <NV>General operational aspects of TRTLLM execution not in other categories. <NV>General operational aspects of TRTLLM execution not in other categories. question Further information is requested Further information is requested 
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

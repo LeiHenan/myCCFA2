@@ -1,0 +1,229 @@
+TITLE: modelopt_fp4: skip the SiLU+FP4 fusion when the runner is marlin by Thireus · Pull Request #38365 · sgl-project/sglang · GitHub
+
+--- COMMENT 1 ---
+Motivation
+
+ --fp4-gemm-backend marlin cannot start a Qwen3.5 or Qwen3-Next NVFP4 checkpoint. The flag is accepted and the weights are repacked for marlin, then the scheduler dies in EagerRunner.warmup() with sglang::apply_fp4_marlin_linear() Expected a value of type 'Tensor' for argument 'input' but instead found type 'tuple' , raised out of ModelOptFp4LinearMethod.apply() under qwen2_moe.py 's self.down_proj(self._silu_fp4_quant_fused(gate_up)) .
+
+ _maybe_enable_silu_fp4_quant_fusion() enables a FlashInfer kernel that fuses SiLU+mul with the activation NVFP4 quantization and hands down_proj a prequantized (fp4, scale) tuple, which is only meaningful for the W4A4 kernels; marlin is weight-only (W4A16) and consumes an unquantized activation, and apply() passes its x straight to the apply_fp4_marlin_linear custom op, whose schema declares input as a Tensor . The fusion gate checks the layer's quant method and quant mode but never the runner backend, so the two settings can always be selected together, the combination always crashes, and there is no fallback and no diagnostic pointing back at the flag.
+
+ Modifications
+
+ Return early from _maybe_enable_silu_fp4_quant_fusion() when get_fp4_gemm_runner_backend().is_marlin() , in the same predicate that already refuses the fusion for a non-NVFP4 layer and for a missing FlashInfer kernel. initialize_fp4_gemm_config() runs in Scheduler.init_moe_gemm_config() , before init_model_worker() builds the layers, so the backend is known at that point. The W4A4 path is untouched, and SGLANG_DISABLE_SILU_FP4_QUANT_FUSION=1 keeps working, but a user selecting a documented --fp4-gemm-backend value should not have to know that an unrelated environment variable exists. One guard, one file.
+
+ Accuracy Tests
+
+ No output change: the guard's body is unreachable unless --fp4-gemm-backend marlin is passed, so greedy output is unchanged for every configuration that could run on both sides. On a 27B-class NVFP4 checkpoint (mixed-precision, MLP on NVFP4) on an RTX 5090 (sm_120) with --fp4-gemm-backend marlin , the scheduler aborts in warm-up before the change; after it the server starts, captures its graphs and serves.
+
+ Speed Tests and Profiling
+
+ No speed change expected: the change only stops an always-crashing flag combination from being selected and adds no work to any serving path.
+
+ Checklist
+
+ Format your code according to the Format code with pre-commit . (pre-commit run over python/sglang/srt/models/qwen3_5.py: all hooks pass with no reformatting (single-line config-time guard).)
+
+ Add unit tests according to the Run and add unit tests . (n/a: a config-time backend guard; the fused path is unreachable unless --fp4-gemm-backend marlin is selected, so it is covered by byte-identity, and a config-time assertion would need the marlin FP4 backend rather than a CPU stub.)
+
+ Update documentation according to Write documentations . (n/a: no documentation surface.)
+
+ Provide accuracy and speed benchmark results according to Test the accuracy and Benchmark the speed . (n/a: no output or speed change; the guard only stops an always-crashing flag combination (before: warm-up abort; after: the server starts, captures graphs and serves). See Accuracy Tests and Speed Tests and Profiling above.)
+
+ Follow the SGLang code style guidance . (pre-commit ruff / isort / ruff-format clean on the changed file.)
+
+ CI States
+
+ Latest PR Test (Base): ❌ Run #34153583897 
+
+Latest PR Test (Extra): ❌ Run #34153583763 
+
+Latest PR Test (AMD ROCm 7.2): ❌ Run #34153583882
+
+=== PAGE TEXT (non-comment) ===
+modelopt_fp4: skip the SiLU+FP4 fusion when the runner is marlin by Thireus · Pull Request #38365 · sgl-project/sglang · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ sgl-project
+ 
+ / 
+ 
+ sglang 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 8.8k 
+
+ Star
+ 35.9k 
+
+ Code 
+
+ Issues 
+ 891 
+
+ Pull requests 
+ 4.4k 
+
+ Discussions 
+
+ Actions 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Security and quality
+
+ Insights
+
+ modelopt_fp4: skip the SiLU+FP4 fusion when the runner is marlin - # 38365 
+ # 38365 
+
+ Closed 
+ Thireus wants to merge 1 commit into sgl-project:main sgl-project/sglang:main from Thireus:fix/marlin-no-silu-fp4-quant-fusion Thireus/sglang:fix/marlin-no-silu-fp4-quant-fusion Copy head branch name to clipboard 
+
+ Conversation Commits 1 ( 1 ) Checks Files changed 
+
+ Closed 
+ modelopt_fp4: skip the SiLU+FP4 fusion when the runner is marlin # 38365 Thireus wants to merge 1 commit into sgl-project:main sgl-project/sglang:main from Thireus:fix/marlin-no-silu-fp4-quant-fusion Thireus/sglang:fix/marlin-no-silu-fp4-quant-fusion Copy head branch name to clipboard 
+
+ Conversation
+
+ Thireus 
+
+ commented
+
+ Sep 7, 2026 
+
+ • 
+
+ edited by github-actions
+ Bot 
+
+ Loading 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Copy link
+
+ Copy Markdown

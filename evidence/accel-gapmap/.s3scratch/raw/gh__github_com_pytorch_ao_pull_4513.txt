@@ -1,0 +1,254 @@
+TITLE: Add fused MXFP4 (E2M1) + Random Hadamard Transform CuTe DSL quantize cast (SM100) by santoshmo · Pull Request #4513 · pytorch/ao · GitHub
+
+--- COMMENT 1 ---
+What: A single-pass, max-bandwidth CuTe DSL kernel that applies a per-32-block Random Hadamard Transform
+
+(register FWHT(32) + sign vector) and quantizes to MXFP4 — E2M1 data (2 codes/byte) + E8M0 block scales — writing
+
+packed [M, K//2] qdata and cuBLAS-blocked (or plain) scales in one streaming pass. Each thread owns one full
+
+32-element block: it reads the 32 inputs with forced 128-bit loads, runs FWHT+sign in registers, computes the
+
+E8M0 scale, and writes the 16 packed output bytes with a single 128-bit store plus one scale byte. No shared
+
+memory, no TMA, no warp specialization; heavy per-thread ILP hides the load latency and the E2M1/E8M0
+
+conversions; the saturating cvt.rn.satfinite.e2m1x2 removes the need for explicit ±6 clamps. Lives in
+
+ torchao/prototype/mx_formats/cutedsl/ ; opt-in via MXTensor.to_mx(..., mxfp4_cast_kernel_choice=CUTEDSL, rht_sign_vector=...) . Self-contained (own E2M1 PTX pack + register FWHT); reuses only existing torchao infra
+
+( to_blocked , ScaleCalculationMode , the CuTe DSL runtime gate, shared E8M0/cvt helpers). RHT is fused into the
+
+cast to suppress outliers before 4-bit quant without a separate transform pass.
+
+ Accuracy
+
+ Bit-exact ( rtol=0, atol=0 ) packed qdata and swizzled scales — validated byte-for-byte across
+
+scaling_mode {FLOOR, RCEIL} × swizzled {on, off} × dtype {bf16, fp32} × shapes {128×128, 128×384, 256×512,
+
+1024×2048} (incl. single-tile / OOB). test_mxfp4_rht_cutedsl.py (16 tests) passes; the op is bit-exact vs
+
+torchao's emulated to_mx(torch.float4_e2m1fn_x2) on identical RHT input.
+
+ SQNR vs the high-precision dense (x @ H)·sign reference: ~18.8 dB (FLOOR / RCEIL).
+
+ Component-level: register FWHT matches the dense Hadamard to ~7e-7; the FP4 E8M0 scale helpers are
+
+bit-exact vs eager to_mx .
+
+ Performance (B200, CUPTI device time, bf16 in; RHT path)
+
+ Shape (M×K) 
+ Latency 
+ Effective BW 
+
+ 8192 × 8192 
+ ~53 µs 
+ ~3.2 TB/s 
+
+ 2048 × 8192 
+ ~15 µs 
+ ~2.9 TB/s 
+
+ 4096 × 4096 
+ ~18 µs 
+ ~2.4 TB/s 
+
+ Reported as CUPTI kernel self-time (true kernel throughput), excluding the per-call host dispatch/alloc overhead
+
+a wall-clock timer would fold in — benchmarks/mx_formats/cast_bench.py was switched to device time for the
+
+cutedsl MXFP4 modes. The RHT path is FWHT(32)-compute-bound (~2.4–3.2 TB/s, ~30–40% of HBM peak); the plain
+
+no-RHT cast (not exposed by this RHT-only op) reaches ~5 TB/s (≈ HBM roofline).
+
+ Note: Ships FLOOR + RCEIL; EVEN/CEIL are not included.
+
+=== PAGE TEXT (non-comment) ===
+Add fused MXFP4 (E2M1) + Random Hadamard Transform CuTe DSL quantize cast (SM100) by santoshmo · Pull Request #4513 · pytorch/ao · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ pytorch
+ 
+ / 
+ 
+ ao 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 620 
+
+ Star
+ 3k 
+
+ Code 
+
+ Issues 
+ 300 
+
+ Pull requests 
+ 484 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ Add fused MXFP4 (E2M1) + Random Hadamard Transform CuTe DSL quantize cast (SM100) - # 4513 
+ # 4513 
+
+ Closed 
+ santoshmo wants to merge 10 commits into pytorch:main pytorch/ao:main from santoshmo:mxfp4-rht-cutedsl santoshmo/ao:mxfp4-rht-cutedsl Copy head branch name to clipboard 
+
+ Conversation Commits 10 ( 10 ) Checks Files changed 
+
+ Closed 
+ Add fused MXFP4 (E2M1) + Random Hadamard Transform CuTe DSL quantize cast (SM100) # 4513 santoshmo wants to merge 10 commits into pytorch:main pytorch/ao:main from santoshmo:mxfp4-rht-cutedsl santoshmo/ao:mxfp4-rht-cutedsl Copy head branch name to clipboard 
+
+ Conversation
+
+ santoshmo 
+
+ commented
+
+ Jun 19, 2026 
+
+ • 
+
+ edited
+
+ Loading 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Copy link
+
+ Copy Markdown

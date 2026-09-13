@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Assemble INFERENCE_ACCEL_GAP_MAP.md from S*.md evidence blocks.
+"""Assemble INFERENCE_ACCEL_GAP_MAP.md from S*.md / E*.md evidence blocks.
 
   python3 assemble.py
 
-Reads  _index.jsonl  (produced by `python3 verify.py parse`)
-       corrections.json  (verification-forced edits: drops, reclassifications, field rewrites)
+Reads  _index.jsonl    (produced by `python3 verify.py parse`)
+       corrections.json (verification-forced edits: drops, reclassifications, field rewrites)
+       HEADER.md        (prose header + search log; written by hand at the end)
 Writes ../INFERENCE_ACCEL_GAP_MAP.md
 """
 import json, os, re, sys
@@ -18,8 +19,10 @@ cpath = os.path.join(HERE, "corrections.json")
 if os.path.exists(cpath):
     CORR = json.load(open(cpath, encoding="utf-8"))
 
-HEADER = open(os.path.join(HERE, "HEADER.md"), encoding="utf-8").read() if \
-    os.path.exists(os.path.join(HERE, "HEADER.md")) else ""
+HEADER = ""
+_hp = os.path.join(HERE, "HEADER.md")
+if os.path.exists(_hp):
+    HEADER = open(_hp, encoding="utf-8").read()
 
 
 def load():
@@ -55,14 +58,13 @@ def apply_corrections(recs):
 
 def g(r, *names, default=""):
     for n in names:
-        for k in (n, n.replace(" ", "_"), n.upper()):
+        for k in (n, n.replace(" ", "_"), n.replace("-", "_"), n.upper()):
             if r.get(k):
                 return r[k]
     return default
 
 
 def clean(s):
-    """Collapse whitespace but preserve internal quote characters."""
     return re.sub(r"\s+", " ", (s or "")).strip()
 
 
@@ -85,13 +87,11 @@ def url_html(r):
 
 
 def ev(r):
-    e = g(r, "EVIDENCE", "READ", default="READ BODY")
-    return clean(e)
+    return clean(g(r, "EVIDENCE", "READ", default="READ BODY"))
 
 
 def section_a(recs, n_start=1):
-    rows = []
-    i = n_start
+    rows, i = [], n_start
     for r in recs:
         if r["section"] != "CLOSED":
             continue
@@ -106,8 +106,7 @@ def section_a(recs, n_start=1):
 
 
 def section_b(recs):
-    parts = []
-    n = 0
+    parts, n = [], 0
     for r in recs:
         if r["section"] != "OPEN":
             continue
@@ -118,6 +117,28 @@ def section_b(recs):
             f"* **URL:** {' ; '.join(urls(r))}\n"
             f"* **Verbatim quote of the asking:** {clean(g(r,'ASKING_QUOTE','QUOTE'))}\n"
             f"* **What specifically is missing:** {clean(g(r,'WHAT_IS_MISSING','MISSING'))}\n"
+            f"* **S3b status:** {clean(g(r,'S3B', default='NOT RUN'))}\n"
+            f"* **Evidence:** {ev(r)}\n")
+    return "\n".join(parts), n
+
+
+def section_e(recs):
+    """NEVER-DISCUSSED (negative evidence) — what a discussion-derived map cannot produce."""
+    parts, n = [], 0
+    for r in recs:
+        if r["section"] != "NEVER-DISCUSSED":
+            continue
+        n += 1
+        parts.append(
+            f"### E{n}. {clean(g(r,'WHAT_IS_MISSING','GAP'))[:180]}\n\n"
+            f"* **GAP (engine's own words):** {clean(g(r,'GAP'))}\n"
+            f"* **SOURCE:** {clean(g(r,'SOURCE'))} — {url_html(r)}\n"
+            f"* **What is missing:** {clean(g(r,'WHAT_IS_MISSING'))}\n"
+            f"* **Queries tried:** {clean(g(r,'QUERIES_TRIED'))}\n"
+            f"* **Absence claim:** {clean(g(r,'ABSENCE_CLAIM'))}\n"
+            f"* **Confidence the absence is real:** "
+            f"{clean(g(r,'CONFIDENCE_THE_ABSENCE_IS_REAL','CONFIDENCE'))}\n"
+            f"* **Target-rig relevance:** {clean(g(r,'TARGET_RIG_RELEVANCE','TARGET_RIG'))}\n"
             f"* **Evidence:** {ev(r)}\n")
     return "\n".join(parts), n
 
@@ -136,11 +157,10 @@ def guess_group(r):
     if r.get("GROUP"):
         return clean(r["GROUP"])
     sub = (r.get("subsection") or "").lower()
-    blob = (sub + " " + clean(g(r, "STATED_REASON", "REASON"))[:0]).lower()
     for key, pat in [("C.4", r"revert|withdraw|retract|rolled back|remov"),
                      ("C.2", r"wontfix|not.planned|by.design|not a bug|won't fix|will not"),
                      ("C.3", r"stale"),
-                     ("C.6", r"paper|limitation|arxiv|under cut|undercut"),
+                     ("C.6", r"paper|limitation|arxiv|undercut"),
                      ("C.5", r"negative|did not|no improvement|slower|regress|no benefit|no gain"),
                      ("C.1", r"unmerged|closed")]:
         if re.search(pat, sub):
@@ -148,6 +168,22 @@ def guess_group(r):
     if urls(r) and "arxiv.org" in urls(r)[0]:
         return "C.6"
     return "C.1"
+
+
+def _c_row(n, r):
+    """One Section-C row. REASON-MAY-HAVE-EXPIRED and S3b ride in the reason cell so the
+    'expired reason' pool stays greppable straight from the table."""
+    reason = md_cell(g(r, "STATED_REASON", "REASON"))
+    exp = clean(g(r, "REASON-MAY-HAVE-EXPIRED", "REASON_MAY_HAVE_EXPIRED"))
+    s3b = clean(g(r, "S3B"))
+    extra = []
+    if exp:
+        extra.append(f"**REASON-MAY-HAVE-EXPIRED:** {md_cell(exp)}")
+    if s3b:
+        extra.append(f"**S3b:** {md_cell(s3b)}")
+    tail = (" " + " ".join(extra)) if extra else ""
+    return "| C{} | {} | {} | {} | {}{} | {} |".format(
+        n, md_cell(g(r, "WHO")), md_cell(g(r, "ARTIFACT")), url_html(r), reason, tail, ev(r))
 
 
 def section_c(recs):
@@ -158,7 +194,7 @@ def section_c(recs):
             continue
         gk = guess_group(r)
         (groups[gk] if gk in groups else other).append(r)
-    parts, n = [], 0
+    parts, n, expired_rows = [], 0, []
     for k, title in C_GROUPS.items():
         rs = groups[k]
         parts.append(f"\n### {k} {title}  ({len(rs)} items)\n")
@@ -169,9 +205,9 @@ def section_c(recs):
         parts.append("|---|---|---|---|---|---|")
         for r in rs:
             n += 1
-            parts.append("| C{} | {} | {} | {} | {} | {} |".format(
-                n, md_cell(g(r, "WHO")), md_cell(g(r, "ARTIFACT")), url_html(r),
-                md_cell(g(r, "STATED_REASON", "REASON")), ev(r)))
+            parts.append(_c_row(n, r))
+            if clean(g(r, "REASON-MAY-HAVE-EXPIRED", "REASON_MAY_HAVE_EXPIRED")):
+                expired_rows.append((n, r))
         parts.append("")
     if other:
         parts.append(f"\n### C.7 Other attempted-and-abandoned  ({len(other)} items)\n")
@@ -179,9 +215,19 @@ def section_c(recs):
         parts.append("|---|---|---|---|---|---|")
         for r in other:
             n += 1
-            parts.append("| C{} | {} | {} | {} | {} | {} |".format(
-                n, md_cell(g(r, "WHO")), md_cell(g(r, "ARTIFACT")), url_html(r),
-                md_cell(g(r, "STATED_REASON", "REASON")), ev(r)))
+            parts.append(_c_row(n, r))
+            if clean(g(r, "REASON-MAY-HAVE-EXPIRED", "REASON_MAY_HAVE_EXPIRED")):
+                expired_rows.append((n, r))
+    exp = ("\n**Items whose stated reason may have expired** (the constraint the abandonment "
+           "depended on has since changed — highest-priority pool):\n\n")
+    if expired_rows:
+        for num, r in expired_rows:
+            exp += (f"- **C{num}** {md_cell(g(r,'ARTIFACT'))} — "
+                    f"{md_cell(g(r,'REASON-MAY-HAVE-EXPIRED','REASON_MAY_HAVE_EXPIRED'))} "
+                    f"({url_html(r)})\n")
+    else:
+        exp += "_None identified._\n"
+    parts.insert(0, exp)
     return "\n".join(parts), n
 
 
@@ -228,9 +274,16 @@ def section_d(recs):
         parts.append("|---|---|---|---|---|---|")
         for r in rs:
             n += 1
-            parts.append("| D{} | {} | {} | {} | {} | {} |".format(
+            exp = clean(g(r, "REASON-MAY-HAVE-EXPIRED", "REASON_MAY_HAVE_EXPIRED"))
+            s3b = clean(g(r, "S3B"))
+            tail = ""
+            if exp:
+                tail += f" **REASON-MAY-HAVE-EXPIRED:** {md_cell(exp)}"
+            if s3b:
+                tail += f" **S3b:** {md_cell(s3b)}"
+            parts.append("| D{} | {} | {} | {} | {}{} | {} |".format(
                 n, md_cell(g(r, "WHO")), md_cell(g(r, "ARTIFACT")), url_html(r),
-                md_cell(g(r, "HARDWARE_QUOTE")), ev(r)))
+                md_cell(g(r, "HARDWARE_QUOTE")), tail, ev(r)))
         parts.append("")
     return "\n".join(parts), n
 
@@ -242,16 +295,20 @@ if __name__ == "__main__":
     b, nb = section_b(recs)
     c, nc = section_c(recs)
     d, nd = section_d(recs)
+    e, ne = section_e(recs)
     doc = (HEADER +
-           "\n---\n\n## A. CLOSED cells (someone shipped or published a working answer)\n\n" +
-           a +
-           "\n\n---\n\n## B. OPEN cells (explicitly unsolved, with evidence someone is STILL asking)\n\n" +
-           b +
+           "\n---\n\n## A. CLOSED cells (someone shipped or published a working answer)\n\n" + a +
+           "\n\n---\n\n## B. OPEN cells (explicitly unsolved, with evidence someone is STILL asking)"
+           "\n\n" + b +
            "\n\n---\n\n## C. ATTEMPTED-AND-ABANDONED cells\n" + c +
            "\n\n---\n\n## D. HARDWARE-RULED-OUT\n" + d +
+           "\n\n---\n\n## E. NEVER-DISCUSSED (negative evidence)\n\n"
+           "_Gaps the engine itself admits to, for which no human discussion could be found. "
+           "Each row carries the exact queries tried and a confidence that the absence is real. "
+           "Read the absence claim before treating any row as unoccupied ground._\n\n" + e +
            "\n\n---\n\n## Verification correction log\n\n" +
            ("\n".join("- " + x for x in log) if log else "_No corrections applied._") +
            "\n\n## Items dropped under the no-verbatim-quote rule\n\n" +
            ("\n".join(f"- {i} — {w}" for i, w in dropped) if dropped else "_None._") + "\n")
     open(OUT, "w", encoding="utf-8").write(doc)
-    print(f"A={na} B={nb} C={nc} D={nd}  ->  {OUT}")
+    print(f"A={na} B={nb} C={nc} D={nd} E={ne}  ->  {OUT}")

@@ -1,0 +1,308 @@
+TITLE: [Research] Investigate the effect of calculating activation qparams on sequential epoch end, not for every batch · Issue #2446 · vllm-project/llm-compressor · GitHub
+CREATED_AT: 2026-03-04T21:20:34Z | 2026-03-04T21:20:35Z | 2026-03-09T07:04:07Z | 2026-03-09T07:28:45Z
+LABELS: enhancement, stale
+STATE_REASON: COMPLETED
+
+--- COMMENT 1 ---
+## Background ##
+In the past, the observer abstraction was mostly useful for computing quantization parameters during QAT, where each forward pass of training generated a new set of qparams which affected gradients for future passes. However, this technique might be overkill for techniques like PTQ. From a research philosophy perspective, QAT is performed with the goal of modifying weights to be "aware" of quantization, while PTQ aims to replicate the original unquantized weights as closely as possible.
+
+As of now, each calibration batch triggers a new set of activation qparams to be calculated. For the QuantizationModifier (RTN), these new qparams are used to perform quantized forward passes which affect subsequent modules. However, this is not true for GPTQ, AWQ, and AutoRound (see [DISABLE_QAC_MODIFIERS](https://github.com/vllm-project/llm-compressor/blob/7461d02b9bf9edc35f3be9effdaa97d6639baf1f/src/llmcompressor/utils/helpers.py#L177)).
+
+Either way, the calculation of qparams at every batch step is very expensive. It would be more performant (and I hypothesize, more accurate) to keep running min/max values, then only calculate qparams once calibration has finished. However, there is a risk that this algorithmic change affects accuracy.
+
+## Requested Changes ##
+1. Modify `QuantizationMixin` to NOT calculate qparams on each batch in the hook, and instead calculate qparams once on (sequential) calibration epoch end. Remember to [disable quantization in all cases](https://github.com/vllm-project/llm-compressor/blob/main/src/llmcompressor/pipelines/sequential/pipeline.py#L125), only during calibration (keep enabled during propagation)
+2. Modify observer subclasses to add a `calibrate_module` method which uses its running statistics (min/max) to calculate qparams which are used to update module qparams. After the qparams are updated, the running statistics should be deleted off of the observer to reduce memory usage
+3. Run regression tests to see the effect of these changes compared to the original implementation. You can run lm_eval regressions with the following commands:
+```bash
+CADENCE=weekly TEST_DATA_FILE=tests/lmeval/configs/fp8_static_per_tensor.yaml python3 -m pytest tests/lmeval/test_lmeval.py -sx
+CADENCE=weekly TEST_DATA_FILE=tests/lmeval/configs/w4a16_awq_sym.yaml python3 -m pytest tests/lmeval/test_lmeval.py -sx
+CADENCE=weekly TEST_DATA_FILE=tests/lmeval/configs/w4a4_nvfp4.yaml python3 -m pytest tests/lmeval/test_lmeval.py -sx
+```
+
+--- COMMENT 2 ---
+Hi, anyone is working on this one? I like doing research and can take it if none, let me try a tentative POR first.
+
+--- COMMENT 3 ---
+This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!
+
+--- COMMENT 4 ---
+This work was done by @HDCharles as part of https://github.com/vllm-project/llm-compressor/pull/2585. The results are [here](https://gist.github.com/HDCharles/ec03e247f964afa91b10ec679e74c262)
+
+=== PAGE TEXT (non-comment) ===
+[Research] Investigate the effect of calculating activation qparams on sequential epoch end, not for every batch · Issue #2446 · vllm-project/llm-compressor · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ vllm-project
+ 
+ / 
+ 
+ llm-compressor 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 661 
+
+ Star
+ 3.8k 
+
+ Code 
+
+ Issues 
+ 42 
+
+ Pull requests 
+ 74 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Wiki 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Wiki
+
+ Security and quality
+
+ Insights
+
+ [Research] Investigate the effect of calculating activation qparams on sequential epoch end, not for every batch #2446 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Closed 
+
+ Closed 
+ [Research] Investigate the effect of calculating activation qparams on sequential epoch end, not for every batch #2446 
+
+ Copy link 
+
+ Assignees
+
+ Labels
+ enhancement New feature or request New feature or request stale 
+
+ Description
+ 
+ kylesayrs 
+ opened on Mar 4, 2026 
+
+ Issue body actions 
+
+ Background
+
+ In the past, the observer abstraction was mostly useful for computing quantization parameters during QAT, where each forward pass of training generated a new set of qparams which affected gradients for future passes. However, this technique might be overkill for techniques like PTQ. From a research philosophy perspective, QAT is performed with the goal of modifying weights to be "aware" of quantization, while PTQ aims to replicate the original unquantized weights as closely as possible.
+
+ As of now, each calibration batch triggers a new set of activation qparams to be calculated. For the QuantizationModifier (RTN), these new qparams are used to perform quantized forward passes which affect subsequent modules. However, this is not true for GPTQ, AWQ, and AutoRound (see DISABLE_QAC_MODIFIERS ).
+
+ Either way, the calculation of qparams at every batch step is very expensive. It would be more performant (and I hypothesize, more accurate) to keep running min/max values, then only calculate qparams once calibration has finished. However, there is a risk that this algorithmic change affects accuracy.
+
+ Requested Changes
+
+ Modify QuantizationMixin to NOT calculate qparams on each batch in the hook, and instead calculate qparams once on (sequential) calibration epoch end. Remember to disable quantization in all cases , only during calibration (keep enabled during propagation)
+
+ Modify observer subclasses to add a calibrate_module method which uses its running statistics (min/max) to calculate qparams which are used to update module qparams. After the qparams are updated, the running statistics should be deleted off of the observer to reduce memory usage
+
+ Run regression tests to see the effect of these changes compared to the original implementation. You can run lm_eval regressions with the following commands:
+
+ CADENCE=weekly TEST_DATA_FILE=tests/lmeval/configs/fp8_static_per_tensor.yaml python3 -m pytest tests/lmeval/test_lmeval.py -sx
+CADENCE=weekly TEST_DATA_FILE=tests/lmeval/configs/w4a16_awq_sym.yaml python3 -m pytest tests/lmeval/test_lmeval.py -sx
+CADENCE=weekly TEST_DATA_FILE=tests/lmeval/configs/w4a4_nvfp4.yaml python3 -m pytest tests/lmeval/test_lmeval.py -sx
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ HDCharles
+
+ Labels
+
+ enhancement New feature or request New feature or request stale 
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

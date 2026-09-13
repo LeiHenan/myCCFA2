@@ -1,0 +1,278 @@
+TITLE: Build mxfp4 kernel for sm120a by gau-nernst · Pull Request #2285 · pytorch/ao · GitHub
+STATE-TOKEN: merged
+STATE-TOKEN: small
+
+--- COMMENT 1 ---
+Update (2025/06/14)
+
+ Added benchmark script, courtesy to @drisspg . Perhaps you can run it for B200 as well
+
+ At 575W (default)
+
+ At 400W - this is just for me since I'm running this card at 400W
+
+ For reference (5090 is last column)
+
+ At stock power limit, the card can comfortably reach speed of light. The interesting bit is in MX-FP8 -> it looks like the kernel from torch._scaled_mm() (I guess it's from CuDNN/CuBLAS?) is using FP16 accumulate 🤔
+
+ Update (2025/06/11)
+
+ I narrowed down the issue to template - if the kernel is inside a templated function, even if I don't use any template arguments, I will get the runtime error below ( cudaFuncSetAttribute() returned error: invalid resource handle ). It might be an issue with cutlass or my environment (nvcc version, compiler...).
+
+ Hence, the solution is to create a separate source file for sm120a, without any templated functions. When we support nvfp4 in the future, we can either manually duplicate the code again, use macro, or have a python script to codegen the cutlass kernel creation.
+
+ Other details of this PR:
+
+ Add sm120a extension
+
+ Modify torch library loading logic: For cutlass kernels with architecture-specific targets (smXY a ), it only loads those matching the current GPU's compute capability. The limitation of this code is that it won't work correctly for multi-GPU setup with different compute capabilities.
+
+ Other alternatives that I have considered for the torch library loading logic:
+
+ Basically we need a runtime check to select sm100a or sm120a kernel
+
+ Due to setuptools.Extension 's limitation, sm100a and sm120a kernels must stay in separate shared library files. This eliminates the option of doing runtime check in C++.
+
+ Hence, the runtime check must be in Python. I think of 2 options
+
+ Name 2 different ops (e.g. mx_fp4_bf16_sm100a and mx_fp4_bf16_sm120a ), and dispatch the correct op in Python
+
+ Use the same op name, but only load the torch library corresponding to current GPU at startup -> I go with this approach 
+
+ Original (2025/05/31)
+
+ Just making some quick changes here to see if I can build mxfp4 kernel on 5090 (sm120). Eventually this will be put under torchao._C_cutlass_120a ?
+
+ Setting -DCUTLASS_DEBUG_TRACE_LEVEL=1 so I can see debug trace.
+
+ To build (using torch==2.8.0.dev20250530+cu128 )
+
+ TORCH_CUDA_ARCH_LIST=12.0a uv pip install -e . -v --no-build-isolation
+
+--- COMMENT 2 ---
+Overall looks really good, could you add a test to test/prototype/mx_formats/test_mx_mm.py even if it wound't be exercised in ci, As well if you have any perf numbers that would be great
+
+--- COMMENT 3 ---
+can we unify this code with https://github.com/pytorch/ao/blob/main/benchmarks/float8/bench_matmul.py instead? I know the path says float8 but it would be good to have it all in one place.
+
+--- COMMENT 4 ---
+I have added mxfp4 to that script. You can review it. Thank you
+
+--- COMMENT 5 ---
+thank you!
+
+--- COMMENT 6 ---
+Any changes you want to make? If not, I will merge 🙏
+
+--- COMMENT 7 ---
+just now looking at this but the performance on Nvidia w/ zeros vs non zero filled data is very very different
+
+ I think in a follow up PR we should make the zero filled an option vs randn distributed
+
+--- COMMENT 8 ---
+can even be in this PR, I'd vote for randn as default
+
+--- COMMENT 9 ---
+Should there be an option to choose between randn and zeros? Or just use randn for everything
+
+ For FP4, should I do randn in FP32/BF16 then convert to FP4, or just do randint(0, 255, dtype=uint8).view(float4_e2m1fn_x2) ?
+
+--- COMMENT 10 ---
+^ I think the option for zeros can come later
+
+ I would do the first randn in Higher precision then cast
+
+--- COMMENT 11 ---
+Do you mind taking a final look then merge? The failing tests seem unrelated.
+
+=== PAGE TEXT (non-comment) ===
+Build mxfp4 kernel for sm120a by gau-nernst · Pull Request #2285 · pytorch/ao · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ pytorch
+ 
+ / 
+ 
+ ao 
+
+ Public 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 620 
+
+ Star
+ 3k 
+
+ Code 
+
+ Issues 
+ 300 
+
+ Pull requests 
+ 484 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ Build mxfp4 kernel for sm120a - # 2285 
+ # 2285 
+
+ Merged 
+ drisspg merged 12 commits into pytorch:main pytorch/ao:main from gau-nernst:sm120 gau-nernst/ao:sm120 Copy head branch name to clipboard 
+
+ Jun 21, 2025 
+
+ Conversation Commits 12 ( 12 ) Checks Files changed 
+
+ Merged 
+ Build mxfp4 kernel for sm120a # 2285 drisspg merged 12 commits into pytorch:main pytorch/ao:main from gau-nernst:sm120 gau-nernst/ao:sm120 Copy head branch name to clipboard 
+
+ Conversation
+
+ gau-nernst 
+
+ commented
+
+ May 31, 2025 
+
+ • 
+
+ edited
+
+ Loading 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Copy link
+
+ Copy Markdown
+
+ Collaborator
