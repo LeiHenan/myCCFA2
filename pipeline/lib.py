@@ -28,7 +28,17 @@ def load_gates(path=GATES):
 
 
 def stage_index(sid):
-    return int(sid[1:])
+    """阶段序：`S3` -> 3；带字母后缀的中间阶段（v1.1 的 `S3b`）排在 S3 与 S4 之间。
+
+    字母后缀按 0.1 递增：`S3a`=3.1、`S3b`=3.2 ⇒ `S3 < S3b < S4`，且 `--through S4` 会连带核对 S3b。
+    """
+    body = sid[1:]
+    num = "".join(c for c in body if c.isdigit())
+    letters = "".join(c for c in body if c.isalpha())
+    idx = int(num) if num else 0
+    if letters:
+        idx += 0.1 * (ord(letters[0].lower()) - ord("a") + 1)
+    return idx
 
 
 def skeleton(stage, slug="", title=""):

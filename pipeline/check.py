@@ -116,8 +116,10 @@ def selftest():
     with tempfile.TemporaryDirectory() as td:
         dossier = os.path.join(td, "demo")
         os.makedirs(os.path.join(dossier))
-        # 用脚手架生成 S0–S4 并全部勾选 + 填证据
-        for st in gates["stages"][:5]:
+        # 用脚手架生成 **到 S4 为止的全部阶段**（含 v1.1 新增的中间闸门 S3b）并全部勾选 + 填证据。
+        # 注意：不能写 `[:5]` —— 那种写法在加入 S3b 之后会漏掉 S4（本自测当场抓到了这一点）。
+        upto = lib.stage_index("S4")
+        for st in [s for s in gates["stages"] if lib.stage_index(s["id"]) <= upto]:
             txt = lib.skeleton(st, slug="demo")
             txt = txt.replace("- [ ]", "- [x]")
             if st["id"] == "S1":

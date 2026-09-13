@@ -11,6 +11,8 @@
 | [`pipeline/gates.json`](pipeline/gates.json) | **判据事实源**（机器可读）：每阶段的必填小节、勾选清单、杀出口 | **判据**（唯一） |
 | [`pipeline/check.py`](pipeline/check.py) | **校验器**：声称某阶段完成前，机器核一遍；`--list` 打印判据表 | 执行 |
 | [`pipeline/new_candidate.py`](pipeline/new_candidate.py) | **脚手架**：建 `candidates/<slug>/` 并生成各阶段骨架（内容直接来自 gates.json） | 执行 |
+| [`pipeline/gate.py`](pipeline/gate.py) | **单闸门视图**：`python pipeline/gate.py S3b --dir candidates/<slug>` 打印该闸门的判据/勾选/阻塞 | 执行 |
+| [`pipeline/solved_scan.py`](pipeline/solved_scan.py) | **S3b 取证工具**：跨引擎 × 跨社区检索（manual / api / offline 三模式，可复现） | 执行 |
 | [`docs/TOPIC_METHODOLOGY.md`](docs/TOPIC_METHODOLOGY.md) | **原理与实证索引**：真痛点四条件、伪问题七形态、自检十问、判定纪律、模板 | 为什么 |
 | [`pipeline/CONTEXT_INDEX.md`](pipeline/CONTEXT_INDEX.md) | **本工作区内容地图** + `#6` 的回溯案例（每个阶段当时做对/做错了什么） | 整理 |
 | [`EXECUTION_PLAN.md`](EXECUTION_PLAN.md) | **当前主线的执行方案**（已选定的方向怎么跑） | 执行 |
@@ -50,7 +52,9 @@ flowchart TD
     S2 -->|"存活 0 条"| BACK1
     S2 --> S3["S3 占位与先行核查<br/>必须读正文 + 找齐已 ship 旋钮"]
     S3 -->|"只有『没人做过』"| KILL3["杀"]
-    S3 --> S4["S4 可测量性与上界<br/>恒等式 + 仪器冒烟 + oracle 上界"]
+    S3 --> S3b["S3b 已解决性核查<br/>跨引擎 × 跨社区<br/>0 GPU·h"]
+    S3b -->|"别的引擎/社区已 ship 同等解法"| KILL3B["杀"]
+    S3b --> S4["S4 可测量性与上界<br/>恒等式 + 仪器冒烟 + oracle 上界"]
     S4 -->|"oracle 上界 < 8%"| KILL4["杀（省钱的关键闸门）"]
     S4 --> S5["S5 预登记<br/>判据/网格/噪声/杀条件"]
     S5 -->|"网格缺极值"| BACK5["补网格"]
@@ -86,6 +90,18 @@ flowchart TD
 - 动作：每个存活痛点找 ≥3 个最近邻并**读正文**（记录页/节号）；**找齐目标引擎里已 ship 的旋钮**并把它写成最强基线；写"审稿人会问的那一问"的**结构性**回答；先想好"若被占，降级成什么"。
 - 判死线：立项理由只有"没人做过" ⇒ 杀；给不出结构性理由 ⇒ 改写定位或杀。
 - **本仓库实证**：`#6` 在这一步只查到"引擎内深度轴空白"就继续了，但没有预判"γ 轴已被 `num_speculative_tokens_per_batch_size` 占住且 RFC 还在推进"对增量上限的含义（decision #62）。
+
+### S3b 已解决性核查（**跨引擎 × 跨社区**，v1.1 新增）
+
+- **要回答的唯一问题**：**这个痛点，别的引擎/别的社区是不是早就解决了？**
+- 动作：① 用**问题类**描述候选（不是某个引擎的功能名）；② 跑 `python pipeline/solved_scan.py --keywords … --repos …` 生成待查清单；
+  ③ **逐条打开链接读正文**，填判定矩阵（≥5 行，覆盖 ≥3 个引擎/实现与 ≥2 个研究社区，每行带 URL + 查证深度）；
+  ④ 写一条**反证**（主动找"已被解决"的证据）；⑤ 写明降级路径。
+- 判死线：任一引擎/社区**已 ship 或已发表**同一问题类的同等解法，且差异轴讲不出**条件性**区别 ⇒ **杀**；
+  矩阵不足 5 行或缺 URL/查证深度 ⇒ **禁止进入 S4（不许开 GPU）**。
+- **本仓库实证（v1.1 的由来）**：2026-09-13 的 `sglang-draft-corpus` 走到了 T2 阶段（热路径 recovery 86–93%），
+  才被发现**同一问题类在 vLLM 0.29 里是默认特性**（prompt-lookup decoding，`vllm/config/speculative.py:452-455`、
+  `vllm/v1/spec_decode/ngram_proposer.py`）；原因就是 S3 只查了 SGLang 一家。**0 GPU 本可拦下，却花了 ≈1.15 GPU·h 与数小时。**
 
 ### S4 可测量性与上界（**最省钱的闸门**）
 - 动作：① 把观测量写成**恒等式**（例：`Δln(吞吐) = Δln(接受长度) − Δln(每步代价)`）；② 仪器冒烟（含 gauge vs 计数器、单位、口径）；③ 算 **oracle 上界**——完美决策能赚多少百分比；④ **采数前**估计噪声并写进判据；⑤ 列出环境前提；⑥ 写出结论的**可采纳前置条件**。
@@ -178,6 +194,8 @@ python pipeline/check.py --list                        # 打印判据表（gates
 python pipeline/new_candidate.py --slug <slug> --title "<标题>"   # 建档案 + 生成骨架
 python pipeline/check.py --dir candidates/<slug> --through S4     # 声称 S0–S4 完成，逐条核
 python pipeline/check.py --dir candidates/<slug> --repo .         # 另核 prereg 提升与决策日志
+python pipeline/gate.py S3b --dir candidates/<slug>    # 单闸门判据 + 勾选状态 + 阻塞
+python pipeline/solved_scan.py --keywords "…" --repos …  # S3b 取证（跨引擎×跨社区）
 python pipeline/check.py --selftest                    # 校验器自测
 python pipeline/new_candidate.py --selftest            # 脚手架自测
 ```
@@ -186,4 +204,5 @@ python pipeline/new_candidate.py --selftest            # 脚手架自测
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v1.1 | 2026-09-13 | **新增 S3b「已解决性核查」**（跨引擎 × 跨社区，0 GPU·h，位于 S3 与 S4 之间）：来自 `sglang-draft-corpus` 的实证——S3 只查单一引擎，漏掉 vLLM 默认 ship 的同类机制。同时新增 `pipeline/gate.py`（单闸门视图）与 `pipeline/solved_scan.py`（取证工具）；`lib.stage_index` 支持 `S3b` 这类中间闸门 |
 | v1.0 | 2026-09-13 | 首版：把本工作区的选题判据固化为 9 阶段 pipeline（S0–S8），配 `gates.json` 机器判据 + 校验器 + 脚手架；新增 S4「oracle 上界闸门」与 S5「网格覆盖极值」两条硬要求（`#6` 的两次实际教训）；模式 C（在跑方向审计）来自 `notes/audit-p06-design-2026-09-13.md` 的方法 |
