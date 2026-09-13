@@ -252,3 +252,39 @@ so it is neither quantized nor listed in `ignore`."*
 > 且只报 base/EAGLE3 的 TPOT（`2.91 / 2.97 / 2.91` ms）。⇒ *"DSD at concurrency on this class is essentially uncharacterized."*
 
 **⇒ 这是"仍开放"格子里**唯一**同时满足"我方有仪器、单卡可做、且**上游自己的基准没覆盖**"的** —— **我把它列为头号待筛格子**。
+
+---
+
+## 四、本轮**实测 + S3b**结果（2026-09-14）：两条最强化验线索**双双被占位**，但**拿到 4 个可引用数字**
+
+**成本**：≈0.7 GPU·h（p20 三轮六臂网格 0.55 + p21 四臂探测 0.15；全部清理，末态显存 0 MiB）。
+**派生物**：`results/p20-dsd/2026-09-14/summary.md`、`results/p21-prefix-hit/2026-09-14/summary.md`。
+**raw**：`/root/ccfa_results/2026-09-14/{p20_dsd_v3,p21_hit}/`。
+
+### 4.1 两条线索的终局
+
+| 线索 | 我测到了什么 | S3b 判定 | 占位者（OPEN） |
+|---|---|---|---|
+| **C-DSD**（DSD 的 K=0 档代价） | 并发 8 + **前缀缓存开启**：K=3 **+48.5%**、K=1 **+11.2%**、**全 K=0 表 −31.7%**（相对不投机）；K=0 档的 ITL 17.4 ms ≈ 真投机 18.0 ms ≫ 不投机 11.9 ms | **🔴 不立项** | **PR #53426**（"Opt-in skip of the **K=0 draft sync forward**"，OPEN，标题即机制）、issue **#49548**（OPEN，含自建 `VLLM_DSD_K0_DIAG=1`）、issue **#48494**（OPEN）、PR **#47737**（OPEN） |
+| **B107**（前缀缓存命中仍要重算） | **dflash2 前缀缓存完全不命中**：第 2 遍 `prompt_tokens_cached=0`、`prefix_cache_hits=0/32768`、每请求重算 **4096=100%**；对照 `nospec` 只重算 **16**（**256×**）；**eagle3 32 / ngram 16 正常** ⇒ **方法特异**；且**延迟一拍**（第 3 遍才命中 32,512/32,768） | **🔴 不立项** | issue **#47930**（OPEN，标题即我的结论）、PR **#47926**（OPEN/Draft，机制原文直指 dflash 需 target 隐藏状态建 context KV、*"MTP/EAGLE-style drafters … are unaffected"*）、PR **#54163**（OPEN，*"the whole context was recomputed on every reply"*）、issue **#54094**（OPEN，1.04M prompt zero reuse，环境栏正是 **RTX PRO 6000 Blackwell**） |
+
+### 4.2 四个可直接引用的数字（无论是否立项，都已取证）
+
+1. **投机在本条件（dense 4B / 4k prompt / 并发 8 / 前缀缓存开启）下净赚 +48.5%**（K=3）——与地图 §1.9 那批"投机常输给不投机"的报告**条件不同**（他们多为 185k 上下文 / MoE / 长 CoT）。
+2. **K=0 档比"完全不投机"还慢 31.7%**，且 **ITL 与真投机档几乎相同（17.4 vs 18.0 ms）** ⇒ **K=0 没有回到普通解码路径**。
+3. **`dflash2` 下前缀缓存命中率 = 0（第 2 遍），命中仍重算 100% 的 prompt**；同一 rig 上 `eagle3`/`ngram`/不投机**只重算 1–2 个 block**。
+4. **缓存冷/热本身会改变 T=0 的输出**：同 prompt 冷 vs 热，文本在 `nospec` 7/8、`eagle3` 7/8、**`ngram` 5/8** 相同（即 1–3 个不同）；**冷 vs 热的 token_logprobs 四臂全部 8/8 不同**。⇒ 地图 B116 在本机**独立复现**。
+
+### 4.3 一条对上游因果措辞的实测纠正（方法论产出）
+
+issue #48494 写 *"**The presence of the batch-size table is the trigger**; K=0 tiers are not required."* —— 把因果归给**"表的存在"**。
+但我的 **K 匹配对照**（A2 静态K=3 **无表** vs A6 表常量K=3，**K 完全相同、唯一变量是有没有表**）测得 **−0.51%（噪声 3.63%）** ⇒ **表的存在本身零代价**，真正花钱的是 **K=0 那一档**（−31.7%）。
+⇒ 这正好是 `notes/FILTER_3AXIS.md` §3 要求的那种"**条件性差异轴**"意识：**"同一现象在哪个变量上"必须用匹配对照钉死，不能沿用上游的因果措辞。** 我据此仍**不立项**（现象与机制都已被 #53426 占位）。
+
+### 4.4 仍未判的（按"先便宜后贵"）
+
+`B108`（前缀缓存 + batch-invariant 模式未支持；实现 PR #46592 是他人 **OPEN** 提案 ⇒ 预计同样被占位）、
+`B116`（缓存复用改变确定性输出 ⇒ **我已独立复现**，但属**正确性**而非优化类，且其修法与 #46592 的 canonical chunking 重叠）、
+`B114`（SGLang radix cache + 确定性推理两项未打勾 ⇒ 亦属正确性）、
+`B109`（基础调度器 block 生命周期 bug ⇒ 已有 OPEN issue 与候选补丁 PR #37164）。
+**⇒ 当前判断：三方向里"本机可达"的开放格，几乎全部落在「已被 OPEN PR/issue 占位」或「正确性而非优化类」两类上。**
