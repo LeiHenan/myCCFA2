@@ -11,6 +11,10 @@ export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
 export SGLANG_DISABLE_CUDA_GRAPH=0
 
 VENV=/root/autodl-tmp/venvs/sglang
+# ⚠️ 必须把 venv 的 bin 放进 PATH：`python -m sglang.launch_server` **不会**自动加，
+#   而 flashinfer 的 JIT 需要 `ninja`（它就在 $VENV/bin/ninja）。
+#   缺失时报 `FileNotFoundError: 'ninja'`，容易被误读成「引擎/GPU 不支持」。
+export PATH="$VENV/bin:$PATH"
 OUTDIR=/root/ccfa_results/$(date +%F)/p12_smoke
 mkdir -p "$OUTDIR"
 PORT=31001
@@ -26,6 +30,7 @@ LOG="$OUTDIR/serve.log"
   --model-path "$MODEL" \
   --host 127.0.0.1 --port $PORT \
   --speculative-algorithm NGRAM \
+  --speculative-num-steps 7 \
   --speculative-num-draft-tokens 8 \
   --mem-fraction-static 0.7 \
   --context-length 8192 \
