@@ -76,3 +76,67 @@ vLLM 文档声称 *"algorithmically validated to be lossless"* —— **只在�
 
 **淘汰（本轮）**：B-observability（他人正在做）。
 **待定**：C-DSD、C-NVFP4-KV、B-draft_model、A-grammar-lossless。
+
+---
+
+## 一·补：投机解码地图**补充材料**（394 行 / 430 个不同 URL）的要点与我核实的部分
+
+### 1.7 一条直接约束本机的**硬事实**（OPEN）
+
+**vLLM 无法组合 MTP + n-gram**（#46977，OPEN）：原话 *"Currently `--speculative-config` accepts a single method."* /
+*"**ngram is effectively free (zero inference cost, no VRAM overhead) and excels precisely in those repetitive ranges,
+but contributes nothing to base generation speed on its own.**"*
+⇒ **在我们的 vLLM 0.29 上，dflash/MTP 与 NGRAM 每个引擎实例只能二选一**（本工作区历史实验也确实是分开做的）。
+**未核实**：SGLang 侧是否同样互斥（待查）。
+
+### 1.8 另一条已被明确拒绝的格子（跨引擎一致）
+
+**vLLM 没有跨请求的全局 n-gram 提示查找缓存**（PR #44597，OPEN，有 merge 冲突）：*"The existing ngram proposer only scans
+the current request context… **The default remains local.**"*；**llama.cpp 明确拒绝同一件事**（PR #26283：
+*"We implement the per-request/prompt tree only."*）⇒ 跨引擎一致的"不做"。
+
+### 1.9 🔴 **本文件至今最强的证据线：「投机解码常常在真实部署里输给不投机」**
+
+**跨引擎、多来源、可引用的负结果（子代理材料，逐条有 URL）**：
+
+| 来源 | 原话 / 数字 |
+|---|---|
+| llama.cpp PR #8648（**作者放弃自己的特性**） | *"it is **not worthwhile to invest more work into n-gram-based lookup decoding**"*；*"with Gemma 2 you actually get a **performance regression**"*；*"**~50 previous runs on an RTX 4090** to sufficiently populate the dynamic lookup cache in order to break even. After ~100 previous runs the speedup is ~10%."* |
+| 某部署（2026-08-23，n-gram） | **113.00 → 96.42 tok/s**；*"Status: **CLOSED NEGATIVE** — keep the public recipe target-only"*；*"only 22 accepted tokens from 336 generated draft tokens … (6.55% reported acceptance)"* |
+| llama.cpp #23533 | *"**MTP is ~21% slower than generating without speculation, despite 100% draft accuracy.** This is the opposite of the expected result."* |
+| vLLM #15025（logits 蒸馏的 drafter） | *"acceptance rate is very high … Still I get **consistent performance drop ~30%** … **the best speed is achieved when using main model only without speculative.**"* |
+| vLLM #16258 | *"regardless of the configuration … is **Pareto worse** than the inference without the n-gram model"* |
+
+**⇒ 这批证据的策略含义（我的判断）**：投机解码的收益**不是接受率的函数**——存在"接受率 100% 却慢 21%"
+（llama.cpp #23533）与"接受率很高却慢 30%"（vLLM #15025）的实测。⇒ 真问题不是"如何提高接受率"，
+而是「**什么条件下这套机制整体不划算**」，而这正是我已有的仪器（**每步代价** `spec_step_ms`、
+**逐位置接受率**、`Δln(tok/s) = Δln(接受) − Δln(每步代价)`，全部在 `results/p06-frontier/2026-09-13/A1_4k/mechanism.csv`）
+**能直接量、而历史上一直被接受率掩盖的量**。
+
+### 1.10 我**亲验**的新能力（本轮）
+
+| 项 | 结果 |
+|---|---|
+| `eagle3` 是否为合法投机方法 | ✅ `config/speculative.py:69` 列出 `"eagle","eagle3","extract_hidden_states",MTP...,DFlash...` |
+| 能否识别 EAGLE3 命名的 checkpoint | ✅ `config/speculative.py:1285` `elif "eagle3" in self.draft_model_config.model.lower()` |
+| Qwen3-4B 的公开 EAGLE3 drafter 是否可取 | ✅ HF API 经镜像返回规范化 repo 名（302 → `...-full-context-epoch1-step30000`）⇒ repo 有效 |
+| 我们的 `dflash2` 声明了什么 | `block_size: 8`，**无 `n_predict`**（与第 2 轮审计一致） |
+| 磁盘 | 余 80 G ⇒ 足够 |
+
+**⇒ 这是一条本工作区从未碰过的评测能力**：可把 **EAGLE3 小 drafter** 与现有 **dflash2（MTP 类）**、
+**NGRAM** 做**同机同负载对照**（vLLM 0.29 官方文档的 `draft_model` 示例目标正是 Qwen3-4B）。
+
+### 1.11 子代理对**自身 D 段（硬件排除）的更正**（值得记）
+
+它加了 G6 "NOT hardware-ruled-out" 表，理由：**PR #24322 自己的基准机就是 "an RTX PRO 6000 96GB"**（与本机同类）；
+Speculators 支持单卡训练；PARD 有 `-tp 1` 单卡命令；**Qwen3-4B 的 EAGLE3 drafter 已公开**；
+一个可用的 0.5B drafter *"~2.5 h on a single 24 GB GPU, ~$3 of compute."*
+⇒ D 段里的 128–320 H200-GPU·h 是**面向前沿模型**的数字，**对本机规模不适用**。
+
+### 1.12 量化与投机的关系（被 G5 收窄）
+
+**不是"量化必然破坏 drafter"**，而是**特定量化头/加载路径会静默失败**。反证（成功案例）：
+*"Q8 DFlash2 works fine with a Q4 target — **the draft quant does not need to match the target**"*（3090 实测：
+no-spec 33.16 → MTP2 48.32 → DFlash2 Q4 56.06 → **Q8 59.88** t/s）；Kimi-K2.5 W4A8 + EAGLE3：TPOT 42.73 → 27.41 ms（**−35.9%**）。
+结构性成因（SGLang #38574）：*"The MTP head is not part of the HF model graph that the quantizer traces,
+so it is neither quantized nor listed in `ignore`."*
