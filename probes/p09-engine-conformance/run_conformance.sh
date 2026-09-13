@@ -18,7 +18,9 @@ SGLPY=${SGLPY:-/root/autodl-tmp/venvs/sglang/bin/python}
 VLLMPY=${VLLMPY:-/root/ccfa_venv/bin/python}
 OUT=${OUT:-/root/ccfa_results/$(date +%F)/p09_conformance}
 PORT=${PORT:-8000}
-NAME=${NAME:-qwen3-4b}
+NAME=${NAME:-qwen3-4b}   # ⚠️ 仅用于日志；**不要**用 --served-model-name：
+                          # 客户端 vllm bench serve 需要本地 tokenizer 解析 --model，
+                          # 若服务端只暴露别名，客户端会报 "xxx is not a local folder"（已踩）
 CTX=${CTX:-4096}
 MAXLEN=${MAXLEN:-40960}
 OUTLEN=${OUTLEN:-128}
@@ -51,7 +53,7 @@ serve_vllm() {    # $1=spec(off|ngram)
   if [ "$1" = "ngram" ]; then
     extra=(--speculative-config "{\"method\":\"ngram\",\"num_speculative_tokens\":${GAMMA},\"prompt_lookup_max\":4,\"prompt_lookup_min\":2}")
   fi
-  "$VLLMPY" -m vllm.entrypoints.openai.api_server --model "$MODEL" --served-model-name "$NAME" \
+  "$VLLMPY" -m vllm.entrypoints.openai.api_server --model "$MODEL" \
     --max-model-len "$MAXLEN" --gpu-memory-utilization "$UTIL" --max-num-seqs "$MAXSEQS" \
     --kv-cache-dtype bfloat16 --enforce-eager --port "$PORT" "${extra[@]}" > "$LOG" 2>&1 &
   echo $!
@@ -62,7 +64,7 @@ serve_sglang() {  # $1=spec(off|ngram)
   if [ "$1" = "ngram" ]; then
     extra=(--speculative-algorithm NGRAM --speculative-num-steps "$GAMMA" --speculative-num-draft-tokens "$((GAMMA + 1))")
   fi
-  "$SGLPY" -m sglang.launch_server --model-path "$MODEL" --served-model-name "$NAME" \
+  "$SGLPY" -m sglang.launch_server --model-path "$MODEL" \
     --port "$PORT" --context-length "$MAXLEN" --mem-fraction-static "$UTIL" \
     --max-running-requests "$MAXSEQS" --enable-metrics --kv-cache-dtype bfloat16 "${extra[@]}" > "$LOG" 2>&1 &
   echo $!
@@ -96,7 +98,7 @@ for eng in $ENGINES; do
       for r in $(seq 1 "$REPS"); do
         f="${tag}_c${bc}_r${r}"
         echo "$(date '+%s.%N') START $f" >> "$OUT/${tag}.windows"
-        vllm bench serve --model "$NAME" --base-url "http://localhost:${PORT}" \
+        vllm bench serve --model "$MODEL" --base-url "http://localhost:${PORT}" \
           --dataset-name custom --dataset-path "$PROMPTS" --custom-output-len "$OUTLEN" \
           --num-prompts "$REQS" --max-concurrency "$bc" --disable-shuffle --ignore-eos --seed 0 \
           --save-result --result-dir "$OUT/bs${bc}" --result-filename "${f}.bench.json" \
