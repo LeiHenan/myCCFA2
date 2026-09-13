@@ -134,20 +134,27 @@ def summarize(res: dict) -> str:
 def selftest():
     import tempfile
     with tempfile.TemporaryDirectory() as td:
-        # 构造：bs=1 时 d5 最好；bs=32 时 d3 最好；且 γ 改变会移动最优深度
-        for bs, best in ((1, 5), (32, 3)):
+        # 构造（关键：要让 argmax_depth 随 γ 移动，否则判据③ 不该成立）：
+        #   bs=1 ：γ=3 → d3 最优；γ=7 → d5 最优（移动 ⇒ 判据③ 成立）
+        #   bs=32：两个 γ 都是 d3 最优（不移动 ⇒ 判据③ 不成立）
+        table = {
+            1: {3: {1: 70.0, 3: 90.0, 5: 80.0}, 7: {1: 72.0, 3: 90.0, 5: 105.0}},
+            32: {3: {1: 700.0, 3: 1000.0, 5: 500.0}, 7: {1: 720.0, 3: 1010.0, 5: 520.0}},
+        }
+        for bs, per_g in table.items():
             sub = os.path.join(td, f"bs{bs}")
             os.makedirs(sub)
-            for d in (1, 3, 5):
-                for g, boost in ((3, 0.0), (7, 5.0 if d == best else 0.0)):
-                    base = {1: 70, 3: 90, 5: 110}[d] * (10 if bs == 32 else 1)
+            for g, per_d in per_g.items():
+                for d, base in per_d.items():
                     for r in (1, 2, 3):
-                        v = base + boost + r * 0.1
+                        v = base + (r - 2) * 0.5   # 极小的重复抖动
                         json.dump({"output_throughput": v},
                                   open(os.path.join(sub, f"d{d}_g{g}_ctx4096_r{r}.bench.json"), "w"))
         res = analyze(td)
         assert len(res["rows"]) == 4, len(res["rows"])   # rows = ctx(1) × bs(2) × γ(2)
-        assert any("判据③ 成立" in v for v in res["verdicts"]), res["verdicts"]
+        vd = res["verdicts"]
+        assert any("✅ 判据③ 成立 @ctx=4096,bs=1" in v for v in vd), vd
+        assert any("❌ 判据③ 不成立 @ctx=4096,bs=32" in v for v in vd), vd
         txt = summarize(res)
         assert "depth*" in txt
         print("selftest ✔ 加载/统计/argmax/判据③/内点最优/summary")
