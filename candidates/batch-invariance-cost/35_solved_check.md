@@ -88,3 +88,23 @@
 - [ ] 写明「若被占，本方向降级成什么」，且降级形态不需要新半径
 
 > **杀出口**：任一引擎/社区**已 ship 或已发表**同一问题类的同等解法，且我们的差异轴讲不出条件性区别 ⇒ **杀**；判定矩阵不足 5 行或缺 URL/查证深度 ⇒ **禁止进入 S4**（不许开 GPU）
+
+
+---
+
+## 附：同轮平行检验的第二个候选（thinking 阶段投机）—— 同样被 S3b 拦下
+
+**问题类**：*"推理模型的 thinking 阶段与答案阶段的草稿接受特性不同，一个静态的投机步数/预算无法同时最优；
+该差异是否有可回收的优化空间？"*
+
+**判定：🔴 已解决。** 两条独立证据：
+
+| # | 对象 | 状态 | URL | 查证深度 | 结论 |
+|---|---|---|---|---|---|
+| A | **SGLang adaptive speculative decoding** | **已 ship（有专门文档页）** | [docs.sglang.io/.../adaptive_speculative_decoding](https://docs.sglang.io/docs/advanced_features/adaptive_speculative_decoding.md) | **READ BODY**（整页：设计、EMA 策略、BS 分桶、hysteresis、ceiling、推荐配置） | 文档开篇即 *"designed for workloads whose **accept length changes over time**, where one static step count is rarely optimal"*；实现含**按 batch-size 分桶的独立 EMA 跟踪器** + `down/up_hysteresis` + `ceiling_coeff` + CUDA graph 分档切换 ⇒ "接受长度随时变"的控制器**已 ship** |
+| B | **工程/教学共识** | 已发表（教材级） | [Low acceptance on chain-of-thought](https://theneuralbase.com/speculative-decoding/learn/advanced/low-acceptance-on-chain-of-thought/) ｜ [Why reasoning models are a poor fit for speculative decoding](https://theneuralbase.com/speculative-decoding/learn/advanced/reasoning-model-poor-fit/) | 页面存在且标题即结论（正文为课程索引页，**关键结论在标题中，记为 TITLE ONLY + 标题即论断**） | "**reasoning / chain-of-thought 阶段接受长度低**"是被写成专门章节的**既定事实**，不是未解现象 |
+| C | vLLM 侧对照 | 已 ship | `config/speculative.py:473-529`（`num_speculative_tokens_per_batch_size`、per-request 自适应 RFC `#48202`） | **READ BODY**（源码） | 另一家引擎在**同一决策**上已有 per-BS 与 per-request 两级自适应 |
+
+**⇒ 差异轴只能写成"在 thinking 阶段做自适应"**，而上游已经是**通用自适应**（对任意 accept 变化都响应）
+⇒ 属**程度性**而非**条件性**区别（违反判据 ②），且与 `#6`/decision #62 已记录的学术邻居
+（HELIOS / CAS-Spec 的运行时深度自适应）重叠 ⇒ **杀**。
