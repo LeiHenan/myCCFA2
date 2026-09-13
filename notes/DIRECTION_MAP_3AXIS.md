@@ -140,3 +140,45 @@ Speculators 支持单卡训练；PARD 有 `-tp 1` 单卡命令；**Qwen3-4B 的 
 no-spec 33.16 → MTP2 48.32 → DFlash2 Q4 56.06 → **Q8 59.88** t/s）；Kimi-K2.5 W4A8 + EAGLE3：TPOT 42.73 → 27.41 ms（**−35.9%**）。
 结构性成因（SGLang #38574）：*"The MTP head is not part of the HF model graph that the quantizer traces,
 so it is neither quantized nor listed in `ignore`."*
+
+---
+
+## 一·补2：投机解码地图 **D 段（硬件排除，32 条）对我们这台机器的含义**
+
+**子代理在 D 段开头就给了一条我该记住的前提**：*"**sm120 ≠ sm100**. `is_device_capability_family(100)` is FALSE on sm120
+(120//10 = 12 ≠ 10). vLLM's `platforms/cuda.py` special-cases family(120) separately."*
+
+### 1.13 单卡被硬件排除的（本机不可做，别再追）
+
+| 类 | 条目 | 关键引文 |
+|---|---|---|
+| **量化 KV 路线** | NVFP4 KV cache（D1.3）、FP8 KV 作非存储用（D1.4）、NVFP4 CUTLASS for SM120（D1.6）、W8A8（D1.5） | *"nvfp4 KV crashes on consumer Blackwell (sm_120/121) on stock vLLM — `--kv-cache-dtype nvfp4` routes to the trtllm-gen FP4 FMHA, which has no build there"* |
+| **量化 MoE 路线** | NVFP4 MoE（D1.1）、MXFP8 MoE 原生路径（D1.2）、MXFP8 grouped GEMM（D1.12） | *"The NVFP4 MoE backend selection code only checks for SM9.0 (Hopper) and SM10.x family … but not SM12.0"* |
+| **DFlash/DSpark 的量化组合** | **D1.14（最硬）**：*"DFlash spec decode **cannot** compose with any of `fp8_e5m2`, `fp8_e4m3`, or `turboquant_4bit_nc` — it is locked to `bfloat16` KV cache."* / *"block-diffusion speculative decoding and 4-bit KV are currently mutually exclusive on exactly the memory-bound cards that want both."* | 对我们无实际损失：**我们全程 bf16 KV** |
+| **自适应验证（Adaptive Verification）** | **D2.6**：sm120 上**启动即被拒**（需 `AttentionCGSupport.ALWAYS`，仅 SM100 后端报出） | 参考测量是 TP=8 × 8×B300 |
+| **并行/多节点**（本机 1 卡，全部排除） | DSD + DP（D2.1）、MTP + PP>1（D2.2）、spec decode + dp-attention（D2.3）、draft-DP/TP-1 方案（D2.4，**均未 merge**）、spec decode + P/D 分离（D2.7）、SwiftSpec（D2.8，8×Hopper）、draft 协同训练（D2.9）、Cascade/EcoSpec（D2.10，4 卡 70B）等 | — |
+| **drafter 训练** | D3：EAGLE-3 参考规模需 128–320 H200 GPU·h（D3.2）、生产配方 8×A100（D3.4）、SpecForge 双卡（D3.5） | ⚠️ 但 **D3.1**：*"trainable (within 1-2 days) and testable on **8x RTX 3090**"*；**G6 更正**说 0.5B drafter 约 2.5 h / 单张 24 G ⇒ **小规模 drafter 训练并非完全排除** |
+
+### 1.14 单卡 **可做** 的正面证据（地图自己给的）
+
+| # | 证据 |
+|---|---|
+| D5.2 | **MTP + FP8 KV + chunked prefill 的一个 bug 正是在 "1× RTX PRO 6000 Blackwell (sm_120)" 上被定位的** ⇒ "sm120 上做投机是**可能的**；被 gate 掉的是 FP4/FP8 **数据中心**内核" |
+| D5.1 | 单卡 Blackwell 的 MTP n-sweep：*"MTP n=3 → 100 tok/s (27B) / 170 tok/s (35B MoE); MTP **n=5 → 125 tok/s, annotated '+4% over n=3, marginal'**"*，逐位置接受率 0.87/0.72/0.60（社区材料，非一手） |
+| D5.3 | batch-invariance 验证已在 4090/4080/3060/4×A10G 上做过；PR #52522 的 E2E 测试写明 *"requires one CUDA GPU with at least 32 GB"* |
+| G6 更正 | PR #24322 的基准机就是 **RTX PRO 6000 96GB**（与本机同类）；PARD 有 `-tp 1` 单卡命令；**Qwen3-4B 的 EAGLE3 drafter 已公开**（我们已下载并校验） |
+
+### 1.15 一条与我第 10 轮亲验**直接吻合**的版本陷阱（D4 段）
+
+> *"**MRV2 is default in 0.29.0**, but spec-decode features require it while other features force fallback to MRV1. … vLLM will still fall back to use MRV1 if any of these features are configured."*
+> 以及 *"we are considering Model Runner V1 deprecated and are targeting v0.32 for its removal."*
+
+**⇒ 这解释了我第 10 轮看到的全部现象**：0.29 里 V2 是默认；我也**亲验**过"配 dflash2 时 V1 会硬报错、V2 正常"（不是静默降级）。
+**并且** 与我亲验的 `VLLM_USE_V2_MODEL_RUNNER`（默认 `None`=auto）一致。
+
+### 1.16 一条与我们实验设计**直接相关**的空白（D4 末条）
+
+> **DSD 自己的 merged benchmark 是 BS1-only 且关闭前缀缓存** —— PR #45953 的每条命令都带 `--no-enable-prefix-caching`，
+> 且只报 base/EAGLE3 的 TPOT（`2.91 / 2.97 / 2.91` ms）。⇒ *"DSD at concurrency on this class is essentially uncharacterized."*
+
+**⇒ 这是"仍开放"格子里**唯一**同时满足"我方有仪器、单卡可做、且**上游自己的基准没覆盖**"的** —— **我把它列为头号待筛格子**。
