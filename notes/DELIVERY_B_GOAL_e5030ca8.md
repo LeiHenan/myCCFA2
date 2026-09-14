@@ -112,7 +112,26 @@
 
 1. **池③ 需要更好的工具**：`causal_gap_scan.py` 的噪声来自它匹配到**验证者评论**而非上游断言。可行的改造：只在**已合并的性能 PR 描述**里找因果断言，并要求同 PR 内**没有**只变该变量的对照。
 2. **SGLang 面完全未查**：新机**没装 SGLang**；schoolserver 上 SGLang 同样不可用。三张地图里依赖 SGLang 的格子（INFERENCE 35 格 / KV 42 格）在本目标内**从未被验证过**。
-3. **地图自身的硬件杀因审计**（进行中）：本轮已挖出三条**与地图矛盾**的一手事实——sm120 **有** split-KV（`_vllm_fa2_C.abi3.so` 导出 561 个 split 符号，Qwen3-4B 的 32:8 GQA decode 形状可走到）、sm120 **有** FlashInfer XQA decode + `AttentionCGSupport=UNIFORM_BATCH`（既有日志捕获 35 张 FULL 图）、`IS_QUANTIZED=IS_DENSE=False` 全局硬编码（`vllm/config/vllm.py:129-134`）。⇒ 地图可能**以错误理由杀过格子**，这是本目标唯一可能翻盘的方向。
+3. **地图自身的硬件杀因审计 —— 已完成，0 幸存者**（`notes/KILLREASON_AUDIT_2026-09-15.md`，0 GPU·h）。
+   三张地图里"sm120 缺 X / 被门控 / 回退到 Z"形式的杀因约 **28 条**；逐条实测 **11 条**：**6 HOLD / 4 FALSE-ON-THIS-RIG / 1 UNVERIFIABLE**，**没有任何一条的残留内容过 §0.6 的 2% 门槛** ⇒ 不发 §3 句。
+   4 条 FALSE 都是"**以错误理由关闭、但在这里无所谓**"：
+   · **Spec-D1.8**（"trtllm-gen decode 被 `is_sm100_supported()` 门控"）——那是 **SGLang** 的闸（本机未装），vLLM 里该属性**不存在**；真实闸 `utils/flashinfer.py:482-486` **包含 sm12x**。残留 = XQA decode 可达，§0.6 上界 **0.199 ms/步 = 1.7–2.8%**（且假设注意力读取归零）⇒ **不过**。
+   · **Spec-D1.4**（"FP8 KV 只能当存储"）——子句对 FA 成立（`flash_attn.py:228`；`nm -D | grep -ci fp8` → **0**），但**标题过度断言**：本机 `FlashInferBackend.supports_kv_cache_dtype("fp8_e4m3")=True`。残留 = 被迫离开 FA 后端，非缺功能，量级不可界 ⇒ **不过**。
+   · **Spec-D1.5**（W8A8 "不为 sm ≥ 10.0 构建"）——假：`_C_stable_libtorch.abi3.so` 内含 `sm_120`/`sm_120f` 标记，树里 60 个 `*sm120*` 文件。§0.6 = **0**（BF16 dense）。
+   · **INF-E18/E19**（B12X MXFP8/MXFP4 "静默丢弃"）——硬件闸**通过**（`is_device_capability_family(120)`，`mxfp8/b12x.py:56`、`mxfp4/b12x.py:59`）；真正的阻塞是 `pip install vllm[b12x]`。§0.6 = **0**。
+
+   **⚠️ 我必须撤回自己上一轮写在这里的一条**：我曾据池① 子代理的升级写下"sm120 **有** split-KV（Qwen3-4B 的 32:8 GQA decode 形状可走到）"。
+   审计指出并**经我采纳**：**符号存在 ≠ 可达**——我亲自核到的 561 个 split 符号只是**二进制那一半**；**已装封装**在
+   `<V>/vllm_flash_attn/flash_attn_interface.py:311-312` 用 Python 闸掉了它：`if num_splits > 1: raise NotImplementedError("FA2 does not support num_splits > 1")`。
+   而上游 `flash_api.cpp` 的 GQA-swap 分支在 Python 传 `>1` 时**根本没机会执行**。
+   ⇒ **"sm120 split-KV 是活的"应记为 `UNRESOLVED`，不是 established。** 最便宜的收口：一次短运行打印 decode batch 在 `cudagraph_mode=FULL` 下的 `attn_metadata.max_num_splits`。
+
+   **两条可复用的机制事实（非格子）**：
+   · `is_device_capability_family(100)=False` **但** `has_device_capability(100)=True` 在 sm120 上**答案相反**
+     ⇒ 任何写成"需要 compute capability 100"的杀因**不构成有效的 sm120 排除**。（地图多数用的是正确的谓词形式，故未追加判 FALSE。）
+   · **Spec-D2.6（sm120 上无自适应验证）是一条正确的杀**，且它**从工程上解释了方向 🥇 在本机的处境**：
+     `adaptive_verification.py:481` 要求 `AttentionCGSupport.ALWAYS`，而 `flash_attn.py:356-359` 只在 **FA3** 上给 `ALWAYS`，
+     **本机的 FA2 ⇒ `UNIFORM_BATCH`**（`get_flash_attn_version()` → 2），FlashInfer 同样封顶在 `UNIFORM_BATCH`（`flashinfer.py:1010-1013`）。
 4. **结构性判断（跨 ~700 个地图格 + 263 + 185 + 8 方向 + 5 条自建候选一致）**：
    > **"够大的都被占着，没被占的都不够大。"**
    两条池子给出两种互补的失败：池①/B 段产出"够大但已占位"，池②产出"空闲但够不着门槛"。
