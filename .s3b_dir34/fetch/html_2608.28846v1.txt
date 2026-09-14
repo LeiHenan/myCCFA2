@@ -1,0 +1,635 @@
+ 
+ A Rigor-Matched Audit of Periodic-Step Layer Skipping for Efficient LLM Inference: ConfLayers versus SWIFT, with a Supplemental Analysis of Trained Routing Alternatives 
+ Report GitHub Issue 
+ × 
+ Title: 
+ Content selection saved. Describe the issue below:
+ Description: 
+ Submit without GitHub 
+ Submit in GitHub 
+ arXiv is now an independent nonprofit! 
+ Learn more 
+ × 
+ Back to arXiv 
+ Why HTML? 
+ Report Issue 
+ Back to Abstract 
+ Download PDF 
+ Abstract 
+ 1 Introduction 
+ 2 A Taxonomy of Layer-Skipping Decision Granularity 
+ 3 Related Work 
+ 4 Background: Method Formalizations 
+ 4.1 The ConfLayers Baseline 
+ 4.2 The SWIFT Baseline 
+ 5 Experimental Setup 
+ 5.1 Implementation details 
+ 6 Results 
+ 6.1 Accuracy 
+ 6.2 Cost 
+ 6.2.1 Search-overhead decomposition 
+ 7 Supplemental Analysis: Trained Routing at Coarser Granularity 
+ 7.1 Method formalizations 
+ 7.2 Measurement protocol 
+ 7.3 Accuracy and cost 
+ 8 Generalization Limitation: LayerRoute on TinyLlama 
+ 8.1 Which layers are skipped: a structural comparison 
+ 9 Discussion and Limitations 
+ References 
+ A Architecture Diagrams 
+ B Additional Per-Seed Results 
+ B.1 Main comparison: ConfLayers and SWIFT 
+ B.2 Supplemental analysis: LayerRoute and LayerDrop 
+ License: CC BY 4.0
+arXiv:2608.28846v1 [cs.CL] 28 Aug 2026
+ A Rigor-Matched Audit of Periodic-Step Layer Skipping for Efficient LLM Inference: ConfLayers versus SWIFT, with a Supplemental Analysis of Trained Routing Alternatives
+ Prateek Kumar Sikdar
+ Email: prateek.k.sikdar@accenture.com 
+ Arpan Ghosh
+ Email: arpan.ghosh@wellsfargo.com 
+ Abstract 
+ Layer-skipping methods for efficient LLM inference decide, at some granularity, which transformer layers to execute for a given input. We present a rigor-matched, three-seed audit of two periodic-step, search-based methods that make this decision online, at inference time, and re-evaluate it every few generation steps: a confidence-gated early-exit baseline (ConfLayers) and genuine self-speculative decoding (SWIFT, Xia et al. 2024 ), together with vanilla autoregressive decoding, across two model scales (Qwen2.5-0.5B and Qwen2.5-1.5B, Yang et al. 2024 ) and two tasks (GSM8K reasoning, Cobbe et al. 2021 ; CNN/DailyMail summarization, Nallapati et al. 2016 ; See et al. 2017 ). SWIFT is the strongest method on accuracy in three of four cells; ConfLayers is dominated everywhere, with particularly large deficits on GSM8K at 1.5B. Once online-search overhead is correctly separated from pure inference cost — a decomposition we introduce and validate — SWIFT’s true inference speed is faster than ConfLayers’s in all four cells (5–21%), reversing the naive wall-clock ranking in three of them; ConfLayers’s search overhead is small and stable (1–2% of cost) while SWIFT’s is larger and considerably more variable seed-to-seed (up to 28.7%). We additionally examine two trained-routing methods, LayerRoute ( Sikdar, 2026 ) (a per-sequence, input-conditioned hard gate) and LayerDrop ( Fan et al., 2020 ) (a fixed, input-independent pruning pattern), as a supplemental analysis rather than a head-to-head comparison, since both operate at a fundamentally coarser decision granularity than the periodic-step methods above. Measuring both under a verified protocol — genuine per-input gating, a genuine full-model baseline, and genuine inference-time compute skipping — both trained-routing methods show modest, real speedups (1.08–1.33 × \times ) but accuracy well below the periodic-step methods, including a near-total collapse for LayerRoute on GSM8K at 1.5B (0.003 mean exact-match across three seeds). We release the full audit protocol as a template for rigor-matched efficiency comparisons.
+ 1 Introduction
+ Layer-skipping methods for efficient LLM inference share a common shape — decide, for some unit of input, whether to execute a given transformer layer or bypass it — but differ sharply in when and at what granularity that decision is made. Confidence-gated early-exit methods threshold a per-token confidence signal that is itself tuned online ( Schuster et al., 2022 ; Schuster et al., 2021 ; Teerapittayanon et al., 2016 ) ; self-speculative decoding methods draft candidate continuations with a cheapened version of the same model, periodically re-evaluating the draft configuration, and verify drafts against the full model in a single batched pass ( Leviathan et al., 2023 ; Chen et al., 2023 ; Xia et al., 2024 ) . Both families make their skip decision online , re-checking it every few generation steps. A separate family, trained routing , instead learns a fixed policy offline — a gate, a router, or a pruning mask — so no online search is needed ( Fan et al., 2020 ; Raposo et al., 2024 ; Elbayad et al., 2020 ) ; the policy can be as coarse as a single fixed pattern applied to every input, or as fine as a decision recomputed per sequence.
+ This granularity difference determines what a fair comparison even means: a method re-evaluating its configuration every 25–30 tokens is answering a different question than one committing to a single decision for an entire sequence, or one that never adapts to input at all. Our primary contribution is therefore a comparison restricted to methods sharing the same decision regime — ConfLayers and SWIFT, both periodic-step and search-based — audited under matched seeds, tasks, and scales, with a cost-accounting methodology that correctly separates the online search from the inference it accelerates. This confound is methodologically significant: once search overhead is excluded, the pure-inference speed ranking of the two methods reverses relative to their naive wall-clock ranking in three of four task/scale combinations we test.
+ We additionally examine two representative trained-routing methods, LayerRoute ( Sikdar, 2026 ) and LayerDrop ( Fan et al., 2020 ) , as a supplemental analysis rather than folding them into the main comparison, since their decision granularity does not match ConfLayers’s and SWIFT’s: LayerRoute commits to one gate decision per sequence; LayerDrop commits to one fixed pattern that never varies with input. Treating either as a direct peer of a method that re-searches every 25 tokens would overstate what the comparison can claim. We measure both under a protocol verified to exercise their routing decisions genuinely — real per-input gating, a real full-model baseline, and real inference-time compute skipping — and report the resulting numbers plainly, including a result we did not expect going in.
+ Our contributions are:
+ • 
+ A rigor-matched, 3-seed, 2-task × \times 2-scale comparison of two periodic-step, search-based layer-skipping methods (ConfLayers, SWIFT) against vanilla decoding, with a taxonomy of routing decision granularity motivating why this is the correct main comparison set (Section 2 ).
+ • 
+ A search-overhead decomposition that separates each method’s pure inference cost from its online-search cost, revealing that naive wall-clock comparisons had inverted the true inference-speed ranking of SWIFT and ConfLayers in three of four cells (Section 6.2.1 ).
+ • 
+ A supplemental analysis of two trained-routing methods (LayerRoute, LayerDrop) at a different decision granularity, using a measurement protocol verified to exercise genuine per-input gating, a genuine full-model baseline, and genuine inference-time compute skipping throughout (Section 7 ).
+ • 
+ A from-first-principles port of LayerRoute to TinyLlama-1.1B ( Zhang et al., 2024 ) showing that its headline tool-call-versus-planning skip differential inverts in sign across architectures, reported as a genuine generalization limitation (Section 8 ).
+ • 
+ A reusable, rigor-matched audit protocol, including the frozen-replay search-overhead decomposition, applicable to future efficiency comparisons.
+ 2 A Taxonomy of Layer-Skipping Decision Granularity
+ Table 1 summarizes the four methods discussed in this paper along the dimension that we argue determines comparability: how often, and on what unit of input, the skip decision is made.
+ Table 1: Layer-skipping methods by decision granularity. ConfLayers and SWIFT share the same regime (periodic-step, search-based) and form our main comparison; LayerRoute and LayerDrop occupy two different, coarser regimes and are reported as a supplemental analysis rather than head-to-head peers. 
+ Method 
+ Training 
+ Decision unit 
+ Re-evaluation cadence 
+ ConfLayers 
+ None (online search) 
+ Per token 
+ Every 30 steps 
+ SWIFT 
+ None (online search) 
+ Per token 
+ Every 25 steps 
+ LayerRoute 
+ Trained (LoRA + gate) 
+ Per sequence 
+ Once, input-conditioned 
+ LayerDrop 
+ Trained (structured dropout) 
+ N/A 
+ Never (fixed, input-independent) 
+ ConfLayers and SWIFT both decide online, re-searching their configuration every 25–30 generation steps and often converging early, freezing the found configuration for the remainder of a session (Section 6.2.1 ); this shared regime is what makes a matched comparison between them meaningful. LayerRoute is designed to make one gate decision per input sequence, using that sequence’s own hidden states — a coarser, input-conditioned regime that, absent an explicit freezing mechanism, can drift toward continuously-updating behavior in genuine generation (Section 7.2 ). LayerDrop is coarser still: its pruning pattern is fixed at training time and applied identically to every input, with no adaptivity at all. Comparing ConfLayers/SWIFT against LayerRoute/LayerDrop on identical footing would compare methods answering different questions; we instead present the latter two as a supplemental analysis with this distinction stated explicitly.
+ 3 Related Work
+ Trained routing and structured skipping. LayerDrop ( Fan et al., 2020 ) trains transformers to be robust to layer removal via structured dropout, enabling depth reduction at inference without retraining; we evaluate it directly in Section 7 . The Depth-Adaptive Transformer ( Elbayad et al., 2020 ) and PonderNet ( Banino et al., 2021 ) extend Adaptive Computation Time ( Graves, 2016 ) to learn per-example halting policies. Mixture-of-Depths ( Raposo et al., 2024 ) routes a fixed fraction of tokens per layer through a top- k k router, a finer (token-level) granularity than LayerRoute’s per-sequence gate; we do not evaluate it here. Post-hoc depth-pruning work such as ShortGPT ( Men et al., 2024 ) and Gromov et al. (2024) establish that later transformer layers often contribute disproportionately little to output quality, independent of any routing mechanism.
+ Confidence-gated and search-based early exit. CALM ( Schuster et al., 2022 ) and its earlier variant ( Schuster et al., 2021 ) exit a token’s forward pass once a per-layer confidence measure crosses a threshold; BranchyNet ( Teerapittayanon et al., 2016 ) applies the same idea to convolutional networks. Our ConfLayers baseline follows this family, augmented with an online Bayesian-optimization search over per-layer thresholds (Section 5 ).
+ Speculative and self-speculative decoding. Speculative decoding ( Leviathan et al., 2023 ; Chen et al., 2023 ; Stern et al., 2018 ) drafts multiple tokens with a cheap model and verifies them in one batched pass, with later work exploring tree-structured verification ( Miao et al., 2024 ; Cai et al., 2024 ) and lightweight adapters as drafters ( Du et al., 2024 ) . SWIFT ( Xia et al., 2024 ) removes the need for a separate draft model by self-drafting with a layer-skipped version of the target model, discovered online rather than trained offline.
+ Compute-efficient scaling and pruning. Our discussion of scale-dependent behavior connects to compute-optimal scaling ( Hoffmann et al., 2022 ) and to structural pruning such as LLM-Pruner ( Ma et al., 2023 ) and Wanda ( Sun et al., 2024 ) , which similarly find removable redundancy is scale-dependent.
+ 4 Background: Method Formalizations
+ We formalize ConfLayers and SWIFT here; LayerRoute and LayerDrop’s formalizations appear in the supplemental analysis (Section 7 ).
+ 4.1 The ConfLayers Baseline
+ ConfLayers ( Amer et al., 2026 ) requires no training: it wraps a fixed pretrained backbone with a per-layer confidence rule and an online search over its thresholds.
+ Confidence signal and exit rule. At layer l l , a confidence estimate projects the current hidden state to the vocabulary and takes the top probability,
+ c l ​ ( h l ) = max v ⁡ softmax ​ ( W l ​ m ​ h l ) v , c_{l}(h_{l})=\max_{v}\;\mathrm{softmax}\!\left(W_{lm}\,h_{l}\right)_{v}, 
+ (1) 
+ where W l ​ m W_{lm} is the shared, frozen LM head. The model exits at the first layer clearing threshold τ l \tau_{l} ,
+ z l = [ c l ( h l ) ≥ τ l ] , exit at l ∗ = min { l : z l = 1 } , z_{l}=\mathbb{1}\!\left[c_{l}(h_{l})\geq\tau_{l}\right],\qquad\text{exit at }l^{*}=\min\{\,l:z_{l}=1\,\}, 
+ (2) 
+ emitting W l ​ m ​ h l ∗ W_{lm}h_{l^{*}} directly as output logits, skipping all l > l ∗ l>l^{*} (Figure 5 ).
+ Online threshold search. τ = ( τ 1 , … , τ L ) \tau=(\tau_{1},\dots,\tau_{L}) is not learned by gradient descent; since the mapping from τ \tau to quality and latency is a black-box, non-differentiable function, τ \tau is tuned online via Bayesian optimization,
+ τ ⋆ = arg ​ min τ ∈ [ 0 , 1 ] L ⁡ 𝔼 x ​ [ Cost ⁡ ( x , τ ) ] s.t. 𝔼 x ​ [ QualityDrop ⁡ ( x , τ ) ] ≤ ϵ , \tau^{\star}=\argmin_{\tau\in[0,1]^{L}}\;\mathbb{E}_{x}\!\left[\mathrm{Cost}(x;\tau)\right]\quad\text{s.t.}\quad\mathbb{E}_{x}\!\left[\mathrm{QualityDrop}(x;\tau)\right]\leq\epsilon, 
+ (3) 
+ proposing candidate τ \tau vectors, evaluating on a held-out probe set, and updating a surrogate cost–quality model. This search is what we isolate as “search overhead” in Section 6.2.1 : wall-clock time spent choosing τ \tau , separate from the forward-pass cost of Equations 1 – 2 once fixed.
+ 4.2 The SWIFT Baseline
+ SWIFT ( Xia et al., 2024 ) also requires no training, but rather than exiting early it drafts multiple tokens with a cheapened version of the target model and verifies them losslessly against the full model.
+ Self-draft model. Given a skip set S ⊆ { 1 , … , L } S\subseteq\{1,\dots,L\} , the self-draft model ℳ S \mathcal{M}_{S} is ℳ \mathcal{M} with every layer l ∈ S l\in S replaced by an identity pass-through,
+ h l ( S ) = { h l − 1 ( S ) l ∈ S (skipped) f l ​ ( h l − 1 ( S ) ) l ∉ S (executed) , h_{l}^{(S)}=\begin{cases}h_{l-1}^{(S)}&l\in S\quad\text{(skipped)}\\
+f_{l}\!\left(h_{l-1}^{(S)}\right)&l\notin S\quad\text{(executed)}\end{cases}, 
+ (4) 
+ requiring no additional parameters, since ℳ S \mathcal{M}_{S} reuses ℳ \mathcal{M} ’s own weights (Figure 6 ).
+ Draft-then-verify. ℳ S \mathcal{M}_{S} autoregressively drafts k k candidate tokens, and ℳ \mathcal{M} verifies all k k positions in one batched pass. Each draft token is accepted with probability
+ min ⁡ ( 1 , P ℳ ​ ( x ~ t + i ∣ x ≤ t + i − 1 ) P ℳ S ​ ( x ~ t + i ∣ x ≤ t + i − 1 ) ) , \min\!\left(1,\;\frac{P_{\mathcal{M}}(\tilde{x}_{t+i}\mid x_{\leq t+i-1})}{P_{\mathcal{M}_{S}}(\tilde{x}_{t+i}\mid x_{\leq t+i-1})}\right), 
+ (5) 
+ following the standard rejection rule ( Leviathan et al., 2023 ) ; at the first rejection, a corrective token is resampled from p res ​ ( x ) ∝ max ⁡ ( 0 , P ℳ ​ ( x ) − P ℳ S ​ ( x ) ) p_{\mathrm{res}}(x)\propto\max\!\left(0,\,P_{\mathcal{M}}(x)-P_{\mathcal{M}_{S}}(x)\right) , guaranteeing the output distribution is exactly P ℳ P_{\mathcal{M}} regardless of S S — SWIFT is lossless by construction.
+ Online skip-set search. As with ConfLayers’s τ \tau , S S is searched online, trading a cheaper draft (larger S S ) against a lower acceptance rate,
+ S ⋆ = arg ​ min S ⊆ { 1 , … , L } ⁡ 𝔼 x ​ [ WallClockCost ⁡ ( x , S ) 𝔼 ⁡ [ accepted tokens per round ∣ S ] ] , S^{\star}=\argmin_{S\subseteq\{1,\dots,L\}}\;\mathbb{E}_{x}\!\left[\frac{\mathrm{WallClockCost}(x;S)}{\mathbb{E}[\text{accepted tokens per round}\mid S]}\right], 
+ (6) 
+ again via Bayesian optimization over the discrete space of skip sets, separated from pure drafting cost in Section 6.2.1 .
+ 5 Experimental Setup
+ Models. We use Qwen2.5-0.5B and Qwen2.5-1.5B ( Yang et al., 2024 ) as backbones.
+ Tasks. GSM8K ( Cobbe et al., 2021 ) (grade-school math word problems, exact-match accuracy) represents multi-step reasoning; CNN/DailyMail ( Nallapati et al., 2016 ; See et al., 2017 ) (news summarization, ROUGE-L, Lin 2004 ) represents long-form generation with a different token budget and error profile. We evaluate 100 held-out samples per task, with an identical shuffle/seed recipe across dataset aliases, matching the default evaluation size of the ConfLayers and SWIFT reference implementations’ own scripts. We report per-seed values (Appendix B ) rather than a single point estimate, since 100 samples is small enough that seed-to-seed variance should be inspected directly (Section 9 ).
+ Baselines. Vanilla is standard autoregressive decoding with no acceleration. ConfLayers and SWIFT are formalized in Sections 4.1 and 4.2 ; SWIFT results use a from-scratch port of the official self-drafting and tree-attention implementation to Qwen2, verified class-by-class against the reference implementation.
+ Rigor protocol. Every accuracy and cost cell (method × \times task × \times scale) is run at three seeds (2024, 42, 123), reported as a mean with the observed range. We verified that a CNN/DailyMail generation-length normalization does not itself explain observed score differences between methods.
+ 5.1 Implementation details
+ ConfLayers search calibration. We run ConfLayers’s online threshold search (Equation 3 ) with its reference implementation’s default configuration: search interval 30, maximum optimization iterations 100, maximum score threshold 0.95, context window 100 tokens. Thresholds are calibrated online, per query, not per task.
+ SWIFT search calibration. SWIFT’s online skip-set search (Equation 6 ) uses its reference default: context window 50, optimization interval 1, Bayesian-optimization interval 25, maximum optimization iterations 1000, maximum tolerance iterations 300, maximum score threshold 0.93, with an upper-confidence-bound acquisition function ( κ = 2.5 \kappa{=}2.5 ).
+ Cost measurement protocol. All latency measurements use batch size 1 on a single GPU, with explicit device synchronization before and after each timed call so reported wall-clock time reflects completed GPU work rather than queued kernels. Reported time includes the full generation call — sampling, KV-cache updates, any interleaved search — excluding tokenization/detokenization. We did not run warm-up iterations; the first query of each run carries unsubtracted one-time initialization overhead (Section 9 ).
+ 6 Results
+ 6.1 Accuracy
+ Figure 1 and Table 2 summarize the accuracy matrix for vanilla decoding and the two periodic-step methods. The ranking is stable across all three seeds in every cell.
+ Table 2: Accuracy, mean over 3 seeds (range in brackets). GSM8K is exact-match accuracy; CNN/DailyMail is ROUGE-L. Bold marks the best method per cell. 
+ Task 
+ Scale 
+ Vanilla 
+ ConfLayers 
+ SWIFT 
+ GSM8K 
+ 0.5B 
+ 0.180 [0.14–0.26] 
+ 0.147 [0.13–0.18] 
+ 0.303 [0.27–0.36] 
+ 1.5B 
+ 0.413 [0.38–0.46] 
+ 0.077 [0.05–0.10] 
+ 0.307 [0.29–0.33] 
+ CNN/DM 
+ 0.5B 
+ 0.169 [0.167–0.174] 
+ 0.178 [0.175–0.184] 
+ 0.190 [0.185–0.196] 
+ 1.5B 
+ 0.204 [0.193–0.213] 
+ 0.215 [0.204–0.222] 
+ 0.219 [0.205–0.230] 
+ Figure 1: Accuracy across the full 2 (task) × \times 2 (scale) × \times 3 (method) matrix. Error bars show the observed 3-seed range. ConfLayers is the consistent worst performer in every cell. 
+ ConfLayers underperforms both other methods in every condition, with particularly large deficits on GSM8K at 1.5B (0.077 vs. vanilla’s 0.413), consistent with prior observations that fixed-representation confidence estimates are unreliable for multi-step reasoning ( Schuster et al., 2022 ) . SWIFT is strongest in three of four cells, losing only to vanilla decoding on GSM8K at 1.5B (0.307 vs. 0.413) — but still substantially outperforming ConfLayers there (0.307 vs. 0.077), so the ranking between the two search-based methods is stable across all four cells.
+ 6.2 Cost
+ Table 3 and Figure 2 report per-query wall-clock latency for the two periodic-step methods.
+ Table 3: Per-query wall-clock latency (ms), mean over 3 seeds. Both methods shown decomposed into pure inference and online-search overhead (Section 6.2.1 ). 
+ Task/Scale 
+ Method 
+ Pure inference (ms) 
+ Search overhead 
+ Wall-clock total (ms) 
+ GSM8K/0.5B 
+ ConfLayers 
+ 9194 
+ 2.2% 
+ 10338.5 
+ SWIFT 
+ 8771 
+ 15.1% 
+ 11564.5 
+ GSM8K/1.5B 
+ ConfLayers 
+ 12366 
+ 1.3% 
+ 12485.4 
+ SWIFT 
+ 9913 
+ 12.4% 
+ 11628.8 
+ CNN-DM/0.5B 
+ ConfLayers 
+ 10889 
+ 1.2% 
+ 10231.4 
+ SWIFT 
+ 8610 
+ 8.7% 
+ 10598.2 
+ CNN-DM/1.5B 
+ ConfLayers 
+ 12555 
+ 1.2% 
+ 12973.4 
+ SWIFT 
+ 9880 
+ 18.6% 
+ 12532.5 
+ Figure 2: Per-query wall-clock latency across the full matrix. 
+ 6.2.1 Search-overhead decomposition
+ Naive wall-clock comparison ranks ConfLayers as faster than SWIFT in three of four cells (Table 3 , “wall-clock total”). This is misleading. We instrumented both methods to separately log pure model-forward-pass time and the wall-clock time consumed by each method’s online search — Bayesian-optimization threshold search for ConfLayers, and the analogous search over which layers to self-draft-skip for SWIFT. Figure 3 shows the result: once decomposed, SWIFT’s pure inference cost is faster than ConfLayers’s in all four cells (5–21%), reversing the naive ranking in three of them. ConfLayers’s search overhead is small and stable (1.2–2.2% of total cost, near-zero variance across seeds); SWIFT’s is larger (8.7–18.6% mean) and more variable (up to 28.7% on individual GSM8K/0.5B seeds).
+ Figure 3: Search-overhead decomposition. Once online-search cost is separated from pure model-forward cost, SWIFT is the faster inference engine in every cell, despite appearing slower on unsplit wall-clock time in three of four cells. 
+ Every prior cost comparison involving SWIFT in this line of work understated its true inference speed by folding search cost into the reported number. This decomposition assumes many queries are served within one running session: both methods’ search state persists across queries in our harness rather than resetting per query, so search overhead is front-loaded onto early queries and shrinks as the search converges. We recommend future efficiency comparisons report this decomposition explicitly, alongside a total-cost-for- N N -queries view when N N is known, rather than a single averaged wall-clock figure.
+ 7 Supplemental Analysis: Trained Routing at Coarser Granularity
+ This section examines LayerRoute and LayerDrop, two trained-routing methods operating at a coarser decision granularity than ConfLayers and SWIFT (Section 2 ), not as direct competitors to the main comparison but under a measurement protocol verified to exercise genuine per-input gating, a genuine full-model baseline, and genuine inference-time compute skipping (Section 7.2 ).
+ 7.1 Method formalizations
+ LayerRoute ( Sikdar, 2026 ) . LayerRoute freezes a pretrained backbone θ \theta and attaches, at every transformer layer l ∈ { 1 , … , L } l\in\{1,\dots,L\} , a low-rank adapter Δ ​ W l \Delta W_{l} ( Hu et al., 2022 ) with a scalar gate head. For hidden state h l − 1 h_{l-1} entering layer l l ,
+ f l ​ ( h l − 1 ) = h l − 1 + Attn l ​ ( h l − 1 ) + FFN Δ ​ W l ​ ( h l − 1 ) , f_{l}(h_{l-1})=h_{l-1}+\mathrm{Attn}_{l}(h_{l-1})+\mathrm{FFN}_{\Delta W_{l}}(h_{l-1}), 
+ (7) 
+ and the gate head produces a scalar logit converted to a hard binary decision
+ z l = 𝟙 [ σ ( g l ( h l − 1 ) ) > 0.5 ] , σ ( x ) = 1 1 + e − x , z_{l}=\mathbb{1}\left[\sigma\!\left(g_{l}(h_{l-1})\right)>0.5\right],\qquad\sigma(x)=\frac{1}{1+e^{-x}}, 
+ (8) 
+ with layer output h l = z l ​ f l ​ ( h l − 1 ) + ( 1 − z l ) ​ h l − 1 h_{l}=z_{l}\,f_{l}(h_{l-1})+(1-z_{l})\,h_{l-1} , gradients propagated via straight-through estimation ( Bengio et al., 2013 ) . The gate head pools over the current full sequence’s hidden states, making this a per-sequence decision (Table 1 ), trained jointly with the LoRA adapters via BCE against tool-call/planning provenance labels. Schematic in Figure 7 .
+ LayerDrop ( Fan et al., 2020 ) . We adapt LayerDrop to the same LoRA budget as LayerRoute for a matched training-cost comparison. During training, each layer is stochastically dropped with probability p p (uniform across layers), training the backbone and LoRA adapters to be robust to any layer’s removal. At inference, a fixed set of layers, chosen once from training-time drop statistics, is pruned identically for every input — no router, no per-input adaptivity, the coarsest regime in Table 1 . Schematic in Figure 8 .
+ 7.2 Measurement protocol
+ Because LayerRoute’s architecture blends a gated and an ungated output rather than branching between them, measuring it correctly requires care on three points, each verified independently.
+ Genuine gating. Wall-clock cost is measured through LayerRoute’s gated forward pass directly, token by token, verified to produce output that genuinely differs from an ungated pass rather than being byte-identical to it.
+ Genuine full-model baseline. The baseline forces every layer open via direct bias manipulation on the gate head, verified on a controlled synthetic test to change the layer-execution count to the full layer count.
+ Genuine inference-time compute skipping. Training computes every layer’s full transformation unconditionally (a necessary property of the straight-through estimator, whose backward pass needs the layer’s real forward value even for a gate evaluating to zero); inference adds a conditional skip where no such constraint applies ( if gate==0 and not self.training: continue ), verified via layer-call counting to produce fewer real invocations than the total layer count, with output identical to the blended-but-discarded version for closed gates.
+ For long-form generation, we verified the generation loop’s stopping condition is decoupled from prompt-length truncation, since CNN/DailyMail articles can approach the truncation limit; the post-hoc token-count distribution matches the expected range for both methods, with no queries terminating after a single token.
+ LayerDrop’s fixed pattern requires only the baseline and skip verifications, having no per-input gate to exercise. ConfLayers and SWIFT’s results (Sections 6 – 6.2.1 ) use independent evaluation code, verified separately under the same standard.
+ 7.3 Accuracy and cost
+ Table 4 and Figure 4 report accuracy and speedup, 3 seeds each, using a genuine full-model baseline throughout.
+ Table 4: Supplemental analysis: accuracy and speedup, mean over 3 seeds (range in brackets), LayerRoute and LayerDrop versus a genuine full-model baseline. GSM8K is exact-match; CNN/DailyMail is ROUGE-L. Speedup > 1 >1 indicates the routed/pruned pass is faster than the full-model baseline. 
+ Task 
+ Scale 
+ LayerRoute acc. 
+ LayerRoute speedup 
+ LayerDrop acc. 
+ LayerDrop speedup 
+ GSM8K 
+ 0.5B 
+ 0.137 [0.11–0.16] 
+ 1.08 × \times 
+ 0.010 [0.00–0.02] 
+ 1.30 × \times 
+ 1.5B 
+ 0.003 [0.00–0.01] 
+ 1.32 × \times 
+ 0.060 [0.05–0.07] 
+ 1.25 × \times 
+ CNN/DM 
+ 0.5B 
+ 0.102 [0.099–0.107] 
+ 1.33 × \times 
+ 0.091 [0.085–0.097] 
+ 1.29 × \times 
+ 1.5B 
+ 0.150 [0.139–0.165] 
+ 1.09 × \times 
+ 0.134 [0.131–0.136] 
+ 1.25 × \times 
+ Figure 4: Supplemental results. Left: accuracy under genuine gating and a genuine full-model baseline. Right: speedup versus that same genuine baseline, including genuine inference-time compute skipping (Section 7.2 ). 
+ Two findings stand out. First, LayerRoute’s accuracy on GSM8K at 1.5B is essentially zero (0.003 mean, 1 of 300 samples correct) — a near-total collapse. Routed generations at this scale are coherent, grammatically well-formed text, not degenerate repetition, but consistently fail to reach a correct answer, which we interpret as a genuine capability gap under real per-sequence gating. Second, both methods show modest but real speedups (1.08–1.33 × \times ) over a genuine full-model baseline, smaller than layer-count-implied theoretical savings would suggest; we attribute this to LayerRoute’s router computation (pooling and a linear projection, evaluated at every layer regardless of that layer’s decision) contributing fixed per-layer overhead. LayerDrop, having no such per-query overhead, shows a somewhat larger, more consistent speedup (1.25–1.30 × \times ) despite lower average accuracy.
+ These results should not be read as “trained routing underperforms search-based routing” in general: LayerRoute and LayerDrop operate at a different decision granularity (Section 2 ), were trained under a fixed, unremarkable LoRA budget not tuned per condition, and represent two specific instances of a much larger design space.
+ 8 Generalization Limitation: LayerRoute on TinyLlama
+ Sikdar et al. (2026)’s headline finding is a 12.91% skip-rate differential between tool-call and planning steps on Qwen2.5-0.5B: the trained gate skips more on tool-call steps than planning steps. We test whether this generalizes beyond Qwen2.5’s architecture by re-deriving LayerRoute for TinyLlama-1.1B ( Zhang et al., 2024 ) from first principles: re-checking router hook points against LlamaDecoderLayer ’s module composition, re-examining whether the middle-third gate-initialization heuristic transfers to Llama’s 22-layer depth, and verifying LoRA target-module wiring against Llama’s bias-free attention. This study uses the same teacher-forced evaluation path as the original paper’s own findings, independent of Section 7.2 ’s protocol.
+ The gating mechanism transfers correctly: quality is preserved for both step types (gated perplexity lower than full-computation perplexity, e.g. tool-call 3.766 < 4.705 3.766<4.705 , planning 6.133 < 7.784 6.133<7.784 ). However, the direction inverts: TinyLlama’s router skips more on planning steps ( − 7.92 % -7.92\% in an initial run, − 3.11 % -3.11\% in an independent seed-42 retraining), opposite to Qwen2.5-0.5B’s + 12.91 % +12.91\% . We ruled out a sequence-length confound: the planning/tool-call token-length ratio is similar under both tokenizers (0.233 vs. 0.205), and tool-call is the longer step type under both.
+ 8.1 Which layers are skipped: a structural comparison
+ Table 5 reports the converged closed middle band for both architectures: Qwen2.5-0.5B spans layers 8–16 of 24 (33%–71% relative depth); TinyLlama-1.1B spans layers 7–15 of 22 (32%–73%) — nearly identical relative depth despite independent training on different backbones.
+ Table 5: Converged skip-pattern structure, Qwen2.5-0.5B versus TinyLlama-1.1B. 
+ Backbone 
+ Layers 
+ Closed middle band 
+ Relative depth 
+ Qwen2.5-0.5B 
+ 24 
+ 8–16 
+ 33%–71% 
+ TinyLlama-1.1B 
+ 22 
+ 7–15 
+ 32%–73% 
+ This rules out a qualitatively different structural pattern as the explanation: the shape of what gets skipped transfers almost exactly. We hypothesize the differential’s sign is set by a small number of boundary layers near the threshold, architecture-specific in their response to input content, while the bulk of the middle band is not; a testable hypothesis, not a confirmed mechanism.
+ We report this as a genuine architecture-dependent limitation rather than omitting it: the “tool calls skip more” claim does not universalize across model families, even though the gating mechanism does. Deployments relying on this differential’s direction should re-verify it on the target architecture.
+ 9 Discussion and Limitations
+ Main finding. Among periodic-step, search-based methods, SWIFT is stronger on both accuracy and (once search overhead is decomposed) speed; ConfLayers is dominated on both axes throughout, stable across all seeds in every cell.
+ On the supplemental analysis. LayerRoute and LayerDrop occupy a coarser, less input-adaptive regime than ConfLayers/SWIFT (Section 2 ); the honest conclusion is that under a fixed, unremarkable LoRA budget, and measured under the verified protocol of Section 7.2 , neither is competitive on accuracy here, while both show modest, genuine speedups once compute skipping is confirmed to actually occur.
+ Scope of the audit. We evaluate two model scales and two tasks on instruction-tuned backbones only; findings may not hold for base models. We follow the reference implementations’ default evaluation size (100 samples) without a power analysis for confidence-interval width. Given n = 3 n{=}3 seeds, we report per-seed values directly (Appendix B ) rather than a higher-powered parametric test, and we do not run warm-up iterations before timing. Memory footprint, integration complexity, distribution-shift robustness, and combinability with techniques such as quantization are also relevant to deployment but outside this audit’s scope.
+ AI Use Statement
+ Generative AI tools assisted with literature survey (verified against original sources) and evaluation scaffolding, including the search-overhead decomposition harness and plotting utilities (tested against known reference outputs). All experimental design, method choices, and interpretation of results are the authors’ own, who take responsibility for this work’s final content.
+ Reproducibility Statement
+ Figures in Sections 6 – 8 are means over three fixed seeds (2024, 42, 123) with per-seed values in Appendix B ; full protocol in Sections 5 – 5.1 and 7.2 . The SWIFT and TinyLlama ports were verified class-by-class against upstream implementations. We intend to release our harness, the Qwen2 SWIFT port, trained checkpoints, and per-query result files with this paper.
+ References
+ Amer et al. (2026) 
+ W. Amer, U. Das, and F. Kurdahi 
+ ConfLayers: adaptive confidence-based layer skipping for self-speculative decoding .
+ arXiv preprint arXiv:2604.14612 .
+ Cited by: §4.1 .
+ Banino et al. (2021) 
+ A. Banino, J. Balaguer, and C. Blundell 
+ PonderNet: learning to ponder .
+ arXiv preprint arXiv:2107.05407 .
+ Cited by: §3 .
+ Bengio et al. (2013) 
+ Y. Bengio, N. Léonard, and A. Courville 
+ Estimating or propagating gradients through stochastic neurons for conditional computation .
+ arXiv preprint arXiv:1308.3432 .
+ Cited by: §7.1 .
+ Cai et al. (2024) 
+ T. Cai, Y. Li, Z. Geng, H. Peng, J. D. Lee, D. Chen, and T. Dao 
+ Medusa: simple llm inference acceleration framework with multiple decoding heads .
+ International Conference on Machine Learning .
+ Cited by: §3 .
+ Chen et al. (2023) 
+ C. Chen, S. Borgeaud, G. Irving, J. Lespiau, L. Sifre, and J. Jumper 
+ Accelerating large language model decoding with speculative sampling .
+ arXiv preprint arXiv:2302.01318 .
+ Cited by: §1 ,
+ §3 .
+ Cobbe et al. (2021) 
+ K. Cobbe, V. Kosaraju, M. Bavarian, M. Chen, H. Jun, L. Kaiser, M. Plappert, J. Tworek, J. Hilton, R. Nakano, et al. 
+ Training verifiers to solve math word problems .
+ arXiv preprint arXiv:2110.14168 .
+ Cited by: §5 ,
+ Abstract .
+ Du et al. (2024) 
+ C. Du, J. Jiang, X. Yuanchen, et al. 
+ GliDe with a cape: a low-hassle method to accelerate speculative decoding .
+ arXiv preprint arXiv:2402.02082 .
+ Cited by: §3 .
+ Elbayad et al. (2020) 
+ M. Elbayad, J. Gu, E. Grave, and M. Auli 
+ Depth-adaptive transformer .
+ International Conference on Learning Representations .
+ Cited by: §1 ,
+ §3 .
+ Fan et al. (2020) 
+ A. Fan, E. Grave, and A. Joulin 
+ Reducing transformer depth on demand with structured dropout .
+ International Conference on Learning Representations .
+ Cited by: §1 ,
+ §1 ,
+ §3 ,
+ §7.1 ,
+ Abstract .
+ Graves (2016) 
+ A. Graves 
+ Adaptive computation time for recurrent neural networks .
+ arXiv preprint arXiv:1603.08983 .
+ Cited by: §3 .
+ Gromov et al. (2024) 
+ A. Gromov, K. Tirumala, H. Shapourian, P. Glorioso, and D. A. Roberts 
+ The unreasonable ineffectiveness of the deeper layers .
+ arXiv preprint arXiv:2403.17887 .
+ Cited by: §3 .
+ Hoffmann et al. (2022) 
+ J. Hoffmann, S. Borgeaud, A. Mensch, E. Buchatskaya, T. Cai, E. Rutherford, D. de Las Casas, L. A. Hendricks, J. Welbl, A. Clark, et al. 
+ Training compute-optimal large language models .
+ arXiv preprint arXiv:2203.15556 .
+ Cited by: §3 .
+ Hu et al. (2022) 
+ E. J. Hu, Y. Shen, P. Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang, and W. Chen 
+ LoRA: low-rank adaptation of large language models .
+ International Conference on Learning Representations .
+ Cited by: §7.1 .
+ Leviathan et al. (2023) 
+ Y. Leviathan, M. Kalman, and Y. Matias 
+ Fast inference from transformers via speculative decoding .
+ In International Conference on Machine Learning ,
+ pp. 19274–19286 .
+ Cited by: §1 ,
+ §3 ,
+ §4.2 .
+ Lin (2004) 
+ C. Lin 
+ ROUGE: a package for automatic evaluation of summaries .
+ In Text Summarization Branches Out ,
+ pp. 74–81 .
+ Cited by: §5 .
+ Ma et al. (2023) 
+ X. Ma, G. Fang, and X. Wang 
+ LLM-pruner: on the structural pruning of large language models .
+ Advances in Neural Information Processing Systems 36 .
+ Cited by: §3 .
+ Men et al. (2024) 
+ X. Men, M. Xu, Q. Zhang, B. Wang, H. Lin, Y. Lu, X. Han, and W. Chen 
+ ShortGPT: layers in large language models are more redundant than you expect .
+ arXiv preprint arXiv:2403.03853 .
+ Cited by: §3 .
+ Miao et al. (2024) 
+ X. Miao, G. Oliaro, Z. Zhang, X. Cheng, Z. Wang, Z. Zhang, R. Y. Y. Wong, A. Zhu, L. Yang, X. Shi, et al. 
+ SpecInfer: accelerating generative llm serving with speculative inference and token tree verification .
+ ACM International Conference on Architectural Support for Programming Languages and Operating Systems .
+ Cited by: §3 .
+ Nallapati et al. (2016) 
+ R. Nallapati, B. Zhou, C. dos Santos, Ç. Gu̧lçehre, and B. Xiang 
+ Abstractive text summarization using sequence-to-sequence rnns and beyond .
+ Proceedings of the 20th SIGNLL Conference on Computational Natural Language Learning , pp. 280–290 .
+ Cited by: §5 ,
+ Abstract .
+ Raposo et al. (2024) 
+ D. Raposo, S. Ritter, B. Richards, T. Lillicrap, P. C. Humphreys, and A. Santoro 
+ Mixture-of-depths: dynamically allocating compute in transformer-based language models .
+ arXiv preprint arXiv:2404.02258 .
+ Cited by: §1 ,
+ §3 .
+ Schuster et al. (2022) 
+ T. Schuster, A. Fisch, J. Gupta, M. Dehghani, D. Bahri, V. Q. Tran, Y. Tay, and D. Metzler 
+ Confident adaptive language modeling .
+ Advances in Neural Information Processing Systems 35 , pp. 17456–17472 .
+ Cited by: §1 ,
+ §3 ,
+ §6.1 .
+ Schuster et al. (2021) 
+ T. Schuster, A. Fisch, T. Jaakkola, and R. Barzilay 
+ Consistent accelerated inference via confident adaptive transformers .
+ Empirical Methods in Natural Language Processing .
+ Cited by: §1 ,
+ §3 .
+ See et al. (2017) 
+ A. See, P. J. Liu, and C. D. Manning 
+ Get to the point: summarization with pointer-generator networks .
+ In Proceedings of the 55th Annual Meeting of the Association for Computational Linguistics ,
+ pp. 1073–1083 .
+ Cited by: §5 ,
+ Abstract .
+ Sikdar (2026) 
+ P. K. Sikdar 
+ LayerRoute: input-conditioned adaptive layer skipping via lora fine-tuning for agentic language models .
+ arXiv preprint arXiv:2606.01838 .
+ Cited by: §1 ,
+ §7.1 ,
+ Abstract .
+ Stern et al. (2018) 
+ M. Stern, N. Shazeer, and J. Uszkoreit 
+ Blockwise parallel decoding for deep autoregressive models .
+ Advances in Neural Information Processing Systems 31 .
+ Cited by: §3 .
+ Sun et al. (2024) 
+ M. Sun, Z. Liu, A. Bair, and J. Z. Kolter 
+ A simple and effective pruning approach for large language models .
+ International Conference on Learning Representations .
+ Cited by: §3 .
+ Teerapittayanon et al. (2016) 
+ S. Teerapittayanon, B. McDanel, and H.T. Kung 
+ BranchyNet: fast inference via early exiting from deep neural networks .
+ International Conference on Pattern Recognition .
+ Cited by: §1 ,
+ §3 .
+ Xia et al. (2024) 
+ H. Xia, Y. Li, J. Zhang, C. Du, and W. Li 
+ SWIFT: on-the-fly self-speculative decoding for llm inference acceleration .
+ arXiv preprint arXiv:2410.06916 .
+ Cited by: §1 ,
+ §3 ,
+ §4.2 ,
+ Abstract .
+ Yang et al. (2024) 
+ A. Yang, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Li, D. Liu, F. Huang, H. Wei, et al. 
+ Qwen2.5 technical report .
+ arXiv preprint arXiv:2412.15115 .
+ Cited by: §5 ,
+ Abstract .
+ Zhang et al. (2024) 
+ P. Zhang, G. Zeng, T. Wang, and W. Lu 
+ TinyLlama: an open-source small language model .
+ arXiv preprint arXiv:2401.02385 .
+ Cited by: 4th item ,
+ §8 .
+ Appendix A Architecture Diagrams
+ Figures 5 and 6 give schematic diagrams for the two main-comparison methods; Figures 7 and 8 diagram LayerRoute and LayerDrop, discussed in the supplemental analysis (Section 7 ).
+ Figure 5: ConfLayers: a per-layer confidence estimate is thresholded against τ \tau , discovered online via Bayesian optimization; pure inference and search overhead are logged and reported separately (Section 6.2.1 ). 
+ Figure 6: SWIFT: the target model self-drafts by skipping a searched subset of its own layers, generates candidate continuations via tree attention, and verifies all candidates in a single forward pass of the full model. 
+ Figure 7: LayerRoute: a frozen backbone layer, a per-layer LoRA adapter, and a gate head combine via a straight-through hard gate to produce either the adapted layer output or a pure residual skip (Equations 7 – 8 ). Discussed in the supplemental analysis, Section 7 . 
+ Figure 8: LayerDrop: layers are stochastically dropped during training to make the backbone and LoRA adapters robust to any layer’s removal; at inference, one fixed set of layers, chosen once from training statistics, is pruned identically for every input — no router, no per-input adaptivity. Discussed in the supplemental analysis, Section 7 . 
+ Appendix B Additional Per-Seed Results
+ B.1 Main comparison: ConfLayers and SWIFT
+ Table 2 in the main text reports each accuracy cell as a mean over three seeds with the observed range. Tables 6 and 7 give every individual per-seed value.
+ Table 6: GSM8K exact-match accuracy at each of the three evaluation seeds, main comparison. 
+ Scale 
+ Seed 
+ Vanilla 
+ ConfLayers 
+ SWIFT 
+ 0.5B 
+ 2024 
+ 0.26 
+ 0.13 
+ 0.36 
+ 42 
+ 0.14 
+ 0.18 
+ 0.28 
+ 123 
+ 0.14 
+ 0.13 
+ 0.27 
+ 1.5B 
+ 2024 
+ 0.40 
+ 0.05 
+ 0.29 
+ 42 
+ 0.46 
+ 0.08 
+ 0.33 
+ 123 
+ 0.38 
+ 0.10 
+ 0.30 
+ Table 7: CNN/DailyMail ROUGE-L at each of the three evaluation seeds, main comparison. 
+ Scale 
+ Seed 
+ Vanilla 
+ ConfLayers 
+ SWIFT 
+ 0.5B 
+ 2024 
+ 0.167 
+ 0.175 
+ 0.190 
+ 42 
+ 0.174 
+ 0.184 
+ 0.196 
+ 123 
+ 0.167 
+ 0.178 
+ 0.185 
+ 1.5B 
+ 2024 
+ 0.193 
+ 0.204 
+ 0.205 
+ 42 
+ 0.206 
+ 0.218 
+ 0.223 
+ 123 
+ 0.213 
+ 0.222 
+ 0.230 
+ B.2 Supplemental analysis: LayerRoute and LayerDrop
+ Tables 8 and 9 give per-seed values underlying Table 4 , measured under the protocol described in Section 7.2 .
+ Table 8: GSM8K exact-match accuracy at each of the three evaluation seeds, supplemental analysis. 
+ Scale 
+ Seed 
+ LayerRoute 
+ LayerDrop 
+ 0.5B 
+ 2024 
+ 0.14 
+ 0.00 
+ 42 
+ 0.16 
+ 0.02 
+ 123 
+ 0.11 
+ 0.01 
+ 1.5B 
+ 2024 
+ 0.00 
+ 0.07 
+ 42 
+ 0.01 
+ 0.05 
+ 123 
+ 0.00 
+ 0.06 
+ Table 9: CNN/DailyMail ROUGE-L at each of the three evaluation seeds, supplemental analysis. 
+ Scale 
+ Seed 
+ LayerRoute 
+ LayerDrop 
+ 0.5B 
+ 2024 
+ 0.100 
+ 0.085 
+ 42 
+ 0.099 
+ 0.092 
+ 123 
+ 0.107 
+ 0.097 
+ 1.5B 
+ 2024 
+ 0.146 
+ 0.136 
+ 42 
+ 0.139 
+ 0.131 
+ 123 
+ 0.165 
+ 0.134 
+ Experimental support, please
+ view the build logs 
+ for errors. Generated by
+ L
+ A 
+ T
+ E 
+ xml 
+ .
+ Instructions for reporting errors
+ We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility and mobile
+ support. To report errors in the HTML that will help us improve conversion and rendering, choose any of the
+ methods listed below:
+ Click the "Report Issue" ( 
+ ) button, located in the page header.
+ Tip: You can select the relevant text first, to include it in your report.
+ Our team has already identified the following issues . We appreciate your time reviewing and reporting rendering errors we
+ may not have found yet. Your efforts will help us improve the HTML versions for all readers, because disability
+ should not be a barrier to accessing research. Thank you for your continued support in championing open access for
+ all.
+ Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML maintain a list of packages that need conversion , and welcome developer contributions .
+ We gratefully acknowledge support from
+ our major funders ,
+ member institutions , ,
+ and all contributors.
+ About 
+ · 
+ Help 
+ · 
+ Contact 
+ · 
+ Subscribe 
+ · 
+ Copyright 
+ · 
+ Privacy 
+ · 
+ Accessibility 
+ · 
+ Operational Status (opens in new tab) 
+ Major funding support from

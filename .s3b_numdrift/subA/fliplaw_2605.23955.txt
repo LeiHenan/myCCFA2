@@ -1,0 +1,849 @@
+ 
+ From Accuracy to Auditability: A Survey of Determinism in Financial AI Systems 
+ Report GitHub Issue 
+ × 
+ Title: 
+ Content selection saved. Describe the issue below: 
+ Description: 
+ Submit without GitHub 
+ Submit in GitHub 
+ arXiv is now an independent nonprofit! 
+ Learn more 
+ × 
+ Back to arXiv 
+ Why HTML? 
+ Report Issue 
+ Back to Abstract 
+ Download PDF 
+ Abstract. 
+ 1 Introduction 
+ Contributions. 
+ 2 Tabular Risk Models: The Determinism Challenge in Post-Hoc Explainability 
+ 2.1 The Challenge: Algorithmic Instability and Sampling Variance 
+ 2.2 The Challenge: Explanation Drift and Adversarial Fragility 
+ 2.3 Mitigations 
+ 2.4 Empirical validation. 
+ 3 Graph-Based Fraud Detection: The Mechanics of Topological Nondeterminism 
+ 3.1 Stochastic Neighborhood Sampling 
+ Financial-domain validation. 
+ 3.2 Temporal Asynchrony and Dynamic Graph Instability 
+ 3.3 Hardware-Level Nondeterminism in Scatter Operations 
+ 3.4 Mitigations for Graph Nondeterminism 
+ 4 Agentic AML Workflows and Unstructured Nondeterminism 
+ 4.1 Failure of Greedy Decoding 
+ Empirical validation. 
+ 4.2 Trajectory Drift and Agentic Nondeterminism 
+ 5 Engineering Determinism: Architectural Gateways and Systems Solutions 
+ 5.1 Neuro-Symbolic Gateways and Strict API Tooling 
+ 5.2 Batch-Invariant Inference Servers 
+ 5.3 Cryptographic Audit Trails for Model Risk Management 
+ 5.4 Cross-Modality Synthesis 
+ 6 Quantifying Reproducibility: Evaluation Metrics and Frameworks 
+ 6.1 Continuous Determinism (DDR) 
+ 6.2 Feature Attribution Stability in Tabular Models 
+ 6.3 Latent Space Variance in Graph Networks 
+ Embedding variance vs. decision stability. 
+ 6.4 Trajectory Determinism in Agentic Workflows 
+ 6.5 Logit-Level Determinism Scoring 
+ 6.6 Semantic Similarity Scoring for Output Equivalence 
+ Limitations. 
+ 6.7 Empirical Validation of TDI and PSD 
+ 7 Conclusion and Future Directions 
+ Limitations. 
+ References 
+ A LogU Uncertainty Decomposition 
+ B Tabular Determinism Solutions 
+ C GNN Evaluation Instability 
+ D Elliptic Embedding Variance 
+ E LLM/Agentic Evidence 
+ F Broader Impacts 
+ G PSD Limitations and Matching-Based Alternatives 
+ H DDR Metric Details 
+ License: CC BY-NC-SA 4.0
+arXiv:2605.23955v3 [cs.AI] 20 Aug 2026 
+ From Accuracy to Auditability: A Survey of Determinism in Financial AI Systems 
+ Conference:  ; ; 
+ Ruizhe Zhou
+ Affiliation:  Amazon.com , USA 
+ email: rexzhou@amazon.com 
+ , 
+ Xiaoyang Liu
+ Affiliation:  Amazon.com , USA 
+ email: lxaoya@amazon.com 
+ , 
+ Gaoyuan Du
+ Affiliation:  Amazon.com , USA 
+ email: gdu@amazon.com 
+ , 
+ Yi Zheng
+ Affiliation:  Amazon.com , USA 
+ email: yzhenmz@amazon.com 
+ , 
+ Shouxi Ren
+ Affiliation:  Amazon.com , USA 
+ email: shouxi@amazon.com 
+ , 
+ Deepayan Chakrabarti
+ Affiliation:  Amazon.com , USA 
+ email: deepayc@amazon.com 
+ and 
+ Dengdu Jiang
+ Affiliation:  Amazon.com , USA 
+ email: dengdjiu@amazon.com 
+ © none 
+ Abstract. 
+ Deploying machine learning in regulated financial environments—credit risk, fraud detection, and anti-money laundering—exposes critical vulnerabilities in algorithmic reproducibility. While early financial ML addressed statistical challenges such as backtest overfitting, deep neural networks and Generative AI have introduced mechanical nondeterminism rooted in hardware and architecture. This survey provides a systems perspective on reproducibility failures across three modalities now dominant in financial AI: tabular models (post-hoc explanation variance), graph networks (stochastic sampling and temporal asynchrony), and LLM-based agentic workflows (batch-dependent divergence and trajectory drift). We supplement the literature analysis with first-party experiments on public financial datasets—quantifying explanation rank instability in credit scoring, prediction flip rates in GNN-based fraud detection, and tensor-parallel-induced output divergence in LLM entity extraction. We propose a layered evaluation framework linking modality-specific metrics (RBO, $\mathcal{D}_{\text{cos}}$ , TDI, PSD) to audit readiness, and report where these measures overlap rather than complement one another. 
+ Note on this version (v3). This version corrects several errors in
+v1–v2 that were identified while re-running the same experiments for follow-on work.
+The graph flip rates were computed on a single split while described as covering ten;
+the cross-configuration LLM divergence rate was reported at half its true value because
+pooled exact match has a floor at $0.5$ ; the three “regimes” claimed for the TDI–PSD
+relationship are withdrawn as an artefact of a proxy implementation of PSD; the stated
+mechanism for GCN’s higher flip rate is contradicted by direct measurement; and
+“ $M{=}20$ ” on German Credit denoted an undisclosed variance-selected subset of a
+48-column encoding. Corrected values supersede v1–v2 wherever they differ and are
+marked in place. An extended treatment, tiering these instruments by regulatory role
+and adding a distributive analysis of the variance, is under review elsewhere. 
+ 1. Introduction 
+ Deploying machine learning in financial risk management—Credit Scoring, Fraud Detection, and Anti-Money Laundering (AML)—requires not only predictive accuracy but also algorithmic reproducibility. ML models in these domains operate under strict mandates such as the US Federal Reserve’s SR 11-7 guidelines, the Equal Credit Opportunity Act (ECOA), and the European Union’s AI Act  ( 1 , 2 ) . A model whose outputs vary materially across independent runs under identical inputs poses severe challenges for legal auditability, potentially rendering it undeployable regardless of its performance. 
+ Throughout this survey, we distinguish three related concepts. Computational determinism requires bit-exact identical outputs given identical inputs, model weights, and hardware—the strongest guarantee. Reproducibility is the weaker requirement that independent executions yield outputs consistent enough to support the same downstream decision (e.g., the same credit denial reasons), even if surface-level tokens differ. Auditability requires that any algorithmic decision can be reconstructed and independently verified after the fact, presupposing at least reproducibility. 
+ Historically, nondeterminism in financial modeling was understood as a statistical phenomenon—selection bias, multiple testing, and distributional shift. Harvey et al. (2016) exposed the “factor zoo” of overfitted factors, while Bailey and López de Prado (2014) formalized how selection bias inflates the Sharpe ratio  ( 3 , 4 , 5 ) . However, a fundamentally different class of nondeterminism has emerged—one rooted in the computational machinery itself. Modern ML architectures introduce nondeterminism through non-associative floating-point reductions on parallel accelerators, stochastic algorithmic components (GNN neighborhood sampling during inference, dropout during training), and emergent instabilities in agentic systems (LLM trajectory drift). 
+ Even when researchers fix all random seeds and use greedy decoding, exact replication is thwarted by the hardware stack. Modern parallelism paradigms  ( 47 ) compound this: during training, data parallelism introduces fluctuating All-Reduce accumulation order and pipeline parallelism creates timing variances in gradient application; during inference, tensor parallelism injects numerical noise via All-Gather collectives and dynamic batching alters reduction order within attention kernels. Propagated across billions of parameters, these divergences cascade through non-linear activations into macroscopic variations. 
+ A significant translation gap persists between regulatory expectations and technical practice. The EU AI Act  ( 2 ) articulates governance principles but relies on standards bodies to define acceptable variance. Standard metrics like AUROC or F1 are insensitive to run-to-run variance. Existing compliance approaches often append post-hoc XAI methods to satisfy interpretability requirements without resolving underlying mechanical instability. 
+ This survey systematically examines nondeterminism across three modalities: tabular data (post-hoc explanation variance in credit scoring), dynamic graphs (stochastic sampling and temporal asynchrony in fraud detection), and unstructured text (hardware-level nondeterminism and trajectory drift in agentic AML workflows). We conducted a targeted literature search across Google Scholar and arXiv (2018–2025), prioritizing work reporting quantitative reproducibility measurements over qualitative discussion. 
+ Contributions. 
+ First, we delineate classical statistical reproducibility concerns from modern systems-level computational nondeterminism. Second, we provide a source-verified taxonomy of nondeterminism mechanisms across three modalities, supplemented by first-party experiments on public financial datasets (Sections 2, 3, and 4). Third, we propose a layered, modality-aware evaluation framework—linking feature attribution consistency (RBO), graph embedding variance ( $\mathcal{D}_{\text{cos}}$ ), and agentic output agreement (TDI, PSD) to regulatory audit readiness—bridging domain-agnostic reproducibility tools  ( 7 , 6 ) and financial compliance requirements. 
+ 2. Tabular Risk Models: The Determinism Challenge in Post-Hoc Explainability 
+ In the domains of credit and fraud risk assessment, the foundational data modality remains strictly tabular. Historically, financial institutions relied on highly interpretable, deterministic frameworks such as generalized linear models (GLMs) or logistic regression. However, the pursuit of higher predictive accuracy has driven the industry toward highly parameterized, non-linear architectures, specifically deep ensemble trees (e.g., XGBoost, LightGBM) and deep tabular neural networks (e.g., TabNet) ( 45 ) . While these models capture complex, non-monotonic feature interactions, they function as computational black boxes. This creates a direct conflict with regulatory mandates: lending laws such as the Equal Credit Opportunity Act (ECOA) require explicit, deterministic “Adverse Action Notices,” and anti-fraud operations require auditable Suspicious Activity Reports (SARs) ( 1 ) . To bridge the gap between black-box accuracy and regulatory compliance, the ML community initially adopted post-hoc Explainable AI (XAI) frameworks, most notably LIME and SHAP ( 8 , 20 ) . However, treating explainability as a post-hoc software patch over a probabilistic model may introduce reproducibility failures. 
+ 2.1. The Challenge: Algorithmic Instability and Sampling Variance 
+ The fundamental determinism challenge in tabular risk models stems from the computational complexity of post-hoc attribution. The theoretical foundation of SHAP rests on cooperative game theory, requiring the evaluation of the model over the entire power set of features to compute exact marginal contributions. For a dataset with $M$ features, this necessitates $2^{M}$ model evaluations, rendering exact computation NP-hard. To circumvent this, practitioners rely on approximation algorithms, predominantly KernelSHAP, which samples binary feature coalitions from a background distribution ( 8 ) . This introduces a critical vulnerability: algorithmic instability driven by sampling variance . As demonstrated by Covert and Lee (2021), the variance of the KernelSHAP estimator scales at $\mathcal{O}(1/n)$ , where $n$ is the number of sampled coalitions ( 21 ) . Consequently, two independent executions of KernelSHAP on the exact same credit application, using the exact same underlying model but different random seeds, will yield divergent feature importance rankings. 
+ The magnitude of this variance is severe. Covert and Lee report that on the German Credit dataset, standard KernelSHAP requires 7–13 $\times$ more samples to converge to a stable mean-squared error threshold compared to paired-sampling variants, while unbiased estimators require up to 17,437 $\times$ more samples. Direct financial evidence confirms this: Lin and Wang (2025) measured SHAP ranking stability across 100 XGBoost reruns on credit default data ( 35 ) . While the top-ranked feature was stable, mid-ranked features—precisely the borderline variables most likely to appear in customer-facing denial rationales—spanned up to 25 distinct rank positions due to initialization and sampling variance. For an auditor, this means the legal reason provided for a credit denial is a nondeterministic statistical artifact. 
+ 2.2. The Challenge: Explanation Drift and Adversarial Fragility 
+ Beyond internal sampling variance, post-hoc explainers exhibit extreme sensitivity to localized data geometries, resulting in explanation drift. Because algorithms like LIME and KernelSHAP operate by perturbing inputs to observe the black-box model’s local behavior, the explainer’s decision boundary is inherently fragile. Seminal research by Slack et al. (2020) proved that this sampling mechanism can be actively exploited ( 12 ) . An adversary can train a biased “scaffolding” model that executes discriminatory lending policies on the actual data distribution but behaves benignly on the explainer’s perturbed distribution. In their experiments, adversarial attacks displaced the true sensitive feature from the top explanation ranks in 85–100% of held-out instances on financial datasets. 
+ Even without malicious intervention, natural data drift triggers this fragility. A minor, imperceptible shift in a continuous feature (e.g., an applicant’s income changing by a fraction of a percent) frequently leaves the model’s final risk score unchanged but completely reshuffles the local perturbation neighborhood, radically altering the final SHAP feature hierarchy ( 23 ) . This proves that local decision boundaries estimated by post-hoc tools lack the mathematical stability required for reliable Model Risk Management. 
+ 2.3. Mitigations 
+ Three structural solutions enforce determinism at the explanation layer. 
+ TreeSHAP. Lundberg et al.  ( 9 ) developed TreeSHAP for tree ensembles (XGBoost, LightGBM), computing exact attributions in $\mathcal{O}(TLD^{2})$ by pushing Shapley computation into the tree structure. This restores bit-exact determinism without stochastic approximation. 
+ Explainable Boosting Machines (EBMs). EBMs  ( 10 , 11 ) abandon the black-box paradigm: each feature’s contribution $f_{j}(x_{j})$ is computed independently via isolated shallow trees, with the final prediction $g(E[y])=\beta_{0}+\sum_{j}f_{j}(x_{j})$ . No perturbation or sampling is required—explanations are read from a static lookup table. 
+ Stability-aware training. Addressing findings that cost-sensitive optimization degrades explanation stability  ( 36 ) , adversarial regularization penalizes large attribution shifts under minor input perturbations, smoothing local decision boundaries. 
+ Table  7 summarizes these solutions. 
+ Table 1. Determinism challenges and solutions in tabular risk modeling. 
+ Challenge 
+ Source 
+ Mitigation 
+ Sampling Variance 
+ NP-hard Shapley requires stochastic approx. 
+ TreeSHAP: Exact polynomial-time structural routing 
+ Explanation Drift 
+ Perturbation fragility 
+ Adversarial regularization: Penalize high-gradient shifts 
+ Black-Box Obfuscation 
+ Post-hoc patches 
+ EBMs: Inherently interpretable, variance-free lookup tables 
+ 2.4. Empirical validation. 
+ To provide first-party evidence for the claims above, we conduct a controlled rank-stability experiment on two public credit datasets: the UCI German Credit dataset ( $N{=}1{,}000$ ) and the Kaggle Default of Credit Card Clients dataset ( $M{=}23$ , $N{=}30{,}000$ ). 
+ A disclosure about $M$ that v1–v2 omitted. German Credit has 20 original attributes, most of them categorical, so the number of model inputs depends on the encoding. Versions v1–v2 reported “ $M{=}20$ ” for a pipeline that one-hot encoded the categoricals into 48 columns and then reduced back to 20 by ranking columns on variance. That $M{=}20$ was therefore a variance-selected subset of the encoded space, neither the dataset’s native attributes nor the full encoding, and the selection step was not disclosed. It also does not do what it appears to: a dummy’s variance is $p(1-p)$ , so ranking one-hot columns by variance ranks how near a category’s frequency is to $50\%$ rather than how informative it is, and it makes $M$ a function of the encoding, which undercuts the explanation that larger $M$ enlarges the permutation space. We have removed the step and report both encodings below, since the gap between them is a result rather than a nuisance: 20 integer-coded attributes, and the full 48-column one-hot space. For each dataset, we train XGBoost classifiers using 3 independent random seeds and evaluate explanation stability using two explainers: KernelSHAP (with sample budgets $n\in\{100,500,1{,}000,5{,}000\}$ ) and TreeSHAP (exact computation). For each of 50 randomly sampled test instances, we execute each explainer configuration 30 times with distinct PRNG seeds, holding the underlying model weights fixed. We measure rank stability using the Jaccard Index at $k{=}3$ and $k{=}5$ (the number of adverse action reasons typically required by ECOA), and Rank-Biased Overlap (RBO) with decay parameter $p{=}0.9$ . 
+ Table  2 reports the results, which supersede those in v1–v2 for the reason just given. TreeSHAP achieves perfect determinism ( $J@3=J@5=\text{RBO}=1.0$ ) across all instances and all three configurations, confirming that exact structural computation eliminates explanation variance entirely. KernelSHAP at the common default of $n{=}100$ does not: on German Credit at $M{=}20$ , $J@3$ averages $0.74$ , so roughly one run in four produces a different set of top-3 denial reasons for the same applicant. Increasing the budget to $n{=}5{,}000$ reaches $0.97$ and still falls short of the $J@3{=}1.0$ a binding disclosure requires. 
+ Encoding width matters, and the within-dataset comparison isolates it: holding the data, the model family and the sampled instances fixed, moving German Credit from 20 integer-coded attributes to the 48-column one-hot space lowers $J@3$ at $n{=}100$ from $0.74$ to $0.61$ and $J@5$ from $0.71$ to $0.54$ . The cross-dataset ordering points the same way (Credit Card Default, $M{=}23$ , reaches $J@3{=}0.71$ and $J@5{=}0.62$ at $n{=}100$ ), but that comparison confounds $M$ with $N$ and with the data-generating process, so we do not rest the claim on it. 
+ One further correction to the RBO column. The values in v1–v2 omitted the tail term of Rank-Biased Overlap, which accounts for the unobserved remainder of the ranking beyond depth $k$ ; without it, RBO is systematically understated and cannot reach $1.0$ even for an exactly deterministic explainer. The column below uses the complete definition, $\text{RBO}=(1-p)\sum_{d}p^{d-1}A_{d}+p^{k}A_{k}$ , and is correspondingly higher throughout. 
+ Table 2. Explanation rank stability across 30 independent runs per instance (50 test
+instances, 3 model seeds). Higher is better ( $\uparrow$ ). German Credit is reported
+under both encodings, since v1–v2’s “ $M{=}20$ ” was a variance-selected subset of the
+48-column one-hot space rather than either encoding (Section 2.4). RBO uses the
+complete definition including the tail term; v1–v2 omitted it and understated the
+column throughout. These values supersede v1–v2. 
+ Dataset 
+ Explainer (samples) 
+ J@3 $\uparrow$ 
+ J@5 $\uparrow$ 
+ RBO $\uparrow$ 
+ German Credit ( $M{=}20$ ) 
+ KernelSHAP ( $n{=}100$ ) 
+ $0.74$ 
+ $0.71$ 
+ $0.86$ 
+ KernelSHAP ( $n{=}500$ ) 
+ $0.91$ 
+ $0.89$ 
+ $0.94$ 
+ KernelSHAP ( $n{=}1000$ ) 
+ $0.92$ 
+ $0.92$ 
+ $0.96$ 
+ KernelSHAP ( $n{=}5000$ ) 
+ $0.97$ 
+ $0.97$ 
+ $0.98$ 
+ TreeSHAP (exact) 
+ $1.00$ 
+ $1.00$ 
+ $1.00$ 
+ German Credit ( $M{=}48$ , one-hot) 
+ KernelSHAP ( $n{=}100$ ) 
+ $0.61$ 
+ $0.54$ 
+ $0.69$ 
+ KernelSHAP ( $n{=}500$ ) 
+ $0.85$ 
+ $0.82$ 
+ $0.87$ 
+ KernelSHAP ( $n{=}1000$ ) 
+ $0.90$ 
+ $0.87$ 
+ $0.91$ 
+ KernelSHAP ( $n{=}5000$ ) 
+ $0.95$ 
+ $0.94$ 
+ $0.96$ 
+ TreeSHAP (exact) 
+ $1.00$ 
+ $1.00$ 
+ $1.00$ 
+ Credit Card Default ( $M{=}23$ ) 
+ KernelSHAP ( $n{=}100$ ) 
+ $0.71$ 
+ $0.62$ 
+ $0.80$ 
+ KernelSHAP ( $n{=}500$ ) 
+ $0.84$ 
+ $0.81$ 
+ $0.91$ 
+ KernelSHAP ( $n{=}1000$ ) 
+ $0.88$ 
+ $0.86$ 
+ $0.93$ 
+ KernelSHAP ( $n{=}5000$ ) 
+ $0.94$ 
+ $0.94$ 
+ $0.97$ 
+ TreeSHAP (exact) 
+ $1.00$ 
+ $1.00$ 
+ $1.00$ 
+ Figure  1 provides a complementary per-feature view: while Table  2 measures top- $k$ set overlap, Figure  1 shows the rank span (max rank $-$ min rank across 30 runs) for each individual feature. Mid-ranked features—those most likely to appear in customer-facing denial rationales—exhibit the widest rank spans under KernelSHAP. 
+ Figure 1. Feature rank span across 30 KernelSHAP runs ( $n{=}100$ ) per instance on Credit Card Default ( $M{=}23$ ). Each box shows the range of rank positions a feature occupies across independent runs for a single test instance. Mid-ranked features exhibit up to 25 rank positions of variance—precisely the features most likely to appear in ECOA adverse action notices. TreeSHAP achieves zero variance (rank span ${=}$ 0) for all features on all instances. 
+ 3. Graph-Based Fraud Detection: The Mechanics of Topological Nondeterminism 
+ While tabular data dominates financial machine learning, modern fraud rings and Anti-Money Laundering (AML) typologies are inherently relational. Malicious actors exploit complex networks of synthetic identities, shell companies, and layered transactions to obscure illicit fund flows. To capture these topological dependencies, the financial industry has rapidly transitioned from isolated tabular models to Graph Neural Networks (GNNs) ( 25 ) . For example, in these architectures, nodes might represent financial entities—such as user accounts, IP addresses, or routing numbers—while edges represent their interactions, like wire transfers or shared devices. 
+ Unlike tabular ML, where a model processes an isolated feature vector, GNNs rely on recursive message-passing frameworks. A node’s latent representation (embedding) is iteratively updated by aggregating the feature vectors of its localized topological neighborhood. However, the application of GNNs to web-scale financial transaction graphs introduces systems-level reproducibility challenges ( 13 ) . These failures originate not from statistical overfitting, but from the mechanical necessity of stochastic sampling, the asynchronous nature of dynamic graphs, and hardware-level atomic operations on the GPU. 
+ 3.1. Stochastic Neighborhood Sampling 
+ Full-batch GNNs require the entire adjacency and feature matrices in GPU memory—infeasible for enterprise AML networks. GraphSAGE/PinSAGE  ( 14 , 46 ) sample stochastic neighbor subsets, guaranteeing run-to-run variance  ( 26 ) . Shchur et al. show model rankings reverse across random splits (100 splits $\times$ 20 initializations): on Cora, GAT leads under Planetoid but GCN leads under random splits (see Table  8 in Appendix  C ). Domain-specific work confirms this: Deprez et al.  ( 40 ) find synthetic AML data yields “overly optimistic results”; Duy et al.  ( 41 ) show initialization and normalization choices materially affect GNN performance on Elliptic Bitcoin. 
+ Financial-domain validation. 
+ We evaluate on the Elliptic Bitcoin dataset (203K nodes, 234K edges, ${\sim}2\%$ illicit)  ( 13 ) with GCN under deterministic aggregation and GraphSAGE and GAT under default aggregation, each over 50 seeds $\times$ 10 splits (2500 training runs). The corrected figures below come from a re-run on Tesla T4s, one configuration per device; the superseded v1–v2 figures were produced on an A10G. All three train full-batch: we vary the aggregation operator and the determinism flag, not the sampling regime, and no neighbor sampling is exercised anywhere in this experiment. Earlier versions of this survey labelled the GraphSAGE and GAT rows with fan-out sizes, which corresponded to nothing in the code and are removed. 
+ Table  3 shows GraphSAGE attaining the highest F1 ( $0.799$ ) while $15.5\%$ of nodes deviate from their modal label across seeds. Flip rates are computed within each split over its 50 seeds and then averaged across the 10 splits, since test node sets differ by split. The figures in v1–v2 ( $22.8/30.0/28.5\%$ ) were computed on split 0 alone while described as covering ten splits, and are superseded by the values in Table  3 . 
+ GCN’s higher flip rate ( $27.5\%$ ) despite deterministic execution is not explained by weaker discrimination near the boundary, as v1–v2 asserted. Retaining per-node cross-seed scores, mechanical dispersion is highest for GraphSAGE (mean s.d. $0.0867$ ), then GCN ( $0.0758$ ), then GAT ( $0.0683$ )—the reverse of the flip-rate ordering on the same nodes (GCN $32.0\%$ , GAT $27.7\%$ , GraphSAGE $21.9\%$ on split 0). GraphSAGE’s low flip rate is bought with margins and not with determinism: its scores move more run to run than either competitor’s. A flip rate mixes pipeline noise with distance to the decision threshold, so it is not an instrument for mechanical nondeterminism, and a tolerance written against it does not bound the serving stack. 
+ Because the flip rate counts any deviation from the modal label, it is monotone non-decreasing in the number of runs $R$ ; a figure quoted without its $R$ is not interpretable. The $R$ -invariant companion is the expected pairwise disagreement (EPD), the probability that two independent runs disagree, which at $R{=}50$ is four to nine times smaller than the any-deviation form. Table  3 reports both. 
+ Rankings are split-dependent, though not as v1–v2 described: GraphSAGE has the highest mean F1 on all ten splits (Figure  2 ). What varies is which of three replicate runs of the same GraphSAGE configuration wins a given split, at margins of $1\times 10^{-5}$ to $7\times 10^{-4}$ F1. Full-batch GCN requires $5\times$ more VRAM. Embedding-level analysis (Appendix  D ) shows GAT exhibits $1.4\times$ higher cosine embedding variance (formally defined as $\mathcal{D}_{\text{cos}}$ in Section 6) than GCN, while initialization-induced drift dominates over sampling noise. 
+ Table 3. Illicit-class F1 on Elliptic Bitcoin, 50 seeds $\times$ 10 splits, all models
+full-batch. Flip rate is the fraction of test nodes deviating from their
+cross-seed modal label at $R{=}50$ , computed within each split and averaged across the
+ten; it grows with $R$ , so a band written against it must state its own $R$ .
+ EPD is the $R$ -invariant expected pairwise disagreement, which is what we
+recommend bands be written against. Neither bounds mechanical nondeterminism: the
+ordering here is the reverse of the score-dispersion ordering (Section 3.1).
+ $\downarrow$ =lower is better. These values supersede those in v1–v2, which were
+computed on a single split. 
+ Model 
+ F1 (mean $\pm$ std) 
+ Flip Rate $\downarrow$ 
+ EPD $\downarrow$ 
+ VRAM 
+ GCN (full-batch, det.) 
+ $0.554\pm 0.159$ 
+ 27.5% 
+ 5.4% 
+ 5.0 GB 
+ GraphSAGE (full-batch) 
+ $0.799\pm 0.127$ 
+ 15.5% 
+ 1.7% 
+ 1.0 GB 
+ GAT (full-batch) 
+ $0.500\pm 0.117$ 
+ 25.7% 
+ 6.5% 
+ 1.3 GB 
+ Figure 2. Model ranking across 10 splits on Elliptic Bitcoin. GraphSAGE has the highest
+mean F1 on every split, so the architecture does dominate; the caption in
+v1–v2 stated the opposite. The instability is one level down: which of three
+replicate runs of the same GraphSAGE configuration wins a given split varies, at
+margins of $1\times 10^{-5}$ to $7\times 10^{-4}$ F1. That is the sharper result, since
+selection instability survives fixing the architecture, the protocol and the seeds. 
+ 3.2. Temporal Asynchrony and Dynamic Graph Instability 
+ Beyond spatial sampling variance, AML networks suffer from severe temporal nondeterminism. Financial transaction networks are Continuous-Time Dynamic Graphs (CTDGs) where edges stream asynchronously and continuously ( 27 ) . When a transaction occurs, the state of the participating nodes must be instantaneously updated. 
+ In live production systems relying on Temporal Graph Networks (TGNs)  ( 27 ) , message-passing mechanisms depend strictly on the chronological ordering of edges. TGNs maintain a node memory state $\mathbf{s}_{v}(t)$ , which is updated via a Recurrent Neural Network (RNN) module (e.g., a GRU) based on the previous state and incoming messages: 
+ $\mathbf{s}_{v}(t)=\text{GRU}\left(\mathbf{s}_{v}(t^{-}),\mathbf{m}_{v}(t)\right)$ 
+ High-throughput distributed architectures frequently experience microsecond variances in network latency. Consequently, the exact temporal order in which simultaneous transactions are ingested and processed by the inference server fluctuates. Because the memory update function is stateful and highly path-dependent, a microsecond race condition between two edges altering the same target node fundamentally shifts the trajectory of the localized embedding, breaking exact replication between offline backtests and live deployment. While no published study has yet quantified the exact magnitude of temporal-ordering variance in production AML graphs, the analogous finding from LLM inference—where batch-ordering changes alone induce $>$ 4% accuracy variance ( 37 ) —suggests that path-dependent financial graph systems face similar or greater sensitivity. 
+ 3.3. Hardware-Level Nondeterminism in Scatter Operations 
+ Even if a financial institution completely freezes the graph topology and strictly sequences edge ingestion, exact computational reproducibility remains elusive. In frameworks commonly used for GNNs (such as PyTorch Geometric), the AGGREGATE function relies on scatter-reduction operations (e.g., scatter_add ) to pool messages from a variable number of source nodes. On heavily parallelized GPU architectures, these scatter operations are implemented using atomic hardware instructions (e.g., atomicAdd in CUDA) to prevent memory corruption across parallel threads ( 28 ) . 
+ Floating-point arithmetic in limited precision is inherently non-associative; meaning $(\mathbf{a}+\mathbf{b})+\mathbf{c}\neq\mathbf{a}+(\mathbf{b}+\mathbf{c})$ . Because the GPU warp scheduler dynamically dictates the execution order of parallel threads based on instantaneous hardware load, the exact order in which neighbor messages are accumulated is strictly nondeterministic across independent runs, posing a direct challenge to verifiable AI systems. 
+ 3.4. Mitigations for Graph Nondeterminism 
+ Three approaches address GNN reproducibility at different cost points. First, torch.use_deterministic_algorithms(True) forces deterministic scatter operations at the framework level, but requires full-batch processing ( $5\times$ VRAM, as shown in Table  3 ). Second, increasing the neighbor sample size reduces sampling variance with diminishing returns  ( 14 ) , trading memory for stability; v1–v2 attributed this to “our experiments”, which was incorrect, since no neighbor sampling is exercised anywhere in our experiment. Third, for temporal graphs, strictly sequencing edge ingestion via timestamp-ordered queues eliminates race conditions at the cost of throughput. Unlike the tabular setting where exact solutions exist (TreeSHAP), no current approach achieves zero-cost determinism for large-scale GNNs—the memory-determinism trade-off remains fundamental. 
+ 4. Agentic AML Workflows and Unstructured Nondeterminism 
+ While tabular and graph-based risk models process numerical data, the vast majority of financial compliance relies on parsing unstructured, multimodal text. Historically, institutions relied on deterministic rule engines or static embedding models (e.g., FinBERT) for Named Entity Recognition (NER) ( 30 ) . Because these architectures rely on a single forward pass without autoregressive generation, they achieve near-perfect computational reproducibility. 
+ However, the industry has rapidly shifted toward deploying Large Language Models (LLMs) and multi-agent systems. These systems actively reason, execute tool calls, and synthesize multi-document risk narratives. The trend toward general-purpose reasoning models trained with reinforcement learning  ( 32 ) further amplifies this concern: extended chain-of-thought sequences generate hundreds or thousands of tokens, providing more opportunities for micro-variances to compound. This transition from static embeddings to autoregressive, agentic reasoning introduces a significant vulnerability: the breakdown of exact-match computational determinism. 
+ 4.1. Failure of Greedy Decoding 
+ Setting the generation temperature to zero ( $T{=}0$ ) for greedy decoding does not guarantee determinism in practice  ( 16 ) . Zhang et al.  ( 37 ) show changing tensor-parallel (TP) size induces $>$ 4% accuracy variance even under greedy decoding; their TBIK kernels restore bit-wise reproducibility. Inference determinism is a systems property  ( 33 ) . In Chain-of-Thought (CoT) pipelines, a single token substitution at step $t$ irreversibly alters the context for $t{+}1$ , compounding into divergent risk summaries. Hardware-level nondeterminism further compounds this: optimized kernels (FlashAttention  ( 29 ) ) rely on atomic reductions whose accumulation order varies with batch size  ( 17 ) . 
+ Empirical validation. 
+ We process 100 synthetic SAR narratives with three LLMs (Qwen2.5-7B, InternLM2.5-7B, Phi-3-mini) via vLLM on A10G, greedy decoding, varying only TP $\in\{1,2,4\}$ (10 runs/config). Table  4 reports results using four metrics: Exact Match (EM, binary string identity), Pairwise Semantic Determinism (PSD, sentence-level semantic equivalence; see Section 6), Entity-level Jaccard (Ent.J), and the Token Determinism Index. The columns marked $\text{TDI}^{p}$ and $\text{PSD}^{p}$ are proxies, not the metrics as defined in Section 6 , and are discussed as such below; the definitions require per-token logprobs and a sentence-embedding model respectively, and the recorded runs retained neither. 
+ Within any fixed TP, every run is bit-identical and EM ${=}$ 1.0, so the pipeline appears perfectly deterministic to any test that holds infrastructure constant. Across TP widths, $30$ – $36\%$ of prompts yield different text . Versions v1–v2 reported “14–18% diverge” here, which is exactly half the true rate. That figure came from pooling both widths and reading $1-\text{EM}$ as the divergence rate: because each configuration is internally bit-identical, per-prompt EM takes only the values $0.5$ and $1.0$ , so the pooled mean is $1-d/2$ for a divergence fraction $d$ , and $1-\text{EM}$ recovers $d/2$ . We report $d$ directly; a metric with a floor at half its range is a poor compliance threshold. Entity-level Jaccard remains high ( $0.96$ – $0.99$ ), so most surface divergence leaves extracted fields intact — but the residual gap below $1.0$ is the compliance-relevant part, since a $1$ – $4\%$ chance that an entity or amount differs disqualifies a filed field even when the narrative reads the same. 
+ Table 4. LLM determinism on SAR extraction (100 prompts, 10 runs/config, $T{=}0$ ).
+ $\uparrow$ =higher is better, $\downarrow$ =lower is better. $d$ is the fraction of
+prompts whose text differs across the compared widths, computed directly rather than as
+ $1-\text{EM}$ : pooled EM has a floor at $0.5$ because each configuration is internally
+bit-identical, so v1–v2’s reading of $1-\text{EM}$ as the divergence rate reported half
+its true value. $\text{PSD}^{p}$ and $\text{TDI}^{p}$ are the proxy implementations
+used in v1–v2, retained for comparison; PSD mean and PSD min are the
+metric as defined, recomputed from SemScore over the cached generations. Note that the
+proxy’s apparent “substantive drift” for InternLM ( $0.88$ ) does not survive: its
+faithful PSD is $0.996$ . Phi-3’s faithful minimum of $0.598$ is the figure a
+tolerance on the worst narrative would have to clear. 
+ Model 
+ Comparison 
+ EM $\uparrow$ 
+ $d\downarrow$ 
+ PSD ${}^{p}\uparrow$ 
+ PSD mean $\uparrow$ 
+ PSD min $\uparrow$ 
+ Ent.J $\uparrow$ 
+ TDI ${}^{p}\uparrow$ 
+ Qwen2.5-7B 
+ Within (any TP) 
+ 1.00 
+ 0% 
+ 1.00 
+ 1.000 
+ 1.000 
+ 1.00 
+ 1.00 
+ TP1 vs. 4 
+ 0.85 
+ 30% 
+ 0.99 
+ 0.997 
+ 0.923 
+ 0.99 
+ 0.77 
+ InternLM2.5 
+ Within (any TP) 
+ 1.00 
+ 0% 
+ 1.00 
+ 1.000 
+ 1.000 
+ 1.00 
+ 1.00 
+ TP1 vs. 4 
+ 0.82 
+ 36% 
+ 0.88 
+ 0.996 
+ 0.975 
+ 0.97 
+ 0.75 
+ Phi-3-mini 
+ Within (any TP) 
+ 1.00 
+ 0% 
+ 1.00 
+ 1.000 
+ 1.000 
+ 1.00 
+ 1.00 
+ TP1 vs. 4 
+ 0.83 
+ 35% 
+ 0.89 
+ 0.992 
+ 0.598 
+ 0.96 
+ 0.83 
+ 4.2. Trajectory Drift and Agentic Nondeterminism 
+ When LLMs are deployed as agents (ReAct  ( 31 ) ), nondeterminism compounds through tool-call chains. DFAH  ( 15 ) finds 120B+ models require $3.7\times$ larger validation samples than 7–20B models. Wang et al.  ( 38 ) report 19–46% structured-output degradation across temperatures. Lee et al.  ( 39 ) show single-judge MAE is $4\times$ higher than multi-agent evaluation on identical financial inputs (see Table  10 in Appendix  E for a full evidence summary). 
+ 5. Engineering Determinism: Architectural Gateways and Systems Solutions 
+ Resolving the reproducibility crisis in financial risk requires acknowledging that monolithic, probabilistic deep learning models cannot simultaneously achieve high-level reasoning and strict mathematical determinism. Consequently, the systems engineering community is pivoting toward hybrid architectures that isolate stochastic generation from deterministic execution. 
+ 5.1. Neuro-Symbolic Gateways and Strict API Tooling 
+ To combat agentic trajectory drift, enterprise systems are moving toward strictly typed, neuro-symbolic architectures. In these frameworks, the LLM is restricted to a semantic translation layer—reading unstructured text and mapping it to a predefined ontology. All mathematical calculations, logical deductions, and final risk scoring are offloaded to a deterministic symbolic engine. By enforcing strict API contracts (e.g., forcing JSON schema adherence via constrained decoding frameworks), institutions can ensure that the risk engine processes deterministic code ( 34 ) . A recent benchmark of constrained decoding methods confirms that JSON Schema-based generation can guarantee structural compliance at the token level, though the effectiveness varies across schema complexity and model size ( 42 ) . The IBM cross-provider validation framework further demonstrates that combining schema enforcement with multi-provider consensus checking reduces output drift in financial reconciliation and regulatory reporting workflows ( 33 ) . 
+ 5.2. Batch-Invariant Inference Servers 
+ Addressing hardware-level nondeterminism requires intervention at the kernel level. Recent work has identified that the primary source of LLM inference nondeterminism is batch-size-dependent reduction order in GPU kernels ( 18 ) . Proposed mitigations include batch-invariant kernel designs that rewrite atomic reduction operations (specifically RMSNorm and Attention accumulations) to force a fixed summation order regardless of batch composition, as well as verified speculation approaches that decouple determinism from kernel design entirely ( 19 ) . By guaranteeing that floating-point partial sums are accumulated in a strictly identical order regardless of surrounding batch size or thread scheduling, these systems can achieve run-to-run bitwise exactness, enabling standard software unit-testing to be applied to locally deployed LLMs. However, these approaches remain early-stage: batch-invariant kernels incur throughput overhead, and verified speculation requires additional engineering complexity. 
+ 5.3. Cryptographic Audit Trails for Model Risk Management 
+ To satisfy regulators enforcing the EU AI Act and SR 11-7 ( 2 , 1 ) , systems engineers are implementing cryptographic audit trails. Because API drift and model weight updates are inevitable, true reproducibility requires state-rebuilding capabilities. Modern frameworks employ hash-chain-backed audit logging, creating immutable snapshots of the exact model weights, hyperparameter states, quantization thresholds, and random seed initializations at the exact millisecond a credit denial or AML alert is generated. The DFAH framework demonstrates one practical instantiation of this approach: by logging full agent trajectories with determinism scores at each step, it enables post-hoc audit replay and pinpoints exactly where in a multi-step workflow the output diverged ( 15 ) . This allows auditors to reconstruct the precise computational environment after the fact, though the storage and engineering overhead of maintaining such trails at enterprise scale remains an open challenge. 
+ 5.4. Cross-Modality Synthesis 
+ Table  5 synthesizes the reproducibility failure modes, evidence, and mitigations across all three modalities. Each domain faces distinct mechanical sources of nondeterminism, but the regulatory implication is shared: systems that cannot demonstrate reproducible outputs under controlled conditions cannot satisfy audit requirements regardless of predictive accuracy. 
+ Table 5. Cross-modality synthesis of reproducibility failures in financial AI. † First-party results. 
+ Domain 
+ Failure Mode 
+ Evidence 
+ Mitigation 
+ Trade-off 
+ Tabular 
+ Sampling variance 
+ 17,437 $\times$ divergence  ( 21 ) ; $J@3{=}0.71$ – $0.76$ † 
+ TreeSHAP; paired sampling 
+ Computation cost 
+ Tabular 
+ Adversarial fragility 
+ 85–100% attack success  ( 12 ) 
+ Adversarial regularization  ( 36 ) 
+ Testing burden 
+ Graph 
+ Split/init sensitivity 
+ Rankings flip across splits  ( 26 ) ; 3/10 † 
+ Repeated-run evaluation 
+ Benchmarking cost 
+ Graph 
+ Stochastic sampling 
+ 30% flip rate on Elliptic † 
+ Deterministic aggregation 
+ $5\times$ VRAM † 
+ LLM 
+ TP/batch config 
+ $>$ 4% accuracy var.  ( 37 ) ; EM $=$ 0.82–0.85 † 
+ Batch-invariant kernels 
+ Throughput overhead 
+ LLM 
+ Trajectory drift 
+ MAE $4\times$ higher  ( 39 ) ; 19–46% degrad.  ( 38 ) 
+ Process-aware eval. 
+ Orchestration cost 
+ 6. Quantifying Reproducibility: Evaluation Metrics and Frameworks 
+ Traditional machine learning benchmarks overwhelmingly prioritize predictive accuracy metrics—such as Area Under the Receiver Operating Characteristic Curve (AUROC), F1-score, and Mean Average Precision (mAP). However, these metrics evaluate the relationship between the model’s output and the ground-truth label, completely ignoring the mechanical stability of the model across independent execution traces. While domain-agnostic reproducibility tools exist—notably TorchMetrics ( 7 ) , which provides standardized metric computation for reproducible evaluation, and Bhojanapalli et al. ( 6 ) , who quantify prediction-level variance across hardware configurations—these frameworks do not address the modality-specific failure modes that arise in regulated financial settings: stochastic feature attribution in credit scoring, topological embedding drift in fraud detection graphs, and trajectory divergence in agentic AML workflows. To rigorously audit financial AI systems for regulatory compliance, the machine learning community must adopt a standardized taxonomy of reproducibility metrics that quantify internal variance independent of ground-truth accuracy, tailored to the specific computational modalities deployed in financial risk management. 
+ The measurement of determinism requires modality-specific evaluation frameworks. To accommodate this, we propose a layered evaluation stack that transitions from continuous probability scoring (DDR) to tabular feature ranking (RBO), latent graph embeddings (Cosine Variance), and unstructured agentic generation (TDI and PSD). 
+ 6.1. Continuous Determinism (DDR) 
+ For continuous prediction scores, Anjum et al.  ( 44 ) propose the Deterministic-Non-Deterministic Ratio: $\text{DDR}=\text{Var}(D)/\text{Var}(N)$ , decomposing predictions into signal $D$ and hardware noise $N$ . We include DDR in our taxonomy for completeness but do not validate it experimentally (see Appendix  H for details). 
+ 6.2. Feature Attribution Stability in Tabular Models 
+ In credit risk, where post-hoc explainers like KernelSHAP are used to generate adverse action notices, reproducibility is measured by the stability of the generated feature importance rankings across multiple runs with distinct random seeds. Given a tabular model $f$ and an input instance $x$ , an explainer generates a ranked list of feature attributions $R$ . 
+ To quantify the deterministic stability of the explainer, practitioners cannot rely on simple Pearson correlation, as regulatory compliance primarily cares about the top reasons for denial, not the bottom. Therefore, the standard measurement is Top- $k$ Feature Agreement, frequently calculated using the Jaccard Index or Rank-Biased Overlap (RBO) ( 22 , 23 ) . 
+ For two independent runs yielding top- $k$ feature sets $S_{1}$ and $S_{2}$ , the Jaccard Feature Intersection is defined as: 
+ $J@k(S_{1},S_{2})=\frac{|S_{1}\cap S_{2}|}{|S_{1}\cup S_{2}|}$ 
+ A deterministic, legally compliant system requires $J@k=1.0$ for small $k$ (e.g., the top 4 denial reasons). As the evidence in Section 2 demonstrates, sampling-based explainers can produce substantial rank disagreement in mid-tier features, implying $J@k 
+ $\text{RBO}(R_{1},R_{2},p)=(1-p)\sum_{d=1}^{\infty}p^{d-1}\frac{|R_{1:d}\cap R_{2:d}|}{d}$ 
+ High-variance models exhibit low RBO scores, providing a quantitative metric to disqualify unstable credit models from production deployment. 
+ 6.3. Latent Space Variance in Graph Networks 
+ For Graph Neural Networks (GNNs) used in transaction monitoring, the final classification (e.g., fraud vs. benign) often remains stable, but the underlying latent representations fluctuate wildly due to stochastic neighborhood sampling and asynchronous edge ingestion. Measuring GNN reproducibility requires quantifying embedding drift in the high-dimensional latent space. 
+ Given a target node $v$ , let $\mathbf{h}_{v}^{(s_{1})}$ and $\mathbf{h}_{v}^{(s_{2})}$ represent the final layer $L_{2}$ -normalized embeddings generated across two independent runs with distinct sampling seeds $s_{1}$ and $s_{2}$ . The reproducibility of the GNN is quantified by the expected pairwise Cosine Distance across $N$ runs: 
+ $\mathcal{D}_{\text{cos}}(v)=\frac{2}{N(N-1)}\sum_{i=1}^{N}\sum_{j=i+1}^{N}\left(1-\frac{\mathbf{h}_{v}^{(s_{i})}\cdot\mathbf{h}_{v}^{(s_{j})}}{\|\mathbf{h}_{v}^{(s_{i})}\|\|\mathbf{h}_{v}^{(s_{j})}\|}\right)$ 
+ In a perfectly deterministic system, $\mathcal{D}_{\text{cos}}=0$ . In production AML networks using GraphSAGE, increasing the stochastic sample size $\mathcal{S}_{\mathcal{N}(v)}$ decreases latent variance at the cost of exponentially higher VRAM consumption, formally defining the hardware-determinism trade-off ( 14 ) . 
+ Embedding variance vs. decision stability. 
+ High $\mathcal{D}_{\text{cos}}$ does not necessarily imply unstable decisions: relative scores (e.g., $\mathbf{h}_{v}\cdot\mathbf{h}_{u}$ ) may remain stable if embeddings drift coherently. Our prediction flip rate (Section 3) directly measures decision-level instability and should be used alongside $\mathcal{D}_{\text{cos}}$ . 
+ 6.4. Trajectory Determinism in Agentic Workflows 
+ For multi-agent AML pipelines, determinism must be measured over the action path itself. An agent’s trace can be modeled as a sequence of discrete actions; applying the Levenshtein distance across independent executions pinpoints where the trajectory drifted  ( 15 ) . However, action-path metrics and Exact Match share a limitation: they cannot distinguish genuine uncertainty from legitimate variability among equally valid outputs. The following subsections introduce complementary metrics addressing this gap. 
+ 6.5. Logit-Level Determinism Scoring 
+ The metrics discussed above—Exact Match and Trajectory Edit Distance—as well as token-level semantic overlap measures like BERTScore  ( 24 ) , all operate on the output side of the inference pipeline: they compare final generated tokens or action sequences across runs. However, a complementary and arguably more fundamental approach is to measure determinism at the logit level, directly inspecting the pre-softmax score distribution that governs token selection. Recent work on Logits-induced Token Uncertainty (LogU) provides a principled framework for this analysis ( 43 ) . 
+ The key insight of LogU is that probability-based uncertainty measures lose critical information during softmax normalization. When the raw logit vector $\mathbf{z}_{t}=\{\mathcal{M}(\tau^{m}|\mathbf{q},\mathbf{a}_{t-1})\}_{m=1}^{|\mathcal{V}|}$ is normalized into a probability distribution, the absolute magnitude of evidence accumulated during training is discarded, retaining only relative token rankings. This creates a fundamental ambiguity: a token with probability 0.3 could reflect either genuine model uncertainty (the model lacks knowledge and distributes mass thinly) or confident multi-answer awareness (the model has encountered many valid continuations and distributes mass across several strong candidates). For financial determinism auditing, this distinction is critical—the former signals unreliable inference, while the latter signals robust but legitimately variable output. 
+ LogU resolves this ambiguity by treating the top- $K$ logits as parameters of a Dirichlet distribution $\text{Dir}(\alpha_{1},\ldots,\alpha_{K})$ , where $\alpha_{k}=\mathcal{M}(\tau_{k}|\mathbf{q},\mathbf{a}_{t-1})$ for the $k$ -th highest-scoring token. This decomposition yields two orthogonal uncertainty dimensions. The aleatoric uncertainty (AU) captures the relative entropy among candidate tokens: 
+ $\text{AU}(a_{t})=-\sum_{k=1}^{K}\frac{\alpha_{k}}{\alpha_{0}}\left(\psi(\alpha_{k}+1)-\psi(\alpha_{0}+1)\right),\quad\alpha_{0}=\sum_{k=1}^{K}\alpha_{k}$ 
+ where $\psi$ denotes the digamma function. The epistemic uncertainty (EU) captures the model’s overall evidence strength: 
+ $\text{EU}(a_{t})=\frac{K}{\sum_{k=1}^{K}(\alpha_{k}+1)}$ 
+ We operationalize this as the Token Determinism Index (TDI). Given a sequence of $T$ generated tokens, TDI measures the fraction generated with sufficient epistemic evidence: 
+ $\text{TDI}=\frac{1}{T}\sum_{t=1}^{T}\mathds{1}\left[\text{EU}(a_{t}) 
+ where $\theta_{\text{EU}}$ is a calibrated threshold. A TDI close to 1.0 indicates nearly all tokens were generated with sufficient evidence strength, regardless of whether the model chose among multiple valid candidates. Unlike Exact Match, TDI tolerates legitimate variability while flagging genuinely unreliable tokens. 
+ 6.6. Semantic Similarity Scoring for Output Equivalence 
+ Regulators need to assess whether independent runs convey the same financial meaning . We adapt SemScore  ( 48 ) —which achieves the highest human-evaluation correlation among 8 metrics—into Pairwise Semantic Determinism (PSD). Given $N$ runs producing outputs $O_{i}$ : 
+ $\text{PSD}=\frac{2}{N(N-1)}\sum_{i=1}^{N}\sum_{j=i+1}^{N}\text{SemScore}(O_{i},O_{j})$ 
+ PSD is computable without model internals, complementing token-level BERTScore  ( 24 ) . 
+ Limitations. 
+ Sentence-level PSD can be dominated by filler words, masking divergences in critical content (entity names, amounts). For structured outputs, a matching-based approach—extracting information units and solving an optimal assignment (e.g., Hungarian algorithm)—provides a more precise signal; our entity-level Jaccard approximates this (see Appendix  G for a full discussion). 
+ Together, TDI and PSD answer: (1) did the model have sufficient evidence? and (2) do runs convey the same meaning? Table  6 summarizes the full metric taxonomy. 
+ Table 6. Proposed determinism metric taxonomy for financial AI. 
+ Metric 
+ Layer 
+ Measures 
+ Access 
+ Use Case 
+ J@k / RBO 
+ Feature 
+ Attribution stability 
+ Output 
+ Credit adverse actions 
+ $\mathcal{D}_{\text{cos}}$ 
+ Embedding 
+ Graph latent drift 
+ Output 
+ Fraud/AML monitoring 
+ TDI 
+ Logit 
+ Per-token evidence 
+ Internal 
+ Diagnosing divergence 
+ PSD 
+ Sentence 
+ Semantic equivalence 
+ Output 
+ Black-box API audit 
+ DDR 
+ Prediction 
+ Signal-to-noise 
+ Output 
+ Classification fragility 
+ 6.7. Empirical Validation of TDI and PSD 
+ This subsection reports a negative result that replaces the positive one claimed
+in v1–v2. Those versions read three regimes off a scatter of TDI against PSD and
+presented them as validating the complementarity of the two measures. That reading does
+not survive, for two reasons that compound. 
+ First, the quantity plotted as PSD was not PSD. It was pairwise entity-set Jaccard,
+thresholded—computed from the same entity sets the Ent.J column of
+Table  4 is built from. PSD and Ent.J were therefore not two
+measures but one, which is why they move together in that table. A complementarity
+claim cannot rest on two views of the same quantity. 
+ Second, the comparison was made at the wrong unit. Correlating nine configuration
+means has no power to answer whether two instruments carry different information about
+a given output; the question is per prompt. Recomputing PSD as defined—SemScore over
+the cached generations—and correlating per prompt against entity Jaccard gives
+ $+0.18$ to $+0.72$ (mean $+0.49$ , significant on four of six configurations), against
+ $+0.93$ to $+1.00$ for the proxy, which reaches exactly $1.000$ on Qwen. 
+ What the faithful metric supports is weaker and narrower than complementarity. PSD is
+ partly redundant with the entity check and not separable from it: it carries
+some information the entity sets do not, and the two should be read together rather
+than treated as independent evidence. It does grade where the proxy could not, taking
+27–36 distinct values per 100 prompts against the proxy’s two. What it does not
+recover is separation between models—all three sit between $0.992$ and $0.997$ on the
+mean—so the three regimes were a property of the proxy and not of the models.
+Per-prompt minima do carry signal the mean conceals (Phi-3 reaches $0.598$ on
+its worst prompt against Qwen’s $0.923$ ), which argues for reporting PSD as a minimum
+when the claim concerns the worst output an analyst will read. 
+ Figure 3. $\text{TDI}^{p}$ against $\text{PSD}^{p}$ for all model $\times$ TP configurations.
+ This figure is retained as a record of a withdrawn claim. Versions v1–v2 read
+three regimes off it and presented them as showing that the two instruments capture
+orthogonal aspects of determinism. They do not: the quantity plotted as PSD is a
+thresholded overlap of the same entity sets the Ent.J column is built from, so the two
+axes are not independent, and the scatter has one point per configuration where the
+question is per prompt. Under the faithful metric the regimes dissolve and all three
+models fall between $0.992$ and $0.997$ (Section 6.7). 
+ 7. Conclusion and Future Directions 
+ The transition from econometric models to deep networks and multi-agent workflows has transformed the reproducibility crisis from a statistical phenomenon into a systems engineering bottleneck. In tabular credit scoring, NP-hard Shapley computation forces stochastic approximations that destabilize explainability. In graph-based fraud detection, memory bottlenecks necessitate stochastic sampling that breaks embedding replication. In agentic workflows, dynamic batching and non-associative reductions compound through autoregressive trajectories, destroying exact-match determinism. 
+ Our first-party experiments quantify these failures on public financial datasets: KernelSHAP explanation rankings vary for roughly one applicant in four at the $n{=}100$ default ( $J@3{=}0.74$ at $M{=}20$ , falling to $0.61$ on the same data under a wider encoding), GNN prediction labels deviate from their cross-seed mode for $15$ – $28\%$ of test nodes ( $2$ – $7\%$ as pairwise disagreement), and LLM outputs diverge for $30$ – $36\%$ of prompts when tensor-parallel configuration changes—even under greedy decoding. The graph and LLM figures correct v1–v2, which reported the former on a single split and the latter at half its true value. 
+ Future work must prioritize: (1) batch-invariant CUDA kernels for bitwise accumulation without throughput loss; (2) neuro-symbolic architectures routing LLM outputs to deterministic engines; (3) deterministic attribution methods beyond stochastic sampling; and (4) instruments that genuinely separate benign variability from unreliable inference. Our own attempt does not: the faithful PSD is partly redundant with an entity-level check rather than complementary to it (Section 6.7), and the faithful TDI remains unmeasured because it requires logprobs the serving layer must be configured in advance to retain. Establishing separability, rather than assuming it, is the open problem. 
+ Limitations. 
+ The temporal-ordering analysis (Section 3) describes plausible mechanisms without production measurements. Our GNN experiment uses a single public dataset (Elliptic Bitcoin) and may not generalize to proprietary enterprise-scale graphs. Our LLM experiment tests only 7B-class open-source models on synthetic prompts—proprietary models and real compliance documents may exhibit different divergence patterns. The $\text{TDI}^{p}$ and $\text{PSD}^{p}$ columns are proxies rather than the metrics defined in Section 6: $\text{TDI}^{p}$ is a positional token-agreement rate rather than a Dirichlet decomposition over stored logits, and $\text{PSD}^{p}$ is a thresholded entity-set overlap rather than a semantic score. The faithful PSD is recoverable from the cached generations and is reported in Section 6.7; the faithful TDI is not, because the recorded runs never requested logprobs, and obtaining it requires re-generation with logprobs enabled. An instrument that consumes internal state must be provisioned before the run it is meant to audit. 
+ References 
+ (1) 
+Bank for International Settlements (BIS).
+ Managing explanations: how regulators can address AI explainability in Model Risk Management .
+ FSI Insights on policy implementation, 2024.
+ (2) 
+European Parliament and Council.
+ Regulation (EU) 2024/1689 laying down harmonised rules on Artificial Intelligence (Artificial Intelligence Act) .
+ Official Journal of the European Union, 2024.
+ (3) 
+Campbell R. Harvey, Yan Liu, and Heqing Zhu.
+ … and the Cross-Section of Expected Returns .
+ The Review of Financial Studies, 29(1):5–68, 2016.
+ (4) 
+David H. Bailey and Marcos López de Prado.
+ The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting, and Non-Normality .
+ The Journal of Portfolio Management, 40(5):89–107, 2014.
+ (5) 
+H. Arian et al.
+ Backtest overfitting in the machine learning era: A comparison of out-of-sample testing methods .
+ Knowledge-Based Systems, 2024.
+ (6) 
+S. Bhojanapalli et al.
+ On the Reproducibility of Neural Network Predictions .
+ arXiv preprint arXiv:2102.03349, 2021.
+ (7) 
+N. Detlefsen et al.
+ TorchMetrics - Measuring Reproducibility in Deep Learning .
+ Journal of Open Source Software, 7(70):4101, 2022.
+ (8) 
+Scott M. Lundberg and Su-In Lee.
+ A Unified Approach to Interpreting Model Predictions .
+ Advances in Neural Information Processing Systems (NeurIPS), 30, 2017.
+ (9) 
+Scott M. Lundberg, Gabriel Erion, Hugh Chen, Alex DeGrave, Jordan M. Prutkin, Bala Nair, Ronit Katz, Jonathan Himmelfarb, Nisha Bansal, and Su-In Lee.
+ From Local Explanations to Global Understanding with Explainable AI for Trees .
+ Nature Machine Intelligence, 2(1):56–67, 2020.
+ (10) 
+Yin Lou, Rich Caruana, and Johannes Gehrke.
+ Intelligible Models for Classification and Regression .
+ Proceedings of the 18th ACM SIGKDD International Conference on Knowledge Discovery and Data Mining (KDD), 150–158, 2012.
+ (11) 
+Rich Caruana, Yin Lou, Johannes Gehrke, Paul Koch, Marc Sturm, and Noemie Elhadad.
+ Intelligible Models for HealthCare: Predicting Pneumonia Risk and Hospital 30-day Readmission .
+ Proceedings of the 21st ACM SIGKDD International Conference on Knowledge Discovery and Data Mining (KDD), 1721–1730, 2015.
+ (12) 
+Dylan Slack, Sophie Hilgard, Emily Jia, Sameer Singh, and Himabindu Lakkaraju.
+ Fooling LIME and SHAP: Adversarial Attacks on Post hoc Explanation Methods .
+ AAAI/ACM Conference on AI, Ethics, and Society (AIES), 2020.
+ (13) 
+M. Weber et al.
+ Graph Neural Networks for Financial Fraud Detection: A Survey .
+ arXiv preprint arXiv:2411.05815, 2024.
+ (14) 
+William L. Hamilton, Rex Ying, and Jure Leskovec.
+ Inductive Representation Learning on Large Graphs .
+ Advances in Neural Information Processing Systems (NeurIPS), 30, 2017.
+ (15) 
+Raffi Khatchadourian.
+ Replayable Financial Agents: A Determinism-Faithfulness Assurance Harness for Tool-Using LLM Agents .
+ arXiv preprint arXiv:2601.15322, 2026.
+ (16) 
+L. Wang and Y. Wang.
+ Assessing Consistency and Reproducibility in the Outputs of Large Language Models: Evidence Across Diverse Finance and Accounting Tasks .
+ arXiv preprint arXiv:2503.16974, 2025.
+ (17) 
+Jiayi Yuan, Hao Li, Xinheng Ding, Wenya Xie, Yu-Jhe Li, Wentian Zhao, Kun Wan, Jing Shi, Xia Hu, and Zirui Liu.
+ Understanding and Mitigating Numerical Sources of Nondeterminism in LLM Inference .
+ arXiv preprint arXiv:2506.09501, 2025.
+ (18) 
+Thinking Machines Lab.
+ Defeating Nondeterminism in LLM Inference .
+ Technical Report, 2025. https://thinkingmachines.ai/defeating-nondeterminism .
+ (19) 
+Raja Gond, Aditya K Kamath, Ramachandran Ramjee, and Ashish Panwar.
+ Enabling Determinism in LLM Inference with Verified Speculation .
+ arXiv preprint arXiv:2601.17768, 2025.
+ (20) 
+Marco Tulio Ribeiro, Sameer Singh, and Carlos Guestrin.
+ "Why Should I Trust You?": Explaining the Predictions of Any Classifier .
+ Proceedings of the 22nd ACM SIGKDD International Conference on Knowledge Discovery and Data Mining (KDD), 2016.
+ (21) 
+Ian Covert and Su-In Lee.
+ Improving KernelSHAP: Practical Shapley Value Estimation Using Linear Regression .
+ Proceedings of AISTATS (PMLR 130), 2021.
+ (22) 
+William Webber, Alistair Moffat, and Justin Zobel.
+ A Similarity Measure for Indefinite Rankings .
+ ACM Transactions on Information Systems (TOIS), 28(4):1–34, 2010.
+ (23) 
+Amirata Ghorbani, Abubakar Abid, and James Zou.
+ Interpretation of Neural Networks is Fragile .
+ Proceedings of the AAAI Conference on Artificial Intelligence, 33(01):3681–3688, 2019.
+ (24) 
+Tianyi Zhang, Varsha Kishore, Felix Wu, Kilian Q. Weinberger, and Yoav Artzi.
+ BERTScore: Evaluating Text Generation with BERT .
+ International Conference on Learning Representations (ICLR), 2020.
+ (25) 
+Thomas N. Kipf and Max Welling.
+ Semi-Supervised Classification with Graph Convolutional Networks .
+ International Conference on Learning Representations (ICLR), 2017.
+ (26) 
+Oleksandr Shchur, Maximilian Mumme, Aleksandar Bojchevski, and Stephan Günnemann.
+ Pitfalls of Graph Neural Network Evaluation .
+ NeurIPS Relational Representation Learning Workshop, 2018. arXiv:1811.05868.
+ (27) 
+Emanuele Rossi, Ben Chamberlain, Fabrizio Frasca, Davide Eynard, Federico Monti, and Michael Bronstein.
+ Temporal Graph Networks for Deep Learning on Dynamic Graphs .
+ ICML Workshop on Graph Representation Learning, 2020.
+ (28) 
+Matthias Fey and Jan Eric Lenssen.
+ Fast Graph Representation Learning with PyTorch Geometric .
+ ICLR Workshop on Representation Learning on Graphs and Manifolds, 2019.
+ (29) 
+Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, and Christopher Ré.
+ FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness .
+ Advances in Neural Information Processing Systems (NeurIPS), 35, 2022.
+ (30) 
+Allen H. Huang, Hui Wang, and Yi Yang.
+ FinBERT: A Large Language Model for Extracting Information from Financial Text .
+ Contemporary Accounting Research, 40(2):806–841, 2023.
+ (31) 
+Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan, and Yuan Cao.
+ ReAct: Synergizing Reasoning and Acting in Language Models .
+ International Conference on Learning Representations (ICLR), 2023.
+ (32) 
+Boxin Wang, Chankyu Lee, Nayeon Lee, Sheng-Chieh Lin, Wenliang Dai, Yang Chen, Yangyi Chen, Zhuolin Yang, Zihan Liu, Mohammad Shoeybi, Bryan Catanzaro, and Wei Ping.
+ Nemotron-Cascade: Scaling Cascaded Reinforcement Learning for General-Purpose Reasoning Models .
+ arXiv preprint arXiv:2512.13607, 2025.
+ (33) 
+Raffi Khatchadourian and Rolando Franco.
+ LLM Output Drift: Cross-Provider Validation & Mitigation for Financial Workflows .
+ arXiv preprint arXiv:2511.07585, 2025.
+ (34) 
+Brandon T. Willard and Rémi Louf.
+ Efficient Guided Generation for Large Language Models .
+ arXiv preprint arXiv:2307.09702, 2023.
+ (35) 
+Liang Lin and Yue Wang.
+ SHAP Stability in Credit Risk Management: A Case Study in Credit Card Default Model .
+ Risks, 2025. arXiv:2508.01851.
+ (36) 
+Matteo Ballegeer, Matthias Bogaert, and Dries F. Benoit.
+ Evaluating the Stability of Model Explanations in Instance-Dependent Cost-Sensitive Credit Scoring .
+ European Journal of Operational Research, 326(3), 2025.
+ (37) 
+Ziyang Zhang, Xinheng Ding, Jiayi Yuan, Rixin Liu, Huizi Mao, Jiarong Xing, and Zirui Liu.
+ Deterministic Inference across Tensor Parallel Sizes That Eliminates Training-Inference Mismatch .
+ arXiv preprint arXiv:2511.17826, 2025.
+ (38) 
+Guanchen Wang et al.
+ STED and Consistency Scoring: A Framework for Evaluating LLM Structured Output Reliability .
+ NeurIPS Workshop, 2025. arXiv:2512.23712.
+ (39) 
+Yu-Ting Lee et al.
+ AEMA: Verifiable Evaluation Framework for Trustworthy and Controlled Agentic LLM Systems .
+ arXiv preprint arXiv:2601.11903, 2026.
+ (40) 
+Bruno Deprez, Toon Vanderschueren, Bart Baesens, Tim Verdonck, and Wouter Verbeke.
+ Network Analytics for Anti-Money Laundering – A Systematic Literature Review and Experimental Evaluation .
+ INFORMS Journal on Data Science, 2024. arXiv:2405.19383.
+ (41) 
+Dang Sy Duy, Nguyen Duy Chien, Kapil Dev, and Jeff Nijsse.
+ Normalisation and Initialisation Strategies for Graph Neural Networks in Blockchain Anomaly Detection .
+ arXiv preprint arXiv:2602.23599, 2026.
+ (42) 
+Derek Tam et al.
+ Generating Structured Outputs from Language Models .
+ arXiv preprint arXiv:2501.10868, 2025.
+ (43) 
+Shuo Chen, Tian Dong, Jiaqi Wang, and Dieter Fox.
+ Estimating LLM Uncertainty with Logits .
+ Proceedings of the International Conference on Machine Learning (ICML), 2025. arXiv:2502.00290.
+ (44) 
+Usman Anjum, Chris Trentman, Elrod Caden, and Justin Zhan.
+ Towards Modeling Data Quality and Machine Learning Model Performance .
+ arXiv preprint arXiv:2412.05882, 2024.
+ (45) 
+Sercan Ö. Arik and Tomas Pfister.
+ TabNet: Attentive Interpretable Tabular Learning .
+ Proceedings of the AAAI Conference on Artificial Intelligence, 35(8):6679–6687, 2021.
+ (46) 
+Rex Ying, Ruining He, Kaifeng Chen, Pong Eksombatchai, William L. Hamilton, and Jure Leskovec.
+ Graph Convolutional Neural Networks for Web-Scale Recommender Systems .
+ Proceedings of the 24th ACM SIGKDD International Conference on Knowledge Discovery and Data Mining (KDD), 974–983, 2018.
+ (47) 
+Deepak Narayanan, Mohammad Shoeybi, Jared Casper, Patrick LeGresley, Mostofa Patwary, Vijay Korthikanti, Dmitri Vainbrand, Prethvi Kashinkunti, Julie Bernauer, Bryan Catanzaro, Amar Phanishayee, and Matei Zaharia.
+ Efficient Large-Scale Language Model Training on GPU Clusters Using Megatron-LM .
+ Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis (SC), 2021.
+ (48) 
+Ansar Aynetdinov and Alham Fikri Aji.
+ SemScore: Automated Evaluation of Instruction-Tuned LLMs based on Semantic Textual Similarity .
+ arXiv preprint arXiv:2401.17072, 2024.
+ Appendix A LogU Uncertainty Decomposition 
+ LogU  ( 43 ) treats the top- $K$ logits as Dirichlet parameters $\text{Dir}(\alpha_{1},\ldots,\alpha_{K})$ . The aleatoric uncertainty (AU) captures relative entropy:
+ $\text{AU}(a_{t})=-\sum_{k=1}^{K}\frac{\alpha_{k}}{\alpha_{0}}(\psi(\alpha_{k}+1)-\psi(\alpha_{0}+1))$ , $\alpha_{0}=\sum_{k}\alpha_{k}$ .
+The epistemic uncertainty (EU) captures evidence strength:
+ $\text{EU}(a_{t})=K/\sum_{k=1}^{K}(\alpha_{k}+1)$ .
+This yields four quadrants: (I) high AU+EU = unreliable; (II) low AU, high EU = best guess; (III) low AU+EU = ideal deterministic; (IV) high AU, low EU = legitimate variability. On TruthfulQA, LogU achieves 72–74% AUROC  ( 43 ) . 
+ Appendix B Tabular Determinism Solutions 
+ Table  7 summarizes the three structural solutions for enforcing determinism in tabular risk models discussed in Section 2.3. 
+ Table 7. Determinism challenges and solutions in tabular risk modeling. 
+ Challenge 
+ Source 
+ Mitigation 
+ Sampling Variance 
+ NP-hard Shapley 
+ TreeSHAP: Exact routing 
+ Explanation Drift 
+ Perturbation fragility 
+ Adversarial regularization 
+ Black-Box 
+ Post-hoc patches 
+ EBMs: Variance-free lookups 
+ Appendix C GNN Evaluation Instability 
+ Table  8 reports GNN evaluation instability from Shchur et al.  ( 26 ) , demonstrating that model rankings reverse across random data splits on standard citation-network benchmarks. 
+ Table 8. GNN instability from Shchur et al.  ( 26 ) (100 splits $\times$ 20 init.). 
+ Dataset 
+ Split 
+ GCN 
+ GAT 
+ MoNet 
+ GS-max 
+ Cora 
+ Planetoid 
+ 81.9 $\pm$ 0.8 
+ 82.8 $\pm$ 0.5 
+ 82.2 $\pm$ 0.7 
+ 77.4 $\pm$ 1.0 
+ Cora 
+ Random 
+ 79.0 $\pm$ 0.7 
+ 77.9 $\pm$ 0.7 
+ 77.9 $\pm$ 0.7 
+ 74.5 $\pm$ 0.6 
+ PubMed 
+ Planetoid 
+ 79.0 $\pm$ 0.5 
+ 77.0 $\pm$ 1.3 
+ 77.7 $\pm$ 0.6 
+ 76.6 $\pm$ 0.8 
+ PubMed 
+ Random 
+ 69.5 $\pm$ 1.0 
+ 69.5 $\pm$ 0.6 
+ 70.7 $\pm$ 0.5 
+ 70.3 $\pm$ 0.8 
+ Appendix D Elliptic Embedding Variance 
+ Table  9 reports the cosine embedding variance $\mathcal{D}_{\text{cos}}$ for GNN architectures on the Elliptic Bitcoin dataset, complementing the F1 and flip rate results in Section 3. 
+ Table 9. $\mathcal{D}_{\text{cos}}$ on Elliptic Bitcoin (1K test nodes). $\downarrow$ =better. 
+ Model 
+ $\mathcal{D}_{\text{cos}}\downarrow$ 
+ Rel. GCN 
+ GCN (det.) 
+ 0.680 
+ $1.0\times$ 
+ GraphSAGE $[5,5]$ 
+ 0.681 
+ $1.0\times$ 
+ GAT $[10,10]$ 
+ 0.952 
+ $1.4\times$ 
+ Appendix E LLM/Agentic Evidence 
+ Table  10 summarizes the source-verified evidence on LLM and agentic nondeterminism discussed in Section 4. 
+ Table 10. LLM/agentic nondeterminism evidence. 
+ Study 
+ Setting 
+ Failure 
+ Metric 
+ Finding 
+ Zhang  ( 37 ) 
+ TP=1–8 
+ Config div. 
+ Accuracy 
+ $>$ 4% var. 
+ Wang  ( 38 ) 
+ JSON, 6 LLMs 
+ Drift 
+ STED 
+ 19–46% degrad. 
+ Lee  ( 39 ) 
+ Invoice, 30 runs 
+ Path var. 
+ MAE 
+ 0.077 vs. 0.018 
+ Appendix F Broader Impacts 
+ The inability to deterministically reproduce AI decisions in credit scoring and fraud detection poses societal risks concerning systemic bias and ECOA violations. The solutions discussed—batch-invariant architectures and cryptographic audit trails—aim to provide mathematically verifiable proofs of decision-making. 
+ Appendix G PSD Limitations and Matching-Based Alternatives 
+ A known limitation of sentence-level PSD is that filler words (articles, prepositions) dominate the sentence embedding, potentially masking divergences in critical content such as entity names or monetary amounts. For structured financial outputs where key fields are identifiable, a matching-based approach may be more appropriate: extract information units (entities, amounts, dates) from each output, then solve an optimal assignment problem (e.g., via the Hungarian algorithm) to find the best alignment between two runs, scoring determinism by the fraction of matched units. Our entity-level Jaccard metric (Table  4 ) approximates this approach for named entities. We retain sentence-level PSD for unstructured narratives where field extraction is not straightforward, while acknowledging that field-level matching provides a more precise signal for structured compliance outputs. 
+ Appendix H DDR Metric Details 
+ The Deterministic-Non-Deterministic Ratio (DDR)  ( 44 ) posits that any prediction $Y=D+N$ , where $D$ is the deterministic signal and $N$ is nondeterministic noise from hardware scatter operations, temporal latency, or sampling variance. DDR $=\text{Var}(D)/\text{Var}(N)$ measures classification fragility: in a low-DDR state, noise can overpower the signal near the decision boundary (e.g., a 0.51 fraud probability), causing labels to flip across runs. DDR-Accuracy curves allow institutions to stress-test how rapidly accuracy degrades as noise increases, establishing minimum-DDR thresholds for deployment. Isolating $D$ from $N$ requires controlled multi-hardware experiments beyond this survey’s scope. 
+ Experimental support, please
+ view the build logs 
+ for errors. Generated by
+ L
+ A 
+ T
+ E 
+ xml 
+ .
+ Instructions for reporting errors 
+ We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility and mobile
+ support. To report errors in the HTML that will help us improve conversion and rendering, choose any of the
+ methods listed below: 
+ Click the "Report Issue" ( 
+ ) button, located in the page header. 
+ Tip: You can select the relevant text first, to include it in your report. 
+ Our team has already identified the following issues . We appreciate your time reviewing and reporting rendering errors we
+ may not have found yet. Your efforts will help us improve the HTML versions for all readers, because disability
+ should not be a barrier to accessing research. Thank you for your continued support in championing open access for
+ all. 
+ Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML maintain a list of packages that need conversion , and welcome developer contributions . 
+ We gratefully acknowledge support from
+ our major funders ,
+ member institutions , ,
+ and all contributors.
+ About 
+ · 
+ Help 
+ · 
+ Contact 
+ · 
+ Subscribe 
+ · 
+ Copyright 
+ · 
+ Privacy 
+ · 
+ Accessibility 
+ · 
+ Operational Status (opens in new tab) 
+ Major funding support from 

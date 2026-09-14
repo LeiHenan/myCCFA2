@@ -31,16 +31,41 @@ import argparse
 import re
 import sys
 
-# ---- FILTER §0 的机械化部分：本机（单卡 RTX PRO 6000 96GB sm120 / Qwen3-4B dense）够不着的东西
-HARDWARE_PAT = re.compile(
-    r"\b(multi[- ]?node|multi[- ]?gpu|tensor[- ]?parallel|tp\s*=?\s*[2-9]|tp[2-9]\b|"
-    r"nvlink|infiniband|\bib\b|rdma|nixl|mnnvl|cluster|disaggregat|"
+# ---- FILTER §0 的机械化部分：**按硬件画像分档**
+# 教训（2026-09-15）：本文件原先硬编码"单卡 RTX PRO 6000 96GB sm120"，那是 2026-09-13 那台 AutoDL 机，
+# **该机已关机**。现役 schoolserver 是 8x RTX 4090 24GB sm89。硬件档写死会让整个"够不着"桶
+# 在两个方向上同时错：把 multi-GPU 判死（现机有 8 卡），却放过多卡内存够不着的条目。
+# ⇒ 硬件画像必须**显式分档**，且分档本身可自测。
+PROFILES = {
+    # 现役（默认）
+    "ada-8x4090": dict(
+        desc="8x RTX 4090 24GB sm89, PCIe-only 无 P2P(host-staged), 2x NUMA(4+4), "
+             "driver 550.67 CUDA 12.4, 192 核共享, /home 仅 ~67-79G 可用, vLLM 不可用, HF transformers 可用",
+        multi_gpu=True, nvlink=False, ib=False, max_card_gb=24, engines=("hf-transformers",)),
+    # 已关机的旧机（保留以便复述旧结论时对照）
+    "blackwell-1x-pro6000": dict(
+        desc="1x RTX PRO 6000 Blackwell 96GB sm120, driver 580.82.09 CUDA 13, vLLM 0.29 + SGLang 0.5.19",
+        multi_gpu=False, nvlink=False, ib=False, max_card_gb=96, engines=("vllm", "sglang", "hf-transformers")),
+}
+PROFILE = PROFILES["ada-8x4090"]      # 由 --profile 覆盖
+
+# ① 互连/规模：**任何机型都没有** ⇒ 永久硬杀
+FABRIC_PAT = re.compile(
+    r"\b(multi[- ]?node|infiniband|\bib\b|rdma|nixl|mnnvl|nvlink|nvswitch|cluster|disaggregat\w*)\b", re.I)
+# ② 多卡并行：**只在画像没有多卡时**才是硬杀
+MULTIGPU_PAT = re.compile(
+    r"\b(multi[- ]?gpu|tensor[- ]?parallel|tp\s*=?\s*[2-9]|tp[2-9]\b|"
     r"[2-9]\s*[x×]\s*(h100|h200|a100|b200|b300|4090|3090)|"
     r"(h100|h200|a100|b200|b300)\s*[x×]\s*[2-9]|"
-    r"\b(pcp|dcp|context parallel|sequence parallel|expert parallel|pipeline parallel)\b|"
-    r"\bdp\b.*\brank|data[- ]parallel)\b",
-    re.I,
-)
+    r"pcp|dcp|context parallel|sequence parallel|expert parallel|pipeline parallel|"
+    r"data[- ]parallel|\bdp\b.*\brank)\b", re.I)
+# ③ 单卡容量：**旧画像缺的那一半**。命中 80/96/141GB 级卡或显存下限描述 ⇒ 24GB 卡够不着
+CAPACITY_PAT = re.compile(
+    r"\b(80\s*gb|96\s*gb|141\s*gb|h100|h200|a100|b200|b300|mi300|h800|"
+    r"[2-9][0-9]\s*gb\s*(?:card|gpu|vram|memory)|(?:card|gpu|vram|memory)\s*[2-9][0-9]\s*gb)\b", re.I)
+# ④ 引擎能力：**不是自动杀**，只作提示列（地图通篇都在提引擎名，自动杀会过度杀伤）
+ENGINE_NEEDS = {"vllm": re.compile(r"\bvllm\b", re.I), "sglang": re.compile(r"\bsglang\b", re.I)}
+
 # 模型族够不着：我们的目标是 dense 全注意力 Qwen3-4B
 MODEL_PAT = re.compile(
     r"\b(hybrid|mamba|gdn|gated.?delta|linear attention|ssm|recurrent state|"
@@ -93,9 +118,22 @@ def parse_items(text: str) -> list[dict]:
     return items
 
 
-def classify(it: dict) -> dict:
+def classify(it: dict, profile: dict | None = None) -> dict:
+    pf = profile or PROFILE
     blob = it["title"] + "\n" + it.get("block", "")
-    hw = bool(HARDWARE_PAT.search(blob))
+    fabric = bool(FABRIC_PAT.search(blob))
+    multigpu = bool(MULTIGPU_PAT.search(blob))
+    capacity = bool(CAPACITY_PAT.search(blob))
+    hw_blocks = []
+    if fabric:
+        hw_blocks.append("fabric")                      # 无该互连：永久
+    if multigpu and not pf["multi_gpu"]:
+        hw_blocks.append("multi-gpu")                   # 画像只有单卡
+    if capacity and pf["max_card_gb"] < 40:
+        hw_blocks.append("capacity>%dG" % pf["max_card_gb"])
+    hw = bool(hw_blocks)
+    needs_engines = [e for e, pat in ENGINE_NEEDS.items() if pat.search(blob)]
+    engine_missing = [e for e in needs_engines if e not in pf["engines"]]
     mdl = bool(MODEL_PAT.search(blob))
     corr = bool(CORRECT_PAT.search(blob))
     occ = bool(OCCUPIED_PAT.search(blob))
@@ -125,7 +163,8 @@ def classify(it: dict) -> dict:
         bucket = "5-正确性/可观测(非优化类)"
     else:
         bucket = "6-其余(B段与非过期C段,降权)"
-    return dict(it, hw=hw, model_family=mdl, correctness=corr, occupied=occ,
+    return dict(it, hw=hw, hw_why="+".join(hw_blocks), model_family=mdl, correctness=corr,
+                occupied=occ, engine_hint=("有引擎依赖:" + ",".join(engine_missing)) if engine_missing else "",
                 section=sec, s3b=s3b, expired=expired,
                 reachable=reachable, bucket=bucket)
 
@@ -145,8 +184,11 @@ def main() -> int:
     ap.add_argument("--map", required=False)
     ap.add_argument("--only-reachable", action="store_true")
     ap.add_argument("--bucket", help="只打印某个桶（前缀匹配）")
+    ap.add_argument("--profile", default="ada-8x4090", choices=sorted(PROFILES))
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
+    global PROFILE
+    PROFILE = PROFILES[a.profile]
     if a.selftest:
         return selftest()
     if not a.map:
@@ -154,7 +196,8 @@ def main() -> int:
         return 2
 
     text = open(a.map, encoding="utf-8").read()
-    items = [classify(x) for x in parse_items(text)]
+    print("# 硬件画像: %s -- %s" % (a.profile, PROFILE["desc"]))
+    items = [classify(x, PROFILE) for x in parse_items(text)]
     if a.only_reachable:
         items = [x for x in items if x["reachable"]]
     if a.bucket:
@@ -163,11 +206,11 @@ def main() -> int:
     items.sort(key=lambda x: (BUCKET_ORDER.get(x["bucket"], 9), x["id"]))
 
     print(f"# {a.map} —— 共 {len(items)} 个格子（分诊，非判定）")
-    print("id\tsection\ts3b\texpired\thw\tmodel\tcorr\tbucket\ttitle\tline")
+    print("id\tsection\ts3b\texpired\thw\thw_why\tmodel\tcorr\tengine\tbucket\ttitle\tline")
     for x in items:
         print("\t".join([x["id"], x["section"], str(x["s3b"]), str(x["expired"]),
-                         str(x["hw"]), str(x["model_family"]), str(x["correctness"]),
-                         x["bucket"], x["title"][:100], str(x["line"])]))
+                         str(x["hw"]), x.get("hw_why", ""), str(x["model_family"]), str(x["correctness"]),
+                         x.get("engine_hint", ""), x["bucket"], x["title"][:100], str(x["line"])]))
     print()
     from collections import Counter
     print("# 分桶统计:", dict(Counter(x["bucket"] for x in items)))
@@ -208,16 +251,29 @@ def selftest() -> int:
     items = [classify(x) for x in parse_items(md)]
     got = {x["id"]: (x["bucket"], x["s3b"]) for x in items}
     assert len(items) == 9, (len(items), [x["id"] for x in items])
-    assert got["B1"][0] == "3-够不着", got["B1"]              # mamba + TP8 + NVLink
+    assert got["B1"][0] == "3-够不着", got["B1"]              # mamba + TP8 + NVLink（NVLink 永久杀）
     assert got["B3"][0] == "5-正确性/可观测(非优化类)", got["B3"]
-    assert got["B4"][0] == "3-够不着", got["B4"]              # RDMA
+    assert got["B4"][0] == "3-够不着", got["B4"]              # RDMA：永久硬杀
     assert got["B5"][0] == "4-已被占位/已解决(仅用于排除)", got["B5"]
     assert got["C1"][0] == "1-C且失败理由可能已过期", got["C1"]  # rev8 池 ①
     assert got["E1"][0] == "2-E且无人做过", got["E1"]            # rev8 池 ②
     assert got["E2"][0] == "4-已被占位/已解决(仅用于排除)", got["E2"]
     # rev8：B 段不因"没搜到"升权（B 段本身就被降权）
     assert got["B2"][0] == "6-其余(B段与非过期C段,降权)", got["B2"]
-    print("selftest OK")
+    # ---- 画像分档的真断言（2026-09-15 修系统性偏差时加）
+    ada, bw = PROFILES["ada-8x4090"], PROFILES["blackwell-1x-pro6000"]
+    t_tp = "### B9. Tensor parallel all-reduce chunking on 4 GPUs"
+    t_cap = "### B10. A 70B model served on one H100 80 GB card"
+    i_tp = classify(parse_items(t_tp)[0], ada)
+    i_cap = classify(parse_items(t_cap)[0], ada)
+    # 现役是 8 卡 ⇒ TP 类**不再**是硬杀（这正是原版把整桶判死的地方）
+    assert not i_tp["hw"], ("ada 画像不该把 TP 判为够不着", i_tp["hw_why"])
+    # 现役单卡 24G ⇒ 80G 卡的需求**必须**被杀（原版漏掉的那一半）
+    assert i_cap["hw"] and "capacity" in i_cap["hw_why"], ("ada 画像必须杀掉 80G 卡需求", i_cap["hw_why"])
+    # 旧画像下 TP 才是硬杀（保证对照仍可复述旧结论）
+    i_tp_old = classify(parse_items(t_tp)[0], bw)
+    assert i_tp_old["hw"] and "multi-gpu" in i_tp_old["hw_why"], i_tp_old["hw_why"]
+    print("selftest OK  | 画像分档断言: ada 下 TP 可达、80G 卡被杀；blackwell-1x 下 TP 被杀")
     for k in sorted(got):
         print(f"   {k:4s} {got[k][0]:32s} s3b={got[k][1]}")
     return 0

@@ -1,0 +1,873 @@
+ 
+ NaCl: A General and Effective KV Cache Eviction Framework for LLMs at Inference Time 
+ Report GitHub Issue 
+ × 
+ Title: 
+ Content selection saved. Describe the issue below:
+ Description: 
+ Submit without GitHub 
+ Submit in GitHub 
+ arXiv is now an independent nonprofit! 
+ Learn more 
+ × 
+ Back to arXiv 
+ Why HTML? 
+ Report Issue 
+ Back to Abstract 
+ Download PDF 
+ Abstract 
+ 1 Introduction 
+ 2 Related Work 
+ Efficient Inference with Limited KV Cache Budgets 
+ Efficient Transformers 
+ Length Extrapolation 
+ 3 Problem Formulation 
+ Eviction Policy 
+ Encoding Phase Eviction 
+ Generation Phase Eviction 
+ 4 Observation 
+ Rethinking Evaluation Metrics for Long-text Eviction Strategy 
+ Rethinking Attention Scores to Retain Pivotal Tokens 
+ 5 NaCl 
+ 5.1 Eviction based on Proxy Tokens 
+ 5.2 Eviction based on Random Possibility Sampling 
+ 6 Experiments 
+ 6.1 Setup 
+ Objective 
+ Models and Tasks 
+ Baselines 
+ 6.2 Result 
+ Short-Text Performance 
+ Long-text Performance 
+ 6.3 Ablation Studies 
+ The Effect of Proxy-Tokens Eviction 
+ The Effect of Random Eviction 
+ The Choice of Sampling Distributions for Random Eviction 
+ The Effect of Global Eviction 
+ The Effect of Head-wise Token Eviction 
+ 6.4 Analysis 
+ Memory Usage of KV Cache 
+ Interpretable Analysis of Eviction Results 
+ Why Head-wise Eviction Matters 
+ 7 Conclusion 
+ References 
+ A Appendix 
+ A.1 Sparsity in Attention Cache 
+ A.2 Attention Score Function in Eviction 
+ A.3 The Influence of Proxy Token Locations on NACL’s Proxy Eviction Strategy 
+ A.4 Why NaCl ues Random Eviction? 
+ A.5 Algorithmic Complexity Analysis 
+ A.6 Hyperparameters 
+ A.7 Reduce Attention Scores with FlashAttention-2 
+ Re-Computation of the Attention Score: 
+ Implementation of Reduce Attention Scores Kernel: 
+ License: CC BY-NC-ND 4.0
+arXiv:2408.03675v1 [cs.CL] 07 Aug 2024
+ NaCl : A General and Effective KV Cache Eviction Framework for LLMs at Inference Time
+ Yilong Chen
+ Affiliation: Institute of Information Engineering, Chinese Academy of Sciences
+ Email: chenyilong@iie.ac.cn 
+ Guoxia Wang
+ Email: cuishiyao@iie.ac.cn 
+ Junyuan Shang
+ Email: liutingwen@iie.ac.cn 
+ Shiyao Cui
+ Affiliation: Institute of Information Engineering, Chinese Academy of Sciences
+ Email: wangguoxia@baidu.com 
+ Zhenyu Zhang
+ Affiliation: Baidu Inc.
+ Email: shangjunyuan@baidu.com 
+ Tingwen Liu, 
+ Shuohuan Wang, Yu Sun, Dianhai Yu, Hua Wu 
+ Affiliation: Institute of Information Engineering, Chinese Academy of Sciences
+ Affiliation: Baidu Inc.
+ Email: zhangzhenyu07@baidu.com 
+ Affiliation: School of Cyber Security, University of Chinese Academy of Sciences
+ Email: wangshuohuan@baidu.com 
+ Email: sunyu02@baidu.com 
+ Abstract 
+ Large Language Models (LLMs) have ignited an innovative surge of AI applications, marking a new era of exciting possibilities equipped with extended context windows. However, hosting these models is cost-prohibitive mainly due to the extensive memory consumption of KV Cache involving long-context modeling. Despite several works proposing to evict unnecessary tokens from the KV Cache, most of them rely on the biased local statistics of accumulated attention scores and report performance using unconvincing metric like perplexity on inadequate short-text evaluation. In this paper, we propose NaCl , a general framework for long-context KV cache eviction that achieves more optimal and efficient eviction in a single operation during the encoding phase. Due to NaCl ’s efficiency, we combine more accurate attention score statistics in Proxy-Tokens Eviction with the diversified random eviction strategy of Random Eviction , aiming to alleviate the issue of attention bias and enhance the robustness in maintaining pivotal tokens for long-context modeling tasks. Notably, our method significantly improves the performance on short- and long-text tasks by 80% and 76% respectively, reducing KV Cache by up to 5 × 5\times with over 95% performance maintenance. The code is available at https://github.com/PaddlePaddle/Research/tree/master/NLP/ACL2024-NACL .
+ † † 
+ ∗ Equal contribution. Work done at Baidu Inc. † † 
+ † Corresponding author. ‡ Project lead. 
+ 1 Introduction
+ Large Language Models (LLMs) with longer context window Touvron et al. (2023) ; Xiong et al. (2023) ; Jiang et al. (2023) ; Anthropic (2023) ; OpenAI (2023) have emerged recently for better conducting long conversations,
+summarizing long documents, or debugging code at the repository level Bai et al. (2023) . However, their deployment is costly and infeasible on fixed memory hardware, mainly due to the surprisingly large memory consumption of KV Cache mechanism. For instance, a 7 billion-parameter model
+with an input batch size of 4 and a sequence length of 32k results in 64GB of KV cache, 4.7 × 4.7\times larger than the model weights.
+ Figure 1: Traditional eviction algorithms perform step-by-step greedy search for tokens for eviction. Our framework searches globally for tokens within a chunk and then performs one single eviction. 
+ To mitigate the
+pressure on the scarce GPU memory from using KV cache, a number of studies Zhang et al. (2023) ; Liu et al. (2023c) ; Ge et al. (2023) ; Xiao et al. (2023) have explored sparsity among Transformer attention blocks to evict unnecessary tokens from the KV cache. For instance, H2O Zhang et al. (2023) utilized the local statistics of accumulated attention scores to retain a balance of recent and heavy hitter tokens during generation. Window Attention based methods Xiao et al. (2023) proposed to keep the initial tokens which is proven vital for generation fluency. This line of work reduced the memory footprint of KV cache for efficient inference with negligible loss in generation quality. In addition, the above methods do not require costly retraining which is more suitable for current open-sourced LLMs Touvron et al. (2023) ; Jiang et al. (2023) , compared to those that need specific attention mechanism adaptation Beltagy et al. (2020) ; Kitaev et al. (2020) ; Shazeer (2019) ; Ainslie et al. (2023) .
+ However, we argue that the performance reported in the above methods is over-optimistic, as the evaluation metric and tested benchmark is not sufficient. LLMs may fail in real-life long-context modeling tasks Bai et al. (2023) , though they can achieve low language modeling perplexity which is untrustworthy used as the golden metric in current studies Xiao et al. (2023) ; Han et al. (2023) . Furthermore, the local statistics of accumulated attention score is observed to be biased (see Fig. 2 ), especially in long context input, meaning that it should be carefully used as the only strategy for measuring the importance of tokens.
+ To fill the gap, we propose NaCl , a ge n er a l and effective KV c ache eviction framework to unleash the power of L L Ms for long-context modeling with limited memory budgets. NaCl specifically formulates the eviction task in encoding phase which is different from the commonly used one-token-in one-token out eviction procedure in generation phase. In encoding phase, the eviction can be effectively implemented to apply only once on the whole input by progressively evicting KV caches layer by layer. The one-eviction formulation benefits current eviction policies in a more efficient and optimal way, as multiple costly eviction operations can be combined, then the global statistics of attention scores can be utilized.
+ Based on the above formulation, we present Proxy-Tokens Eviction which exploits the global statistics of attention scores gathered from proxy tokens for eviction. In practise, the proxy tokens can be selected from the question input, commonly located at the end of a long text. Intuitively, these proxy tokens are more capable of retaining the task-specific tokens in KV cache. As a result, Proxy-Tokens Eviction alleviates the attention bias problem (see Sec. 4 ) occurred in methods using local statistics Zhang et al. (2023) ; Oren et al. (2024) or task-irrelevant proxy tokens Liu et al. (2023c) .
+ However, Proxy-Tokens Eviction also relies heavily on the statistic of attention scores which may be untrustworthy in long-context input. Thus, we incorporate Random Eviction , a random eviction policy, into Proxy-Tokens Eviction . Random Eviction randomly samples tokens to evict from the probability distribution in Proxy-Tokens Eviction with different seed on attention heads and layers. This diversified randomness enhances the model’s robustness to maintain potentially important tokens in long text generation.
+ We conducted extensive experiments on a single NVIDIA A100 (80GB) GPU on representative open-sourced LLMs: LLaMA2-base, LLaMA2-Chat Touvron et al. (2023) , and evaluated them on both short- and long-text modeling tasks from lm-eval-harness Gao et al. (2021) and LongBench Bai et al. (2023) . The experiments show that NaCl performs KV cache eviction efficiently with negligible degradation on model quality (i.e., saving the inference memory usage of KV cache by up to 5 × 5\times with over 95% maintenance). Specifically, NaCl achieve 80% and 75% performance improvement on short- and long- text modeling tasks, respectively, with 50% KV cache reduction, compared to current eviction methods.
+ 2 Related Work
+ Efficient Inference with Limited KV Cache Budgets
+ emerged for reducing the prominent inference bottleneck caused by KV cache, particularly for long content input. A series of methods Zhang et al. (2023) ; Ge et al. (2023) ; Liu et al. (2023c) ; Oren et al. (2024) explored the sparsity among Transformer’s attention block, then evicted unnecessary tokens from KV Cache for efficient inference. For instance, H2O Zhang et al. (2023) retained a balance of recent and heavy hitter tokens with the highest accumulated attention scores throughout the sequence. Scissorhands Liu et al. (2023c) sequentially predicted the potentially pivotal tokens with the attention score above average within a history window. Some method Ge et al. (2023) further applied costly eviction policy selection for better performance. However, the above methods relied heavily on the attention score with local statistics which may be sub-optimal in long-context tasks Li et al. (2023) ; Bai et al. (2023) .
+ Meanwhile, some efforts have been made to utilize a learnable mechanism to determine necessary tokens during inference Anagnostidis et al. (2023) , or converting the traditional multi-head attention(MHA) Vaswani et al. (2017) to multi-query attention (MQA) Shazeer (2019) or group-query attention (GQA) Ainslie et al. (2023) . However, these methods involve additional training, while NaCl focuses on the inference phase without resource-intensive training.
+ Efficient Transformers
+ Tay et al. (2020) have been extensively explored Child et al. (2019) ; Kitaev et al. (2020) ; Zaheer et al. (2020) ; Beltagy et al. (2020) ; Dai et al. (2019) ; Ding et al. (2020) ; Bulatov et al. (2022) ; Chevalier et al. (2023) to address the self-attention operation which scales quadratically with the sequence length. For instance, Sparse Transformer Child et al. (2019) uses a dilated sliding window the reduces the attention complexity. Longformer Beltagy et al. (2020) and Bigbird Zaheer et al. (2020) reduced the complexity of self-attention by combining random, window and global attention. Recurrence Transformers Dai et al. (2019) maintain a memory bank of past KV cache to process the long text in segments. However, the above methods either trade off model quality or require re-training of models, but often failed in achieving memory saving and wall-clock speedup at inference time Dao et al. (2022) .
+ Length Extrapolation
+ enabled language models to generalize beyond the context window they were trained on. A recent line of research Chen et al. (2023) ; Peng et al. (2023) ; Liu et al. (2023b) focuses on adapting relative positional embedding Su et al. (2024) widely used in current Foundation models Touvron et al. (2023) ; Jiang et al. (2023) for context window extension. Attention Sink Xiao et al. (2023) and LM-Infinite Han et al. (2023) further exploited the initial tokens to recover the performance of window attention for infinite-length inputs. However, the ability of these methods tested using metric like perplexity is over-optimistic for long context tasks Li et al. (2023) ; Bai et al. (2023) .
+ 3 Problem Formulation
+ This section defines a two-phased approach for efficient KV cache management during LLM inference, tailored for scenarios with limited KV cache budgets.
+ Eviction Policy
+ We defined the eviction policy F score : S t i ← S t − 1 i , subject to ​ | S t i | = | S t − 1 i | ≤ 𝒞 F_{\text{score}}:S_{t}^{i}\leftarrow S_{t-1}^{i},\text{subject to }|S_{t}^{i}|=|S_{t-1}^{i}|\leq\mathcal{C} where the scoring function F score F_{\text{score}} assigns low scores to unnecessary tokens for eviction, such that the pre-define KV cache budget 𝒞 \mathcal{C} is maintained. S t i S_{t}^{i} denote the indices set of retained tokens in KV cache at t t -th time step and i i -th transformer layer.
+ Encoding Phase Eviction
+ The model processes the input prompts, x prompt i = [ x 1 i , … , x p i ] ∈ ℝ p × d x_{\text{prompt}}^{i}=[x_{1}^{i},\ldots,x_{p}^{i}]\in\mathbb{R}^{p\times d} , to compute the initial key cache 𝒦 0 i = x prompt i ​ W K i ∈ ℝ p × d \mathcal{K}_{0}^{i}=x_{\text{prompt}}^{i}W_{K}^{i}\in\mathbb{R}^{p\times d} and value cache 𝒱 0 i = x prompt i ​ W V i ∈ ℝ p × d \mathcal{V}_{0}^{i}=x_{\text{prompt}}^{i}W_{V}^{i}\in\mathbb{R}^{p\times d} , where p p denotes the encoding prompt length, W K i , W V i ∈ ℝ d × d W_{K}^{i},W_{V}^{i}\in\mathbb{R}^{d\times d} represent the key and value projection weight at layer i i with hidden dimension d d , respectively. The attention scores 𝐀 prompt i ∈ ℝ p × p \mathbf{A}_{\text{prompt}}^{i}\in\mathbb{R}^{p\times p} are computed as ( x prompt i ​ W Q i ) ⋅ ( x prompt i ​ W K i ) T d \frac{(x_{\text{prompt}}^{i}W_{Q}^{i})\cdot{(x_{\text{prompt}}^{i}W_{K}^{i})}^{T}}{\sqrt{d}} where W Q i ∈ ℝ d × d W_{Q}^{i}\in\mathbb{R}^{d\times d} represent the query projection weight. The eviction in encoding phase is defined as follows:
+ S encoding i = F score ​ ( 𝐀 prompt i , 𝒞 ) S_{\text{encoding}}^{i}=F_{\text{score}}(\mathbf{A}_{\text{prompt}}^{i},\mathcal{C}) 
+ then, the initial KV cache can be updated 𝒦 0 i , 𝒱 0 i ← 𝒦 S encoding i , 𝒱 S encoding i \mathcal{K}_{0}^{i},\mathcal{V}_{0}^{i}\leftarrow\mathcal{K}_{S_{\text{encoding}}^{i}},\mathcal{V}_{S_{\text{encoding}}^{i}} for the later usage in generation phase.
+ Generation Phase Eviction
+ Denote the generated tokens’ input to i i -th layer as x decoding i = [ z 1 i , … , z T i ] ∈ ℝ T × d x_{\text{decoding}}^{i}=[z_{1}^{i},\ldots,z_{T}^{i}]\in\mathbb{R}^{T\times d} . The Generation phase updates the KV cache with each new token generation. Given the time step t t and layer i i , key and value cache is updated as 𝒦 t i = [ 𝒦 t − 1 i , z t i ⋅ W K i ] \mathcal{K}_{t}^{i}=[\mathcal{K}_{t-1}^{i},z_{t}^{i}\cdot W_{K}^{i}] , 𝒱 t i = [ 𝒱 t − 1 i , z t i ⋅ W V i ] \mathcal{V}_{t}^{i}=[\mathcal{V}_{t-1}^{i},z_{t}^{i}\cdot W_{V}^{i}] , respectively. The attention scores 𝐀 t i ∈ ℝ 1 × | 𝒦 t i | \mathbf{A}_{t}^{i}\in\mathbb{R}^{1\times|\mathcal{K}_{t}^{i}|} are computed as ( z t i ​ W Q i ) ⋅ 𝒦 t i T d \frac{(z_{t}^{i}W_{Q}^{i})\cdot{\mathcal{K}_{t}^{i}}^{T}}{\sqrt{d}} . The eviction in generation phase is defined as follows:
+ S t i = F score ​ ( 𝐀 t i , S t − 1 , 𝒞 ) S_{t}^{i}=F_{\text{score}}(\mathbf{A}_{t}^{i},S_{t-1},\mathcal{C}) 
+ where the KV cache are updated T m \frac{T}{m} times following 𝒦 t i , 𝒱 t i ← 𝒦 S t i , 𝒱 S t i \mathcal{K}_{t}^{i},\mathcal{V}_{t}^{i}\leftarrow\mathcal{K}_{S_{t}^{i}},\mathcal{V}_{S_{t}^{i}} at every m m time steps.
+ To note that, recent works formulated the encoding phase eviction the same as the one in generation phase which require step-by-step evictions, resulting in computational overhead. In contrast, we formulate the eviction to perform only once during the encoding phase and T m \frac{T}{m} times during the generation phase. Generally, the condition T ≪ p T\ll p is readily satisfied in long text scenarios, allowing T m \frac{T}{m} to be approximated as a constant order of magnitude. Consequently, the overall time complexity is reduced from 𝒪 ⁡ ( p + T ) \mathcal{O}(p+T) to 𝒪 ⁡ ( 1 ) \mathcal{O}(1) . This also allows the eviction policy in a global optimal manner comparing to those greedy algorithm that couples the input window size with the KV cache budget.
+ (a) H2O 
+ (b) MSRNN 
+ (c) NaCl 
+ (d) Attention Scores in Token Indices 
+ Figure 2: Attention score bias in eviction policy. The darker color in Fig. (a,b,c) shows the retained tokens. 
+ 4 Observation
+ We present two experimental findings by rethinking previous eviction methods that inspire the design of NaCl .
+ Rethinking Evaluation Metrics for Long-text Eviction Strategy
+ Current metrics such as the perplexity (PPL) fall short in capturing the nuances of model performance in long-text scenarios, revealing a gap between evaluation practices and real-world applications (see, Tab. 1 ). Evaluations predominantly utilize datasets with short texts, inadequately representing the complexities and challenges of processing and understanding long-text input. The emphasis on textual fluency leads to a notable bias: the method Xiao et al. (2023) , though claiming for infinite input, fails in tasks (see, Tab. 1 , 2 ) which requires the ability to generate accurately. This inspires us to re-evaluate current methods on both short- and long- text modeling tasks demands on comprehension and generation capabilities.
+ Rethinking Attention Scores to Retain Pivotal Tokens
+ Attention bias problem refers to the phenomenon where, at each step of generation, attention scores are higher within the tokens directly preceding the current token, while comparatively diminished for all others. In Fig. 2 (a) and (b), the attention bias problem is observed, leading to an overemphasis on either initial tokens Zhang et al. (2023) or recent tokens Oren et al. (2024) , overlooking those potentially pivotal tokens in longer context. Furthermore, the attention score distribution become flattened with the increase in text length (see Fig. 2 (d)), which may be less capable of accurately identifying important tokens. Normalization can solve this problem to some extent, but as stated in the H2O Zhang et al. (2023) , the effect is not optimal. This inspires us to reform the attention-based eviction methods to be less bias and more robust in long-context modeling tasks.
+ 5 NaCl 
+ In this section, we present a hybrid KV cache eviction policy in NaCl , including the Proxy-Tokens Eviction in Sec. 5.1 and Random Eviction in Sec. 5.2 .
+ Figure 3: NaCl consists of a hybrid eviction policy by incorporating Random Eviction into Proxy-Tokens Eviction . Proxy-Tokens Eviction utilizes proxy tokens for more accurate eviction, while Random Eviction performs head-wise sampling from the scoring function of Proxy-Tokens Eviction to enhance the robustness. 
+ 5.1 Eviction based on Proxy Tokens
+ Based on previous observations, the current F score F_{\text{score }} of accumulating attention scores effectively identifies important tokens but suffers from significant bias. We attribute this to the excessive redundant information in the process of scoring tokens.
+ We discovered that when calculating the attention for a given token x x (i.e. tokens may need to be evicted), only a mere fraction of tokens x p x_{p} (i.e. proxy tokens) are responsible for yielding the most precise outcomes during the computation of the token score. Hence, we introduce the proxy tokens hypothesis: within the input x prompt x_{\text{prompt}} , there exists a subset called proxy tokens 𝒫 ∈ x prompt \mathcal{P}\in x_{\text{prompt}} , which precisely estimate the importance of tokens. Scoring function F score F_{\text{score }} can be instantiated as:
+ F score ​ ( 𝐀 , 𝒞 ) = ∑ x p ∈ 𝒫 Softmax ​ ( 𝐀 ⁡ ( x p , ∗ ) ) F_{\text{score }}\left(\mathbf{A},\mathcal{C}\right)=\sum_{x_{p}\in\mathcal{P}}\text{Softmax}\left(\mathbf{A}(x_{p},*)\right) 
+ The F score F_{\text{score }} , calculated by reducing the attention score matrix column-wise using the proxy tokens subset 𝒫 \mathcal{P} , provides the most precise measurement of a token’s importance during the eviction process. We can validate the significance of proxy tokens using a straightforward approach. When the proxy token is set to the universal set, our method is equivalent to H2O Zhang et al. (2023) , introducing redundant information that degrades the quality of eviction. When the proxy token is set to only the current token, our method can be equivalent to MSRNN Oren et al. (2024) , neglecting substantial information, thus reducing the accuracy of eviction.
+ Due to the progressively flattened distribution of attention scores with the increase in text length, the pre-defined threshold for sampling 𝒞 p \mathcal{C}_{p} results in lack of generalizability for long text tasks. Therefore, we model the KV cache eviction as an optimization problem, aiming to find a set S t S_{t} that maximizes the function F score F_{\text{score}} , while satisfying the constraint | S t | = 𝒞 p |S_{t}|=\mathcal{C}_{p} .
+ S t ← ( arg ​ max S t ⊂ R ∑ x ∈ S t F score ( 𝐀 , 𝒞 p ) ) ∪ P S_{t}\leftarrow(\argmax_{S_{t}\subset R}\sum_{x\in S_{t}}F_{\text{score}}(\mathbf{A},\mathcal{C}_{p}))\cup P 
+ where R = x prompt \ 𝒫 R=x_{\text{prompt}}\backslash\mathcal{P} as the proxy tokens are retained by default. In practise, the proxy tokens tend to be chosen at the end of the input where the user’s question with more task-specific information is located in. The choice of Proxy Token can be based on task orientation, which allows our approach to be flexibly adapted to various application scenarios. For more information, please refer to the Appx. A.3 .
+ 5.2 Eviction based on Random Possibility Sampling
+ Eviction algorithms commonly rely on the attention scores which may be biased or lack robustness in capturing critical information throughout the generation process. Herein, we introduce a simple and effective eviction policy which incorporates the randomness into the decision-making process of the attention mechanism. By randomly sampling from a probability distribution, our method aims to enhance the model’s ability to recover and maintain important information that might otherwise be lost.
+ In detail, we construct the probability distribution from F random F_{\text{random}} . F random F_{\text{random}} can signify each candidate token’s relative significance in long text generation, and the probability P prompt P_{\text{prompt }} is determined as follows:
+ P prompt = Softmax ​ ( F random ​ ( 𝐀 prompt , 𝒞 r ) ) P_{\text{prompt }}=\text{Softmax}\left(F_{\text{random }}(\mathbf{A}_{\text{prompt }},\mathcal{C}_{r})\right) 
+ where P prompt P_{\text{prompt}} allows the non-deterministic selection of pivotal tokens. Through this probabilistic lens, our model casts the dice, diversifying its focus and increasing the chances of preserving essential information across the span of long texts. Thus, we present Random Eviction with budget 𝒞 r \mathcal{C}_{r} :
+ S random ∼ P prompt , | S random | = 𝒞 r S_{\text{random}}\sim P_{\text{prompt}},\quad|S_{\text{random}}|=\mathcal{C}_{r} 
+ In practise, P random P_{\text{random}} can be based on the normalized distribution Softmax( F score F_{\text{score}} ), then the complexity is 𝒪 ⁡ ( | x prompt | ) \mathcal{O}(|x_{\text{prompt}}|) dominated by the softmax operation.
+ Finally, NaCl effectively combines Proxy-Tokens Eviction and Random Eviction , applying an efficient one-eviction strategy under the KV Cache budget 𝒞 = 𝒞 p + 𝒞 r \mathcal{C}=\mathcal{C}_{p}+\mathcal{C}_{r} , shown in the following Algorithm 1 . Our method is compatible with FlashAttention-2 (see Appx. A.7 ) to minimize memory and computational overhead, helping models to be efficiently deployed in long text tasks.
+ Algorithm 1 NaCl Algorithm 
+ 1: 
+ Total Cache budget 𝒞 \mathcal{C} ( 𝒞 = 𝒞 p + 𝒞 r \mathcal{C}=\mathcal{C}_{\text{p}}+\mathcal{C}_{\text{r}} ), Proxy-Token Eviction Cache budget 𝒞 p \mathcal{C}_{\text{p}} , Random Eviction Cache budget 𝒞 r \mathcal{C}_{\text{r}} , Proxy tokens 𝒫 \mathcal{P} , KV Cache 𝒦 , 𝒱 \mathcal{K},\mathcal{V} 
+ 2: 
+ function Encoding (Prompts)
+ 3: 
+    for Every Layer- i i in LLMs do 
+ 4: 
+     for Every Attention Head- n n do 
+ 5: 
+       W Q i , n , W K i , n , W V i , n ∈ ℝ d × d W_{Q}^{i,n},W_{K}^{i,n},W_{V}^{i,n}\in\mathbb{R}^{d\times d} 
+ 6: 
+       𝐀 ← ( x prompt ​ W Q i , n ) ⋅ ( x prompt ​ W K i , n ) T ​ d − 1 \mathbf{A}\leftarrow(x_{\text{prompt}}W_{Q}^{i,n})\cdot{(x_{\text{prompt}}W_{K}^{i,n})}^{T}{\sqrt{d}}^{-1} 
+ 7: 
+       F score = ∑ x p ∈ 𝒫 Softmax ​ ( 𝐀 ⁡ ( x p , ∗ ) ) F_{\text{score}}=\sum_{x_{p}\in\mathcal{P}}\text{Softmax}\left(\mathbf{A}(x_{p},*)\right) 
+ 8: 
+       R ← x prompt \ P i , n R\leftarrow x_{\text{prompt}}\backslash P^{i,n} 
+ 9: 
+       u score ← ( max ∑ x ∈ R F score ( 𝐀 , 𝒞 p ) ) ∪ 𝒫 i , n u_{\text{score}}\leftarrow(\max\sum_{x\in R}F_{\text{score}}(\mathbf{A},\mathcal{C}_{\text{p}}))\cup\mathcal{P}^{i,n} 
+ 10: 
+       OPEN u random ∼ Softmax ​ ( F random ​ ( 𝐀 prompt ) , 𝒞 r ) ) u_{\text{random}}\sim\text{Softmax}\left(F_{\text{random}}(\mathbf{A}_{\text{prompt}}),\mathcal{C}_{\text{r}})\right) 
+ 11: 
+       S encoding i , n ← u score ∪ u random S_{\text{encoding}}^{i,n}\leftarrow u_{\text{score}}\cup u_{\text{random}} 
+ 12: 
+     end for 
+ 13: 
+    end for 
+ 14: 
+ end function 
+ 15: 
+ function Generation ( S encoding S_{\text{encoding}} , Max Length)
+ 16: 
+    m ← m\leftarrow eviction interval
+ 17: 
+    z 0 ← z_{0}\leftarrow last prompt token
+ 18: 
+    S 0 ← S encoding S_{0}\leftarrow S_{\text{encoding}} 
+ 19: 
+    for t ∈ { 1 , … , Max Length } \in\{1,...,\text{Max Length}\} do 
+ 20: 
+     for Every Layer- i i in LLMs do 
+ 21: 
+       for Every Attention Head- n n do 
+ 22: 
+        𝒦 t − 1 i , n ← 𝒦 S t − 1 i , n , 𝒱 t − 1 i , n ← 𝒱 S t − 1 i , n \mathcal{K}_{t-1}^{i,n}\leftarrow\mathcal{K}_{S_{t-1}^{i,n}},\mathcal{V}_{t-1}^{i,n}\leftarrow\mathcal{V}_{S_{t-1}^{i,n}} 
+ 23: 
+        𝒦 t i , n ← [ 𝒦 t − 1 i , n , z t i ⋅ W K i , n ] \mathcal{K}_{t}^{i,n}\leftarrow[\mathcal{K}_{t-1}^{i,n},z_{t}^{i}\cdot W_{K}^{i,n}] 
+ 24: 
+        𝒱 t i , n ← [ 𝒱 t − 1 i , n , z t i ⋅ W V i , n ] \mathcal{V}_{t}^{i,n}\leftarrow[\mathcal{V}_{t-1}^{i,n},z_{t}^{i}\cdot W_{V}^{i,n}] 
+ 25: 
+        𝐀 = ( z t ​ W Q i , n ) ⋅ 𝒦 t i , n T ​ d − 1 \mathbf{A}=(z_{t}W_{Q}^{i,n})\cdot{\mathcal{K}_{t}^{i,n}}^{T}{\sqrt{d}}^{-1} 
+ 26: 
+        if t mod m = 0 t\bmod m=0 then 
+ 27: 
+          S t i , n ← Eviction ​ ( 𝐀 , 𝒞 ) S_{t}^{i,n}\leftarrow\text{Eviction}(\mathbf{A},\mathcal{C}) 
+ 28: 
+          ⊳ \triangleright Ref: Line7-10.
+ 29: 
+        end if 
+ 30: 
+       end for 
+ 31: 
+     end for 
+ 32: 
+     𝒛 t ← \boldsymbol{z}_{t}\leftarrow sample from LLM prediction
+ 33: 
+    end for 
+ 34: 
+ end function 
+ 6 Experiments
+ 6.1 Setup
+ Model 
+ PiQA 
+ COPA 
+ Open. 
+ Wino. 
+ SciQ 
+ ARC-E 
+ ARC-C 
+ Average 
+ Δ \Delta 
+ log PPL 
+ # of tokens (5-Shot) 
+ 319 
+ 118 
+ 97 
+ 160 
+ 508 
+ 296 
+ 239 
+ − - 
+ − - 
+ − - 
+ Full cache 
+ 78.8 
+ 83.0 
+ 44.8 
+ 73.7 
+ 80.9 
+ 78.8 
+ 50.8 
+ 64.6 
+ − - 
+ 3.8 
+ Attention Sink (20%) 
+ 54.0 
+ 55.0 
+ 30.2 
+ 49.1 
+ 22.3 
+ 25.4 
+ 23.0 
+ 35.9 
+ − - 28.7 
+ 6.4 
+ H2O (20%) 
+ 77.6 
+ 81.0 
+ 41.0 
+ 67.0 
+ 75.8 
+ 70.4 
+ 44.0 
+ 60.3 
+ − - 4.3 
+ 4.0 
+ MSRNN(20%) 
+ 77.6 
+ 78.0 
+ 43.0 
+ 67.8 
+ 76.5 
+ 71.6 
+ 45.3 
+ 60.6 
+ − - 4.0 
+ 4.0 
+ NaCl (20%) 
+ 77.9 
+ 79.0 
+ 43.8 
+ 71.5 
+ 80.0 
+ 74.9 
+ 48.8 
+ 63.8 
+ − - 0.8 
+ 4.0 
+ # of tokens (25-Shot) 
+ 1014 
+ 501 
+ 559 
+ 689 
+ 2540 
+ 1480 
+ 1195 
+ − - 
+ − - 
+ − - 
+ Full cache 
+ 59.3 
+ 87.0 
+ 47.2 
+ 75.5 
+ 11.1 
+ 67.6 
+ 31.2 
+ 53.8 
+ − - 
+ 3.2 
+ Attention Sink (20%) 
+ 50.4 
+ 47.0 
+ 29.0 
+ 46.6 
+ 11.1 
+ 25.6 
+ 22.5 
+ 33.2 
+ − - 20.6 
+ 7.9 
+ H2O (20%) 
+ 59.2 
+ 86.0 
+ 44.6 
+ 73.8 
+ 10.5 
+ 66.0 
+ 30.0 
+ 52.8 
+ − - 1.0 
+ 3.3 
+ MSRNN (20%) 
+ 58.9 
+ 86.0 
+ 44.8 
+ 73.9 
+ 10.7 
+ 65.9 
+ 30.6 
+ 52.9 
+ − - 0.9 
+ 3.3 
+ NaCl (20%) 
+ 58.9 
+ 87.0 
+ 45.6 
+ 73.6 
+ 11.1 
+ 66.1 
+ 31.4 
+ 53.2 
+ − - 0.6 
+ 3.2 
+ Table 1: N-shot evaluation of eviction strategies on short text tasks on LLaMA2-7B-base. 
+ Objective
+ We aim to provide experimental evidence for three key research questions: 1 . Whether there are advantages in performance and task generalization of NaCl over other eviction methods. 2 . How the two eviction policys in NaCl affect the final functionality, and by what combination can we achieve optimal results. 3 . What is the rationale behind NaCl for superior results?
+ Models and Tasks
+ We use the family of decoder-only Transformers: LLaMA2-7B-base, LLaMA2-7B-Chat Touvron et al. (2023) to evaluate the effectiveness of NaCl . To evaluate the few-shot learning ability, we sample seven tasks from the popular benchmark (lm-eval-harness Gao et al. (2021) ): PiQA Bisk et al. (2020) , COPA Roemmele et al. (2011) , OpenBookQA Mihaylov et al. (2018) , Winogrande Sakaguchi et al. (2021) , SciQA Welbl et al. (2017) , ARC-E and ARC-C Clark et al. (2018) . In the long text scenario, we took seven tasks from Longbench Bai et al. (2023) : PassageRetrieval-Zh, PassageRetrieval-En, RepoBench-P Liu et al. (2023a) , HotpotQA Yang et al. (2018) , NarrativeQA Kočiskỳ et al. (2018) , TriviaQA Joshi et al. (2017) , QMSum Zhong et al. (2021) . We report perplexity computed on the OpenBookQA dataset as a measure of the model’s generation ability in generalized domains. We conduct our experiments on a single NVIDIA A100 80GB GPU. Results were averaged over various seeds to ensure reliability.
+ Baselines
+ We consider four representative eviction methods:
+ • Attention Sink Xiao et al. (2023) keeps the initial and recent tokens for infinite-length text processing.
+ • H2O Zhang et al. (2023) firstly proposes utilizing the summation of attention scores for greedy eviction, which achieves fair results which serves as our main baseline.
+ • MSRNN Oren et al. (2024) considers the current token’s attention score for eviction.
+ • Scissorhands Liu et al. (2023c) increments the counter within a history window for low score token eviction.
+ Figure 4: The memory usage of KV Cache with respect to the sequence length in the setting of comparable downstreaming performance between NaCl and other methods. 
+ Method 
+ PR-Zh 
+ PR-En 
+ Repo-P 
+ HotpotQA 
+ NarQA 
+ TriviaQA 
+ QMSum 
+ Average 
+ Δ \Delta 
+ Full Cache 
+ 8.0 
+ 10.1 
+ 52.3 
+ 27.7 
+ 18.6 
+ 83.3 
+ 20.6 
+ 31.5 
+ – 
+ Scissorhands (30%) 
+ 4.0 
+ 2.6 
+ 51.8 
+ 17.2 
+ 12.5 
+ 79.2 
+ 19.6 
+ 26.7 
+ − - 4.8 
+ H2O (30%) 
+ 3.7 
+ 5.0 
+ 50.9 
+ 27.1 
+ 15.5 
+ 81.6 
+ 20.2 
+ 29.1 
+ − - 2.4 
+ MSRNN (30%) 
+ 5.5 
+ 4.5 
+ 50.3 
+ 26.1 
+ 16.4 
+ 82.9 
+ 20.9 
+ 29.5 
+ − - 2.0 
+ NaCl (30%) 
+ 6.8 
+ 9.0 
+ 52.5 
+ 27.9 
+ 16.4 
+ 83.1 
+ 21.5 
+ 31.0 
+ − - 0.5 
+ Scissorhands (20%) 
+ 0.5 
+ 43.0 
+ 44.9 
+ 11.4 
+ 6.7 
+ 68.9 
+ 16.3 
+ 21.9 
+ − - 9.6 
+ H2O (20%) 
+ 4.2 
+ 4.5 
+ 49.4 
+ 24.5 
+ 15.2 
+ 82.8 
+ 19.8 
+ 28.6 
+ − - 2.9 
+ MSRNN(20%) 
+ 4.5 
+ 4.5 
+ 49.0 
+ 23.9 
+ 14.7 
+ 82.5 
+ 20.4 
+ 28.5 
+ − - 3.0 
+ NaCl (20%) 
+ 7.0 
+ 9.4 
+ 51.6 
+ 27.2 
+ 17.1 
+ 82.5 
+ 20.8 
+ 30.8 
+ − - 0.7 
+ Scissorhands (10%) 
+ 0.0 
+ 3.7 
+ 27.6 
+ 4.4 
+ 2.8 
+ 52.8 
+ 12.9 
+ 14.9 
+ − - 16.6 
+ H2O (10%) 
+ 4.9 
+ 3.5 
+ 48.1 
+ 22.8 
+ 13.6 
+ 79.4 
+ 19.6 
+ 27.4 
+ − - 4.1 
+ MSRNN (10%) 
+ 4.0 
+ 3.0 
+ 47.9 
+ 23.4 
+ 13.4 
+ 80.8 
+ 19.6 
+ 27.5 
+ − - 4.0 
+ NaCl (10%) 
+ 6.8 
+ 7.0 
+ 49.2 
+ 25.5 
+ 15.0 
+ 81.7 
+ 20.4 
+ 29.4 
+ − - 2.1 
+ Table 2: Evaluation of eviction strategies on long text tasks with 4k-length on LLaMA2-7B-Chat. 
+ 6.2 Result
+ Short-Text ACC. 
+ Long-Text ACC. 
+ NaCl 
+ 63.8 
+ 30.8 
+ − - Eviction w. Proxy Tokens 
+ 35.7 ( − - 28.1) 
+ 24.8 ( − - 6.0) 
+ − - Random Eviction 
+ 62.6 ( − - 1.2) 
+ 21.7 ( − - 9.2) 
+ − - Probability Sampling 
+ 63.0 ( − - 0.8) 
+ 29.7 ( − - 1.1) 
+ − - Global Eviction 
+ 62.5 ( − - 1.3) 
+ 29.3 ( − - 1.5) 
+ − - Head-wise Eviction 
+ 61.7 ( − - 2.1) 
+ 28.1 ( − - 2.7) 
+ Table 3: Ablation study at 20% budget’s eviction. We report the average accuracy of short- and long-text tasks. 
+ Short-Text Performance
+ Our experimental analysis shows the effectiveness of NaCl in managing KV cache under constrained memory budgets while maintaining high performance across various short-text benchmarks. Firstly, NaCl demonstrated superior performance in comparison to the baseline eviction methods with minimal performance degradation. In the 5-shot setting, NaCl achieved an average score of 63.8% points, nearly matching the full cache performance of 64.6% points and significantly outperforming H2O by 3.5% points.
+Moreover, NaCl exhibited consistent improvements across most datasets relative to previous methods, affirming its robust generalization and practical applicability. In the 25-shot setting, although there was a performance dip across all methods due to the increased complexity and information redundancy, NaCl still showed remarkable resilience. Notably, it matched or slightly outperformed the full cache setup in certain datasets, such as maintaining a 87.0% point score on COPA, identical to the full cache performance. This illustrates that NaCl not only manages to select pertinent information effectively but also mitigates the impact of redundant data, enhancing the model’s robustness.
+ Long-text Performance
+ NaCl achieves 80% memory usage reduction with only mere 0.7% point decrease with respect to the average accuracy in Tab. 2 . Fig. 5 (Left) shows that NaCl is possible to achieve 3 × 3\times more reduction in KV Cache while maintaining comparable performance to baselines. Additionally, we observed the stable performance of NaCl under different budget, while others’ fluctuate.
+In HotpotQA and QMSum, NaCl (30%) even surpassed the performance without KV cache eviction by 0.2% and 0.9% points, respectively. For challenging passkey retrieval tasks, H2O and MSRNN with the attention bias towards initial and recent tokens fails in retaining the pivotal passkey located in the middle of the long input. In contrast, NaCl demonstrates stable and superior performance in different budgets setting, that only missed 2 passkeys in PR-Zh and PR-En comparing to the model in full cache setting. This remarkable achievement highlights NaCl ’s ability to retain essential information, avoiding the pitfalls of redundant data and thereby bolstering the model’s robustness in processing complex long texts.
+ 6.3 Ablation Studies
+ Figure 5: The average accuracy is reported with different KV Cache budget (Left), Proxy tokens budget (Middle), and Random budget ratio (Right). 
+ The Effect of Proxy-Tokens Eviction 
+ Proxy tokens play an important role in finding pivotal tokens. The performance degradation (see Tab. 3 ) is significant when removing this policy. In Fig. 5 (Middle), we report the impact of proxy token budget on the average accuracy as a proportion of the text length. In extreme cases, such as 0% and 100% proxy token budget, the method degenerates into two special cases: MSRNN Oren et al. (2024) and H2O Zhang et al. (2023) , respectively. The suboptimal performance with 0% proxy token budget suggests that the unsufficiency of a single current token for determining the pivotal tokens. However, excessive abuse of proxy token budget up to 100% will introduce redundant information leading to decline in performance. In practise, we suggest the budgets for proxy tokens ∼ \sim 10% for better performance.
+ The Effect of Random Eviction 
+ As shown in Tab. 3 , Random Eviction obtained a performance gain of 9% points. In Fig. 5 (Right), increasing the random budget from 10% to 70% results in an average performance improvement of 2.25% to 8.17% points over 0% random budget. The performance peaks at 70% budgets, demonstrating the necessity of the Random Eviction . However, when the random budget’s proportion increases from 90% to 100%, a noticeable performance decline occurs, highlighting the importance to combine the Attention-score-based, Proxy-Tokens Eviction .
+ The Choice of Sampling Distributions for Random Eviction 
+ In Tab. 3 , the experimental results demonstrate that sampling based on global statistical attention scores outperforms those based on uniform distributions in terms of performance. This indicates that attention scores can also provide a more informative reference for randomness in specific contexts.
+ The Effect of Global Eviction
+ The one-eviction formulation in NaCl enhanced the average performance of 1.4% points in Tab. 3 . Compared to the greedy algorithm, our approach reduces complexity while giving more consideration to global information. Furthermore, our algorithm exhibits greater simplicity and directness in its engineering implementation.
+ The Effect of Head-wise Token Eviction
+ The results in Tab. 3 show a gradual decline in the algorithm’s effectiveness as the strategies become more uniform. The algorithm performs best when each head adopts a completely different strategy. The diversity of strategies leads to improved generalization, preserving information across a broader spectrum of dimensions.
+ 6.4 Analysis
+ Memory Usage of KV Cache
+ In Fig. 4 , we report the memory reduction of KV cache for LLaMA2-7B with respect to the sequence length with a fixed batch size of 4 in bf16 precision. At the same accuracy as H2O (20%), our method alleviates the linearly growing KV cache to 10% of the original size, significantly reducing the memory footprint of the KV cache for all model sizes. The memory usage reduction is more significant on long texts, effectively alleviating the memory bottleneck problem of long text reasoning.
+ Interpretable Analysis of Eviction Results
+ Fig. 2 shows the attention score matrix where the darker area represents the retained tokens after eviction. Compared to previous methods, the proxy token guides NaCl to sample the middle tokens more evenly, and protects the initial and recent tokens in the meantime. The head-wise randomness enables maintaining more context information, thereby enhancing the robustness of NaCl .
+ Why Head-wise Eviction Matters
+ From a probabilistic perspective, it is basically impossible for a token to be evicted in the head-wise eviction setting. Taking LLaMA-7B with 32-layers (number of layers l l ) and 32-heads (number of heads h h ) as an example, the probability of a token retained in least one head’s KV cache is which equals 99.92% when the KV Cache budget 𝒞 = 20 % \mathcal{C}=20\% . Even in a severe KV Cache budget setting like 𝒞 = 1 % \mathcal{C}=1\% , the probability that the information of a token is retained in at least one layer is 1 − ( 𝒞 h ) l 1-(\mathcal{C}^{\text{$h$}})^{\text{$l$}} which is larger than 99.99%.
+ 7 Conclusion
+ In this paper, we focus on the accuracy, robustness, and reliability of evaluation for KV cache eviction algorithms deployed in LLMs for processing long texts. We introduce NaCl , a novel approach that combines Proxy-Tokens Eviction and Random Eviction for KV cache eviction strategies, significantly reducing memory usage during model inference without the need for training. We model the eviction problem as a combinatorial optimization issue, where Proxy-Tokens Eviction provides eviction references based on importance, and Random Eviction enhances information richness and robustness through headwise and layerwise composite sampling. Through extensive evaluation, we demonstrate that NaCl can significantly improve cache eviction strategies, reduce inference memory costs, and minimize the impact on the LLM’s ability to handle complex tasks.
+ Limitations
+ Our approach presents two main limitations: First, due to constraints on resources, our method has not been extensively tested across various large-scale language models, especially for different lengths and even ultra-long texts. However, based on our current comprehensive experimental conclusions, we believe NaCl can be extended to more application scenarios. In addition, we introduced the utilization of proxy tokens in Proxy-Tokens Eviction for identifying pivotal tokens, yet the selection of proxy tokens primarily relies on observations and experience. Determining proxy tokens from the model adaptively and accurately presents a challenge, which we deem worthy of further research.
+ Ethics Statement
+ In this research, we employ open-source data and technologies, significantly reducing privacy concerns. Our innovative approach is geared towards understanding model contexts and boosting inference efficiency, with the aim of developing accessible and highly efficient models for extended contexts. This strategy is anticipated to propel the openness of NLP technology and its practical implementation in diverse applications. Importantly, our method is designed to be independent of the training process, ensuring it does not perpetuate or introduce biases into models. By focusing on cutting-edge and resource-efficient methodologies, our work contributes to making AI more open and automated, pushing the envelope in artificial intelligence while ensuring the benefits of our advancements are widely accessible and applicable across various domains, marking a step towards a more inclusive and automated AI future.
+ Acknowledgments
+ We thank the anonymous reviewers for their insightful comments and constructive suggestions. We would like to thank Yinqi Yang, Jiawei Sheng, Xinhua Zhang, Shicheng Wang, Chuanyu Tang and members of the IIE KDsec group for their valuable feedback and discussions. We thank Siming Wu for the implementation of Reduce Attention Scores CUDA kernel. Work done during Yilong Chen’s internship at Baidu Inc. This research is supported by the National Key Research and Development Program of China (Grant No.2021ZD0110501 and Grant No.2021YFB3100600) and the Youth Innovation Promotion Association of CAS (Grant No.2021153).
+ References
+ Ainslie et al. (2023) 
+Joshua Ainslie, James Lee-Thorp, Michiel de Jong, Yury Zemlyanskiy, Federico Lebrón, and Sumit Sanghai. 2023.
+ Gqa: Training generalized multi-query transformer models from multi-head checkpoints.
+ arXiv preprint arXiv:2305.13245 .
+ Anagnostidis et al. (2023) 
+Sotiris Anagnostidis, Dario Pavllo, Luca Biggio, Lorenzo Noci, Aurelien Lucchi, and Thomas Hoffmann. 2023.
+ Dynamic context pruning for efficient and interpretable autoregressive transformers.
+ arXiv preprint arXiv:2305.15805 .
+ Anthropic (2023) 
+Anthropic. 2023.
+ Anthropic: Introducing claude 2.1 .
+ Bai et al. (2023) 
+Yushi Bai, Xin Lv, Jiajie Zhang, Hongchang Lyu, Jiankai Tang, Zhidian Huang, Zhengxiao Du, Xiao Liu, Aohan Zeng, Lei Hou, et al. 2023.
+ Longbench: A bilingual, multitask benchmark for long context understanding.
+ arXiv preprint arXiv:2308.14508 .
+ Beltagy et al. (2020) 
+Iz Beltagy, Matthew E Peters, and Arman Cohan. 2020.
+ Longformer: The long-document transformer.
+ arXiv preprint arXiv:2004.05150 .
+ Bisk et al. (2020) 
+Yonatan Bisk, Rowan Zellers, Jianfeng Gao, Yejin Choi, et al. 2020.
+ Piqa: Reasoning about physical commonsense in natural language.
+ In Proceedings of the AAAI conference on artificial intelligence , volume 34, pages 7432–7439.
+ Bulatov et al. (2022) 
+Aydar Bulatov, Yury Kuratov, and Mikhail Burtsev. 2022.
+ Recurrent memory transformer.
+ Advances in Neural Information Processing Systems , 35:11079–11091.
+ Chen et al. (2023) 
+Shouyuan Chen, Sherman Wong, Liangjian Chen, and Yuandong Tian. 2023.
+ Extending context window of large language models via positional interpolation.
+ arXiv preprint arXiv:2306.15595 .
+ Chevalier et al. (2023) 
+Alexis Chevalier, Alexander Wettig, Anirudh Ajith, and Danqi Chen. 2023.
+ Adapting language models to compress contexts.
+ arXiv preprint arXiv:2305.14788 .
+ Child et al. (2019) 
+Rewon Child, Scott Gray, Alec Radford, and Ilya Sutskever. 2019.
+ Generating long sequences with sparse transformers.
+ arXiv preprint arXiv:1904.10509 .
+ Clark et al. (2018) 
+Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. 2018.
+ Think you have solved question answering? try arc, the ai2 reasoning challenge.
+ arXiv preprint arXiv:1803.05457 .
+ Dai et al. (2019) 
+Zihang Dai, Zhilin Yang, Yiming Yang, Jaime G. Carbonell, Quoc V. Le, and Ruslan Salakhutdinov. 2019.
+ Transformer-xl: Attentive language models beyond a fixed-length context .
+ CoRR , abs/1901.02860.
+ Dao et al. (2022) 
+Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 2022.
+ Flashattention: Fast and memory-efficient exact attention with io-awareness.
+ Advances in Neural Information Processing Systems , 35:16344–16359.
+ Ding et al. (2020) 
+Siyu Ding, Junyuan Shang, Shuohuan Wang, Yu Sun, Hao Tian, Hua Wu, and Haifeng Wang. 2020.
+ Ernie-doc: A retrospective long-document modeling transformer.
+ arXiv preprint arXiv:2012.15688 .
+ Gao et al. (2021) 
+Leo Gao, Jonathan Tow, Stella Biderman, Sid Black, Anthony DiPofi, Charles Foster, Laurence Golding, Jeffrey Hsu, Kyle McDonell, Niklas Muennighoff, Jason Phang, Laria Reynolds, Eric Tang, Anish Thite, Ben Wang, Kevin Wang, and Andy Zou. 2021.
+ A framework for few-shot language model evaluation.
+ In Zenodo . https://doi.org/10.5281/zenodo.5371628.
+ Ge et al. (2023) 
+Suyu Ge, Yunan Zhang, Liyuan Liu, Minjia Zhang, Jiawei Han, and Jianfeng Gao. 2023.
+ Model tells you what to discard: Adaptive kv cache compression for llms.
+ arXiv preprint arXiv:2310.01801 .
+ Han et al. (2023) 
+Chi Han, Qifan Wang, Wenhan Xiong, Yu Chen, Heng Ji, and Sinong Wang. 2023.
+ Lm-infinite: Simple on-the-fly length generalization for large language models.
+ arXiv preprint arXiv:2308.16137 .
+ Jiang et al. (2023) 
+Albert Q Jiang, Alexandre Sablayrolles, Arthur Mensch, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Florian Bressand, Gianna Lengyel, Guillaume Lample, Lucile Saulnier, et al. 2023.
+ Mistral 7b.
+ arXiv preprint arXiv:2310.06825 .
+ Joshi et al. (2017) 
+Mandar Joshi, Eunsol Choi, Daniel S Weld, and Luke Zettlemoyer. 2017.
+ Triviaqa: A large scale distantly supervised challenge dataset for reading comprehension.
+ arXiv preprint arXiv:1705.03551 .
+ Kitaev et al. (2020) 
+Nikita Kitaev, Lukasz Kaiser, and Anselm Levskaya. 2020.
+ Reformer: The efficient transformer .
+ In 8th International Conference on Learning Representations, ICLR 2020, Addis Ababa, Ethiopia, April 26-30, 2020 . OpenReview.net.
+ Kočiskỳ et al. (2018) 
+Tomáš Kočiskỳ, Jonathan Schwarz, Phil Blunsom, Chris Dyer, Karl Moritz Hermann, Gábor Melis, and Edward Grefenstette. 2018.
+ The narrativeqa reading comprehension challenge.
+ Transactions of the Association for Computational Linguistics , 6:317–328.
+ Li et al. (2023) 
+Dacheng Li, Rulin Shao, Anze Xie, and Ying Sheng. 2023.
+ How long can open-source llms truly promise on context length? 
+ Liu et al. (2023a) 
+Tianyang Liu, Canwen Xu, and Julian McAuley. 2023a.
+ Repobench: Benchmarking repository-level code auto-completion systems.
+ arXiv preprint arXiv:2306.03091 .
+ Liu et al. (2023b) 
+Xiaoran Liu, Hang Yan, Shuo Zhang, Chenxin An, Xipeng Qiu, and Dahua Lin. 2023b.
+ Scaling laws of rope-based extrapolation.
+ arXiv preprint arXiv:2310.05209 .
+ Liu et al. (2023c) 
+Zichang Liu, Aditya Desai, Fangshuo Liao, Weitao Wang, Victor Xie, Zhaozhuo Xu, Anastasios Kyrillidis, and Anshumali Shrivastava. 2023c.
+ Scissorhands: Exploiting the persistence of importance hypothesis for llm kv cache compression at test time.
+ arXiv preprint arXiv:2305.17118 .
+ Mihaylov et al. (2018) 
+Todor Mihaylov, Peter Clark, Tushar Khot, and Ashish Sabharwal. 2018.
+ Can a suit of armor conduct electricity? a new dataset for open book question answering.
+ arXiv preprint arXiv:1809.02789 .
+ OpenAI (2023) 
+OpenAI. 2023.
+ Openai: Gpt-4 .
+ Oren et al. (2024) 
+Matanel Oren, Michael Hassid, Yossi Adi, and Roy Schwartz. 2024.
+ Transformers are multi-state rnns.
+ arXiv preprint arXiv:2401.06104 .
+ Peng et al. (2023) 
+Bowen Peng, Jeffrey Quesnelle, Honglu Fan, and Enrico Shippole. 2023.
+ Yarn: Efficient context window extension of large language models.
+ arXiv preprint arXiv:2309.00071 .
+ Roemmele et al. (2011) 
+Melissa Roemmele, Cosmin Adrian Bejan, and Andrew S Gordon. 2011.
+ Choice of plausible alternatives: An evaluation of commonsense causal reasoning.
+ In 2011 AAAI Spring Symposium Series .
+ Sakaguchi et al. (2021) 
+Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. 2021.
+ Winogrande: An adversarial winograd schema challenge at scale.
+ Communications of the ACM , 64(9):99–106.
+ Shazeer (2019) 
+Noam Shazeer. 2019.
+ Fast transformer decoding: One write-head is all you need.
+ arXiv preprint arXiv:1911.02150 .
+ Su et al. (2024) 
+Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng Liu. 2024.
+ Roformer: Enhanced transformer with rotary position embedding.
+ Neurocomputing , 568:127063.
+ Tay et al. (2020) 
+Yi Tay, Mostafa Dehghani, Dara Bahri, and Donald Metzler. 2020.
+ Efficient transformers: A survey.
+ arXiv preprint arXiv:2009.06732 .
+ Touvron et al. (2023) 
+Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, et al. 2023.
+ Llama 2: Open foundation and fine-tuned chat models.
+ arXiv preprint arXiv:2307.09288 .
+ Vaswani et al. (2017) 
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017.
+ Attention is all you need.
+ Advances in neural information processing systems , 30.
+ Welbl et al. (2017) 
+Johannes Welbl, Nelson F Liu, and Matt Gardner. 2017.
+ Crowdsourcing multiple choice science questions.
+ arXiv preprint arXiv:1707.06209 .
+ Xiao et al. (2023) 
+Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. 2023.
+ Efficient streaming language models with attention sinks.
+ arXiv preprint arXiv:2309.17453 .
+ Xiong et al. (2023) 
+Wenhan Xiong, Jingyu Liu, Igor Molybog, Hejia Zhang, Prajjwal Bhargava, Rui Hou, Louis Martin, Rashi Rungta, Karthik Abinav Sankararaman, Barlas Oguz, et al. 2023.
+ Effective long-context scaling of foundation models.
+ arXiv preprint arXiv:2309.16039 .
+ Yang et al. (2018) 
+Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Bengio, William W Cohen, Ruslan Salakhutdinov, and Christopher D Manning. 2018.
+ Hotpotqa: A dataset for diverse, explainable multi-hop question answering.
+ arXiv preprint arXiv:1809.09600 .
+ Zaheer et al. (2020) 
+Manzil Zaheer, Guru Guruganesh, Avinava Dubey, Joshua Ainslie, Chris Alberti, Santiago Ontanon, Philip Pham, Anirudh Ravula, Qifan Wang, Li Yang, et al. 2020.
+ Big bird: Transformers for longer sequences.
+ Advances in neural information processing systems .
+ Zhang et al. (2023) 
+Zhenyu Zhang, Ying Sheng, Tianyi Zhou, Tianlong Chen, Lianmin Zheng, Ruisi Cai, Zhao Song, Yuandong Tian, Christopher Ré, Clark Barrett, et al. 2023.
+ H _ ​ 2 \_2 o: Heavy-hitter oracle for efficient generative inference of large language models.
+ arXiv preprint arXiv:2306.14048 .
+ Zhong et al. (2021) 
+Ming Zhong, Da Yin, Tao Yu, Ahmad Zaidi, Mutethia Mutuma, Rahul Jha, Ahmed Hassan Awadallah, Asli Celikyilmaz, Yang Liu, Xipeng Qiu, et al. 2021.
+ Qmsum: A new benchmark for query-based multi-domain meeting summarization.
+ arXiv preprint arXiv:2104.05938 .
+ Appendix A Appendix
+ A.1 Sparsity in Attention Cache
+ Inspired by previous literature on the existence of attentional sparsity in self-attentive heads, we delve into the sparsity of attention during the generation of LLMs. Given a normalised attention score matrix calculated by the softmax function applied to the dot product of the query matrix Q Q and the key matrix K K , represented as A = Softmax ​ ( Q ​ K ⊤ ) A=\text{Softmax}(QK^{\top}) , the attention mechanism allocates weights to different elements in the input sequence, reflecting their relative importance. Thus if the attention score of a token is low, it means that it has little influence on the process, and therefore we base our sparsification on the threshold to quantify sparsity. The sparsity percentage for a given threshold t is calculated as:
+ Sparsity ​ ( t , i ) = ∑ j = 1 N 𝟏 ​ ( | A i ​ j | < t ) N {\text{Sparsity}}(t,i)=\frac{\sum_{j=1}^{N}\mathbf{1}\left(|A_{ij}|<t\right)}{N} 
+ where N N is the dimension of the attention matrix, Softmax ​ ( Q ​ K ⊤ ) i ​ j \text{Softmax}(QK^{\top})_{ij} represents the attention weight between the i t ​ h i^{th} and j t ​ h j^{th} elements, and 𝟏 ​ ( ⋅ ) \mathbf{1}(\cdot) is an indicator function that returns 1 if the condition is true and 0 otherwise. This formula calculates the proportion of attention weights that are considered negligible or insignificant for different sparsity thresholds, thus providing a multi-faceted view of attention distribution’s sparsity across the model.
+ Figure 6: Attention weights sparsity under different thresholds and sequence length. 
+ Fig. 6 shows the change of Sparsity under different thresholds, it can be seen that under different threshold values, the sparsity of A gradually increases with the sequence length, when the sequence length is 1200, the sparsity is more stable at 0.78. This means that 22% of the tokens are the dominant factor in the computation process.
+ A.2 Attention Score Function in Eviction
+ In this section we show the importance scores of token in the contexts for H2O (see Fig. 7 ), MSRNN (see Fig. 8 ) and NACL (see Fig. 9 ) during different steps. The importance score function of H2O assigns larger scores to tokens in the front part, and MSRNN assigns larger scores to tokens in close proximity.NACL evenly distributes importance scores over longer contexts, so that both distant and close tokens will have a chance to be sampled to be retained.
+ Figure 7: H2O Eviction Function Score with Step 
+ Figure 8: MSRNN Eviction Function Score with Step 
+ Figure 9: NACL Eviction Function Score with Step 
+ A.3 The Influence of Proxy Token Locations on NACL’s Proxy Eviction Strategy
+ In Proxy Token Eviction, we need to find the most accurate tokens in the sequence that can calculate the importance score of the token.The core of this problem is how to establish a judgment criterion of whether a token is important or not, and this judgment criterion determines how to select the proxy token set.
+Intuitively, we believe that whether a token in a sequence is important or not is determined by the task the model is about to accomplish. We refer to this task of the model’s input as the user’s question. In practical applications, we can usually separate the user’s question, so that we can place it at the end of input to maximize the performance of the Proxy Eviction Strategy. When we are unaware of the position of the user’s question, we primarily utilize proxy tokens to protect the beginning and end of the sequence, as in most cases, these positions contain crucial information about the generation. Even if the proxy token fails to include any information related to the question, our method can be considered as an improved version of MSRNN Oren et al. (2024) . By introducing the proxy token, we regularize the distribution of the Important scores. We also enhance the robustness of preserving intermediate information by combining it with the Random Sample strategy. Based on the aforementioned combination strategies, NACL demonstrates significant performance improvements in terms of results.
+ A.4 Why NaCl ues Random Eviction?
+ Figure 10: Through random sampling, these layers and heads can access a broader range of tokens, thereby casting a wider net to capture information. 
+ We demonstrate a case of combinatorial optimization based on randomness in Figure 10 . Within the KV cache, the loss of any information can lead to a misunderstanding of the current information. In previous methods, a broader spectrum of information that might otherwise be overlooked due to the uniformity and potential bias of score-based eviction methods. This randomness of diversification ensures that even information that is not prominently featured by self-attention mechanisms is given a chance to be integrated at deeper levels of the model Dai et al. (2019) . Consequently, this approach facilitates the model’s ability to capture and process a more varied set of token interactions, enhancing its overall performance by reducing the risk of losing vital information.
+ A.5 Algorithmic Complexity Analysis
+ In long-text scenarios, the length of the generated text during the generation phase is often much shorter than the length of the input text. Assuming the length of the input text during the encoding phase is p p and the length of the output text during the decoding phase is T T , where T ≪ p T\ll p . Given the complexity of the F score F_{\text{score}} function as O ⁡ ( p ) O(p) , and applying a step-by-step eviction algorithm on data of length p p results in a complexity of O ⁡ ( p 2 ) O(p^{2}) , making it impractical and costly for real-world applications.
+ Therefore, in long-text scenarios, we employ a one-time optimal eviction algorithm, where we calculate the optimal eviction strategy S e ​ n ​ o ​ c ​ d ​ i ​ n ​ g S_{enocding} in a one-time computation during the encoding phase. Since the number of tokens generated is negligible compared to the total, we apply the eviction strategy S i S_{i} at this stage as well. In comparison to the greedy algorithm that evicts based on S i − 1 S_{i-1} while retaining the same budget, our method can globally optimize to find the best eviction strategy. Moreover, we can decrease the time complexity from O ⁡ ( p 2 ) O(p^{2}) to O ⁡ ( p ) O(p) , making the algorithm straightforward and effective in engineering applications.
+ A.6 Hyperparameters
+ Here, we provide the hyperparameters for allocating the ratio of KV cache bugets for the hybrid eviction policy used in our experiments in Tab. 4 .
+ Budget 
+ Protect Proxy 
+ No-protect Proxy 
+ Proxy-Tokens Eviction 
+ Random Eviction 
+ 10% 
+ 1% 
+ 3% 
+ 2% 
+ 7% 
+ 20% 
+ 2% 
+ 18% 
+ 6% 
+ 12% 
+ 30% 
+ 1.5% 
+ 20% 
+ 10.5% 
+ 18% 
+ Table 4: The allocation of the KV cache budget ratio for Protect Proxy, Proxy-Tokens Eviction and Random Eviction in NaCl . 
+ A.7 Reduce Attention Scores with FlashAttention-2
+ We have implemented NACL on 128k long-text inference and made it compatible with Flash Attention. There are two implementations below, both of which can be directly used with Flash Attention.
+ Re-Computation of the Attention Score:
+ We utilize 𝐐 𝒫 \mathbf{Q}_{\mathcal{P}} and 𝐊 \mathbf{K} to calculate the required attention scores during the encoding phase, separate from Flash Attention. Since the proxy tokens set is very small, only a small portion of the attention score needs to be re-computed, thus the additional overhead is insignificant. According to experimental results, on a 128k context, evicting 20% while maintaining a stable 15GB of memory usage does not affect the inference speed.
+ Implementation of Reduce Attention Scores Kernel:
+ The forward computation of FlashAttention-2 Dao et al. (2022) returns the log-sum-exp (Logsumexp) for each row. Leveraging this Logsumexp, we can recompute the attention scores matrix in the manner described in the backward computation of FlashAttention-2. Subsequently, we perform a column-wise summation to obtain the reduced attention scores, as outlined in Algorithm 2 .
+ Algorithm 2 Reduce Attention Scores with FlashAttention-2 
+ 1: 
+ Matrices 𝐐 ∈ ℝ N q × d , 𝐊 ∈ ℝ N k × d \mathbf{Q}\in\mathbb{R}^{N_{q}\times d},\mathbf{K}\in\mathbb{R}^{N_{k}\times d} in HBM, vector Logsumexp L ∈ ℝ N q L\in\mathbb{R}^{N_{q}} in HBM, block sizes B c B_{c} , B r B_{r} .
+ 2: 
+ Divide 𝐐 \mathbf{Q} into T r = ⌈ N q B r ⌉ T_{r}=\left\lceil\frac{N_{q}}{B_{r}}\right\rceil blocks 𝐐 1 , … , 𝐐 T r \mathbf{Q}_{1},\dots,\mathbf{Q}_{T_{r}} of size B r × d B_{r}\times d each,
+and divide 𝐊 \mathbf{K} in to T c = ⌈ N k B c ⌉ T_{c}=\left\lceil\frac{N_{k}}{B_{c}}\right\rceil blocks 𝐊 1 , … , 𝐊 T c \mathbf{K}_{1},\dots,\mathbf{K}_{T_{c}} , of size B c × d B_{c}\times d each.
+ 3: 
+ Divide L L into T r T_{r} blocks L i , … , L T r L_{i},\dots,L_{T_{r}} of size B r B_{r} each.
+ 4: 
+ Initialize the output 𝐎 = ( 0 ) N k \mathbf{O}=(0)_{N_{k}} in HBM and divide it into T c T_{c} blocks 𝐎 1 , … , 𝐎 T c \mathbf{O}_{1},\dots,\mathbf{O}_{T_{c}} of size B c B_{c} each.
+ 5: 
+ for 1 ≤ j ≤ T c 1\leq j\leq T_{c} do 
+ 6: 
+   Load 𝐊 j \mathbf{K}_{j} from HBM to on-chip SRAM.
+ 7: 
+   Initialize 𝐑 j = ( 0 ) B c \mathbf{R}_{j}=(0)_{B_{c}} on Register.
+ 8: 
+    for 1 ≤ i ≤ T r 1\leq i\leq T_{r} do 
+ 9: 
+    Load 𝐐 i , L i \mathbf{Q}_{i},L_{i} from HBM to on-chip SRAM.
+ 10: 
+    On chip, compute 𝐒 i ( j ) = 𝐐 i ​ 𝐊 j T ∈ ℝ B r × B c \mathbf{S}_{i}^{(j)}=\mathbf{Q}_{i}\mathbf{K}_{j}^{T}\in\mathbb{R}^{B_{r}\times B_{c}} .
+ 11: 
+    On chip, compute 𝐏 i ( j ) = exp ⁡ ( 𝐒 i ​ j − L i ) ∈ ℝ B r × B c \mathbf{P}_{i}^{(j)}=\exp(\mathbf{S}_{ij}-L_{i})\in\mathbb{R}^{B_{r}\times B_{c}} .
+ 12: 
+    On chip, compute
+ 𝐑 j ← 𝐑 j + R ​ e ​ d ​ u ​ c ​ e ​ ( 𝐏 i ( j ) ) ∈ ℝ B c \mathbf{R}_{j}\leftarrow\mathbf{R}_{j}+Reduce(\mathbf{P}_{i}^{(j)})\in\mathbb{R}^{B_{c}} .
+ 13: 
+    end for 
+ 14: 
+   amtomicAdd( 𝐎 j , 𝐑 j \mathbf{O}_{j},\mathbf{R}_{j} ).
+ 15: 
+ end for 
+ 16: 
+ Return 𝐎 \mathbf{O} .
+ Experimental support, please
+ view the build logs 
+ for errors. Generated by
+ L
+ A 
+ T
+ E 
+ xml 
+ .
+ Instructions for reporting errors
+ We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility and mobile
+ support. To report errors in the HTML that will help us improve conversion and rendering, choose any of the
+ methods listed below:
+ Click the "Report Issue" ( 
+ ) button, located in the page header.
+ Tip: You can select the relevant text first, to include it in your report.
+ Our team has already identified the following issues . We appreciate your time reviewing and reporting rendering errors we
+ may not have found yet. Your efforts will help us improve the HTML versions for all readers, because disability
+ should not be a barrier to accessing research. Thank you for your continued support in championing open access for
+ all.
+ Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML maintain a list of packages that need conversion , and welcome developer contributions .
+ We gratefully acknowledge support from
+ our major funders ,
+ member institutions , ,
+ and all contributors.
+ About 
+ · 
+ Help 
+ · 
+ Contact 
+ · 
+ Subscribe 
+ · 
+ Copyright 
+ · 
+ Privacy 
+ · 
+ Accessibility 
+ · 
+ Operational Status (opens in new tab) 
+ Major funding support from

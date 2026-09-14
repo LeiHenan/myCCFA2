@@ -1,0 +1,579 @@
+ 
+ DASH: Input-Aware Dynamic Layer Skipping for Efficient LLM Inference with Markov Decision Policies 
+ Report GitHub Issue 
+ × 
+ Title: 
+ Content selection saved. Describe the issue below:
+ Description: 
+ Submit without GitHub 
+ Submit in GitHub 
+ arXiv is now an independent nonprofit! 
+ Learn more 
+ × 
+ Back to arXiv 
+ Why HTML? 
+ Report Issue 
+ Back to Abstract 
+ Download PDF 
+ Abstract 
+ 1 Introduction 
+ 2 Background 
+ 2.1 Layer Skipping 
+ 2.2 Challenges and Opportunities 
+ 2.3 Motivation 
+ 3 Methodology 
+ 3.1 Problem Formulation 
+ 3.2 Compensation Mechanisms Based on Differential Rewards 
+ 3.3 Layer Skipping Decision Mechanism 
+ 3.4 Asynchronous Skipping Decision for Latency Hiding 
+ 4 Evaluation 
+ 4.1 Experimental Settings 
+ 4.2 End-to-End Result 
+ 4.3 Ablation Study 
+ 5 Conclusion 
+ References 
+ License: CC BY-NC-SA 4.0
+arXiv:2505.17420v1 [cs.CL] 23 May 2025
+ DASH: Input-Aware Dynamic Layer Skipping for Efficient LLM Inference with Markov Decision Policies
+ Ning Yang
+ Email: yn937391832@sjtu.edu.cn 
+ Fangxin Liu
+ Email: liufangxin@sjtu.edu.cn 
+ Junjie Wang
+ Email: ljiangcs@sjtu.edu.cn 
+ Tao Yang
+ Kan Liu
+ Haibing Guan
+ Li Jiang*1.Shanghai Jiao Tong University2.Shanghai Qi Zhi Institute3.Northeast University4.Huawei Technologies Ltd.5.Alibaba Group
+ Abstract 
+ Large language models (LLMs) have achieved remarkable performance across a wide range of NLP tasks. However, their substantial inference cost poses a major barrier to real-world deployment, especially in latency-sensitive scenarios. To address this challenge, we propose DASH , an adaptive layer-skipping framework that dynamically selects computation paths conditioned on input characteristics. We model the skipping process as a Markov Decision Process (MDP), enabling fine-grained token-level decisions based on intermediate representations. To mitigate potential performance degradation caused by skipping, we introduce a lightweight compensation mechanism that injects differential rewards into the decision process. Furthermore, we design an asynchronous execution strategy that overlaps layer computation with policy evaluation to minimize runtime overhead.
+Experiments on multiple LLM architectures and NLP benchmarks show that our method achieves significant inference acceleration while maintaining competitive task performance, outperforming existing methods.
+ 1 Introduction
+ Transformer-based architectures have become the backbone of modern AI systems due to their strong long-range dependency modeling Grattafiori et al. (2024) ; Han et al. (2022) . In particular, Large Language Models (LLMs) built on Transformers have achieved impressive results across natural language and vision tasks Achiam et al. (2023) ; Guo et al. (2025) . However, the growing size and complexity of these models pose significant challenges for deployment, especially in latency-sensitive or resource-constrained environments Brown et al. (2020) . Reducing inference cost has thus become a key research goal.
+ Layer skipping has emerged as a promising direction for reducing inference cost. Existing work Liu et al. (2024) ; Varshney et al. (2023) ; Fan et al. (2024) ; Liu et al. (2023) states that not all layers are equally important for every input. In many cases, early layers can already produce sufficiently informative representations, while further computation may offer diminishing returns or even introduce noise. Several recent works propose fixed or heuristic-based skipping strategies, including early-exit mechanisms (e.g., SkipDecode Del Corro et al. (2023) , LayerSkip Elhoushi et al. (2024) ), periodic skipping, or static similarity-based skipping (e.g., FFN-SkipLLM Jaiswal et al. (2024) , AdaSkip He et al. (2025) ).
+ However, these approaches face several limitations. First, most skip policies are static or pre-defined, lacking the flexibility to adapt to input-specific semantics or token-level dynamics. Second, indiscriminate skipping of layers may cause semantic drift or loss of crucial contextual information, resulting in substantial performance degradation. In practice, these methods struggle to balance speed and accuracy, often achieving only modest acceleration before model quality drops significantly.
+ To address these challenges, we propose DASH , an adaptive dynamic layer-skipping framework that learns to select computation paths conditioned on the input. We formulate the layer-skipping process as a Markov Decision Process (MDP), enabling token-level, state-aware decisions at each layer. Our method dynamically determines whether to compute, skip, or exit based on intermediate representations, allowing for fine-grained control over computation. To further mitigate the risk of performance drop from skipped layers, we introduce a compensation mechanism that models differential rewards, adjusting hidden states to preserve semantic fidelity. Moreover, we propose an asynchronous execution scheme that overlaps skip-decision computation with forward computation, hiding control latency and enabling real-time skipping with minimal overhead.
+ Our contributions are summarized as follows:
+ • 
+ We formulate layer skipping as a token-level Markov Decision Process, enabling dynamic and context-aware layer execution conditioned on intermediate representations.
+ • 
+ We propose a compensation mechanism using differential rewards to preserve accuracy under aggressive skipping.
+ • 
+ We introduce an asynchronous execution strategy that overlaps decision-making and layer computation, reducing runtime overhead.
+ • 
+ We validate our approach on multiple LLM backbones, demonstrating significant speedups with minimal performance loss, outperforming existing skipping methods.
+ 2 Background
+ 2.1 Layer Skipping
+ Layer skipping He et al. (2025) ; Men et al. (2024) has emerged as a promising technique to accelerate inference by reducing redundant computation across Transformer layers. Existing approaches can be broadly categorized into three types: early skipping, periodic skipping, and early exit.
+ Early skipping Del Corro et al. (2023) deterministically skips the first few layers at inference time. While it enables efficient batched execution, it may discard critical early-stage features, potentially harming performance.
+Periodic skipping Liu et al. (2024) skips layers at fixed intervals during inference, reducing computation with a regular pattern that supports batching. However, it applies the same skipping schedule to all inputs, ignoring layer importance variations and potentially skipping critical layers.
+Early exit Wang et al. (2022) ; Elhoushi et al. (2024) performs inference sequentially and halts once a confidence threshold is met. While more adaptive, it often incurs extra overhead to train confidence estimators or auxiliary classifiers and may miss valuable information in deeper layers.
+ Despite their efficiency, these methods lack fine-grained, input-aware adaptability. They either follow static schedules or require additional training costs to mitigate performance degradation.
+ 2.2 Challenges and Opportunities
+ Figure 1: Cosine Similarity and Model Accuracy Analysis. The left panel illustrates the cosine similarity across layers, indicating that representation similarity stabilizes after the initial layers despite early fluctuations. The right panel shows a precipitous decline in model accuracy as the number of skipped layers increases, emphasizing that minimal skipping maintains reasonable performance while excessive skipping results in a substantial accuracy drop. 
+ Observation 1: Layer importance varies significantly across different models. 
+ We begin by analyzing the similarity between the Transformer layers’ input and output representations to assess their relative importance. Specifically, given an input vector X X and an output vector Y Y , we measure their cosine similarity as:
+ Similarity ⁡ ( x → , y → ) \displaystyle\operatorname{Similarity}(\vec{x},\vec{y}) 
+ = x → ⋅ y → ‖ x → ‖ ​ ‖ y → ‖ \displaystyle=\frac{\vec{x}\cdot\vec{y}}{\|\vec{x}\|\|\vec{y}\|} 
+ (1) 
+ = ∑ i = 1 n x i ​ y i ∑ i = 1 n x i 2 ​ ∑ i = 1 n y i 2 \displaystyle=\frac{\sum_{i=1}^{n}x_{i}y_{i}}{\sqrt{\sum_{i=1}^{n}x_{i}^{2}}\sqrt{\sum_{i=1}^{n}y_{i}^{2}}} 
+ (2) 
+ We interpret layers with high input-output similarity as less important, since the output remains close to the input, implying limited transformation and contribution during inference. Conversely, layers with lower similarity contribute more substantially and thus hold higher importance.
+ We evaluate the input-output similarity across layers of two distinct models on the CNN/DM reasoning task. As shown in Figure 1 , except for the initial and final layers, most intermediate layers exhibit high similarity, suggesting these layers can be skipped with minimal impact on performance. Notably, the similarity distributions differ markedly between models, underscoring the necessity of adaptive strategies tailored to the unique characteristics of each model.
+ Figure 2: IO similarities between different samples on Qwen model with MMLU dataset. 
+ Observation 2: Static layer skipping leads to irreversible accuracy degradation. 
+ We conduct layer skipping based on inter-layer similarity for the Qwen-2.5-7B model by sequentially skipping layers with the highest similarity and tracking the corresponding accuracy changes (Figure 1 ). The results reveal a steep accuracy decline as more layers are skipped. Specifically, for the 28-layer Qwen model, omitting just 6 to 8 of the most similar layers causes accuracy to deteriorate to the level of a random baseline. This demonstrates that simple static skipping cannot achieve a favorable trade-off between compression and performance retention.
+ To better understand the interplay between layer skipping and input variability, we analyze token-level input-output similarity over a small validation subset, focusing on a single-token generation task. Figure 2 contrasts three output scenarios: identical correct outputs, outputs differing where one is correct and the other incorrect, and both correct but distinct outputs. The results highlight significant variation in similarity scores across tokens and layers, indicating that layer importance depends heavily on input content. Consequently, static similarity metrics aggregated over the entire dataset fail to capture this dynamic behavior, risking the omission of critical layers for specific inputs and resulting in accuracy loss.
+ These findings motivate the need for an input-adaptive, dynamic layer skipping mechanism that balances acceleration gains with accuracy preservation.
+ Observation 3: Embedding changes are slow across layers 
+We further analyze the input-output variations between consecutive layers for a fixed input and observe that the cosine similarity between embeddings or activations of adjacent layers remains consistently high across multiple models. Taking Qwen-2.5-7B as an example (Figure 1 ), from the fifth layer onward, the similarity between consecutive layers exceeds 0.9, indicating that the embedding direction evolves gradually as the input propagates through the network. Notably, the most significant change occurs at the first layer. This finding suggests that such slow variation in embeddings can be exploited to design cooperative acceleration strategies, potentially mitigating the latency overhead introduced by dynamic layer-skipping mechanisms.
+ 2.3 Motivation
+ Transformer-based models often exhibit significant inter-layer redundancy. Recent works such as SkipDecode and AdaSkip demonstrate that substantial portions of computation can be skipped without severe performance degradation. However, existing layer-skipping methods still face challenges in balancing skipping rates and prediction quality, largely due to input variability and architectural differences—even among models designed for the same tasks.
+ This challenge is particularly pronounced under dynamic input conditions. While static layer skipping’s limitations are well-known, compensating for information loss during runtime skipping remains underexplored. Our analysis of input-output similarity across Transformer layers reveals that many layers contribute minimal incremental information and can be safely skipped. Crucially, which layers can be skipped varies dynamically with input characteristics.
+ Motivated by this, we model dynamic layer skipping as a sequential decision-making process inspired by Markov decision processes. We propose the DASH framework—an adaptive system that dynamically identifies optimal computational paths based on real-time input analysis. By integrating a refined layer-skipping decision mechanism with an accuracy compensation strategy, DASH achieves a favorable trade-off between efficiency and performance. Furthermore, through asynchronous execution, our framework maximizes skipping while avoiding additional runtime overhead, making it well-suited for resource-constrained deployment.
+ 3 Methodology
+ In this section, we present DASH, an adaptive dynamic layer-skipping framework that identifies optimal computational paths based on input characteristics. As illustrated in Figure 3 , DASH utilizes a scoring model to evaluate the importance of each Transformer layer during inference and dynamically decides whether to execute or skip the subsequent layer. To prevent accuracy degradation caused by aggressive skipping, DASH enforces strict constraints on skipping decisions and integrates a mixed-precision compensation mechanism, ensuring minimal impact on the model’s original performance. Furthermore, to mitigate the additional latency introduced by the decision-making process, DASH exploits the high similarity between activation inputs of adjacent layers, enabling asynchronous evaluation that reduces overhead. Collectively, these components enable DASH to effectively reduce redundant computation while preserving accuracy, making it highly suitable for deployment in resource-constrained environments.
+ Figure 3: Overview of the DASH Framework. This method first processes the embedding layer and maintains full-precision computation in the first Transformer layer. Starting from the second layer, the scoring model evaluates the next layer’s state using the modified input of the current layer, dynamically selecting the next layer’s state. When a layer is skipped, a compensation mechanism is activated based on the scoring results, effectively balancing inference speed and model accuracy. 
+ 3.1 Problem Formulation
+ Consider a pre-trained LLM M M with L L Transformer layers. Given an input sequence X X , the standard forward pass computes all layers sequentially to produce output f M ​ ( X ) f_{M}(X) .
+Our objective is to reduce inference latency by selectively skipping certain layers while maintaining output quality.
+We formalize this as a layer-skipping decision problem: construct a binary decision sequence S = s 1 , s 2 , … , s L S={s_{1},s_{2},\dots,s_{L}} , where each s i ∈ 0 , 1 s_{i}\in{0,1} indicates whether layer i i is skipped ( 0 0 ) or executed ( 1 1 ). The subset of executed layers forms a computational path P = { l i | s i = 1 } P=\{l_{i}|s_{i}=1\} .
+ Let f M ​ ( X ) f_{M}(X) denote the model output when only layers selected by S S are computed. We aim to minimize the expected number of executed layers, | S | = ∑ i s i |S|=\sum_{i}s_{i} , subject to an acceptable accuracy loss measured by a distance function d ⁡ ( ⋅ , ⋅ ) d(\cdot,\cdot) between full and partial outputs:
+ min D 𝔼 X [ | S X | ] s . t . 𝔼 X [ d ( f M ( X ) , f M , S X ( X ) ] ≤ ϵ \mathop{\min}_{D}\mathbb{E}_{X}[|S_{X}|]\ s.t.\ \mathbb{E}_{X}[d(f_{M}(X),f_{M,S_{X}}(X)]\leq\epsilon 
+ (3) 
+ where ϵ \epsilon is a user-specified tolerance threshold.
+ To capture dependencies between layers and adapt skipping decisions dynamically based on intermediate representations, we model the skipping strategy as a sequential decision-making process. Specifically, a policy π θ \pi_{\theta} parametrized by θ \theta decides the next layer’s execution state conditioned on the current layer’s state s i s_{i} and hidden features h i h_{i} :
+ s i + 1 ∼ π θ ​ ( s i + 1 | s i , h i ) s_{i+1}\sim\pi_{\theta}(s_{i+1}|s_{i},h_{i}) 
+ (4) 
+ The goal is to learn parameters θ \theta that optimize the trade-off between computational cost and prediction quality. Formally,
+ θ ∗ = a ​ r ​ g ​ min D 𝔼 X ​ [ ∑ i = 1 L s i ] ​ s . t . ℒ ⁡ ( π θ ) + ℒ ⁡ ( M ) ≤ ϵ \theta^{*}=arg\mathop{\min}_{D}\mathbb{E}_{X}[\sum_{i=1}^{L}s_{i}]\ s.t.\ \mathcal{L}(\pi_{\theta})+\mathcal{L}(M)\leq\epsilon 
+ (5) 
+ where ℒ ⁡ ( ⋅ ) \mathcal{L}({\cdot}) denotes the downstream task loss or overall model loss, incorporating both prediction accuracy and skipping regularization.
+ 3.2 Compensation Mechanisms Based on Differential Rewards
+ Although DASH achieves significant inference acceleration by skipping a substantial number of layers, we observe that excessive skipping may cause non-negligible accuracy degradation. To address this issue, DASH incorporates a compensation mechanism based on differential rewards, which helps preserve model performance while enabling more aggressive layer skipping.
+ Specifically, when the scoring model decides to skip a layer l i l_{i} , it implies that the input and output of the layer are sufficiently similar. However, instead of directly using the output of the previous layer l i − 1 l_{i-1} as the input to the next layer l i + 1 l_{i+1} , we introduce computational compensation to approximate the skipped transformation.
+ DASH supports three actions for each layer: full execution, complete skipping, and partial computation.
+ • 
+ Full Execution performs the standard FP16 computation.
+ • 
+ Complete Skipping uses a scaling factor to approximate the transformation. The output is estimated as:
+ Y j ​ t i = s ​ c ​ a ​ l ​ e j ⋅ X j ​ t i Y_{jt}^{i}=scale_{j}\cdot X_{jt}^{i} 
+ (6) 
+ where the scaling factor is computed offline using a calibration dataset:
+ s ​ c ​ a ​ l ​ e i = ∑ j = 1 N ∑ t = 1 | T j | ‖ Y j ​ t i ‖ ‖ X j ​ t i ‖ ∑ j = 1 N | T j | scale_{i}=\frac{\sum_{j=1}^{N}\sum_{t=1}^{|T_{j}|}\frac{||Y_{jt}^{i}||}{||X_{jt}^{i}||}}{\sum_{j=1}^{N}|T_{j}|} 
+ (7) 
+ Here, X j ​ t i X_{jt}^{i} and Y j ​ t i Y_{jt}^{i} denote the input and output of layer i i for toke t t in sequence j j , respectively.
+ • 
+ Partial Computation indicates that the layer’s computation is not essential in full precision. In this case, DASH uses low-bit quantization (e.g., INT4 or INT8) instead of FP16 to execute the layer with reduced cost while preserving critical information.
+ To unify this design, each layer’s execution state is encoded using a discrete value. Specifically, a state of 0 indicates that the layer is skipped and its output is approximated via scaling compensation. A state of 1 denotes that the layer is executed with low-precision INT4 computation, while 2 represents execution with INT8. Finally, a state of 4 corresponds to full-precision FP16 execution. This unified encoding enables flexible trade-offs between computational cost and accuracy on a per-layer basis.
+ The overall optimization objective remains unchanged (Equation 5 ): minimize the expected total computation cost while keeping accuracy loss within a predefined threshold.
+Finally, DASH integrates these options into a unified decision process by assigning differential rewards based on the scoring model’s output. The more computationally efficient the chosen action is, the higher the reward—conditioned on the predicted impact on accuracy. This differential reward guides the policy model to make fine-grained, input-adaptive decisions and enables DASH to explore more aggressive yet accurate skipping strategies.
+ 3.3 Layer Skipping Decision Mechanism
+ Given the current layer l i l_{i} of the model, our objective is to determine the execution state of the next layer s i + 1 s_{i+1} , where s ∈ 0 , 1 , 2 , 4 s\in{0,1,2,4} . For accuracy preservation, we never skip the first layer and always set s 1 = 4 s_{1}=4 . The final layer is also excluded from skipping decisions to ensure the integrity of output representations.
+ We employ a scoring model G θ G_{\theta} to implement the skipping policy. The score is computed based on the current hidden state, the current and next layer indices, and the current and candidate next layer states:
+ g = G θ ​ ( h , l i , l i + 1 , s i , s i + 1 ) g=G_{\theta}(h,l_{i},l_{i+1},s_{i},s_{i+1}) 
+ (8) 
+ The scoring function G θ G_{\theta} is defined as:
+ G θ = M ​ L ​ P ​ ( [ h i ; E ⁡ ( l i ) ; E ⁡ ( l i + 1 ) ] ) − α ⁡ ( s i + 1 − s i ) G_{\theta}=MLP([h_{i};E(l_{i});E(l_{i+1})])-\alpha(s_{i+1}-s_{i}) 
+ (9) 
+ where E ⁡ ( ⋅ ) E(\cdot) denotes the layer position embedding function and [ ⋅ ; ⋅ ] [\cdot;\cdot] indicates vector concatenation. The term − α ⁡ ( s i + 1 − s i ) -\alpha(s_{i+1}-s_{i}) serves as a regularization term that penalizes abrupt changes in layer execution states, encouraging smoother transitions and greater skipping continuity.
+ The MLP is a two-layer feedforward network:
+ M ​ L ​ P ​ ( x ) = W 3 ⋅ G ​ E ​ L ​ U ​ ( W 2 ⋅ G ​ E ​ L ​ U ​ ( W 1 ⋅ x ) ) MLP(x)=W_{3}\cdot GELU(W_{2}\cdot GELU(W_{1}\cdot x)) 
+ (10) 
+ where W 1 ∈ ℝ ( d h + 2 ​ d l ) × d 1 W_{1}\in\mathbb{R}^{(d_{h}+2d_{l})\times d_{1}} , W 2 ∈ ℝ d 1 × d 2 W_{2}\in\mathbb{R}^{d_{1}\times d_{2}} , and W 3 ∈ ℝ d 2 × 1 W_{3}\in\mathbb{R}^{d_{2}\times 1} , with d h d_{h} as the hidden state dimension, d l d_{l} as the layer embedding dimension, and d 1 d_{1} , d 2 d_{2} as intermediate MLP dimensions.
+ To balance exploration and exploitation during training, we apply a temperature-based sampling strategy:
+ P ⁡ ( s i + 1 = s | h i , s i ) ∝ e ​ x ​ p ​ ( G θ τ 0 ⋅ e − α ​ t ) P(s_{i+1}=s|h_{i},s_{i})\propto exp(\frac{G_{\theta}}{\tau_{0}\cdot e^{-\alpha t}}) 
+ (11) 
+ where τ = τ 0 ⋅ e − α ​ t \tau=\tau_{0}\cdot e^{-\alpha t} is a temperature parameter that decays over training steps t t to reduce randomness over time.
+ Differential Reward Function. 
+To guide training, we introduce a location-sensitive differential reward, combining accuracy and efficiency:
+ r i = r a ​ c ​ c ⋅ ω i + r e ​ f ​ f r_{i}=r_{acc}\cdot\omega_{i}+r_{eff} 
+ (12) 
+ Here, r acc r_{\mathrm{acc}} measures the prediction accuracy, ω i \omega_{i} is a position-based importance weight, and r eff r_{\mathrm{eff}} rewards computational savings.
+ For classification tasks, r acc = 1 r_{\mathrm{acc}}=1 if the prediction is correct and − 1 -1 otherwise. For generation tasks evaluated with perplexity, the reward is calculated as:
+ r a ​ c ​ c = ϵ − | p ​ p ​ l f ⁡ ( x ) + p ​ p ​ l f s ​ ( x ) | p ​ p ​ l f ⁡ ( x ) r_{acc}=\frac{\epsilon-|ppl_{f(x)}+ppl_{f_{s}(x)}|}{ppl_{f(x)}} 
+ (13) 
+ The location importance weight ω i \omega_{i} takes both layer depth and skipping status into account:
+ ω i = | S X | − | S X , l | | S X | ⋅ σ ⁡ ( s i − | S M | | S X | ) \omega_{i}=\frac{|S_{X}|-|S_{X,l}|}{|S_{X}|}\cdot\sigma(s_{i}-\frac{|S_{M}|}{|S_{X}|}) 
+ (14) 
+ where | S X | |S_{X}| is the total sum of all layer states, | S X , l | |S_{X,l}| is the cumulative state sum from layer 1 to l i l_{i} , | S M | |S_{M}| is the maximum total state value, and σ \sigma is the sigmoid function. This encourages skipping in earlier layers while considering execution intensity.
+ The efficiency reward is computed as:
+ r e ​ f ​ f = β ⋅ ( 4 − s i + 1 ) r_{eff}=\beta\cdot(4-s_{i+1}) 
+ (15) 
+ This term provides higher rewards for more aggressive skipping.
+ Training Objective. 
+We optimize the scoring model via policy gradient reinforcement learning, aiming to maximize expected rewards:
+ ∇ θ ℒ RL ≈ − ∑ i = 1 L r i ∇ θ log π θ ( s i + 1 | s i , h i ) \nabla_{\theta}\mathcal{L}_{\mathrm{RL}}\approx-\sum_{i=1}^{L}r_{i}\nabla_{\theta}\log\pi_{\theta}\left(s_{i+1}|s_{i},h_{i}\right) 
+ (16) 
+ We jointly train the scoring model and the main model using a combined loss:
+ ℒ a ​ l ​ l = ℒ C ​ E + λ ​ ℒ R ​ L \mathcal{L}_{all}=\mathcal{L}_{CE}+\lambda\mathcal{L}_{RL} 
+ (17) 
+ where ℒ CE \mathcal{L}_{\mathrm{CE}} is the cross-entropy loss for the main task and λ \lambda is a balancing factor that controls the trade-off between accuracy and efficiency.
+ Inference Strategy. 
+During inference, we adopt a greedy strategy, selecting the next layer state with the highest score:
+ s i + 1 = a ​ r ​ g ​ max s ∈ { 0 , 1 , 2 , 4 } G θ ​ ( h , l i , l i + 1 , s i , s ) s_{i+1}=arg\mathop{\max}_{s\in\{0,1,2,4\}}G_{\theta}(h,l_{i},l_{i+1},s_{i},s) 
+ (18) 
+ This allows DASH to dynamically determine the execution path across layers, enabling efficient and adaptive inference.
+ 3.4 Asynchronous Skipping Decision for Latency Hiding
+ Although the DASH policy dynamically reduces FLOPs during inference, the layer-wise decision process introduces non-negligible latency. Specifically, the decision score of each layer must be computed before executing that layer, which adds serial dependency and offsets the speedup benefits from skipping.
+ To address this issue, we propose an asynchronous decision mechanism that hides this latency. Our key insight is based on the empirical observation that hidden states, especially in transformer-based models, evolve gradually across layers. Thus, we can approximate the current layer’s hidden state using the previous one.
+ Specifically, when computing layer l i l_{i} , we approximate h i + 1 h_{i+1} with a transformed version of h i h_{i} , scaled by a compensation factor s ​ c ​ a ​ l ​ e i scale_{i} :
+ h i + 1 ′ = s c a l e i ⋅ h i h_{i+1}^{{}^{\prime}}=scale_{i}\cdot h_{i} 
+ (19) 
+ We then use h i + 1 ′ h_{i+1}^{{}^{\prime}} to compute the decision score for the next layer in parallel:
+ s i + 1 = arg max s ∈ { 0 , 1 , 2 , 4 } G θ ( h i + 1 ′ , l i , l i + 1 , s i , s ) s_{i+1}=\arg\max_{s\in\{0,1,2,4\}}G_{\theta}(h_{i+1}^{{}^{\prime}},l_{i},l_{i+1},s_{i},s) 
+ (20) 
+ In this way, the scoring process for layer l i + 1 l_{i+1} overlaps with the computation of laye
+ 4 Evaluation
+ In this section, we present a comprehensive evaluation of DASH’s inference-time performance. We begin by detailing the experimental setup, including benchmarks, baselines, and configurations. Then, we analyze the experimental results to demonstrate the effectiveness of our approach.
+ 4.1 Experimental Settings
+ Benchmarks. 
+We evaluate DASH on two representative large language models: LLaMA-2 (referred to as LLaMA ) Touvron et al. (2023) and Qwen-2.5-7B-Instruct (referred to as Qwen ) Yang et al. (2025) . The evaluation covers both generation and classification tasks. For text generation, we use WikiText-2 Merity et al. (2016) and CNN/DM datasets See et al. (2017) . For classification, we select two commonly used benchmarks: MMLU Hendrycks et al. (2020) and ARC Clark et al. (2018) .
+ Models. 
+We utilize pre-trained models from HuggingFace and TorchVision Model Zoos. All baseline results are measured using FP16 precision. The models are evaluated under the same settings for a fair comparison.
+ Calibration. 
+To compute the scaling parameters required for DASH’s skip compensation, we randomly sample 128 inputs from each dataset to construct a calibration set.
+ Baselines. 
+We compare our proposed method against four strong baselines for accelerating large language model inference: Early-Exit, SkipDecode, Adaskip, and RandomSkip. These methods represent diverse strategies for reducing computational costs during the generation process.
+ 1) Early-Exit Fan et al. (2024) enables the model to produce outputs from intermediate hidden states without completing a full forward pass. It dynamically selects exit points based on input complexity, thereby reducing inference overhead. This method integrates early-exit modules at specific transformer layers, allowing faster token generation with minimal quality degradation.
+ 2) SkipDecode Del Corro et al. (2023) is a token-level early-exit strategy optimized for batch inference and key-value caching. Unlike traditional early-exit methods, it determines a unified exit layer per token across the batch at each sequence position. It enforces a monotonic decrease in exit layers across time steps, avoiding redundant key-value recomputation for past tokens. Rather than halting computation, it strategically skips lower and middle layers, focusing computation on higher layers.
+ 3) Adaskip He et al. (2025) is an adaptive sublayer-skipping method tailored for long-context inference. It identifies less informative layers based on similarity metrics and enables sublayer-level skipping to enhance efficiency without significant performance loss.
+ 4) RandomSkip serves as a control baseline that randomly skips layers during inference according to a predefined probability distribution, without using any learned policy.
+ 4.2 End-to-End Result
+ Qwen 
+ Wikitext2(ppl) 
+ CNN/DM(Rouge-L) 
+ MMLU(Acc) 
+ ARC-C(Acc.) 
+ 1.33x 
+ 1.67x 
+ 2.0x 
+ 1.33x 
+ 1.67x 
+ 2.0x 
+ 1.33x 
+ 1.67x 
+ 2.0x 
+ 1.33x 
+ 1.67x 
+ 2.0x 
+ FP16 
+ 6.62 
+ 22.8 
+ 70.2 
+ 60.6 
+ Early-Exit 
+ 13.1 
+ 35.4 
+ 1e3 
+ 21.6 
+ 18.4 
+ 10.7 
+ 56.4 
+ 38.8 
+ 26.2 
+ 45.5 
+ 38.5 
+ 30.2 
+ RandomSkip 
+ 85.2 
+ 173.4 
+ 4e3 
+ 13.7 
+ 9.5 
+ 8.2 
+ 42.1 
+ 24.8 
+ 25.1 
+ 36.8 
+ 30.6 
+ 24.5 
+ SkipDecode 
+ 36.8 
+ 96.5 
+ 1e3 
+ 20.2 
+ 13.5 
+ 8.1 
+ 63.5 
+ 60.4 
+ 55.3 
+ 55.3 
+ 40.9 
+ 33.5 
+ Adaskip 
+ 8.12 
+ 18.4 
+ 77.4 
+ 21.4 
+ 20.8 
+ 15.7 
+ 66.8 
+ 58.1 
+ 43.2 
+ 50.4 
+ 39.8 
+ 31.1 
+ Ours 
+ 7.43 
+ 19.9 
+ 53.2 
+ 22.5 
+ 22.1 
+ 19.2 
+ 69.7 
+ 67.5 
+ 61.0 
+ 58.4 
+ 52.2 
+ 36.5 
+ Table 1: Evaluation Results for Qwen model.
+ LLaMA 
+ Wikitext2(ppl) 
+ CNN/DM(Rouge-L) 
+ MMLU(Acc) 
+ ARC-C(Acc.) 
+ 1.33x 
+ 1.67x 
+ 2.0x 
+ 1.33x 
+ 1.67x 
+ 2.0x 
+ 1.33x 
+ 1.67x 
+ 2.0x 
+ 1.33x 
+ 1.67x 
+ 2.0x 
+ FP16 
+ 5.47 
+ 27.7 
+ 46.3 
+ 39.9 
+ Early-Exit 
+ 9.12 
+ 24.8 
+ 371 
+ 26.2 
+ 22.8 
+ 18.4 
+ 40.6 
+ 34.9 
+ 32.5 
+ 33.2 
+ 28.5 
+ 26.3 
+ RandomSkip 
+ 113.8 
+ 1e3 
+ 3e3 
+ 15.8 
+ 8.4 
+ 8.1 
+ 33.8 
+ 26.1 
+ 25.1 
+ 27.3 
+ 25.1 
+ 24.9 
+ SkipDecode 
+ 20.7 
+ 44.3 
+ 192.4 
+ 22.8 
+ 19.6 
+ 15.0 
+ 44.1 
+ 42.7 
+ 40.8 
+ 37.1 
+ 33.7 
+ 28.4 
+ Adaskip 
+ 7.03 
+ 21.0 
+ 55.4 
+ 24.3 
+ 21.2 
+ 17.3 
+ 45.9 
+ 42.8 
+ 32.4 
+ 38.1 
+ 35.3 
+ 29.7 
+ Ours 
+ 6.61 
+ 13.6 
+ 38.8 
+ 26.8 
+ 23.3 
+ 20.1 
+ 46.0 
+ 44.6 
+ 42.8 
+ 38.6 
+ 36.4 
+ 31.1 
+ Table 2: Evaluation Results for LLaMA model.
+ Table 1 and Table 2 summarize the performance of various layer skipping methods applied to Qwen and LLaMA models across multiple tasks, evaluated under acceleration ratios of 1.33×, 1.67×, and 2.0×.
+ As illustrated, our proposed method, DASH, consistently outperforms all baseline approaches at every acceleration level. Moreover, the performance gap widens as the acceleration ratio increases. At lower acceleration ratios, DASH incurs only negligible accuracy degradation—for instance, on the MMLU benchmark using the Qwen model, the accuracy drop is limited to 0.5%. In contrast, when the acceleration ratio reaches 2.0×, competing methods suffer from severe performance degradation, nearing random guess levels. Conversely, DASH maintains robust performance, thereby achieving a significantly better trade-off between inference speedup and prediction quality.
+ 4.3 Ablation Study
+ Effectiveness of the scoring model. 
+We first validate the effectiveness of the decision model proposed in DASH. Using the Qwen model and the MMLU dataset, we analyze state function outputs at different acceleration ratios for the same sample, comparing them with the layer-wise input-output similarity computed for that sample. As shown in Figure 4 , although the specific skipped states vary across acceleration ratios, there is a clear positive correlation: layers exhibiting higher similarity tend to have a greater probability of being skipped, with an increased tendency towards complete skipping. This observation aligns well with our prior profiling analysis and demonstrates that DASH can accurately identify less critical layers, thereby achieving inference acceleration by selectively skipping layer computations.
+ Figure 4: I/O similarity and layer-skipping states at different speedup ratios.The higher the I/O similarity, the more aggressive the layer-skipping strategy becomes, preferentially selecting layer states with higher acceleration ratios. 
+ Effectiveness of the compensation mechanisms. 
+Our dynamic layer-skipping strategy incorporates several compensation mechanisms, which enable flexible adaptation of skipping strategies and maximize the potential for layer skipping without significant accuracy degradation. We evaluate the impact of different compensation techniques on model accuracy, with results summarized in Table 3 . Firstly, compared to static skipping methods, the introduction of a dynamic decision-making framework substantially restores accuracy, highlighting the efficacy of our adaptive approach. Secondly, the application of a simple scaling-based compensation method further improves accuracy relative to no compensation. Furthermore, integrating INT4/INT8 quantization within the layer-skipping pipeline also contributes to accuracy recovery. Collectively, these compensation mechanisms empower DASH to achieve superior accuracy-compression trade-offs compared to alternative approaches.
+ Method 
+ 1.33x 
+ 1.67x 
+ 2.0x 
+ Origin(Acc(%)) 
+ 70.18 
+ 1.Naive Static Skipping 
+ 43.1 
+ 25.3 
+ 25.2 
+ 2.Dynamic Decision Skipping 
+ 62.1 
+ 38.7 
+ 24.9 
+ 3.(2) + scale Compensation 
+ 64.3 
+ 58.9 
+ 42.7 
+ 4.(3) + INT8 Compensation 
+ 69.5 
+ 66.1 
+ 59.2 
+ 5.(3) + INT4/INT8 Compensation 
+ 69.7 
+ 67.5 
+ 61.0 
+ Table 3: Accuracy results during different compensation strategies. 
+ Transferability of scoring models. 
+In practice, decision models are typically trained on task-specific datasets but are expected to generalize across diverse downstream tasks. To investigate this, we evaluate the performance of decision systems trained on different datasets when applied to the MMLU benchmark, with results presented in Figure 5 . While all systems employ the same training methodology, their performance differs significantly due to variations in task-specific reward signals, where the decision model obtained using the corresponding training set performs the best. Nevertheless, even the least effective decision model achieves notable accuracy retention when executing dynamic layer skipping. This indicates a degree of transferability in our approach, although there remains substantial room for improving its generalization capability across tasks.
+ Figure 5: Results on MMLU datasets. Decision system trained on different datasets by Qwen-2.5-7B 
+ 5 Conclusion
+ We identify dynamic layer skipping as a key approach to addressing the significant computational redundancy found in large Transformer-based language models. Our analysis reveals that static layer skipping methods often suffer from severe accuracy degradation due to their inability to adapt to input variability. To tackle this, we propose the DASH framework, which formulates layer skipping as a sequential decision-making process guided by a learned scoring model. Compared to existing static and heuristic skipping strategies, DASH consistently achieves higher acceleration ratios with minimal performance loss, thanks to its adaptive and input-aware skipping mechanism. Furthermore, the integration of compensation techniques effectively mitigates accuracy degradation, preserving model quality under aggressive skipping. We also demonstrate that the learned decision models exhibit promising transferability across different downstream tasks, indicating potential for broader applicability.
+ Limitation
+ Although we have demonstrated that DASH exhibits a certain degree of transferability across different tasks, the proposed scoring model still requires continuous updates to adapt to task requirements in long-running scenarios. Furthermore, due to the relatively low similarity in the initial layers of the model, the correction mechanism during asynchronous execution introduced in this solution may exhibit some instability. This instability tends to make the scoring model consistently avoid skipping the initial few layers, even when their I/O similarity has become sufficiently high, consequently preventing further acceleration.
+ References
+ Achiam et al. (2023) 
+Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya,
+Florencia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman,
+Shyamal Anadkat, and 1 others. 2023.
+ Gpt-4 technical report.
+ arXiv preprint arXiv:2303.08774 .
+ Brown et al. (2020) 
+Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla
+Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, and
+1 others. 2020.
+ Language models are few-shot learners.
+ Advances in neural information processing systems ,
+33:1877–1901.
+ Clark et al. (2018) 
+Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa
+Schoenick, and Oyvind Tafjord. 2018.
+ Think you have solved question answering? try arc, the ai2 reasoning
+challenge.
+ arXiv preprint arXiv:1803.05457 .
+ Del Corro et al. (2023) 
+Luciano Del Corro, Allie Del Giorno, Sahaj Agarwal, Bin Yu, Ahmed Awadallah,
+and Subhabrata Mukherjee. 2023.
+ Skipdecode: Autoregressive skip decoding with batching and caching
+for efficient llm inference.
+ arXiv preprint arXiv:2307.02628 .
+ Elhoushi et al. (2024) 
+Mostafa Elhoushi, Akshat Shrivastava, Diana Liskovich, Basil Hosmer, Bram
+Wasti, Liangzhen Lai, Anas Mahmoud, Bilge Acun, Saurabh Agarwal, Ahmed Roman,
+and 1 others. 2024.
+ Layerskip: Enabling early exit inference and self-speculative
+decoding.
+ arXiv preprint arXiv:2404.16710 .
+ Fan et al. (2024) 
+Siqi Fan, Xin Jiang, Xiang Li, Xuying Meng, Peng Han, Shuo Shang, Aixin Sun,
+Yequan Wang, and Zhongyuan Wang. 2024.
+ Not all layers of llms are necessary during inference.
+ arXiv preprint arXiv:2403.02181 .
+ Grattafiori et al. (2024) 
+Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek
+Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex
+Vaughan, and 1 others. 2024.
+ The llama 3 herd of models.
+ arXiv preprint arXiv:2407.21783 .
+ Guo et al. (2025) 
+Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu,
+Qihao Zhu, Shirong Ma, Peiyi Wang, Xiao Bi, and 1 others. 2025.
+ Deepseek-r1: Incentivizing reasoning capability in llms via
+reinforcement learning.
+ arXiv preprint arXiv:2501.12948 .
+ Han et al. (2022) 
+Kai Han, Yunhe Wang, Hanting Chen, Xinghao Chen, Jianyuan Guo, Zhenhua Liu,
+Yehui Tang, An Xiao, Chunjing Xu, Yixing Xu, and 1 others. 2022.
+ A survey on vision transformer.
+ IEEE transactions on pattern analysis and machine
+intelligence , 45(1):87–110.
+ He et al. (2025) 
+Zhuomin He, Yizhen Yao, Pengfei Zuo, Bin Gao, Qinya Li, Zhenzhe Zheng, and Fan
+Wu. 2025.
+ Adaskip: Adaptive sublayer skipping for accelerating long-context llm
+inference.
+ arXiv preprint arXiv:2501.02336 .
+ Hendrycks et al. (2020) 
+Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn
+Song, and Jacob Steinhardt. 2020.
+ Measuring massive multitask language understanding.
+ arXiv preprint arXiv:2009.03300 .
+ Jaiswal et al. (2024) 
+Ajay Jaiswal, Bodun Hu, Lu Yin, Yeonju Ro, Shiwei Liu, Tianlong Chen, and
+Aditya Akella. 2024.
+ Ffn-skipllm: A hidden gem for autoregressive decoding with adaptive
+feed forward skipping.
+ arXiv preprint arXiv:2404.03865 .
+ Liu et al. (2024) 
+Yijin Liu, Fandong Meng, and Jie Zhou. 2024.
+ Accelerating inference in large language models with a unified layer
+skipping strategy.
+ arXiv preprint arXiv:2404.06954 .
+ Liu et al. (2023) 
+Zichang Liu, Jue Wang, Tri Dao, Tianyi Zhou, Binhang Yuan, Zhao Song, Anshumali
+Shrivastava, Ce Zhang, Yuandong Tian, Christopher Re, and 1 others. 2023.
+ Deja vu: Contextual sparsity for efficient llms at inference time.
+ In International Conference on Machine Learning , pages
+22137–22176. PMLR.
+ Men et al. (2024) 
+Xin Men, Mingyu Xu, Qingyu Zhang, Bingning Wang, Hongyu Lin, Yaojie Lu, Xianpei
+Han, and Weipeng Chen. 2024.
+ Shortgpt: Layers in large language models are more redundant than you
+expect.
+ arXiv preprint arXiv:2403.03853 .
+ Merity et al. (2016) 
+Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. 2016.
+ Pointer sentinel mixture models.
+ arXiv preprint arXiv:1609.07843 .
+ See et al. (2017) 
+Abigail See, Peter J Liu, and Christopher D Manning. 2017.
+ Get to the point: Summarization with pointer-generator networks.
+ arXiv preprint arXiv:1704.04368 .
+ Touvron et al. (2023) 
+Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine
+Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale,
+and 1 others. 2023.
+ Llama 2: Open foundation and fine-tuned chat models.
+ arXiv preprint arXiv:2307.09288 .
+ Varshney et al. (2023) 
+Neeraj Varshney, Agneet Chatterjee, Mihir Parmar, and Chitta Baral. 2023.
+ Accelerating llm inference by enabling intermediate layer decoding.
+ CoRR .
+ Wang et al. (2022) 
+Jue Wang, Ke Chen, Gang Chen, Lidan Shou, and Julian McAuley. 2022.
+ Skipbert: Efficient inference with shallow layer skipping.
+ In Proceedings of the 60th Annual Meeting of the Association
+for Computational Linguistics (Volume 1: Long Papers) , pages 7287–7301.
+ Yang et al. (2025) 
+An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen
+Yu, Chang Gao, Chengen Huang, Chenxu Lv, and 1 others. 2025.
+ Qwen3 technical report.
+ arXiv preprint arXiv:2505.09388 .
+ Experimental support, please
+ view the build logs 
+ for errors. Generated by
+ L
+ A 
+ T
+ E 
+ xml 
+ .
+ Instructions for reporting errors
+ We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility and mobile
+ support. To report errors in the HTML that will help us improve conversion and rendering, choose any of the
+ methods listed below:
+ Click the "Report Issue" ( 
+ ) button, located in the page header.
+ Tip: You can select the relevant text first, to include it in your report.
+ Our team has already identified the following issues . We appreciate your time reviewing and reporting rendering errors we
+ may not have found yet. Your efforts will help us improve the HTML versions for all readers, because disability
+ should not be a barrier to accessing research. Thank you for your continued support in championing open access for
+ all.
+ Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML maintain a list of packages that need conversion , and welcome developer contributions .
+ We gratefully acknowledge support from
+ our major funders ,
+ member institutions , ,
+ and all contributors.
+ About 
+ · 
+ Help 
+ · 
+ Contact 
+ · 
+ Subscribe 
+ · 
+ Copyright 
+ · 
+ Privacy 
+ · 
+ Accessibility 
+ · 
+ Operational Status (opens in new tab) 
+ Major funding support from

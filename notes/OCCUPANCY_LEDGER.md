@@ -240,3 +240,36 @@ randn m=0.4097→TV 0.8060（1.97）；randn m=0.6204→TV 0.1926（0.31）。
 ⇒ **"440×/1323× 跨度"可能主要是质量效应而非结构效应。** `probes/p31-matched-mass/` 直接判它，
 并同时记录已发表工作认定的真判据（top-1/top-2 logit margin 及其扰动 `d_gap`）。
 **冻结判据**：匹配后 TV 比 <1.5× ⇒ 死；>3× 但 `d_gap` 分布重合（只有软指标差异）⇒ 也死。
+
+### 9.5 换机器：候选空间的真实瓶颈是**引擎**，不是想法（已量化）
+
+用修好的分诊工具（新增 `engine_hint` 列）实测**现机下依赖不可用引擎的格子数**：
+
+| 地图 | 总格数 | 依赖 vLLM/SGLang | 占比 |
+|---|---|---|---|
+| `INFERENCE_ACCEL_GAP_MAP.md` | 102 | **98**（vllm 68 / sglang 35） | **96%** |
+| `KV_CACHE_GAP_MAP.md` | 301 | **207**（vllm 170 / sglang 42） | **69%** |
+
+⇒ **pipeline 要求"效应必须在服务器上实测"，而 69–96% 的候选只能在跑不起来的引擎里测。**
+这就是两轮来"能测的都已被占、够大的都测不了"这一模式的结构性原因。
+**（诚实修正）**：§9.1 标为"系统性偏差"的硬件画像问题，实际只换掉 **6–7 格**（INFERENCE ~7、KV ~6）——
+影响远小于我当时的措辞。真正的偏差是引擎依赖。
+
+### 9.6 用户决定：**换机器**（不装 g++、不升 schoolserver 驱动）；schoolserver **不关机**
+
+新机（rebuild 后的 AutoDL，用户提供）：`ssh -p 26924 root@connect.weste.seetacloud.com`
+| 项 | 值 |
+|---|---|
+| GPU | **1× RTX 6000D, 85,651 MiB, compute cap 12.0 (sm120)** |
+| 驱动 / CUDA | **595.71.05** / CUDA 13 |
+| venv | `/root/ccfa_venv`：Python 3.12.3, **torch 2.13.0+cu130**, `cuda.is_available()=True` |
+| **vLLM** | **0.29.0 可 import**（SGLang 未装） |
+| CPU / RAM | 208 核 / 1007 GB |
+| 磁盘 | `/root/autodl-tmp` **200 G（1% 已用）**；`/` overlay 30 G（21 G 可用） |
+| 旧资产 | `ccfa_env.sh`、`ccfa_venv`、`ccfa_results` 均在；**模型已被清空**（`autodl-tmp/models` 为空） |
+
+⇒ **这台正是三张地图原始校准的硬件档（sm120、96 GB 级单卡、driver ≥580）**，
+`HARDWARE_PAT` 的原始假设在这台机上**重新成立**，而 `ada-8x4090` 画像只适用于 schoolserver。
+**注意**：`vLLM 0.29.0 可 import ≠ 算得对**——schoolserver 的教训是 v0.21 能跑但输出是垃圾。
+`probes/p34-engine-gate/vllm_correctness.py` 是**冻结的正确性闸门**：vLLM 贪心输出必须与 HF 贪心逐 token 比对。
+**未过此闸门之前，不得在这台机上立项。**
