@@ -1,0 +1,86 @@
+# 新机环境画像（用户提供，2026-09-15）
+
+**接入**：`ssh -p 26924 root@connect.weste.seetacloud.com`（AutoDL，rebuild 后的那台）
+**用途**：用户决定「**换机器**」——不在 schoolserver 上装 g++ / 升驱动，改用这台做验证。
+
+---
+
+## 1. 硬件与软件（实测，非推断）
+
+| 项 | 值 | 来源 |
+|---|---|---|
+| 容器 | `autodl-container-b9j8ek84q3-c14058ce` | `hostname` |
+| GPU | **1× NVIDIA RTX 6000D**，**85,651 MiB (83.7 GiB)** | `nvidia-smi --query-gpu` |
+| **compute capability** | **12.0（sm120 / Blackwell）** | 同上 |
+| 驱动 | **595.71.05** | 同上 |
+| 拓扑 | 单卡（`GPU0 X`），无 P2P/NVLink 议题 | `nvidia-smi topo -m` |
+| CPU / RAM | **208 核 / 1007 GB** | `nproc` / `free -g` |
+| 磁盘 | `/root/autodl-tmp` **200 G（1% 已用）**；`/` overlay **30 G（21 G 可用）** | `df -h` |
+| venv | `/root/ccfa_venv`：Python **3.12.3**，**torch 2.13.0+cu130**，`cuda.is_available()=True` | 实测 |
+| **vLLM** | **0.29.0**（可 import，且**引擎可跑**，见 §3） | `import vllm` |
+| SGLang | **未安装**（`ModuleNotFoundError`） | 实测 |
+| 环境脚本 | `/root/ccfa_env.sh`（见 §2） | — |
+| 模型 | **重建时被清空**；`/root/autodl-tmp/models` 原为空 | 实测 |
+
+⇒ **这台正是三张地图（`KV_CACHE_GAP_MAP` / `INFERENCE_ACCEL_GAP_MAP` / `spec-decode-gap-map`）
+原始校准的硬件档**：sm120、96 GB 级单卡、driver ≥580、vLLM 可用。
+`pipeline/tools/prescreen_map.py` 里被我新增的 `ada-8x4090` 画像**只适用于 schoolserver**；
+在**这台**机上原始假设重新成立 ⇒ 复述任何"够不着"结论时必须写明**是哪台机**。
+
+## 2. `/root/ccfa_env.sh`（既有，未改动）
+
+```
+export LC_ALL=C.UTF-8        # 容器未生成 en_US.UTF-8 ⇒ 不设会让 python import readline 段错误
+export LANG=C.UTF-8
+export CCFA=/root/myCCFA
+export MODELS=/root/autodl-tmp/models
+export TARGET=/root/autodl-tmp/models/Qwen3-4B
+export DRAFTER_SRC=/root/autodl-tmp/models/dflash2
+export DRAFTER_ROOT=/root/autodl-tmp/dflash-variants
+export KV_DTYPE=bfloat16
+export HF_ENDPOINT=https://hf-mirror.com
+export HF_HOME=/root/autodl-tmp/hf
+export HF_HUB_DISABLE_XET=1
+export OUT_BASE=/root/ccfa_results/$(date +%F)   # 必须在仓库外
+. /root/ccfa_venv/bin/activate
+```
+
+## 3. 引擎正确性闸门（**本项目最贵的教训：能 import ≠ 算得对**）
+
+**背景**：schoolserver 上 vLLM 0.21.0 引擎初始化成功、正常吐 token，**但输出是垃圾**
+（`'!RAD_optional!!!...'`）。所以"vLLM 0.29.0 可 import"**不构成**可用性证据。
+
+**闸门 v1**（`probes/p34-engine-gate/vllm_correctness.py`）在 Qwen3-4B 上下载完成后运行：
+
+| 检查 | 结果 |
+|---|---|
+| 模型下载 | 7.6 G，3 个 safetensors 分片，`DOWNLOAD_DONE` |
+| vLLM 引擎 | 权重加载 1.65 s；可用 KV 缓存 **60.98 GiB**；`enforce_eager` 下 init 64.27 s |
+| **输出可读性** | **连贯英文**：`' was driven by the need to perform complex calculations more efficiently. The first mechanical calculator was the abacus, which dates back to ancient times…'` ⇒ **不是 schoolserver 那种垃圾输出** |
+| 与 HF 贪心逐 token 比对 | **第 14 个 token 起分歧**（HF=3881 vs vLLM=22148） |
+
+**闸门 v2 结果（`gate2.py`，三 prompt × 128 token）—— 通过**：
+
+| 判据 | 结果 |
+|---|---|
+| **T1 配置内自洽性** | 三个 prompt 同配置连跑两次 **全部 IDENTICAL** ⇒ **引擎确定，可用作仪器** |
+| **T2 可读性** | 完全连贯英文 |
+| **T3 分歧性质** | **3 个 prompt 中 2 个与 HF eager 前 128 token 逐位全同**；1 个在第 **31** token 分歧，分歧后文本**仍连贯**（vLLM 讲 difference engine、HF 讲 analytical engine，两种史实均正确）⇒ 分歧位置**随 prompt 变化** ⇒ 数值路径差异，非故障 |
+| **T4 margin** | 分歧步 HF 的 top1−top2 margin = **0.1250**，全序列中位 **2.125** ⇒ **小 17 倍**，与已发表 margin 判据（2605.30218 / 2608.13756）自洽 |
+
+**⇒ 结论：这台机 = 正确的引擎 + 不同的数值路径。可用于实验。**
+且它比 schoolserver 上的 monkey-patch 平台强：**真实部署引擎**、84 GB 显存（可上更大模型/更长上下文）、
+**sm120（地图原始硬件档）**、以及可控的 kernel 路径轴（`enforce_eager` / cudagraph / `torch.compile`，
+正是 `vLLM PR #55944` 记录的那条轴）。
+
+**判读（关键）**：分歧**不等于**故障。vLLM 与 HF 用不同 kernel / 不同 reduction 次序，
+**这正是 `vLLM PR #55944` 文档正文写明的现象**：*"Eager execution, `torch.compile` without CUDA graphs,
+and the default path with CUDA graphs use different kernels. Their outputs differ by a small amount for
+the same input."*
+⇒ **对"引擎是否是可用仪器"这个问题，v1 不足以定论**；v2（`gate2.py`）把它拆成四条可判据：
+T1 配置内自洽性（同配置连跑两次必须逐 token 相同）／T2 128 token 可读性／
+T3 分歧位置随 prompt 变化且分歧后仍连贯（⇒ 数值路径差异，非故障）／
+T4 分歧步的 top1−top2 margin 是否偏小（⇒ 与已发表 margin 判据 2605.30218 / 2608.13756 自洽）。
+
+**纪律**：**T1 不通过（引擎非确定）⇒ 这台机不可用于任何测量**，先修引擎。
+**T1–T3 通过 ⇒ 这台机是"正确的引擎 + 不同的数值路径"**，而那个差异本身**就是我当前候选的研究对象**。
