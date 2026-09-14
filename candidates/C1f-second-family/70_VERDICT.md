@@ -72,6 +72,38 @@
 | 2 | 找一个**不触发该断言**的第二 hybrid 家族（Zamba2-2.7B / Nemotron-H / GraniteMoeHybrid 也可能中招，需先试） | 我的闸门要求 ≥2 家族 |
 | 3 | 拆步计时（草稿 vs 验证） | C-1d/e 的机制归属 |
 
+---
+
+## 4b. 判别结果（已做）：**Qwen3.5 的记账是 spec-aware 的 ⇒ C-1d/e 的数字不受此混淆**
+
+§3 第 2 点是我自己提出的最大威胁（"Qwen3.5 的数字可能是记账错配的症状"）。**已排除。**
+
+读引擎自己解析出的配置：
+
+| 模型 | `block_size`（投机 **关** → **开**） | 结果 |
+|---|---|---|
+| **Qwen3.5-4B** | **528 → 544**（+3%） | ✅ **对齐过程感知到投机状态**，为它加宽了页 |
+| **Falcon-H1-3B** | 2080（无变化） | ❌ 未感知 ⇒ 断言崩 |
+
+**且源码可证**：
+- `vllm/model_executor/models/qwen3_5.py:389-407` 的 `get_mamba_state_shape_from_config`
+  **显式读取** `vllm_config.speculative_config.num_speculative_tokens` 并传给
+  `MambaStateShapeCalculator.gated_delta_net_state_shape(...)`；
+- FalconH1 / GraniteMoeHybrid / Zamba2 **不读** —— 这正是上游 **#47635**
+  标题 "*Pass **num_spec** to mamba2_state_shape in FalconH1/GraniteMoeHybrid/Zamba2*" 所指的修复。
+
+⇒ **同代两个 hybrid 家族在"状态形状是否感知投机"上不一致**：
+Qwen3.5 感知（528→544），Falcon 不感知（2080 不变，直接崩）。
+
+**因此**：
+1. **C-1d/C-1e 在 Qwen3.5 上测到的 hybrid 成本差，不是"投机状态塞进旧 padding"的症状** ——
+   对齐过程确实为投机扩了页。**我最大的未排除混淆已排除。**
+2. **#47635 是一条"家族间不一致"的修复**，而**本文提供的是它的独立动态复现 + 触发条件**
+   （仍需"投机 + prefix caching"同时存在）。这**加强**了对该 bug 的理解，但仍**不构成我的课题**。
+3. 剩下要做的仍是 §4 的 2、3（第二家族、拆步计时）。
+
+---
+
 ## 5. 诚实边界
 
 - 崩溃是**我实测**的（两种配置对照、可复现）；**上游 PR 的存在是检索到的**，
