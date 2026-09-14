@@ -302,3 +302,42 @@ randn m=0.4097→TV 0.8060（1.97）；randn m=0.6204→TV 0.1926（0.31）。
 ⇒ **三张地图里 69–96% 因"引擎不可用"而无法验证的格子，现在可测。** 这是下一轮的起点。
 （schoolserver 8×4090 仍是 driver 550.67，目标文本所载的 `/home/user/envs/tools` 仅证明**装好**，不证明**能跑**；
 cu13 扩展在该驱动上失败的实测记录见 `notes/SCHOOLSERVER_ENV_2026-09-15.md`。）
+
+### 9.9 重要更正：**"引擎不可用"是 schoolserver 的，不是这台 AutoDL 机的**
+
+在用户给的新机上发现 `/root/ccfa_results/2026-09-12/S1_4k/bs1/d3_g3_ctx4096_r1.bench.json`
+的启动日志：**上一个目标就已经在这台机器上跑过 `vLLM 0.29.0 + Qwen3-4B + dflash 投机器 (K=3)`**
+（`Resolved architecture: DFlash2DraftModel`、`Using FLASH_ATTN version 2`、`V2 Model Runner`）。
+该文件含真实测量：`spec_decode_acceptance_rate 24.19%`、`acceptance_length 1.726`、
+**`per_position_acceptance_rates [0.484, 0.182, 0.060]`**、`mean_tpot 10.07 ms`。
+
+⇒ §9.5/§9.6 的"69–96% 候选不可测"**只对 schoolserver 成立**；这台 AutoDL 机一直有可用引擎。
+**教训**：本目标此前把"某台机器上的环境结论"当成了"整个候选池的结论"——这正是 §9.1 那条
+"硬件档写死"错误的一个新实例（我修了 `prescreen_map.py` 的硬件画像，却没有修**引擎画像**）。
+**动作**：`prescreen_map.py` 的引擎提示列必须与**具体机器**绑定，且默认画像随机器切换。
+
+### 9.10 vLLM 0.29.0 在新机（sm120）上原生支持 DFlash / DSpark
+
+实测（读安装源码）：`vllm/config/speculative.py` 有 `DFlashModelTypes = Literal["dflash"]`、
+`DSparkModelTypes = Literal["dspark"]`；`vllm/model_executor/models/` 下有
+`qwen3_dflash.py`、`qwen3_dflash2.py`、`qwen3_dspark.py`、`laguna_dflash.py`。
+⇒ **思路方向 🥇（Speculation Budget）所需的基础设施在解锁后的机器上是完整的。**
+
+### 9.11 优先复活：**S-B**（`notes/REVERIFY_adaptive_k_2026-09-15.md` §3）
+
+在 8 个方向全部裁决完毕、我自己三条候选全灭之后，**S-B 是唯一一条"量级已被上游实测、且上游自己承认没做完"的存活切片**：
+
+> **上游因果断言**（vLLM #54749）：*"(2k, B=8) pays, so neither rule fires there; (32k, B=8) does not pay,
+> so the context rule must fire at 32k; but then (32k, B=1) would be switched off, and it pays."*
+> **上游自己承认缺口**：*"I have not attributed the DSD baseline tax to its terms —
+> **the 2×2 design for that is written and unrun**"* 与 *"the explanation for its magnitude is open."*
+> **量级**：**上游实测**，单个差异格值 **1.29×–1.36×**（#54749，c=256，per-arm stdev ≤1.72%）。
+> **未被覆盖的**：没有任何占位者**分解**这个曲面（把效应归因到 (a) 注意力/验证代价随 KV 长度增长、
+> (b) 接受率随上下文衰减、(c) capture 边界上的 CUDA-graph/填充浪费 三者中的哪一项）。
+
+**这正是 `pipeline/tools/causal_gap_scan.py` 定义的机会类型（上游断言因果、无匹配对照）**，且上游**明写**了 2×2 设计未跑。
+**开工顺序（遵守 §0.6：先零卡上界）**：
+① 取 #54749 / #54691 的**全部** pay/no-pay 格子，检验**任何可分离形式 `f(B)+g(C)`（或乘积/比值形）能否复现符号模式**；
+   能拟合 ⇒ S-B 当场死；不能 ⇒ 许可开卡。（子代理执行中，`notes/SB_SEPARABILITY_2026-09-15.md`）
+② 许可后，在本机跑 2×2（B∈{1,8} × ctx∈{2k,32k}，Qwen3-4B + dflash2），**每格配匹配对照**，
+   并记录逐位置接受率以分离 (b)。
