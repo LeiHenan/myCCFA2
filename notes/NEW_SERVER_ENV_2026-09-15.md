@@ -84,3 +84,16 @@ T4 分歧步的 top1−top2 margin 是否偏小（⇒ 与已发表 margin 判据
 
 **纪律**：**T1 不通过（引擎非确定）⇒ 这台机不可用于任何测量**，先修引擎。
 **T1–T3 通过 ⇒ 这台机是"正确的引擎 + 不同的数值路径"**，而那个差异本身**就是我当前候选的研究对象**。
+
+## 4. 投机解码路径（S-B 曾需要，现 S-B 已被零卡闸门杀掉，但基础设施已验证一半）
+
+| 检查 | 结果 |
+|---|---|
+| vLLM 0.29.0 原生支持 DFlash/DSpark | **是**（源码实测）：`vllm/config/speculative.py` 有 `DFlashModelTypes = Literal["dflash"]`、`DSparkModelTypes = Literal["dspark"]`；`vllm/model_executor/models/` 下有 `qwen3_dflash.py`、`qwen3_dflash2.py`、`qwen3_dspark.py`、`laguna_dflash.py` |
+| **OFF 臂（无投机）** | **通过**：`OFF_OK`，引擎初始化 3.77 s，`GPU KV cache size: 474,288 tokens`（max_model_len 4608） |
+| **ON 臂（dflash2, K=3）** | **尚未验证** —— 投机器 `mgoin/Qwen3-4B-speculator.dflash2` **下载未完成**（7 文件中最后 1 个=权重仍在传），引擎因此初始化失败。**这是"下载未完"，不是"配置不可行"。** |
+| 历史佐证 | `/root/ccfa_results/2026-09-12/S1_4k/bs1/d3_g3_ctx4096_r1.bench.json` 的启动日志证明**上一个目标已在本机成功跑过**同配置（`Resolved architecture: DFlash2DraftModel`、`FLASH_ATTN v2`、`V2 Model Runner`），并含真实数字：`spec_decode_acceptance_rate 24.19%`、`acceptance_length 1.726`、**`per_position_acceptance_rates [0.484, 0.182, 0.060]`**、`mean_tpot_ms 10.07`、`mean_itl_ms 17.27` |
+
+**纪律提醒（本机已验证的一条）**：`enforce_eager=True` 时 `speculative_config` 与 `num_spec_tokens`
+必须**读回断言**（`llm.llm_engine.vllm_config.speculative_config`），不能只断言构造参数——
+本工作区已两次因"两组配置实际相同"报废实验。`probes/p36-spec-gate/spec_gate.py` 里已内置该回读断言。
