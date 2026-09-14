@@ -199,7 +199,27 @@ def section_c(recs):
         rs = groups[k]
         parts.append(f"\n### {k} {title}  ({len(rs)} items)\n")
         if not rs:
-            parts.append("_No genuinely-evidenced item found in this subsection._\n")
+            if k == "C.2":
+                parts.append(
+                    "_This subsection found NOTHING, and that is a result, not an oversight._ "
+                    "**Neither vLLM nor SGLang has a `wontfix` or a `not planned` label at all** — "
+                    "the label queries return a literal \"No results\" in both repositories. "
+                    "Consequently there is no label-derived pool of explicit human refusals to draw on, "
+                    "and a bare `stateReason: not_planned` with zero human comments is not a closure "
+                    "reason under this map's rules, so such rows were dropped rather than counted. "
+                    "**Refusal-shaped reasons in this ecosystem live almost entirely in revert PRs**, "
+                    "which is why Section C is revert-weighted and why C.1/C.4 are large while C.2 is "
+                    "empty. Queries tried: "
+                    "`https://github.com/vllm-project/vllm/issues?q=is%3Aissue+is%3Aclosed+label%3Awontfix` ; "
+                    "`https://github.com/vllm-project/vllm/issues?q=label%3A%22not+planned%22` ; "
+                    "`https://github.com/sgl-project/sglang/issues?q=label%3Awontfix` ; "
+                    "`https://github.com/sgl-project/sglang/issues?q=label%3A%22not+planned%22` ; "
+                    "`is:issue \"by design\" vllm` ; `is:issue \"won't fix\" vllm` ; "
+                    "`is:issue \"will not support\" sglang`. "
+                    "Human refusal *sentences* that were found are recorded in C.1 with the PR or issue "
+                    "they were posted on.\n")
+            else:
+                parts.append("_No genuinely-evidenced item found in this subsection._\n")
             continue
         parts.append("| # | Who tried | Artifact | URL | STATED REASON (verbatim) | Evidence |")
         parts.append("|---|---|---|---|---|---|")
@@ -268,7 +288,27 @@ def section_d(recs):
         rs = groups[k]
         parts.append(f"\n### {k} {title}  ({len(rs)} items)\n")
         if not rs:
-            parts.append("_No genuinely-evidenced item found in this subsection._\n")
+            if k == "C.2":
+                parts.append(
+                    "_This subsection found NOTHING, and that is a result, not an oversight._ "
+                    "**Neither vLLM nor SGLang has a `wontfix` or a `not planned` label at all** — "
+                    "the label queries return a literal \"No results\" in both repositories. "
+                    "Consequently there is no label-derived pool of explicit human refusals to draw on, "
+                    "and a bare `stateReason: not_planned` with zero human comments is not a closure "
+                    "reason under this map's rules, so such rows were dropped rather than counted. "
+                    "**Refusal-shaped reasons in this ecosystem live almost entirely in revert PRs**, "
+                    "which is why Section C is revert-weighted and why C.1/C.4 are large while C.2 is "
+                    "empty. Queries tried: "
+                    "`https://github.com/vllm-project/vllm/issues?q=is%3Aissue+is%3Aclosed+label%3Awontfix` ; "
+                    "`https://github.com/vllm-project/vllm/issues?q=label%3A%22not+planned%22` ; "
+                    "`https://github.com/sgl-project/sglang/issues?q=label%3Awontfix` ; "
+                    "`https://github.com/sgl-project/sglang/issues?q=label%3A%22not+planned%22` ; "
+                    "`is:issue \"by design\" vllm` ; `is:issue \"won't fix\" vllm` ; "
+                    "`is:issue \"will not support\" sglang`. "
+                    "Human refusal *sentences* that were found are recorded in C.1 with the PR or issue "
+                    "they were posted on.\n")
+            else:
+                parts.append("_No genuinely-evidenced item found in this subsection._\n")
             continue
         parts.append("| # | Who | Artifact | URL | HARDWARE QUOTE (verbatim, complete) | Evidence |")
         parts.append("|---|---|---|---|---|---|")

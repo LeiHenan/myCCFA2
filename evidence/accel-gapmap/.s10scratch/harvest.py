@@ -12,16 +12,22 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 os.makedirs(CACHE, exist_ok=True)
 
 
-def curl(url, timeout=90):
+def curl(url, timeout=90, tries=6):
     key = hashlib.sha1(url.encode()).hexdigest()
     raw = os.path.join(CACHE, key + ".html")
     if os.path.exists(raw) and os.path.getsize(raw) > 500:
         return open(raw, "rb").read().decode("utf-8", "replace")
-    p = subprocess.run(
-        ["curl", "-sL", "--retry", "4", "--retry-delay", "2", "--retry-all-errors",
-         "--max-time", str(timeout), "-A", UA, url],
-        capture_output=True)
-    data = p.stdout.decode("utf-8", "replace")
+    data = ""
+    for i in range(tries):
+        p = subprocess.run(
+            ["curl", "-sL", "--retry", "3", "--retry-delay", "2", "--retry-all-errors",
+             "--max-time", str(timeout), "-A", UA, url],
+            capture_output=True)
+        data = p.stdout.decode("utf-8", "replace")
+        if len(data) > 500:
+            break
+        import time
+        time.sleep(3 + 2 * i)
     if len(data) > 500:
         open(raw, "w", encoding="utf-8").write(data)
     return data
@@ -54,11 +60,11 @@ def parse(htm):
         aid = aid.group(1)
         t = re.search(r'(?s)<p class="title[^"]*">(.*?)</p>', li)
         title = norm(t.group(1)).replace("Title:", "").strip() if t else "?"
-        c = re.search(r'(?s)<span class="has-text-black-bis[^"]*">Comments:</span>\s*<span[^>]*>(.*?)</span>', li)
-        if not c:
-            c = re.search(r'(?s)Comments:\s*</span>(.*?)</p>', li)
+        c = re.search(r'(?s)Comments:</span>(.*?)</p>', li)
         comments = norm(c.group(1)) if c else ""
-        ab = re.search(r'(?s)<span class="abstract-full[^"]*"[^>]*>(.*?)</span>', li)
+        ab = re.search(r'(?s)<span class="abstract-full[^"]*"[^>]*>(.*?)</span>\s*(?:<a|</p>|</span>)', li)
+        if not ab:
+            ab = re.search(r'(?s)<span class="abstract-full[^"]*"[^>]*>(.*)', li)
         abstract = norm(ab.group(1)) if ab else ""
         authors = re.search(r'(?s)<p class="authors">(.*?)</p>', li)
         auth = norm(authors.group(1)).replace("Authors:", "").strip() if authors else ""
@@ -71,6 +77,19 @@ def parse(htm):
 
 if __name__ == "__main__":
     q = sys.argv[1]
+    if q.startswith("http"):
+        htm = curl(q, timeout=60)
+        total, items = parse(htm)
+        print(f"### URL: {q} -> {len(items)} parsed / {total} total  (bytes={len(htm)})")
+        for it in items:
+            blob = (it["comments"] + " " + it["abstract"]).lower()
+            flag = "***" if ("withdraw" in blob or "retract" in blob) else "   "
+            print(f"{flag} {it['id']} | {it['title'][:120]}")
+            if it["comments"]:
+                print(f"      COMMENTS: {it['comments'][:600]}")
+            if it["jref"]:
+                print(f"      JREF: {it['jref'][:200]}")
+        sys.exit(0)
     st = sys.argv[2] if len(sys.argv) > 2 else "all"
     size = sys.argv[3] if len(sys.argv) > 3 else "100"
     from urllib.parse import quote_plus
