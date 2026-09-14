@@ -1,5 +1,15 @@
 # C-1 判定：**预登记假设被证伪** —— prefix caching 对 dflash 不是有害的，而是**最有益的**
 
+> ## ⚠️ 范围更正（2026-09-14 晚，见 `candidates/C1b-hybrid-spec/70_VERDICT.md`）
+>
+> **本判定只在 dense Qwen3-4B 上成立。**
+> 后续用 **hybrid Qwen3.5-4B**（24 linear + 8 full）重测，同一配置族下
+> **投机解码在 K=1 就造成 2.44× 净损失，并随 K 单调恶化到 4.55×**（−59% → −78%）。
+> 而上游 #47930 报的正是 **hybrid**。
+> ⇒ **本文件不能推广为"投机×前缀缓存无害"**；它只否证了
+> "在 dense Qwen3-4B 上，dflash2 会被前缀缓存破坏"这一条预登记预测。
+
+
 **日期**：2026-09-14 ｜ **平台**：RTX 4080 SUPER 32GB，vLLM 0.29.0，Qwen3-4B（真实文本，多轮对话，1024-token system prefix）
 **预登记**：`prereg_C1_spec_prefix_2026-09-14.md`（**采数前写下**，含杀判据）
 **成本**：≈0.6 GPU·h
