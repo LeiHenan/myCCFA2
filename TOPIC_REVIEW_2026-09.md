@@ -1,3 +1,30 @@
+> # ⚠️ 2026-09-15 重大修订：C-1 线的结论被推翻，本台账中所有 C-1 数值作废
+>
+> 详见 [`candidates/C1-spec-prefix/75_VERDICT_FINAL_E4_REFUTED.md`](candidates/C1-spec-prefix/75_VERDICT_FINAL_E4_REFUTED.md)。
+>
+> **一句话**：我此前报告的"hybrid（线性注意力+全注意力）目标上投机解码净亏"是
+> **度量口径伪影**。给 `EngineCore.step` 打桩取真实步数后，投机解码在
+> **三个家族上全部为正收益**：
+>
+> | 家族 | 无投机 → 投机最优 | 倍率 |
+> |---|---|---|
+> | dense Qwen3-4B | 41.3 → 48.1 tok/s | **1.165×** |
+> | hybrid Qwen3.5-4B | 28.3 → 32.7 tok/s | **1.155×** |
+> | hybrid Falcon-H1-3B | 22.7 → 24.3 tok/s | **1.070×** |
+>
+> 错因：把 `sum(histogram)` 当总步数。实测恒等式 `draft_tokens / K == sum(histogram)`
+> 精确成立 ⇒ 它等于"发起起草的步数"，**不是**总步数；`A × sum(histogram) = 总 token`
+> 本就不该成立。C-1b / C-1j / C-1e / C-1i 的机制结论全部作废。
+>
+> 同时，"每步耗时几乎不随草稿长度 K 变化"这一机制**已被 LMSYS/SGLang 公开**
+> （[2026-08-21 博客](https://www.lmsys.org/blog/2026-08-21-ling3-flash-spec-decode-blackwell)），
+> 因此**没有新颖性**。
+>
+> **当前状态：C-1 线没有可立项课题。** 唯一存活候选是一个度量学陷阱（vLLM 0.29 的
+> 三种 `step` 口径），尚未补完。
+
+---
+
 # 选题独立审核与立项台账（2026-09-14）
 
 本文件是一次**独立选题会话**的结论归档：在「大模型推理加速」方向内，
