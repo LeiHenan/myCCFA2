@@ -1,0 +1,853 @@
+ 
+ ForesightKV: Optimizing KV Cache Eviction for Reasoning Models by Learning Long-Term Contribution 
+ Report GitHub Issue 
+ × 
+ Title: 
+ Content selection saved. Describe the issue below:
+ Description: 
+ Submit without GitHub 
+ Submit in GitHub 
+ arXiv is now an independent nonprofit! 
+ Learn more 
+ × 
+ Back to arXiv 
+ Why HTML? 
+ Report Issue 
+ Back to Abstract 
+ Download PDF 
+ Abstract 
+ 1 Introduction 
+ 2 Empirical Study 
+ 2.1 Complex Attention Patterns During Long-Text Reasoning 
+ 2.2 Large Shifts in Loss for Low-Entropy Tokens 
+ 3 ForesightKV 
+ 3.1 Dynamic KV Cache Eviction During Long-Context Generation 
+ 3.2 Supervised Training 
+ Golden Eviction. 
+ Training. 
+ Effectiveness of Golden Eviction. 
+ 3.3 Reinforcement Learning 
+ 4 Experiments 
+ 4.1 Experiments Setup 
+ Evaluated Models and Benchmarks. 
+ Baselines. 
+ 4.2 Main Results 
+ 4.3 Further Analysis 
+ Efficiency of ForesightKV. 
+ Reward Design. 
+ Design of Model and Sampling Algorithm. 
+ Generalization Capabilities. 
+ 5 Related Work 
+ KV Cache Eviction. 
+ Efficient Long-Context Generation. 
+ 6 Conclusion 
+ References 
+ A Theoretical Analysis of KV Cache Eviction 
+ Problem Setup. 
+ Conclusion. 
+ B Model Architectures and Sampling Algorithm 
+ B.1 Model Design 
+ B.2 Sampling Algorithm 
+ C Analysis of ForesightKV for Capturing Attention Patterns 
+ D Analysis of Low-Entropy Tokens 
+ E Experiments Details 
+ E.1 Training Setup 
+ Data Preparation. 
+ Supervised Training. 
+ Reinforcement Learning. 
+ E.2 Baselines 
+ E.3 Reward Changes Across Training 
+ E.4 Experiments with MiniCPM-4.1-8B 
+ E.5 Experiments with more Methods 
+ E.6 Throughput Analysis 
+ End-to-End Speed. 
+ Speed of KV Cache Eviction. 
+ License: CC BY 4.0
+arXiv:2602.03203v1 [cs.CL] 03 Feb 2026
+ ForesightKV: Optimizing KV Cache Eviction for Reasoning Models by Learning Long-Term Contribution
+ Zican Dong
+ Affiliation: Gaoling School of Artificial Intelligence, Renmin University of China
+ Peiyu Liu
+ Affiliation: University of International Business and Economics
+ Junyi Li
+ Affiliation: Department of Data Science, City University of Hong Kong
+ Zhipeng Chen
+ Affiliation: Gaoling School of Artificial Intelligence, Renmin University of China
+ Han Peng
+ Affiliation: Gaoling School of Artificial Intelligence, Renmin University of China
+ Shuo Wang
+ Affiliation: Tsinghua University
+ Wayne Xin Zhao
+ Affiliation: Gaoling School of Artificial Intelligence, Renmin University of China
+ Correspondence to: batmanfly@gmail.com 
+ Abstract 
+ Recently, large language models (LLMs) have shown remarkable reasoning abilities by producing long reasoning traces. However, as the sequence length grows, the key-value (KV) cache expands linearly, incurring significant memory and computation costs. Existing KV cache eviction methods mitigate this issue by discarding less important KV pairs, but often fail to capture complex KV dependencies, resulting in performance degradation. To better balance efficiency and performance, we introduce ForesightKV, a training-based KV cache eviction framework that learns to predict which KV pairs to evict during long-text generations.
+We first design the Golden Eviction algorithm, which identifies the optimal eviction KV pairs at each step using future attention scores. These traces and the scores at each step are then distilled via supervised training with a Pairwise Ranking Loss. Furthermore, we formulate cache eviction as a Markov Decision Process and apply the GRPO algorithm to mitigate the significant language modeling loss increase on low-entropy tokens.
+Experiments on AIME2024 and AIME2025 benchmarks of three reasoning models demonstrate that ForesightKV consistently outperforms prior methods under only half the cache budget, while benefiting synergistically from both supervised and reinforcement learning approaches.
+ Keywords: Machine Learning, ICML
+ 1 Introduction
+ Recently, large language models (LLMs), especially the reasoning models, have demonstrated exceptional long-context generation capacities ( Comanici et al., 2025 ; DeepSeek-AI et al., 2025 ; Zhao et al., 2023 ; Chen et al., 2025 ) .
+With the extension of context windows and advancements in large-scale reinforcement learning, these models can generate complex and long reasoning paths for reasoning tasks, enabling them to solve problems through step-by-step reasoning ( DeepSeek-AI et al., 2025 ; Shao et al., 2024 ; Peng et al., 2024 ) . However, as the model’s output length increases, the size of the model’s internal key-value (KV) cache grows linearly, leading to decreased generation speed and increased memory overhead. Taking Qwen3-4B ( Yang et al., 2025a ) as an example, at a sequence length of 32K, the KV cache storage for a single instance consumes 4.5 GB with the precision of BFloat16, severely limiting the number of concurrent batches. Furthermore, since decoding is inherently memory-bound, loading an excessively large KV cache incurs significant latency ( Yuan et al., 2024 ) .
+ To address the overhead of the KV cache in long texts, numerous KV cache compression methods have been proposed, which reduce costs by either permanently reducing the number of KV pairs or reducing the overhead of storing a single KV pair ( Li et al., 2024 ; Zhang et al., 2023 ; Liu et al., 2024b ; Wang et al., 2024 ; Chang et al., 2024 ) . Among them, the majority are designed for long-input tasks, with only a few studies being applicable to long-text generation. During the generation process, these methods typically employ elaborately designed rules ( e.g., attention scores, features of the KV pairs, and their positions) to estimate the importance of KV pairs and permanently evict unimportant ones at each eviction step ( Cai et al., 2025 ; Zhang et al., 2023 ; Xiao et al., 2024 ; Wu et al., 2024 ) . However, these training-free methods are often insufficient to take all the complex patterns across different attention heads into account, typically leading to suboptimal performance. In contrast, other works employ training-based methods to perform a one-time evaluation of KV pair importance for eviction ( Lancucki et al., 2025 ) , which fails to capture the dynamic nature of their importance at different stages of the sequence.
+ To achieve a better tradeoff between generation quality and efficiency in the KV cache eviction process, we first investigate the behavior of Qwen3-4B ( Yang et al., 2025a ) on questions and reasoning traces generated by itself. We observe that KV pairs across different attention heads often exhibit different patterns, which can be categorized into three main types, i.e., global, position-dependent, and semantic-dependent (as shown in Figure 1 ). Among them, due to the inherent properties of reasoning data, semantic-dependent patterns exhibit greater complexity compared to the other two types, manifesting features such as block-wise attention structures and dynamic variations. This makes it difficult to capture them with rule-based algorithms or methods that determine importance in a single pass ( Zhang et al., 2023 ; Lancucki et al., 2025 ) .
+In addition, we observe that the losses of low-entropy tokens sharply change due to the absence of critical KV pairs, resulting in factual errors that may distort subsequent reasoning. These observations highlight the necessity of eviction methods that can adaptively track semantic dependencies and mitigate the significant loss increase of low-entropy tokens during generation.
+ In this work, we propose ForesightKV, a method that learns to predict the long-term contribution of each KV pair and adaptively evicts less important ones during generation.
+The key idea is to train a lightweight scoring model that estimates the dynamic importance of each KV pair and guides eviction decisions. To achieve this, ForesightKV employs a two-stage training paradigm: supervised learning with constructed future importance labels, followed by reinforcement learning to refine eviction policies.We first introduce the Golden Eviction algorithm to construct supervision labels. Specifically, we partition the attention matrix of a sequence into fixed-length blocks along the query dimension and aggregate attention scores within each block and attention heads within the same group to compute block scores. For each eviction step, we employ the maximum block scores of future steps as future scores and discard pairs with the lowest future scores,
+thus minimizing the impact of eviction. The scoring model is then trained with these labels using a pairwise ranking loss to capture relative eviction preferences.
+Subsequently, we model the KV cache eviction as a Markov Decision Process (MDP) and optimize the scoring models with
+reinforcement learning. On a full reasoning sequence, the scoring model selects eviction actions at each step, which results in different eviction traces. We formulate the sequence reward based on the MSE loss of language modeling losses before and after KV cache eviction for tokens that are initially predicted with low entropy and with large loss increases. The scoring models are then trained using the GRPO algorithm to maximize this cumulative reward.
+Notably, our framework trains solely the lightweight scoring models with no backward operations or parameter updates on the LLMs.
+ To evaluate the effectiveness of our method, we compare ForesightKV with other KV cache eviction methods on three reasoning LLMs using two math benchmarks, i.e., AIME2024 and AIME2025. Experiments show that our method can achieve better results than the baselines with even only half the KV cache. Specifically, ForesightKV preserves 92 % 92\% and 99 % 99\% of the original model’s performance under 2K and 4K budget constraints, respectively. Furthermore, our approach yields substantial throughput improvements while presenting superior generalization capabilities on similar long-form generation tasks.
+ 2 Empirical Study
+ 2.1 Complex Attention Patterns During Long-Text Reasoning
+ Figure 1 : KV patterns in Qwen3-4B, including three patterns: (A) Global; (B) Position-dependent; (C) and (D) Semantic-dependent. 
+ To investigate the properties of the KV cache during long-context reasoning, we employ Qwen3-4B ( Yang et al., 2025a ) to generate responses to questions from the STILL dataset ( Min et al., 2024 ) . We then select a representative response to calculate attention scores and visualize the attention maps of three attention heads, as illustrated in Figure 1 .
+Consistent with the findings of MInference 1.0 ( Jiang et al., 2024 ) , we observe distinct attention patterns across different attention heads. Based on the dynamic characteristics of these attention patterns, we categorize the KV pairs into three types, namely global, position-dependent, and semantic-dependent.
+ ∙ \bullet Global : Global KV pairs manifest as vertical lines in the attention map. This visual pattern indicates these pairs receive a high attention weight from most queries.
+ ∙ \bullet Position-dependent : In Transformer decoders, the attention mechanism often demonstrates locality, with most of the attention allocated to tokens near the query ( Xiao et al., 2024 ) . As the decoding length increases, attention to earlier KV pairs decreases, reducing their overall importance.
+ ∙ \bullet Semantic-dependent : In contrast to the other two types, semantic-dependent KV pairs exhibit more complex properties. As shown in Figure 1 (C), the attention map often displays a block-wise pattern due to inherent structural features in long-text reasoning data. In this case, attention is primarily concentrated on KV pairs within the current block and in previously semantically related blocks. As decoding moves into subsequent blocks, the high-attention regions may shift accordingly. Moreover, after a specific query, KV pairs that previously received high attention may become permanently irrelevant, as illustrated in Figure 1 (D).
+ Given the complexity of these attention mechanisms, previous KV cache eviction algorithms often fail to capture such intricate patterns. For instance, at each eviction step, SnapKV ( Li et al., 2024 ) uses the last few tokens as an observation window and utilizes their attention scores to evaluate the importance of KV pairs. However, many semantic-dependent KV pairs will often exhibit different importance as the semantics change. Therefore, SnapKV often discards tokens that have little semantic association with the tokens of that window but are subsequently important, causing severe performance loss. Furthermore, these patterns are not mutually exclusive and can co-occur within a single attention head, posing an additional challenge for KV cache eviction design. In Appendix C , we present the ability of different methods to capture attention characteristics.
+ 2.2 Large Shifts in Loss for Low-Entropy Tokens
+ In reasoning tasks, the entropy of LLMs plays a crucial role. High-entropy tokens (tokens with top-20% entropy) often mark decision points between different reasoning paths, while low-entropy tokens (other tokens) make up the more detailed and deterministic parts of the reasoning process ( Wang et al., 2025 ) . To investigate how these distinct token types behave, we employ Qwen3-4B ( Yang et al., 2025a ) to compute the loss on given sequences and compare the changes in loss for high-entropy and low-entropy tokens with R-KV ( Cai et al., 2025 ) with the budgets of 1024 1024 tokens across math, coding, and summarization tasks. As shown in Table 1 , low-entropy tokens are influenced largely by the KV cache eviction, which is reflected as a greater proportional increase in the loss. We infer that this may be due to the eviction of contextual information, which is crucial for maintaining the low entropy of these tokens ( Qiu et al., 2025 ) .
+Furthermore, we analyze prediction errors on low-entropy tokens and find they often involve numbers, symbols, and entities that have appeared in the previous context (see Appendix D ), whose factual mistakes can accumulate over long sequences and distort subsequent reasoning. Thus, it is very important to consider these low-entropy tokens for KV cache eviction.
+ Entropy 
+ Math 
+ Code 
+ Summarization 
+ Low-Entropy 
+ + 147 % +147\% 
+ + 75 % +75\% 
+ + 187 % +187\% 
+ High-Entropy 
+ + 52 % +52\% 
+ + 1 % +1\% 
+ + 142 % +142\% 
+ Table 1 : Loss ratio of tokens with different entropies after eviction. 
+ 3 ForesightKV
+ Figure 2 : Overview of ForesightKV. ForesightKV uses a scoring model to guide dynamic KV cache eviction during long-context generations, which is trained through supervised learning and then reinforcement learning. The dashed box indicates pooling. 
+ To effectively manage the KV cache in long-context generation, we introduce ForesightKV , a training-based eviction method
+that balances memory efficiency with generation quality.
+The key idea is to learn a scoring model to predict the long-term contribution of KV pairs and guide eviction decisions under a fixed memory budget. Specifically, our approach begins by formally defining the compression process during long-context generation with scoring models in our framework (Section 3.1 ). We then propose a two-stage training pipeline consisting of supervised training (Section 3.2 ) and reinforcement learning (Section 3.3 ) to optimize the scoring models’ long-term prediction capacities.
+A flowchart of our method is presented in Figure 2 .
+ 3.1 Dynamic KV Cache Eviction During Long-Context Generation
+ In general, we define a dynamic compression process in our framework, parameterized by two hyperparameters:
+a cache budget B B , which specifies the target number of KV pairs to retain, and an eviction length L L , which determines the frequency of the eviction process. The eviction is triggered periodically: after every L L new tokens are generated, the cache size
+reaches B + L B+L . At this point, we keep the most recent L L KV pairs and employ an eviction algorithm that prunes the other cache back to the budget size B − L B-L by retaining only the most important KV pairs.
+Specifically, at each eviction step, we assign a scoring model π θ \pi_{\theta} to evaluate the importance of each KV pair.
+To balance efficiency and performance, we adopt an MLP scorer π θ \pi_{\theta} to predict the importance score ϕ n \phi_{n} of the n n -th KV pair. Motivated by the complex and diverse KV cache patterns observed in Section 2.1 , we construct the input feature 𝐱 n \mathbf{x}_{n} by concatenating the key 𝐤 n \mathbf{k}_{n} , the value 𝐯 n \mathbf{v}_{n} , and their associated attention features 𝐚 n \mathbf{a}_{n} , fixed-length vectors transformed from the attention scores (see Appendix B ).
+ 𝐱 n = Concat ​ ( 𝐤 n , 𝐯 n , 𝐚 n ) , ϕ n = π θ ​ ( 𝐱 n ) . \mathbf{x}_{n}=\text{Concat}(\mathbf{k}_{n},\mathbf{v}_{n},\mathbf{a}_{n}),\quad\phi_{n}=\pi_{\theta}(\mathbf{x}_{n}). 
+ (1) 
+ Based on the importance scores, we first select 2 ​ L 2L unimportant KV pairs via Top-K sampling, and then select L L pairs from them via multinomial sampling. We drop the L L less important KV pairs and retain the rest for subsequent attention computation:
+ s t ′ = s t / Multinomial L ​ ( ( Softmax ​ ( Top 2 ​ L ​ ( − Φ ) ) ) CLOSE . s_{t}^{\prime}=s_{t}/\text{Multinomial}_{L}((\text{Softmax}(\text{Top}_{2L}(-\Phi))). 
+ (2) 
+ We provide the details of the scoring model and sampling method in Appendix B .
+In the following, we present the two-stage training framework for the scoring models. In the first stage, we employ the “Golden Eviction” algorithm that leverages future information to generate optimal eviction traces, which serve as supervision for training the scoring model. In the second stage, we refine the model via reinforcement learning by formulating eviction as a Markov Decision Process. Throughout training, the LLM parameters remain frozen, and only the lightweight scoring models are updated.
+ 3.2 Supervised Training
+ In our two-stage framework, we begin with a supervised training phase to equip the scoring model with the ability to identify critical KV pairs.
+This stage is motivated by our analysis (Section 2 ), which shows that the relevance of a KV pair evolves dynamically during generation.
+To predict the future importance, we introduce the Golden Eviction algorithm, which constructs target labels and eviction traces. The scoring models are then trained on these labels using a Pairwise Ranking Loss.
+ Golden Eviction.
+ As proved in Appendix A , discarding KV pairs with the lowest attention scores has the minimal impact on the upper bound of the model’s output. Inspired by this observation, we propose the “Golden Eviction” algorithm.
+Specifically, for a given full reasoning trace consisting of the prompt and generated response, 𝐰 = { w 1 , … , w T } \mathbf{w}=\{w_{1},\dots,w_{T}\} , we compute the corresponding attention score matrix 𝐀 h ∈ ℝ T × T \mathbf{A}^{h}\in\mathbb{R}^{T\times T} on the original model,
+where h h denotes head index on given layer. Subsequently, we partition the attention matrix along the query dimension with a stride of L L , starting from the first eviction position B + L B+L , where the final block is padded to match the maximum length. We employ pooling across the query dimension and attention group to obtain the block scores 𝐚 ~ t h \tilde{\mathbf{a}}_{t}^{h} of all blocks for each kv pair:
+ 𝐚 t h \displaystyle\mathbf{a}_{t}^{h} 
+ = Pool ( 𝐀 B + t L : B + ( t + 1 ) L − 1 , : h ) ∈ ℝ T , \displaystyle=\text{Pool}(\mathbf{A}^{h}_{B+tL:B+(t+1)L-1,:})\in\mathbb{R}^{T}, 
+ (3) 
+ 𝐚 ~ t h ′ \displaystyle\tilde{\mathbf{a}}_{t}^{h^{\prime}} 
+ = Pool ​ ( { 𝐚 t g ⁡ ( h ′ − 1 ) + 1 , … , 𝐚 t g ​ h ′ } ) ∈ ℝ T , \displaystyle=\text{Pool}(\{\mathbf{a}_{t}^{g(h^{\prime}-1)+1},\dots,\mathbf{a}_{t}^{gh^{\prime}}\})\in\mathbb{R}^{T}, 
+ (4) 
+ where t ∈ { 1 , … , M } t\in\{1,\dots,M\} is the number of eviction steps and M = ⌈ ( T − B ) / L ⌉ − 1 M=\lceil(T-B)/L\rceil-1 . For simplicity, we employ average pooling for the two pooling computations.
+For each eviction step t t , our objective is to minimize the impact on future attention computations. In other words, we want the evicted KV pairs to have low attention scores in all future blocks. Thus, we first compute the maximum block score over all future blocks as the future score α i , t h ′ ∈ ℝ \alpha_{i,t}^{h^{\prime}}\in\mathbb{R} for the i i -th KV pair, and only keep the KV pairs with the largest future scores as the retained cache s t h ′ s_{t}^{h^{\prime}} .
+ α i , t h ′ = max t ≤ j ≤ M ⁡ ( 𝐚 ~ i , j h ′ ) , s t h ′ = Top B − L ​ ( α i , t h ′ ) . \alpha_{i,t}^{h^{\prime}}=\max_{t\leq j\leq M}(\tilde{\mathbf{a}}_{i,j}^{h^{\prime}}),~~~s_{t}^{h^{\prime}}=\text{Top}_{B-L}({\alpha_{i,t}^{h^{\prime}}}). 
+ (5) 
+ Training.
+ Subsequently, based on the KV cache eviction traces obtained from the Golden Eviction algorithm, we employ the scoring model to compute a score for each KV pair at every eviction step. Furthermore, we frame the eviction as a ranking task and use Pairwise Ranking Loss to train the scoring models. Our objective is to ensure that the model’s predicted scores for any two KV pairs are ranked in the same order of their future scores. For any pair of indices i i and j j , if α i , t h ′ > α j , t h ′ \alpha_{i,t}^{h^{\prime}}>\alpha_{j,t}^{h^{\prime}} , we require that ϕ i , t h ′ > ϕ j , t h ′ \phi_{i,t}^{h^{\prime}}>\phi_{j,t}^{h^{\prime}} .
+Formally, we define the training loss function as follows ( m m is a hyper-parameter for the loss):
+ ℒ supervised ​ ( π θ ) = ∑ t ∈ τ ∑ α i , t h ′ < α j , t h ′ max ⁡ ( 0 , m − ( ϕ i , t h ′ − ϕ j , t h ′ ) ) . \mathcal{L}_{\text{supervised}}(\pi_{\theta})=\sum_{t\in\tau}\sum_{\alpha_{i,t}^{h^{\prime}}<\alpha_{j,t}^{h^{\prime}}}\max(0,m-(\phi_{i,t}^{h^{\prime}}-\phi_{j,t}^{h^{\prime}})). 
+ (6) 
+ Effectiveness of Golden Eviction.
+ To demonstrate the effectiveness of the Golden Eviction algorithm, we compare it against three leading KV cache eviction algorithms: R-KV ( Cai et al., 2025 ) , SnapKV ( Li et al., 2024 ) , and H2O ( Zhang et al., 2023 ) . Using Qwen3-4B ( Yang et al., 2025a ) models, we measure the percentage increase in model loss on sampled inference data. We evaluate these methods with the KV cache budgets of 1024 and 2048, and employ the KV cache eviction every 128 or 256 tokens. As detailed in Table 2 , Golden Eviction consistently yields significantly lower loss than the competing approaches. These results confirm the effectiveness of Golden Eviction in preserving model performance under strict memory constraints.
+ Table 2 : Comparison of model loss ratios for different methods relative to the original model under various KV cache budgets. Here, (1024,128), (2048,128), (1024,256), and (2048,256) denote KV cache budgets of 1024 and 2048, with KV cache evicts every 128 or 256 tokens. 
+ Method 
+ (1024,256) 
+ (2048,256) 
+ (1024,128) 
+ (2048,128) 
+ Golden 
+ 1.0711 
+ 1.0166 
+ 1.0715 
+ 1.0185 
+ R-KV 
+ 1.4101 
+ 1.1606 
+ 1.4750 
+ 1.1814 
+ SnapKV 
+ 1.4091 
+ 1.1281 
+ 1.4214 
+ 1.1343 
+ H2O 
+ 1.2730 
+ 1.0948 
+ 1.4106 
+ 1.1578 
+ 3.3 Reinforcement Learning
+ Despite the effectiveness of supervised training with Golden Eviction, it fails to account for the distribution shift in internal states caused by the eviction during inference. Thus, the ideal eviction trace is different from the Golden Eviction algorithm.
+To bridge this gap between the supervised training and the dynamic inference process, we further refine the model using reinforcement learning.
+ For KV cache eviction in long-context decoding, the retained KV cache influences both the current generation of the model and subsequent cache eviction decisions.
+Therefore, we define KV cache eviction during inference as a Markov Decision Process (MDP) and employ reinforcement learning algorithms to optimize the eviction process. Given a full reasoning trace 𝐰 = { w 1 , … , w T } \mathbf{w}=\{w_{1},\dots,w_{T}\} , and the frozen LLM Θ \Theta , our goal is to maximize the rewards by optimizing the set of scoring models { π θ h , l } \{\pi_{\theta_{h,l}}\} . In the following, we first define the components of the reinforcement learning framework:
+ ∙ \bullet State ( s t {s}_{t} ): The current remaining KV cache at the step t t .
+ ∙ \bullet Action ( a t a_{t} ): Given a state s t s_{t} , the action a t a_{t} is to select a subset of indices of the KV pairs { 1 , … , B + L } \{1,\dots,B+L\} to retain for the current generation step by a predefined cache budget.
+ ∙ \bullet Policy ( π θ {\pi}_{\theta} ): For each attention group, we define the scoring model as the policy model, which assigns a score to guide whether the KV pair should be retained or discarded.
+ ∙ \bullet Reward ( R t R_{t} ): To evaluate the quality of an eviction action, we define a sequence-level reward. Inspired by the observations in Section 2.2 , we find that increases in the loss of low-entropy tokens have a substantial impact on reasoning quality. Based on this insight, we construct a subset of tokens E E according to two criteria: (1) the token’s original entropy falls within the bottom 80 % 80\% of the sequence 𝐰 low \mathbf{w}_{\text{low}} , and (2) its loss increase from the original model ( ℒ ori \mathcal{L}_{\text{ori}} ) to the evicted model ( ℒ evict \mathcal{L}_{\text{evict}} )
+exceeds a threshold η \eta , Δ ​ ℒ ​ ( w t ) = ℒ ori ​ ( w t ) − ℒ evict ​ ( w t ) \Delta\mathcal{L}(w_{t})=\mathcal{L}_{\text{ori}}(w_{t})-\mathcal{L}_{\text{evict}}(w_{t}) . The subset E E is formulated as follows:
+ E = { w t ∣ w t ∈ 𝐰 low , Δ ℒ ( w t ) > η } . E=\{w_{t}\mid w_{t}\in\mathbf{w}_{\text{low}},\Delta\mathcal{L}(w_{t})>\eta\}. 
+ (7) 
+ The reward is then defined as the average
+square of the loss increases Δ ​ ℒ ​ ( w t ) \Delta\mathcal{L}(w_{t}) across all tokens in E E , formulated as:
+ R t = − ℒ ours = − ∑ t ∈ E [ Δ ℒ ( w t ) ] 2 . \displaystyle R_{t}=-\mathcal{L}_{\text{ours}}=-\sum_{t\in E}[\Delta\mathcal{L}(w_{t})]^{2}. 
+ (8) 
+ Figure 3 : Comparison of ForesightKV with other KV cache eviction methods on reasoning tasks. 
+ We use the GRPO algorithm ( Shao et al., 2024 ) to train the scoring models. We initialize our policy model π θ \pi_{\theta} with the model obtained from supervised training, which also serves as the reference model π ref \pi_{\text{ref}} . At each training step, for a given sequence 𝐰 \mathbf{w} , we sample G G KV cache eviction traces for all layers and heads using the Top-K multinomial sampling method with the old policy π θ old \pi_{\theta_{\text{old}}} , i.e., { o 1 , … , o G } \{o_{1},\dots,o_{G}\} . Influenced by the different kept KV caches across traces, the same token will exhibit different hidden states, resulting in varying rewards throughout the entire sequence. Subsequently, we employ group relative normalization to compute the estimated advantage scores for these traces:
+ A ^ t = ( R t − Mean ​ ( R t ) ) / Std ​ ( R t ) . \hat{A}_{t}=(R_{t}-\text{Mean}(R_{t}))/{\text{Std}(R_{t})}. 
+ (9) 
+ Furthermore, we broadcast these advantage scores to every eviction process for all scoring models and optimize these models together using the following training objective.
+ 𝒥 ⁡ ( θ ) = \displaystyle\mathcal{J}(\theta)= 
+ 𝔼 o ∼ π θ old [ ∑ t = 1 | o | min ( r t ( θ ) A ^ t , \displaystyle\mathbb{E}_{o\sim\pi_{\theta_{\text{old}}}}\biggl[\sum_{t=1}^{|o|}\min\bigg(r_{t}(\theta)\hat{A}_{t}, 
+ OPEN clip ​ ( r t ​ ( θ ) , 1 − ϵ , 1 + ϵ ) ​ A ^ t ) \displaystyle\text{clip}(r_{t}(\theta),1-\epsilon,1+\epsilon)\hat{A}_{t}\bigg) 
+ − β ⋅ KL [ π θ ( a t | s t ) ∥ π ref ( a t | s t ) ] ] , \displaystyle-\beta\cdot\text{KL}\left[\pi_{\theta}(a_{t}|s_{t})\|\pi_{\text{ref}}(a_{t}|s_{t})\right]\biggr], 
+ (10) 
+ where r t ​ ( θ ) = π θ ​ ( a t | s t ) π θ old ​ ( a t | s t ) r_{t}(\theta)=\frac{\pi_{\theta}(a_{t}|s_{t})}{\pi_{\theta_{\text{old}}}(a_{t}|s_{t})} is the importance sampling ratio, ϵ ∈ ℝ \epsilon\in\mathbb{R} is the clipping threshold, and β \beta controls KL regularization.
+ 4 Experiments
+ 4.1 Experiments Setup
+ Evaluated Models and Benchmarks.
+ To evaluate the effectiveness of our method on the long-text reasoning task, we choose DeepSeek-R1-Distill-Qwen-7B ( DeepSeek-AI et al., 2025 ) , Qwen3-4B and Qwen3-1.7B ( Yang et al., 2025a ) as evaluated models and evaluate them on two complex math benchmarks, i.e., AIME2024 and AIME2025. Following the settings of previous work ( DeepSeek-AI et al., 2025 ; Yang et al., 2025a ) , we set the temperature of 0.6 0.6 , top- k k of 20 20 , and top- p p of 0.95 0.95 . To ensure statistical reliability, we report the average scores of pass@ 1 1 , where each benchmark is evaluated independently 32 times. For each method, we evaluate the performance under different cache budgets B B , e.g., 1024, 2048, and 4096, with the eviction length L L of 256 256 . For both models, we set the immediate size of scoring models to 16. We also select the top 512 KV pairs first and sample 256 pairs from them. We introduce the details of training setups in Appendix E.1 .
+ Baselines.
+ We compare our method with three KV cache eviction methods, i.e., SnapKV ( Li et al., 2024 ) , H2O ( Zhang et al., 2023 ) , and R-KV ( Cai et al., 2025 ) . Following the settings in R-KV, we compress the KV cache every L L steps for all these methods and apply SnapKV during the long-decoding phase, where it performs dynamic compression at each step by leveraging the attention within a fixed-size window. The details of these methods are provided in Appendix E.2 .
+ Table 3 : Efficiency evaluation of ForesightKV. “ # \# MCB” denotes the maximum concurrent batch size. 
+ Method 
+ 8K 
+ 16K 
+ 32K 
+ # \# MCB 
+ Throughput 
+ Ratio 
+ # \# MCB 
+ Throughput 
+ Ratio 
+ # \# MCB 
+ Throughput 
+ Ratio 
+ Full 
+ 48 
+ 139.39 
+ 1.00 × 1.00\times 
+ 24 
+ 73.40 
+ 1.00 × 1.00\times 
+ 11 
+ 37.73 
+ 1.00 × 1.00\times 
+ ForesightKV-1K 
+ 96 
+ 375.10 
+ 2.69 × 2.69\times 
+ 96 
+ 372.35 
+ 5.07 × 5.07\times 
+ 96 
+ 369.43 
+ 9.79 × 9.79\times 
+ ForesightKV-2K 
+ 70 
+ 272.48 
+ 1.95 × 1.95\times 
+ 70 
+ 270.65 
+ 3.69 × 3.69\times 
+ 70 
+ 268.36 
+ 7.11 × 7.11\times 
+ ForesightKV-4K 
+ 48 
+ 198.58 
+ 1.42 × 1.42\times 
+ 48 
+ 196.32 
+ 2.67 × 2.67\times 
+ 48 
+ 193.95 
+ 5.14 × 5.14\times 
+ ForesightKV-8K 
+ - 
+ - 
+ - 
+ 36 
+ 114.32 
+ 1.56 × 1.56\times 
+ 36 
+ 112.99 
+ 3.03 × 3.03\times 
+ 4.2 Main Results
+ Figure 3 presents the performance comparison of ForesightKV and other KV cache eviction methods.
+Firstly, our method achieves better performance under the same KV cache budgets compared to other eviction methods across various benchmarks. Compared to other KV cache eviction methods, ForesightKV achieves comparable or even better performance with only half the KV cache. For example, on the AIME2024 dataset, ForesightKV with the Qwen3-4B model and a budget of only 1K outperforms R-KV with a 2K budget (54.5 vs. 44.8). Additionally, on certain benchmarks, ForesightKV can achieve comparable performances with the original model with a budget of 4K KV pairs. This demonstrates that ForesightKV learns to better predict the long-term importance of KV pairs, thereby preserving the model’s long-text reasoning capabilities more effectively.
+ Secondly, our method can benefit from both supervised training and reinforcement learning stages. The first stage of supervised training endows the scoring models with a powerful predictive capability for importance, significantly surpassing existing rule-based methods on benchmarks. Furthermore, the second stage of reinforcement learning enhances the scoring models by optimizing their capabilities through optimization of the overall LLMs. By optimizing the eviction policy to maximize the predictive accuracy of critical future tokens across all positions, the model’s reasoning performance can be further improved within a fixed KV cache budget.
+ Finally, our method exhibits robust generalization across varying budgets. Although trained with restricted budgets ( B ≤ 2 ​ K B\leq 2\text{K} ) in both stages, it seamlessly generalizes to other settings, e.g., a budget of 4K. This indicates that our approach captures the intrinsic importance of KV cache entries, rather than simply overfitting to specific budget constraints.
+ For experiments with more models and baselines, we present them in E.4 and Appendix E.5 .
+ 4.3 Further Analysis
+ Efficiency of ForesightKV.
+ To evaluate the efficiency of ForesightKV on long-context generation tasks, we set the KV budget to 1K, 2K, and 4K tokens and compare it with the full KV cache. We measure the maximum concurrent batch size and throughput of Qwen3-4B on one A800 GPU with generation lengths of 8K, 16K, and 32K tokens. As shown in Table 3 , applying ForesightKV can keep a fixed batch size and throughput under different generation lengths. Additionally, it substantially increases the feasible batch size during generation and leads to significant throughput improvements. For instance, ForesightKV with a budget of 1024 1024 tokens achieves up to a 9.79 × 9.79\times throughput gain on long-context generation of 32K tokens. In Appendix E.6 , we further demonstrate the efficiency of the scoring models and significant end-to-end speedup.
+ Reward Design.
+ To optimize the KV cache eviction, we design and evaluate several distinct reward functions. (1) ℒ all \mathcal{L}_{\text{all}} , ℒ low \mathcal{L}_{\text{low}} , and ℒ high \mathcal{L}_{\text{high}} : the language modeling losses for all, low-entropy, and high-entropy tokens, respectively; (2) ℒ low,large \mathcal{L}_{\text{low,large}} : the loss on the subset of low-entropy tokens whose loss increases by more than 1.5 post-eviction; and (3) ℒ ours \mathcal{L}_{\text{ours}} : the MSE loss on this same subset of severely impacted tokens as ℒ low,large \mathcal{L}_{\text{low,large}} . We use the reinforcement learning framework on Qwen3-4B with the budget size of 1 ​ K 1K and present the results in Table 4 . Our findings reveal that naively minimizing the overall language modeling loss ( ℒ all \mathcal{L}_{\text{all}} ) does not guarantee better performance. While targeting low-entropy tokens ( ℒ low \mathcal{L}_{\text{low}} ) yields marginal gains, focusing on high-entropy ones ( ℒ high \mathcal{L}_{\text{high}} ) causes significant degradation. The most effective strategy is to selectively optimize for low-entropy tokens that are most adversely affected by eviction. Using ℒ low,large \mathcal{L}_{\text{low,large}} and ℒ ours \mathcal{L}_{\text{ours}} as reward signals reduces both the number of tokens with large loss spikes and the overall model perplexity. Notably, the MSE-based reward, ℒ ours \mathcal{L}_{\text{ours}} , is particularly effective at penalizing catastrophic loss increases, leading to the best final performance.
+ Reward 
+ - 
+ - ℒ all \mathcal{L}_{\text{all}} 
+ - ℒ low \mathcal{L}_{\text{low}} 
+ - ℒ high \mathcal{L}_{\text{high}} 
+ - ℒ low,large \mathcal{L}_{\text{low,large}} 
+ - ℒ ours \mathcal{L}_{\text{ours}} 
+ AIME24 
+ 51.7 
+ 50.6 
+ 53.5 
+ 49.6 
+ 53.8 
+ 54.5 
+ AIME25 
+ 40.9 
+ 40.0 
+ 40.4 
+ 35.4 
+ 42.3 
+ 42.3 
+ Table 4 : Experiments of rewards with 1K budget. 
+ Input 
+ Sampling 
+ AIME24 
+ AIME25 
+ Attn+KV 
+ Top-K+MN 
+ 51.7 
+ 40.9 
+ Attn 
+ Top-K+MN 
+ 37.5 
+ 22.9 
+ Attn+KV 
+ MN 
+ 16.5 
+ 13.8 
+ Attn+KV 
+ Top-K 
+ 46.0 
+ 37.7 
+ Table 5 : Ablation study of scoring model and sampling function with 1K budget. Attn and KV denote using attention features and KV representations. Top-K and MN denote the Top-K and multinomial sampling methods. 
+ Design of Model and Sampling Algorithm.
+ We conduct ablation studies to analyze the effects of the scoring model’s inputs and the sampling algorithms. Instead of concatenating attention features with KV representations, we evaluate the scoring model with only attention features. We also replace our sampling method (multinomial sampling from the top-K pairs) with either top-K or multinomial sampling. As shown in Table 5 , evaluations on AIME2024 and AIME2025 with Qwen3-4B reveal that both modifications consistently degrade performance: top-K and multinomial sampling led to a significant performance drop, while only using attention features can hardly accurately predict the importance of the KV pairs.
+ Generalization Capabilities.
+ To evaluate the generalization capabilities of ForesightKV, we conduct experiments on reasoning benchmarks in other domains, specifically GPQA ( Rein et al., 2023 ) (science) and LiveCodeBench-V3 ( Jain et al., 2025 ) (coding). The experimental results with Qwen3-4B are shown in Table 6 . Similar to observations on math benchmarks, ForesightKV consistently outperforms all baselines on both datasets with only half the KV budgets, while the performance of ForesightKV approaches that of the original model under a limited budget. Given that the scoring models were trained exclusively on math tasks, these results demonstrate the superior generalization capabilities of ForesightKV beyond the training domains.
+ Table 6 : Generalization capacities evaluations of Qwen3-4B on GPQA and LiveCodeBench. 
+ Method 
+ GPQA 
+ LiveCodeBench 
+ 1K 
+ 2K 
+ 4K 
+ 1K 
+ 2K 
+ Full 
+ 54.6 
+ 63.4 
+ H2O 
+ 25.2 
+ 29.7 
+ 43.1 
+ 28.3 
+ 42.5 
+ SnapKV 
+ 16.9 
+ 34.8 
+ 49.1 
+ 27.0 
+ 48.1 
+ R-KV 
+ 23.0 
+ 40.0 
+ 50.7 
+ 34.4 
+ 52.0 
+ ForesightKV( w/o RL) 
+ 44.2 
+ 51.2 
+ 52.4 
+ 55.7 
+ 61.5 
+ ForesightKV 
+ 45.2 
+ 51.3 
+ 53.7 
+ 55.7 
+ 61.1 
+ 5 Related Work
+ KV Cache Eviction.
+ To mitigate the memory and computational overhead of the KV cache, which scales linearly with context length, various techniques have been proposed to enhance model efficiency, including KV cache eviction ( Zhang et al., 2023 ) , merging ( Wang et al., 2024 ) , dynamic loading ( Tang et al., 2024 ) , low-rank decomposition ( Chang et al., 2024 ) , and quantization ( Hooper et al., 2024 ; Liu et al., 2024b ; Liu et al., 2024a ) . Among these, KV cache eviction methods exploit the inherent sparsity of attention mechanisms to permanently discard less important KV pairs based on predefined rules. These methods typically rely on heuristic rules, e.g., positions, attention scores, and representations of KV ( Xiao et al., 2024 ; Zhang et al., 2023 ; Cai et al., 2025 ; Li et al., 2024 ; Wu et al., 2024 ; Goel et al., 2025 ) . However, such heuristic-based approaches are often suboptimal for long-generation tasks. Additionally, some work uses trainable methods to discard unimportant caches ( Lancucki et al., 2025 ; Zeng et al., 2024 ; Huang et al., 2024 ) . These methods make a one-time judgment on the importance of the KV cache and then permanently discard it, which is difficult to capture the changing importance as the sequence evolves. Our method is the first to jointly use supervised and reinforcement learning to optimize the eviction process. It dynamically captures the importance of KV pairs to decide on their eviction, leading to improved performance.
+ Efficient Long-Context Generation.
+ With the extension of context windows and the enhancement of long-context abilities of LLMs, long-text generation tasks, particularly for long-reasoning tasks, have emerged as a focal point of research ( DeepSeek-AI et al., 2025 ; Dong et al., 2025 ) . After reinforcement learning, the model accurately solves problems by generating a lengthy reasoning process ( Yang et al., 2025a ) . To further improve efficiency, some studies have reduced the model’s generation length by designing reinforcement learning algorithms ( Cheng et al., 2025 ) and employing model merging ( Wu et al., 2025 ) .
+Other studies focus on reducing the computational cost associated with generating each token via speculative decoding ( Yang et al., 2025b ) or KV cache compression ( Cai et al., 2025 ) , without changing the generation lengths. Our work falls into the latter category, improving efficiency by reducing overhead through KV cache eviction.
+ 6 Conclusion
+ In this paper, we introduce ForesightKV, a novel two-stage training method for KV cache eviction tailored for long-context reasoning tasks. In the first stage, we design a Golden Eviction algorithm to obtain ideal eviction data, which is used to train scoring models with a Pairwise Ranking Loss. In the second stage, we model the eviction task as a Markov Decision Process and apply reinforcement learning to mitigate the significant performance loss on low-entropy tokens that can occur after eviction. Experiments on two reasoning benchmarks demonstrate that ForesightKV outperforms leading baselines with only half the cache budget. Ablation studies confirm that both the supervised and reinforcement learning stages are crucial to its success. We believe this reinforcement learning perspective opens up a promising new research direction for adaptive KV cache management in long-context reasoning.
+ Impact Statement
+ This paper presents work whose goal is to advance the field of Machine Learning. There are many potential societal consequences of our work, none of which we feel must be specifically highlighted here.
+ References
+ Cai et al. (2025) 
+ Z. Cai, W. Xiao, H. Sun, C. Luo, Y. Zhang, K. Wan, Y. Li, Y. Zhou, L. Chang, J. Gu, Z. Dong, A. Anandkumar, A. Asi, and J. Hu 
+ R-KV: redundancy-aware KV cache compression for training-free reasoning models acceleration .
+ CoRR abs/2505.24133 .
+ Cited by: 2nd item ,
+ §E.2 ,
+ §1 ,
+ §2.2 ,
+ §3.2 ,
+ §4.1 ,
+ §5 ,
+ §5 .
+ Chang et al. (2024) 
+ C. Chang, W. Lin, C. Lin, C. Chen, Y. Hu, P. Wang, N. Huang, L. Ceze, and K. Wu 
+ Palu: compressing kv-cache with low-rank projection .
+ CoRR abs/2407.21118 .
+ Cited by: §1 ,
+ §5 .
+ Chen et al. (2025) 
+ A. Chen, A. Li, B. Gong, B. Jiang, B. Fei, B. Yang, B. Shan, C. Yu, C. Wang, C. Zhu, C. Xiao, C. Du, C. Zhang, C. Qiao, C. Zhang, C. Du, C. Guo, D. Chen, D. Ding, D. Sun, D. Li, E. Jiao, H. Zhou, H. Zhang, H. Ding, H. Sun, H. Feng, H. Cai, H. Zhu, J. Sun, J. Zhuang, J. Cai, J. Song, J. Zhu, J. Li, J. Tian, J. Liu, J. Xu, J. Yan, J. Liu, J. He, K. Feng, K. Yang, K. Xiao, L. Han, L. Wang, L. Yu, L. Feng, L. Li, L. Zheng, L. Du, L. Yang, L. Zeng, M. Yu, M. Tao, M. Chi, M. Zhang, M. Lin, N. Hu, N. Di, P. Gao, P. Li, P. Zhao, Q. Ren, Q. Xu, Q. Li, Q. Wang, R. Tian, R. Leng, S. Chen, S. Chen, S. Shi, S. Weng, S. Guan, S. Yu, S. Li, S. Zhu, T. Li, T. Cai, T. Liang, W. Cheng, W. Kong, W. Li, X. Chen, X. Song, X. Luo, X. Su, X. Li, X. Han, X. Hou, X. Lu, X. Zou, X. Shen, Y. Gong, Y. Ma, Y. Wang, Y. Shi, Y. Zhong, and Y. Duan 
+ MiniMax-m1: scaling test-time compute efficiently with lightning attention .
+ CoRR abs/2506.13585 .
+ Cited by: §1 .
+ Cheng et al. (2025) 
+ X. Cheng, J. Li, Z. Zhang, X. Tang, W. X. Zhao, X. Kong, and Z. Zhang 
+ Incentivizing dual process thinking for efficient large language model reasoning .
+ CoRR abs/2505.16315 .
+ Cited by: §5 .
+ Comanici et al. (2025) 
+ G. Comanici, E. Bieber, M. Schaekermann, I. Pasupat, N. Sachdeva, I. S. Dhillon, M. Blistein, O. Ram, D. Zhang, E. Rosen, L. Marris, S. Petulla, C. Gaffney, A. Aharoni, N. Lintz, T. C. Pais, H. Jacobsson, I. Szpektor, N. Jiang, K. Haridasan, A. Omran, N. Saunshi, D. Bahri, G. Mishra, E. Chu, T. Boyd, B. Hekman, A. Parisi, C. Zhang, K. Kawintiranon, T. Bedrax-Weiss, O. Wang, Y. Xu, O. Purkiss, U. Mendlovic, I. Deutel, N. Nguyen, A. Langley, F. Korn, L. Rossazza, A. Ramé, S. Waghmare, H. Miller, N. Byrd, A. Sheshan, R. H. S. Bhardwaj, P. Janus, T. Rissa, D. Horgan, S. Silver, A. Wahid, S. Brin, Y. Raimond, K. Kloboves, C. Wang, N. B. Gundavarapu, I. Shumailov, B. Wang, M. Pajarskas, J. Heyward, M. Nikoltchev, M. Kula, H. Zhou, Z. Garrett, S. Kafle, S. Arik, A. Goel, M. Yang, J. Park, K. Kojima, P. Mahmoudieh, K. Kavukcuoglu, G. Chen, D. Fritz, A. Bulyenov, S. Roy, D. Paparas, H. Shemtov, B. Chen, R. Strudel, D. Reitter, A. Roy, A. Vlasov, C. Ryu, C. Leichner, H. Yang, Z. Mariet, D. Vnukov, T. Sohn, A. Stuart, W. Liang, M. Chen, P. Rawlani, C. Koh, J. Co-Reyes, G. Lai, P. Banzal, D. Vytiniotis, J. Mei, and M. Cai 
+ Gemini 2.5: pushing the frontier with advanced reasoning, multimodality, long context, and next generation agentic capabilities .
+ CoRR abs/2507.06261 .
+ Cited by: §1 .
+ DeepSeek-AI et al. (2025) 
+ DeepSeek-AI, D. Guo, D. Yang, H. Zhang, J. Song, R. Zhang, R. Xu, Q. Zhu, S. Ma, P. Wang, X. Bi, X. Zhang, X. Yu, Y. Wu, Z. F. Wu, Z. Gou, Z. Shao, Z. Li, Z. Gao, A. Liu, B. Xue, B. Wang, B. Wu, B. Feng, C. Lu, C. Zhao, C. Deng, C. Zhang, C. Ruan, D. Dai, D. Chen, D. Ji, E. Li, F. Lin, F. Dai, F. Luo, G. Hao, G. Chen, G. Li, H. Zhang, H. Bao, H. Xu, H. Wang, H. Ding, H. Xin, H. Gao, H. Qu, H. Li, J. Guo, J. Li, J. Wang, J. Chen, J. Yuan, J. Qiu, J. Li, J. L. Cai, J. Ni, J. Liang, J. Chen, K. Dong, K. Hu, K. Gao, K. Guan, K. Huang, K. Yu, L. Wang, L. Zhang, L. Zhao, L. Wang, L. Zhang, L. Xu, L. Xia, M. Zhang, M. Zhang, M. Tang, M. Li, M. Wang, M. Li, N. Tian, P. Huang, P. Zhang, Q. Wang, Q. Chen, Q. Du, R. Ge, R. Zhang, R. Pan, R. Wang, R. J. Chen, R. L. Jin, R. Chen, S. Lu, S. Zhou, S. Chen, S. Ye, S. Wang, S. Yu, S. Zhou, S. Pan, and S. S. Li 
+ DeepSeek-r1: incentivizing reasoning capability in llms via reinforcement learning .
+ CoRR abs/2501.12948 .
+ Cited by: §1 ,
+ §4.1 ,
+ §5 .
+ Dong et al. (2025) 
+ Z. Dong, J. Li, J. Jiang, M. Xu, X. Zhao, B. Wang, and W. Chen 
+ LongReD: mitigating short-text degradation of long-context large language models via restoration distillation .
+ In Proceedings of the 63rd Annual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), ACL 2025, Vienna, Austria,
+July 27 - August 1, 2025 ,
+ pp. 10687–10707 .
+ Cited by: §5 .
+ Goel et al. (2025) 
+ R. Goel, J. Park, M. Gagrani, D. Jones, M. J. Morse, H. Langston, M. Lee, and C. Lott 
+ CAOTE: KV caching through attention output error based token eviction .
+ CoRR abs/2504.14051 .
+ Cited by: §5 .
+ Hooper et al. (2024) 
+ C. Hooper, S. Kim, H. Mohammadzadeh, M. W. Mahoney, Y. S. Shao, K. Keutzer, and A. Gholami 
+ KVQuant: towards 10 million context length LLM inference with KV cache quantization .
+ In Advances in Neural Information Processing Systems 38: Annual Conference
+on Neural Information Processing Systems 2024, NeurIPS 2024, Vancouver,
+BC, Canada, December 10 - 15, 2024 ,
+ Cited by: §5 .
+ Huang et al. (2024) 
+ Y. Huang, B. Yuan, X. Han, C. Xiao, and Z. Liu 
+ Locret: enhancing eviction in long-context LLM inference with trained retaining heads .
+ CoRR abs/2410.01805 .
+ Cited by: §5 .
+ Jain et al. (2025) 
+ N. Jain, K. Han, A. Gu, W. Li, F. Yan, T. Zhang, S. Wang, A. Solar-Lezama, K. Sen, and I. Stoica 
+ LiveCodeBench: holistic and contamination free evaluation of large language models for code .
+ In The Thirteenth International Conference on Learning Representations,
+ICLR 2025, Singapore, April 24-28, 2025 ,
+ Cited by: §4.3 .
+ Jiang et al. (2024) 
+ H. Jiang, Y. Li, C. Zhang, Q. Wu, X. Luo, S. Ahn, Z. Han, A. H. Abdi, D. Li, C. Lin, Y. Yang, and L. Qiu 
+ MInference 1.0: accelerating pre-filling for long-context llms via dynamic sparse attention .
+ In Advances in Neural Information Processing Systems 38: Annual Conference
+on Neural Information Processing Systems 2024, NeurIPS 2024, Vancouver,
+BC, Canada, December 10 - 15, 2024 ,
+ Cited by: §2.1 .
+ Lancucki et al. (2025) 
+ A. Lancucki, K. Staniszewski, P. Nawrot, and E. M. Ponti 
+ Inference-time hyper-scaling with KV cache compression .
+ CoRR abs/2506.05345 .
+ Cited by: §1 ,
+ §1 ,
+ §5 .
+ Li et al. (2024) 
+ Y. Li, Y. Huang, B. Yang, B. Venkitesh, A. Locatelli, H. Ye, T. Cai, P. Lewis, and D. Chen 
+ SnapKV: LLM knows what you are looking for before generation .
+ In Advances in Neural Information Processing Systems 38: Annual Conference
+on Neural Information Processing Systems 2024, NeurIPS 2024, Vancouver,
+BC, Canada, December 10 - 15, 2024 ,
+ Cited by: 1st item ,
+ §E.2 ,
+ §1 ,
+ §2.1 ,
+ §3.2 ,
+ §4.1 ,
+ §5 .
+ Liao et al. (2025) 
+ M. Liao, L. Wang, C. Zhang, Z. Shen, X. Mao, S. Qin, Q. Lin, S. Rajmohan, D. Zhang, and H. Wan 
+ G-kv: decoding-time kv cache eviction with global attention .
+ CoRR abs/2512.00504 .
+ Cited by: §E.5 .
+ Liu et al. (2024a) 
+ P. Liu, Z. Gao, X. Zhao, Y. Ma, T. Wang, and J. Wen 
+ Unlocking data-free low-bit quantization with matrix decomposition for KV cache compression .
+ In Proceedings of the 62nd Annual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), ACL 2024, Bangkok, Thailand,
+August 11-16, 2024 ,
+ pp. 2430–2440 .
+ Cited by: §5 .
+ Liu et al. (2024b) 
+ Z. Liu, J. Yuan, H. Jin, S. Zhong, Z. Xu, V. Braverman, B. Chen, and X. Hu 
+ KIVI: A tuning-free asymmetric 2bit quantization for KV cache .
+ In Forty-first International Conference on Machine Learning, ICML 2024,
+Vienna, Austria, July 21-27, 2024 ,
+ Cited by: §1 ,
+ §5 .
+ Min et al. (2024) 
+ Y. Min, Z. Chen, J. Jiang, J. Chen, J. Deng, Y. Hu, Y. Tang, J. Wang, X. Cheng, H. Song, W. X. Zhao, Z. Liu, Z. Wang, and J. Wen 
+ Imitate, explore, and self-improve: A reproduction report on slow-thinking reasoning systems .
+ CoRR abs/2412.09413 .
+ Cited by: §E.1 ,
+ §2.1 .
+ Peng et al. (2024) 
+ B. Peng, J. Quesnelle, H. Fan, and E. Shippole 
+ YaRN: efficient context window extension of large language models .
+ In The Twelfth International Conference on Learning Representations,
+ICLR 2024, Vienna, Austria, May 7-11, 2024 ,
+ Cited by: §1 .
+ Qiu et al. (2025) 
+ Z. Qiu, Z. Ou, B. Wu, J. Li, A. Liu, and I. King 
+ Entropy-based decoding for retrieval-augmented large language models .
+ In Proceedings of the 2025 Conference of the Nations of the Americas
+Chapter of the Association for Computational Linguistics: Human Language
+Technologies, NAACL 2025 - Volume 1: Long Papers, Albuquerque, New
+Mexico, USA, April 29 - May 4, 2025 ,
+ pp. 4616–4627 .
+ Cited by: §2.2 .
+ Rein et al. (2023) 
+ D. Rein, B. L. Hou, A. C. Stickland, J. Petty, R. Y. Pang, J. Dirani, J. Michael, and S. R. Bowman 
+ GPQA: A graduate-level google-proof q&a benchmark .
+ CoRR abs/2311.12022 .
+ Cited by: §4.3 .
+ Shao et al. (2024) 
+ Z. Shao, P. Wang, Q. Zhu, R. Xu, J. Song, M. Zhang, Y. K. Li, Y. Wu, and D. Guo 
+ DeepSeekMath: pushing the limits of mathematical reasoning in open language models .
+ CoRR abs/2402.03300 .
+ Cited by: §1 ,
+ §3.3 .
+ Song et al. (2025) 
+ J. Song, D. Jo, Y. Kim, and J. Kim 
+ Reasoning path compression: compressing generation trajectories for efficient LLM reasoning .
+ CoRR abs/2505.13866 .
+ Cited by: §E.5 .
+ Tang et al. (2024) 
+ J. Tang, Y. Zhao, K. Zhu, G. Xiao, B. Kasikci, and S. Han 
+ QUEST: query-aware sparsity for efficient long-context LLM inference .
+ In Forty-first International Conference on Machine Learning, ICML 2024,
+Vienna, Austria, July 21-27, 2024 ,
+ Cited by: §5 .
+ Wang et al. (2025) 
+ S. Wang, L. Yu, C. Gao, C. Zheng, S. Liu, R. Lu, K. Dang, X. Chen, J. Yang, Z. Zhang, Y. Liu, A. Yang, A. Zhao, Y. Yue, S. Song, B. Yu, G. Huang, and J. Lin 
+ Beyond the 80/20 rule: high-entropy minority tokens drive effective reinforcement learning for LLM reasoning .
+ CoRR abs/2506.01939 .
+ Cited by: §2.2 .
+ Wang et al. (2024) 
+ Z. Wang, B. Jin, Z. Yu, and M. Zhang 
+ Model tells you where to merge: adaptive KV cache merging for llms on long-context tasks .
+ CoRR abs/2407.08454 .
+ Cited by: §1 ,
+ §5 .
+ Wu et al. (2025) 
+ H. Wu, Y. Yao, S. Liu, Z. Liu, X. Fu, X. Han, X. Li, H. Zhen, T. Zhong, and M. Yuan 
+ Unlocking efficient long-to-short LLM reasoning with model merging .
+ CoRR abs/2503.20641 .
+ Cited by: §5 .
+ Wu et al. (2024) 
+ J. Wu, Z. Wang, L. Zhang, Y. Lai, Y. He, and D. Zhou 
+ SCOPE: optimizing key-value cache compression in long-context generation .
+ CoRR abs/2412.13649 .
+ Cited by: §1 ,
+ §5 .
+ Xiao et al. (2025a) 
+ C. Xiao, Y. Li, X. Han, Y. Bai, J. Cai, H. Chen, W. Chen, X. Cong, G. Cui, N. Ding, S. Fan, Y. Fang, Z. Fu, W. Guan, Y. Guan, J. Guo, Y. Han, B. He, Y. Huang, C. Kong, Q. Li, S. Li, W. Li, Y. Li, Y. Li, Z. Li, D. Liu, B. Lin, Y. Lin, X. Long, Q. Lu, Y. Lu, P. Luo, H. Lyu, L. Ou, Y. Pan, Z. Qu, Q. Shi, Z. Song, J. Su, Z. Su, A. Sun, X. Sun, P. Tang, F. Wang, F. Wang, S. Wang, Y. Wang, Y. Wu, Z. Xiao, J. Xie, Z. Xie, Y. Yan, J. Yuan, K. Zhang, L. Zhang, L. Zhang, X. Zhang, Y. Zhang, H. Zhao, W. Zhao, W. Zhao, Y. Zhao, Z. Zheng, G. Zhou, J. Zhou, W. Zhou, Z. Zhou, Z. Zhou, Z. Liu, G. Zeng, C. Jia, D. Li, and M. Sun 
+ MiniCPM4: ultra-efficient llms on end devices .
+ CoRR abs/2506.07900 .
+ Cited by: §E.4 .
+ Xiao et al. (2025b) 
+ G. Xiao, J. Tang, J. Zuo, J. Guo, S. Yang, H. Tang, Y. Fu, and S. Han 
+ DuoAttention: efficient long-context LLM inference with retrieval and streaming heads .
+ In The Thirteenth International Conference on Learning Representations,
+ICLR 2025, Singapore, April 24-28, 2025 ,
+ Cited by: §E.5 .
+ Xiao et al. (2024) 
+ G. Xiao, Y. Tian, B. Chen, S. Han, and M. Lewis 
+ Efficient streaming language models with attention sinks .
+ In The Twelfth International Conference on Learning Representations,
+ICLR 2024, Vienna, Austria, May 7-11, 2024 ,
+ Cited by: §1 ,
+ §2.1 ,
+ §5 .
+ Yang et al. (2025a) 
+ A. Yang, A. Li, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Gao, C. Huang, C. Lv, C. Zheng, D. Liu, F. Zhou, F. Huang, F. Hu, H. Ge, H. Wei, H. Lin, J. Tang, J. Yang, J. Tu, J. Zhang, J. Yang, J. Yang, J. Zhou, J. Zhou, J. Lin, K. Dang, K. Bao, K. Yang, L. Yu, L. Deng, M. Li, M. Xue, M. Li, P. Zhang, P. Wang, Q. Zhu, R. Men, R. Gao, S. Liu, S. Luo, T. Li, T. Tang, W. Yin, X. Ren, X. Wang, X. Zhang, X. Ren, Y. Fan, Y. Su, Y. Zhang, Y. Zhang, Y. Wan, Y. Liu, Z. Wang, Z. Cui, Z. Zhang, Z. Zhou, and Z. Qiu 
+ Qwen3 technical report .
+ CoRR abs/2505.09388 .
+ Cited by: §1 ,
+ §1 ,
+ §2.1 ,
+ §2.2 ,
+ §3.2 ,
+ §4.1 ,
+ §5 .
+ Yang et al. (2025b) 
+ P. Yang, C. Du, F. Zhang, H. Wang, T. Pang, C. Du, and B. An 
+ LongSpec: long-context lossless speculative decoding with efficient drafting and verification .
+ CoRR abs/2502.17421 .
+ Cited by: §5 .
+ Yuan et al. (2024) 
+ Z. Yuan, Y. Shang, Y. Zhou, Z. Dong, Z. Zhou, C. Xue, B. Wu, Z. Li, Q. Gu, Y. J. Lee, Y. Yan, B. Chen, G. Sun, and K. Keutzer 
+ LLM inference unveiled: survey and roofline model insights .
+ CoRR abs/2402.16363 .
+ Cited by: §1 .
+ Zeng et al. (2024) 
+ Z. Zeng, B. Lin, T. Hou, H. Zhang, and Z. Deng 
+ In-context kv-cache eviction for llms via attention-gate .
+ CoRR abs/2410.12876 .
+ Cited by: §5 .
+ Zhang et al. (2023) 
+ Z. Zhang, Y. Sheng, T. Zhou, T. Chen, L. Zheng, R. Cai, Z. Song, Y. Tian, C. Ré, C. W. Barrett, Z. Wang, and B. Chen 
+ H2O: heavy-hitter oracle for efficient generative inference of large language models .
+ In Advances in Neural Information Processing Systems 36: Annual Conference
+on Neural Information Processing Systems 2023, NeurIPS 2023, New Orleans,
+LA, USA, December 10 - 16, 2023 ,
+ Cited by: 1st item ,
+ §E.2 ,
+ §1 ,
+ §1 ,
+ §3.2 ,
+ §4.1 ,
+ §5 .
+ Zhao et al. (2023) 
+ W. X. Zhao, K. Zhou, J. Li, T. Tang, X. Wang, Y. Hou, Y. Min, B. Zhang, J. Zhang, Z. Dong, Y. Du, C. Yang, Y. Chen, Z. Chen, J. Jiang, R. Ren, Y. Li, X. Tang, Z. Liu, P. Liu, J. Nie, and J. Wen 
+ A survey of large language models .
+ CoRR abs/2303.18223 .
+ Cited by: §1 .
+ Appendix A Theoretical Analysis of KV Cache Eviction
+ In this section, we rigorously analyze the approximation error induced by KV cache eviction. We prove that retaining KV pairs with the highest original attention scores minimizes the error upper bound.
+ Problem Setup.
+ Let the original full attention output be 𝐨 t = ∑ i = 1 N a t , i ​ 𝐯 i \mathbf{o}_{t}=\sum_{i=1}^{N}a_{t,i}\mathbf{v}_{i} , where a t , i = exp ⁡ ( s t , i ) ∑ k = 1 N exp ⁡ ( s t , k ) a_{t,i}=\frac{\exp(s_{t,i})}{\sum_{k=1}^{N}\exp(s_{t,k})} are the original normalized attention scores.
+When evicting a set of indices ℰ \mathcal{E} , the remaining scores are renormalized. Let 𝒮 \mathcal{S} be the retained set. The new output 𝐨 ^ t \hat{\mathbf{o}}_{t} is:
+ 𝐨 ^ t = ∑ i ∈ 𝒮 a ^ t , i ​ 𝐯 i , where a ^ t , i = exp ⁡ ( s t , i ) ∑ k ∈ 𝒮 exp ⁡ ( s t , k ) . \hat{\mathbf{o}}_{t}=\sum_{i\in\mathcal{S}}\hat{a}_{t,i}\mathbf{v}_{i},\quad\text{where}\quad\hat{a}_{t,i}=\frac{\exp(s_{t,i})}{\sum_{k\in\mathcal{S}}\exp(s_{t,k})}. 
+ (11) 
+ Let ϵ t = ∑ j ∈ ℰ a t , j \epsilon_{t}=\sum_{j\in\mathcal{E}}a_{t,j} denote the evicted probability mass (the sum of original attention scores of the evicted tokens). Note that the relationship between the new and original weights is a ^ t , i = a t , i 1 − ϵ t \hat{a}_{t,i}=\frac{a_{t,i}}{1-\epsilon_{t}} .
+ Proposition A.1 . 
+ (Error Bound). Assuming the value vectors are bounded by ‖ 𝐯 i ‖ 2 ≤ C \|\mathbf{v}_{i}\|_{2}\leq C , the approximation error ‖ 𝐨 t − 𝐨 ^ t ‖ 2 \|\mathbf{o}_{t}-\hat{\mathbf{o}}_{t}\|_{2} is bounded by a term strictly proportional to the evicted mass ϵ t \epsilon_{t} : 
+ ‖ 𝐨 t − 𝐨 ^ t ‖ 2 ≤ 2 ​ C ​ ϵ t . \|\mathbf{o}_{t}-\hat{\mathbf{o}}_{t}\|_{2}\leq 2C\epsilon_{t}. 
+ (12) 
+ Proof. 
+ We decompose the original output 𝐨 t \mathbf{o}_{t} into the retained part and the evicted part: 
+ 𝐨 t = ∑ i ∈ 𝒮 a t , i ​ 𝐯 i + ∑ j ∈ ℰ a t , j ​ 𝐯 j . \mathbf{o}_{t}=\sum_{i\in\mathcal{S}}a_{t,i}\mathbf{v}_{i}+\sum_{j\in\mathcal{E}}a_{t,j}\mathbf{v}_{j}. 
+ (13) 
+ The approximated output can be rewritten in terms of the original scores: 
+ 𝐨 ^ t = ∑ i ∈ 𝒮 a t , i 1 − ϵ t ​ 𝐯 i = 1 1 − ϵ t ​ ∑ i ∈ 𝒮 a t , i ​ 𝐯 i . \hat{\mathbf{o}}_{t}=\sum_{i\in\mathcal{S}}\frac{a_{t,i}}{1-\epsilon_{t}}\mathbf{v}_{i}=\frac{1}{1-\epsilon_{t}}\sum_{i\in\mathcal{S}}a_{t,i}\mathbf{v}_{i}. 
+ (14) 
+ Now, let 𝐡 𝒮 = ∑ i ∈ 𝒮 a t , i ​ 𝐯 i \mathbf{h}_{\mathcal{S}}=\sum_{i\in\mathcal{S}}a_{t,i}\mathbf{v}_{i} and 𝐡 ℰ = ∑ j ∈ ℰ a t , j ​ 𝐯 j \mathbf{h}_{\mathcal{E}}=\sum_{j\in\mathcal{E}}a_{t,j}\mathbf{v}_{j} . The error vector is: 
+ 𝐨 t − 𝐨 ^ t \displaystyle\mathbf{o}_{t}-\hat{\mathbf{o}}_{t} 
+ = ( 𝐡 𝒮 + 𝐡 ℰ ) − 1 1 − ϵ t ​ 𝐡 𝒮 \displaystyle=(\mathbf{h}_{\mathcal{S}}+\mathbf{h}_{\mathcal{E}})-\frac{1}{1-\epsilon_{t}}\mathbf{h}_{\mathcal{S}} 
+ (15) 
+ = 𝐡 ℰ + ( 1 − 1 1 − ϵ t ) ​ 𝐡 𝒮 \displaystyle=\mathbf{h}_{\mathcal{E}}+\left(1-\frac{1}{1-\epsilon_{t}}\right)\mathbf{h}_{\mathcal{S}} 
+ (16) 
+ = 𝐡 ℰ − ϵ t 1 − ϵ t ​ 𝐡 𝒮 . \displaystyle=\mathbf{h}_{\mathcal{E}}-\frac{\epsilon_{t}}{1-\epsilon_{t}}\mathbf{h}_{\mathcal{S}}. 
+ (17) 
+ Taking the norm and applying the triangle inequality: 
+ ‖ 𝐨 t − 𝐨 ^ t ‖ 2 ≤ ‖ 𝐡 ℰ ‖ 2 + ϵ t 1 − ϵ t ​ ‖ 𝐡 𝒮 ‖ 2 . \|\mathbf{o}_{t}-\hat{\mathbf{o}}_{t}\|_{2}\leq\|\mathbf{h}_{\mathcal{E}}\|_{2}+\frac{\epsilon_{t}}{1-\epsilon_{t}}\|\mathbf{h}_{\mathcal{S}}\|_{2}. 
+ (18) 
+ Using the bound ‖ 𝐯 ‖ ≤ C \|\mathbf{v}\|\leq C , we can infer that: 
+ ‖ 𝐡 ℰ ‖ 2 \displaystyle\|\mathbf{h}_{\mathcal{E}}\|_{2} 
+ = ‖ ∑ j ∈ ℰ a t , j ​ 𝐯 j ‖ 2 ≤ ∑ j ∈ ℰ a t , j ​ C = C ​ ϵ t , \displaystyle=\|\sum_{j\in\mathcal{E}}a_{t,j}\mathbf{v}_{j}\|_{2}\leq\sum_{j\in\mathcal{E}}a_{t,j}C=C\epsilon_{t}, 
+ (19) 
+ ‖ 𝐡 𝒮 ‖ 2 \displaystyle\|\mathbf{h}_{\mathcal{S}}\|_{2} 
+ = ‖ ∑ i ∈ 𝒮 a t , i ​ 𝐯 i ‖ 2 ≤ ∑ i ∈ 𝒮 a t , i ​ C = C ⁡ ( 1 − ϵ t ) . \displaystyle=\|\sum_{i\in\mathcal{S}}a_{t,i}\mathbf{v}_{i}\|_{2}\leq\sum_{i\in\mathcal{S}}a_{t,i}C=C(1-\epsilon_{t}). 
+ (20) 
+ Substituting these back yields the upper bound: 
+ ‖ 𝐨 t − 𝐨 ^ t ‖ 2 ≤ C ​ ϵ t + ϵ t 1 − ϵ t ⋅ C ⁡ ( 1 − ϵ t ) = C ​ ϵ t + C ​ ϵ t = 2 ​ C ​ ϵ t . \|\mathbf{o}_{t}-\hat{\mathbf{o}}_{t}\|_{2}\leq C\epsilon_{t}+\frac{\epsilon_{t}}{1-\epsilon_{t}}\cdot C(1-\epsilon_{t})=C\epsilon_{t}+C\epsilon_{t}=2C\epsilon_{t}. 
+ (21) 
+ This confirms that the error is bounded by 2 ​ C ​ ϵ t 2C\epsilon_{t} .
+∎ 
+ Conclusion.
+ The bound depends linearly on the evicted mass ϵ t = ∑ j ∈ ℰ a t , j \epsilon_{t}=\sum_{j\in\mathcal{E}}a_{t,j} . To minimize the approximation error, one must minimize ϵ t \epsilon_{t} . This theoretically validates our Golden Eviction strategy, which explicitly retains the KV pairs with the largest attention scores (thereby discarding those with the smallest sum of scores).
+ Appendix B Model Architectures and Sampling Algorithm
+ B.1 Model Design
+ In KV cache eviction, the design of a scoring model to accurately assess the importance of each key-value pair is crucial. To balance computational efficiency and accuracy, we use an MLP to score the importance of each KV pair. To more fully leverage existing information for prediction, we select two types of information as input:
+ • 
+ Attention Features : Inspired by H2O ( Zhang et al., 2023 ) and SnapKV ( Li et al., 2024 ) , we use attention scores from both recent windows and cumulative history. For recent windows, we adopt sizes of 8, 16, and 32, along with a window size equal to the update length. For cumulative history, we aggregate attention scores across chunks using two variants: a direct sum and a decayed sum with a per-chunk decay factor of 0.9. For GQA, we concatenate the attention features of all heads within a group as the final attention feature 𝐚 n ∈ ℝ 6 ​ g \mathbf{a}_{n}\in\mathbb{R}^{6g} .
+ • 
+ KV Representations : We directly concatenate the hidden states of keys 𝐤 n ∈ ℝ D \mathbf{k}_{n}\in\mathbb{R}^{D} and values 𝐯 n ∈ ℝ D \mathbf{v}_{n}\in\mathbb{R}^{D} without additional transformation.
+ Thus, the input feature 𝐱 n = Concat ​ ( [ 𝐤 n , 𝐯 n , 𝐚 n ] ) ∈ ℝ 6 ​ g + 2 ​ D \mathbf{x}_{n}=\text{Concat}([\mathbf{k}_{n},\mathbf{v}_{n},\mathbf{a}_{n}])\in\mathbb{R}^{6g+2D} . Subsequently, the input feature is sent into the MLP model π ϕ \pi_{\phi} to obtain the importance scores:
+ ϕ n = π θ ​ ( 𝐱 n ) = σ ⁡ ( 𝐱 n ​ 𝑾 1 + 𝐛 1 ) ​ 𝑾 2 + 𝐛 2 , \phi_{n}=\pi_{\theta}(\mathbf{x}_{n})=\sigma(\mathbf{x}_{n}\bm{W}_{1}+\mathbf{b}_{1})\bm{W}_{2}+\mathbf{b}_{2}, 
+ (22) 
+ where 𝑾 1 ∈ ℝ ( 6 ​ g + 2 ​ D ) × H \bm{W}_{1}\in\mathbb{R}^{(6g+2D)\times H} , 𝑾 2 ∈ ℝ H × 1 \bm{W}_{2}\in\mathbb{R}^{H\times 1} , 𝒃 1 ∈ ℝ H \bm{b}_{1}\in\mathbb{R}^{H} , 𝒃 2 ∈ ℝ 1 \bm{b}_{2}\in\mathbb{R}^{1} , H H is the immediate size.
+ B.2 Sampling Algorithm
+ After computing the importance score of each KV pair, we apply a Top- K K Multinomial Sampling strategy to determine which pairs to retain and which to evict. The procedure consists of two steps: (i) we first construct a candidate set by selecting the top- K ′ K^{\prime} pairs with the highest scores; (ii) we then normalize their scores with a softmax function and perform multinomial sampling to select K K pairs for eviction. As shown in Section 4.3 , this approach outperforms both standard top- K K and multinomial sampling, while introducing stochasticity that encourages exploration, making it particularly suitable for reinforcement learning settings.
+ Appendix C Analysis of ForesightKV for Capturing Attention Patterns
+ As discussed in Section 2.1 , the complex attention patterns can not be easily captured by the KV cache eviction algorithms. To evaluate how different KV cache eviction algorithms capture attention patterns, we measure the average similarity of each attention head’s outputs before and after applying KV cache compression, as shown in the Table 7 . We can observe that, compared with other methods, ForesightKV results in smaller changes in the outputs of attention heads. This indicates that our method can better capture attention patterns and more closely approximate the original distribution, thereby achieving better performance.
+ Table 7 : Averaged cosine similairty of attention outputs before and after KV cache eviction. 
+ Budgets 
+ ForesightKV 
+ RKV 
+ SnapKV 
+ H2O 
+ 1K 
+ 0.9736 
+ 0.9628 
+ 0.9620 
+ 0.9711 
+ 2K 
+ 0.9889 
+ 0.9782 
+ 0.9816 
+ 0.9845 
+ Appendix D Analysis of Low-Entropy Tokens
+ We take samples from the reasoning traces and use Qwen3-4B with R-KV to predict the token at each position based on the maximum probability on math tasks, and then compare these predictions with the original ones. We present the token changes of the top loss increase in low-entropy tokens in Table 8 . We can observe that these tokens are often related to factual errors, e.g., numbers and symbols. These errors may influence the following reasoning results.
+ Table 8 : Error predictions of low-entropy tokens. The red and blue denote the predicted and original tokens in the sentence. 
+ Golden 
+ 8 × 9 × 5 × 7 = 2520 . 
+ Prediction 
+ 8 × 9 × 5 × 7 = 8520 . 
+ Golden 
+ z = f(x)f(y) = (-1)(-1) = 1. 
+ Prediction 
+ z = f(x)f(y) + (-1)(-1) = 1. 
+ Appendix E Experiments Details
+ E.1 Training Setup
+ Data Preparation.
+ We begin by preparing the training data using the Qwen3-4B model to generate reasoning traces on the STILL dataset ( Min et al., 2024 ) . The generation process employs the same settings as those used during the evaluation phase. From the generated outputs, we select only the corrected traces whose lengths exceed 4096 tokens. This curated collection of long, corrected reasoning traces serves as the dataset for the subsequent supervised training and reinforcement learning stages. All the scoring models for each LLM are trained on the same datasets independently.
+ Supervised Training.
+ Following data preparation, we conduct supervised fine-tuning on the filtered dataset. The training is performed with a batch size of 8 8 and a learning rate of 1 ​ e − 2 1e^{-2} for a total of 1000 1000 steps, utilizing a Cosine learning rate scheduler to anneal the learning rate. For our proposed method, we set the hyperparameter m m for the Pairwise Ranking Loss to 0.01. The budget B B is configured to 1024 1024 , and the eviction length L L is set to 256 256 .
+ Reinforcement Learning.
+ In the reinforcement learning phase, we configure the training with a batch size and a mini-batch size of 32. We employ a fixed learning rate of 3 ​ e − 4 3e^{-4} with a 10 10 step of warmup and train the model for 200 200 steps. For each sample in a batch, we generate 8 8 eviction trajectories, and each batch of data is trained for one epoch without a mini-batch size. To balance efficiency and performance, the budget B B and eviction length L L are set to either (1024,256) or (2048, 512), conditional on whether the sequence length is shorter or longer than 12K tokens. The KL penalty coefficient β \beta is set to 0.01 0.01 for Qwen3-4B, 0.03 0.03 for Qwen3-1.7B, and 0.1 0.1 for DeepSeek-R1-Distill-Qwen-7B. Finally, the margin η \eta in the reward function is set to 1.5 while ϵ \epsilon is set to 0.2 0.2 .
+ E.2 Baselines
+ We set H2O ( Zhang et al., 2023 ) , SnapKV ( Li et al., 2024 ) , and R-KV ( Cai et al., 2025 ) as baselines.
+ • 
+ H2O . H2O uses cumulative attention scores as the evaluation metric. At each step, the one with the highest cumulative attention score is retained. To maintain consistency, we also keep a budget of B B and perform pruning every L L tokens.
+ • 
+ SnapKV . SnapKV is a KV cache compression method for long inputs, which uses the last segment of queries as an observation window and determines importance based on their attention scores. Cai et al. (2025) transforms this into a compression method targeting long outputs, assessing the importance of the current step every L L tokens by utilizing the attention scores of the final 8 tokens.
+ • 
+ R-KV . Based on the aforementioned SnapKV, R-KV also takes into account the redundancy among tokens. It weighs the metrics of window attention score and token-to-token similarity to serve as the importance judgment for a KV pair. The weights for each are 0.1 and 0.9, respectively.
+ Figure 4 : Change of losses with different training steps. 
+ E.3 Reward Changes Across Training
+ We present the changes of loss ℒ ours \mathcal{L}_{\text{ours}} with the different training steps. As shown in Figure 4 , we can observe that during the initial training phase, the model exhibited unstable loss behavior, fluctuating relative to the original model. After a certain number of training steps, the loss consistently decreased, ultimately yielding better results. This indicates that the policy models can achieve effective exploration to improve the reasoning qualities.
+ E.4 Experiments with MiniCPM-4.1-8B
+ To verify the generalizability of our method beyond the Qwen series, we further evaluate it on MiniCPM-4-1-8B ( Xiao et al., 2025a ) with a context length of 32K, as detailed in Table 9 . The results confirm that our approach consistently outperforms baseline methods on this architecture. Notably, due to the significantly longer generation lengths inherent to MiniCPM compared to the Qwen models, we observe that a larger KV cache budget is requisite to maintain optimal performance.
+ Table 9 : Performance evaluation of MiniCPM-4.1-8B on AIME 24 benchmark. 
+ Method 
+ 2K 
+ 4K 
+ 8K 
+ Full 
+ 63.3 
+ R-KV 
+ 13.3 
+ 36.7 
+ 50.0 
+ SnapKV 
+ 10.0 
+ 33.3 
+ 53.3 
+ ForesightKV( w/o RL) 
+ 43.3 
+ 53.3 
+ 63.3 
+ E.5 Experiments with more Methods
+ To further evaluate the effectiveness of ForesightKV, we conduct a comprehensive comparison with G-KV ( Liao et al., 2025 ) , Duo-Attention ( Xiao et al., 2025b ) , and RPC ( Song et al., 2025 ) . Specifically, we compare ForesightKV with RPC on Qwen3-4B, while comparisons with G-KV and Duo-Attention are performed on DeepSeek-R1-Distill-Qwen-7B. The results on AIME2024 are summarized in Table 10 . The results for G-KV are directly taken from the original paper, and for Duo-Attention, we report performance under compression rates of 25% and 50%. All the experiment settings are the same for different methods. As shown in the Table 10 , ForesightKV consistently and substantially outperforms all baseline methods across the evaluated settings, demonstrating its superior effectiveness under comparable or even more aggressive compression scenarios.
+ Table 10 : Performance comparison with more methods. 
+ Model 
+ Method 
+ 1K ( < 25 % <25\% ) 
+ 2K ( < 50 % <50\% ) 
+ 4K 
+ Qwen3-4B 
+ RPC 
+ 10.0 
+ 36.7 
+ 59.2 
+ ForesightKV 
+ 54.5 
+ 70.2 
+ 69.2 
+ DeepSeek-R1-Distill-Qwen-7B 
+ DuoAttention 
+ 3.3 
+ 13.3 
+ - 
+ G-KV 
+ 33.0-35.0 
+ 47.0-49.0 
+ - 
+ ForesightKV 
+ 44.6 
+ 52.9 
+ 54.3 
+ E.6 Throughput Analysis
+ End-to-End Speed.
+ On DeepSeek-R1-Distill-Qwen-7B, we evaluate the whole cost under the batch size of 8, and each sample is tested 8 times. It takes 8 and 9.5 hours under the budget of 1K and 2K, and 17.5 hours for the full KV cache. Thus, even under the same budget, our method can achieve about 2 times speedup.
+ Speed of KV Cache Eviction.
+ We evaluate our method on Qwen3-4B with a budget of 2048. Specifically, we generate sequences of length 32K with a batch size of 64, which takes a total of 5813 seconds. Among this, our KV cache eviction mechanism accounts for only 157 seconds, representing just 2.7% of the total time, which is effectively negligible.
+In contrast, the computation of R-KV takes about 8.1% of the total time, which is much larger.
+Moreover, due to the larger degree of parallelism, reduced attention computation, and lower cache storage overhead, our method achieves significantly higher computational efficiency, which is sufficient to cover the overhead of the scoring model.
+ Experimental support, please
+ view the build logs 
+ for errors. Generated by
+ L
+ A 
+ T
+ E 
+ xml 
+ .
+ Instructions for reporting errors
+ We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility and mobile
+ support. To report errors in the HTML that will help us improve conversion and rendering, choose any of the
+ methods listed below:
+ Click the "Report Issue" ( 
+ ) button, located in the page header.
+ Tip: You can select the relevant text first, to include it in your report.
+ Our team has already identified the following issues . We appreciate your time reviewing and reporting rendering errors we
+ may not have found yet. Your efforts will help us improve the HTML versions for all readers, because disability
+ should not be a barrier to accessing research. Thank you for your continued support in championing open access for
+ all.
+ Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML maintain a list of packages that need conversion , and welcome developer contributions .
+ We gratefully acknowledge support from
+ our major funders ,
+ member institutions , ,
+ and all contributors.
+ About 
+ · 
+ Help 
+ · 
+ Contact 
+ · 
+ Subscribe 
+ · 
+ Copyright 
+ · 
+ Privacy 
+ · 
+ Accessibility 
+ · 
+ Operational Status (opens in new tab) 
+ Major funding support from

@@ -1,0 +1,880 @@
+ 
+ Exact Attention Sensitivity and the Geometry of Transformer Stability 
+@@@Report GitHub Issue 
+ × 
+ Title: 
+ Content selection saved. Describe the issue below: 
+ Description: 
+ Submit without GitHub 
+ Submit in GitHub 
+ arXiv is now an independent nonprofit! 
+ Learn more 
+ × 
+ Back to arXiv 
+ Why HTML? 
+ Report Issue 
+ Back to Abstract 
+ Download PDF 
+ Abstract 
+ 1 Introduction 
+ Limitations of existing theory. 
+ Our approach: architecture-aligned geometry. 
+ Contributions. 
+ 2 Related Work 
+ 3 Geometric Framework 
+ Notation and stability concepts. 
+ 3.1 Why Standard Geometry Fails 
+ 3.2 Block- ∞ \infty /RMS Geometry 
+ Intuition. 
+ 4 Exact Softmax Sensitivity 
+ The stability-expressivity trade-off. 
+ Implications for training dynamics. 
+ 5 Layerwise Stability Analysis 
+ 5.1 Multi-Head Attention Lipschitz Bound 
+ 5.2 Per-Layer Lipschitz Bounds 
+ Pre-LN architecture. 
+ Post-LN architecture. 
+ 5.3 Gradient Flow Analysis 
+ Pre-LN gradient structure. 
+ Post-LN gradient structure. 
+ 5.4 Discussion 
+ 6 From Geometry to Practice 
+ 6.1 Residual Scaling and the N − 1 / 4 N^{-1/4} Exponent 
+ Connection to DeepNorm. 
+ 6.2 The Path-Length Exponent Principle: A Design Rule 
+ 6.3 Learning Rate Warmup 
+ 7 Empirical Verification 
+ Theorem verification. 
+ Training dynamics. 
+ Persistence of θ ⁡ ( p ) ≈ 1 \theta(p)\approx 1 . 
+ Layer-wise gradient pathology. 
+ Warmup validation. 
+ 8 Conclusion 
+ References 
+ A Proofs for Section  : Geometric Framework 
+ B Proof of Theorem  : Exact Softmax Jacobian Norm 
+ Tightness. 
+ C Proofs for Section  : Layerwise Stability 
+ C.1 Proof of Theorem  : MHA Lipschitz Bound 
+ Value pathway. 
+ Attention pathway. 
+ Combining pathways. 
+ C.2 Proof of Theorem  : Pre-LN Full Layer Bound 
+ Bounded input magnitude. 
+ MHA sublayer. 
+ FFN sublayer. 
+ Full layer. 
+ C.3 Proof of Theorem  : Post-LN Full Layer Bound 
+ Input magnitude analysis. 
+ MHA sublayer. 
+ FFN sublayer. 
+ Full layer. 
+ C.4 Proof of Theorem  : Pre-LN Identity Gradient Path 
+ Part (i): Bounded sublayer Jacobian. 
+ Part (ii): End-to-end Jacobian expansion. 
+ Part (iii): Direct gradient pathway. 
+ C.5 Proof of Theorem  : Post-LN No Identity Gradient Path 
+ Part (i): End-to-end Jacobian formula. 
+ Part (ii): LayerNorm Jacobian is projection-like. 
+ Part (iii): No additive identity term. 
+ D Proofs for Section  : Training Heuristics 
+ D.1 Proof of Theorem  : Projection Scaling for Transformers 
+ Asymmetric scaling. 
+ D.2 Proof of Theorem  : Path-Length Exponent Principle 
+ Tightness. 
+ Asymmetric scaling. 
+ E Experimental Details and Additional Results 
+ E.1 Experimental Setup 
+ Model architecture. 
+ Training configuration. 
+ Data. 
+ Metrics. 
+ E.2 Theorem Verification Details 
+ Greedy heuristic for θ ⁡ ( p ) \theta(p) . 
+ E.3 Multi-Seed Results 
+ E.4 Layer-wise θ ⁡ ( p ) \theta(p) Analysis 
+ E.5 Sensitivity Proxy Analysis 
+ E.6 Factor Attribution 
+ Pre-LN factor attribution. 
+ Post-LN factor attribution. 
+ License: arXiv.org perpetual non-exclusive license
+arXiv:2602.18849v1 [cs.LG] 21 Feb 2026 
+@@@Exact Attention Sensitivity and the Geometry of Transformer Stability 
+ Seyed Morteza Emadi
+ Affiliation:  UNC-Chapel Hill, Kenan-Flagler Business School, Chapel Hill, NC, USA
+ Correspondence to: seyed_emadi@kenan-flagler.unc.edu 
+@@@Abstract 
+ Despite powering modern AI, transformers remain mysteriously brittle to train. We develop a stability theory that explains why pre-LayerNorm works, why DeepNorm uses N − 1 / 4 N^{-1/4} scaling, and why warmup is necessary, all from first principles. Our framework has two pillars: (1) We derive the exact operator norm of the softmax Jacobian, ‖ J softmax ​ ( u / τ ) ‖ ∞ → 1 = θ ⁡ ( p ) / τ \|J_{\softmax}(u/\tau)\|_{\infty\to 1}=\theta(p)/\tau , where the balanced-mass factor θ ⁡ ( p ) ∈ [ 0 , 1 ] \theta(p)\in[0,1] quantifies attention sensitivity. (2) We introduce a block- ∞ \infty /RMS geometry aligned with tokenwise computation, yielding Lipschitz bounds independent of sequence length. Using this framework, we prove that pre-LN preserves identity gradient paths while post-LN compounds LayerNorm Jacobians exponentially with depth, and we show that DeepNorm’s N − 1 / 4 N^{-1/4} emerges from the quartic structure of attention’s four projection matrices. We validate our theory on 774M-parameter models and find that, contrary to the intuition that attention sharpens during training to reduce sensitivity, θ ⁡ ( p ) ≈ 1 \theta(p)\approx 1 persists throughout. Transformer stability arises entirely from architectural gradient flow, not from attention dynamics. This finding changes how we reason about training: the architecture itself must handle sensitivity, not learned attention patterns. 
+@@@Keywords:  transformer stability, attention mechanism, Lipschitz bounds, LayerNorm, gradient flow, deep learning theory
+@@@ 1 Introduction 
+ Transformers have become the dominant architecture across machine learning, powering large language models, vision systems, and multimodal applications ( Vaswani et al., 2017 ; Touvron et al., 2023 ) . Yet despite their empirical success, training transformers remains notoriously brittle. Loss spikes, gradient explosions, and subtle divergences can derail optimization runs that have consumed days of computation and substantial resources. The challenge intensifies with scale: deeper models and longer sequences introduce compounding instabilities that require increasingly careful hyperparameter tuning. 
+ Practitioners manage this brittleness through a constellation of heuristics accumulated over years of empirical tuning. Pre-LayerNorm (pre-LN) architectures ( Xiong et al., 2020 ) place normalization before attention rather than after, dramatically improving training stability for deep networks. Residual scaling rules like DeepNorm ( Wang et al., 2022 ) multiply sublayer outputs by depth-dependent factors α ≈ N − 1 / 4 \alpha\approx N^{-1/4} , enabling training of 1000+ layer transformers. Learning rate warmup ( Goyal et al., 2017 ) starts with tiny step sizes and gradually increases, preventing early-training instabilities. These techniques work, but why ? What geometric or algebraic properties make pre-LN stable and post-LN unstable? Why does DeepNorm use N − 1 / 4 N^{-1/4} rather than N − 1 / 2 N^{-1/2} or N − 1 N^{-1} ? What specifically about initialization makes warmup necessary? 
+ This gap between practice and theory has concrete consequences. Without understanding the mechanisms that stabilize training, practitioners cannot predict which heuristics transfer to new architectures, diagnose root causes when training fails, or reason about stability from first principles. The field advances through expensive trial-and-error rather than geometric insight. 
+@@@Limitations of existing theory. 
+ Existing theoretical analyses of transformer stability fall into two camps, neither fully satisfactory. 
+ Global worst-case analyses derive Lipschitz and smoothness bounds using ℓ 2 \ell_{2} or Frobenius geometry ( Kim et al., 2021 ; Dasoulas et al., 2021 ) . These bounds inherit spurious L \sqrt{L} factors from sequence length, suggesting that longer sequences are inherently harder to process stably. But this contradicts practice: transformers handle varying sequence lengths without corresponding stability degradation. The problem is geometric misalignment: the Frobenius norm aggregates across tokens in a way that obscures the rowwise structure of attention. 
+ Local distribution-aware analyses focus on softmax sensitivity in isolation, deriving bounds that depend on attention sharpness ( Yudin et al., 2025 ; Castin et al., 2024 ) . These capture important phenomena but do not integrate cleanly into layerwise bounds for complete transformer blocks. They cannot explain why architectural choices like pre-LN vs. post-LN matter, since both use the same softmax function. 
+ Neither approach fully explains empirical phenomena: the instability of post-LN at depth, the specific scaling factors in DeepNorm, or the geometric necessity of warmup. 
+@@@Our approach: architecture-aligned geometry. 
+ We develop a stability framework explicitly aligned with how transformers compute. The key insight is recognizing what transformers actually do at each step: LayerNorm normalizes each token independently , ignoring other tokens’ magnitudes; attention computes row-stochastic mixtures, where each output token is a convex combination of value vectors; and perturbations propagate through individual token representations , not through global sequence statistics. 
+ These observations motivate a block- ∞ \infty /RMS geometry where we measure the worst-case token magnitude rather than aggregate Frobenius norms. In this geometry, attention mixing is automatically nonexpansive (convex combinations cannot increase the maximum), LayerNorm has bounded Lipschitz constant independent of input scale, and layerwise bounds depend only on architectural parameters, not on sequence length. 
+@@@Contributions. 
+ (1) Path-length exponent principle. For architectures with m m multiplicative maps in the sensitive pathway, scale each by N − 1 / m N^{-1/m} . Standard attention has m = 4 m=4 , yielding DeepNorm’s N − 1 / 4 N^{-1/4} ; shared W Q = W K W^{Q}=W^{K} has m = 3 m=3 , predicting N − 1 / 3 N^{-1/3} (Theorem  6.2 ). 
+ (2) Temperature warmup prediction. Our analysis predicts that temperature warmup ( τ high → τ low \tau_{\mathrm{high}}\to\tau_{\mathrm{low}} ) should match learning rate warmup’s stabilization benefits by directly attenuating the 1 / τ 1/\tau factor in attention sensitivity, while leaving FFN gradients unthrottled (Section  6 ). 
+ (3) Exact softmax sensitivity. We derive the exact operator norm ‖ J softmax ‖ ∞ → 1 = θ ⁡ ( p ) / τ \|J_{\softmax}\|_{\infty\to 1}=\theta(p)/\tau , where θ ⁡ ( p ) ∈ [ 0 , 1 ] \theta(p)\in[0,1] measures how evenly attention can be bisected. This equality (not just a bound) reveals that sensitivity depends on distribution geometry, not just temperature. 
+ (4) Pre-LN vs post-LN mechanism. We prove pre-LN preserves an additive identity gradient path (bypassing sublayer Jacobians) while post-LN forces all gradients through LayerNorm Jacobians, causing exponential decay with depth (Theorems  5.4 ,  5.5 ). 
+ (5) Key empirical finding. Contrary to intuition, θ ⁡ ( p ) ≈ 1 \theta(p)\approx 1 persists throughout training; attention never sharpens to reduce sensitivity. Stability is architectural, not distributional (Section  7 ). 
+ (6) Length-free layerwise bounds. Using block- ∞ \infty /RMS geometry, we derive Lipschitz bounds independent of sequence length (Theorem  5.1 ). 
+@@@ 2 Related Work 
+ Lipschitz analysis of attention. 
+ Kim et al. (2021) established that unconstrained self-attention is not globally Lipschitz, motivating spectral regularization approaches ( Dasoulas et al., 2021 ; Qi et al., 2023 ) . Recent work derives tighter local bounds by incorporating properties of the attention distribution: Yudin et al. (2025) bound the spectral norm using ordinal statistics of attention probabilities, while Castin et al. (2024) analyze smoothness under attention sharpness. We advance beyond bounds to derive the exact Jacobian norm in the ℓ ∞ → ℓ 1 \ell_{\infty}\to\ell_{1} geometry and propagate it through complete layers, enabling architectural comparisons. 
+ Normalization and deep transformers. 
+The original transformer ( Vaswani et al., 2017 ) used post-LayerNorm, but Xiong et al. (2020) showed pre-LN dramatically improves stability for deep networks. Liu et al. (2020) connected this to gradient flow, observing that post-LN gradients can vanish or explode. We provide a precise mechanism: in pre-LN, gradients can flow directly through residual connections; in post-LN, all gradients must pass through LayerNorm at every layer, compounding across depth. 
+ Residual scaling. 
+DeepNorm ( Wang et al., 2022 ) enables 1000+ layer training through careful residual scaling with α ≈ ( 2 N ) − 1 / 4 \alpha\approx(2N)^{-1/4} (the 2 2 reflects two residual sublayers per layer: MHA and FFN). Related approaches include Fixup initialization ( Zhang et al., 2019 ) and T-Fixup ( Huang et al., 2020 ) . We derive DeepNorm’s N − 1 / 4 N^{-1/4} exponent from first principles, showing it emerges from the quartic structure of the attention pathway. 
+ Learning rate warmup. 
+Warmup is standard practice ( Goyal et al., 2017 ) , with explanations focusing on Adam momentum calibration ( Liu et al., 2020 ) and loss landscape sharpness ( Gilmer et al., 2022 ) . Our analysis adds a geometric perspective: since θ ⁡ ( p ) ≈ 1 \theta(p)\approx 1 persists throughout training, stability cannot rely on attention distributions becoming peaked; instead, warmup limits parameter updates while projection norms stabilize. 
+ With this context, we now develop our geometric framework. We begin by introducing a norm aligned with tokenwise transformer computation, then derive exact Jacobian norms that enable architectural comparisons. 
+@@@ 3 Geometric Framework 
+ Analyzing transformer stability requires choosing the right geometric perspective. The choice of norm fundamentally shapes what bounds are possible and what phenomena they can capture. In this section, we argue that standard ℓ 2 \ell_{2} /Frobenius geometry is misaligned with transformer computation, and we introduce an alternative that respects the tokenwise structure of attention and normalization. 
+@@@Notation and stability concepts. 
+ We denote vectors x ∈ ℝ d x\in\mathbb{R}^{d} , matrices X ∈ ℝ L × d X\in\mathbb{R}^{L\times d} , and the probability simplex Δ L − 1 = { p ∈ ℝ L : p i ≥ 0 , ∑ i p i = 1 } \Delta^{L-1}=\{p\in\mathbb{R}^{L}:p_{i}\geq 0,\sum_{i}p_{i}=1\} . For S ⊆ [ L ] S\subseteq[L] , we write p ⁡ ( S ) = ∑ i ∈ S p i p(S)=\sum_{i\in S}p_{i} . We distinguish three stability concepts: layerwise Lipschitz constant L layer = sup X ≠ X ′ ‖ f ⁡ ( X ) − f ⁡ ( X ′ ) ‖ / ‖ X − X ′ ‖ L_{\text{layer}}=\sup_{X\neq X^{\prime}}\|f(X)-f(X^{\prime})\|/\|X-X^{\prime}\| , measuring local sensitivity; end-to-end sensitivity ‖ ∂ X N / ∂ X ℓ ‖ \|\partial X_{N}/\partial X_{\ell}\| , measuring perturbation amplification across layers; and gradient flow , which describes how gradients propagate backward during backpropagation via the transposed Jacobians ( ∂ X ℓ + 1 / ∂ X ℓ ) ⊤ (\partial X_{\ell+1}/\partial X_{\ell})^{\top} . 
+@@@ 3.1 Why Standard Geometry Fails 
+ Standard Lipschitz analyses treat hidden state matrices X ∈ ℝ L × d X\in\mathbb{R}^{L\times d} as single objects, measuring perturbations in Frobenius or spectral norm. The Frobenius norm ‖ Δ ​ X ‖ F = ∑ i , j Δ ​ X i ​ j 2 \|\Delta X\|_{F}=\sqrt{\sum_{i,j}\Delta X_{ij}^{2}} aggregates errors across all tokens and dimensions. 
+ This leads to bounds that scale poorly with sequence length. Consider attention output Y = A ​ X Y=AX where A A is row-stochastic: 
+ ‖ A ​ X ‖ F ≤ ‖ A ‖ F ​ ‖ X ‖ F ≤ L ​ ‖ X ‖ F , \|AX\|_{F}\leq\|A\|_{F}\|X\|_{F}\leq\sqrt{L}\|X\|_{F}, 
+ since ‖ A ‖ F ≤ L \|A\|_{F}\leq\sqrt{L} for row-stochastic A A . The L \sqrt{L} factor suggests longer sequences are inherently less stable, but this contradicts practice: transformers handle varying sequence lengths without corresponding stability degradation. 
+ The problem is geometric misalignment. LayerNorm normalizes each token independently, ignoring other tokens’ magnitudes. Attention computes convex combinations rowwise, depending only on how value vectors are weighted, not on aggregate sequence statistics. The Frobenius norm’s global aggregation obscures this tokenwise structure. 
+@@@ 3.2 Block- ∞ \infty /RMS Geometry 
+ We adopt a norm that respects the tokenwise nature of transformer computation. All proofs for this section appear in Appendix  A . 
+@@@ Definition 3.1 (Block- ∞ \infty /RMS norm) . 
+ For a matrix X = ( x 1 , … , x L ) ⊤ ∈ ℝ L × d X=(x_{1},\ldots,x_{L})^{\top}\in\mathbb{R}^{L\times d} with row vectors x i ∈ ℝ d x_{i}\in\mathbb{R}^{d} , define 
+ ‖ X ‖ ∞ , rms = max 1 ≤ i ≤ L ⁡ ‖ x i ‖ 2 d . \|X\|_{\infty,\mathrm{rms}}=\max_{1\leq i\leq L}\frac{\|x_{i}\|_{2}}{\sqrt{d}}. 
+@@@Intuition. 
+ The block- ∞ \infty /RMS norm asks: “What is the RMS magnitude of the worst-case token?” This respects transformer computation: LayerNorm acts on individual tokens, attention mixes tokens via convex combinations. The d \sqrt{d} normalization aligns with LayerNorm’s standard deviation: a vector with unit RMS norm satisfies 1 d ​ ∑ j x j 2 = 1 \frac{1}{d}\sum_{j}x_{j}^{2}=1 . Measuring worst-case token magnitude yields length-independent bounds. 
+@@@ Lemma 3.2 (Attention mixing is nonexpansive) . 
+ For any row-stochastic A ∈ ℝ L × L A\in\mathbb{R}^{L\times L} and V ∈ ℝ L × d V\in\mathbb{R}^{L\times d} :
+ ‖ A ​ V ‖ ∞ , rms ≤ ‖ V ‖ ∞ , rms \|AV\|_{\infty,\mathrm{rms}}\leq\|V\|_{\infty,\mathrm{rms}} . 
+ This result is central to our framework: attention mixing cannot amplify token magnitudes. Each output row is a convex combination of input rows, and convex combinations cannot exceed the maximum. 
+@@@ Lemma 3.3 (LayerNorm magnitude reset) . 
+ For any x ∈ ℝ d x\in\mathbb{R}^{d} , LayerNorm satisfies ‖ LN ⁡ ( x ) ‖ rms ≤ ‖ γ ‖ ∞ + ‖ β ‖ ∞ \|\LN(x)\|_{\mathrm{rms}}\leq\|\gamma\|_{\infty}+\|\beta\|_{\infty} , where γ , β ∈ ℝ d \gamma,\beta\in\mathbb{R}^{d} are the learned scale and shift parameters. 
+ This “magnitude reset” property is crucial for pre-LN stability: regardless of input magnitude, LayerNorm produces bounded output. A token with ‖ x ‖ 2 = 10 6 \|x\|_{2}=10^{6} yields ‖ LN ⁡ ( x ) ‖ rms = O ⁡ ( 1 ) \|\LN(x)\|_{\mathrm{rms}}=O(1) . We also establish that LayerNorm has Lipschitz constant Lip ⁡ ( LN ) ≤ ‖ γ ‖ ∞ / ϵ \mathrm{Lip}(\LN)\leq\|\gamma\|_{\infty}/\sqrt{\epsilon} in Appendix  A , where ϵ \epsilon is the numerical stability floor. 
+@@@ 4 Exact Softmax Sensitivity 
+ The heart of our analysis is an exact characterization of softmax sensitivity. Unlike prior bounds that provide loose upper estimates, we derive the exact operator norm of the softmax Jacobian, revealing that sensitivity depends on a specific geometric property: the balanced-mass factor. 
+ Before stating our main result, we introduce the quantity governing softmax sensitivity. 
+@@@ Definition 4.1 (Balanced-mass factor) . 
+ For a probability distribution p ∈ Δ L − 1 p\in\Delta^{L-1} , define 
+ θ ⁡ ( p ) = 4 ​ max S ⊆ [ L ] ⁡ p ⁡ ( S ) ​ ( 1 − p ⁡ ( S ) ) ∈ [ 0 , 1 ] , \theta(p)=4\max_{S\subseteq[L]}p(S)(1-p(S))\in[0,1], 
+ where p ⁡ ( S ) = ∑ i ∈ S p i p(S)=\sum_{i\in S}p_{i} is the probability mass on subset S S . 
+ The factor θ ⁡ ( p ) \theta(p) measures how evenly probability mass can be bisected . The product p ​ ( S ) ​ ( 1 − p ​ ( S ) ) p(S)(1-p(S)) is maximized when p ⁡ ( S ) = 1 / 2 p(S)=1/2 , giving θ ⁡ ( p ) = 1 \theta(p)=1 . It equals zero only for one-hot distributions where no subset achieves mass near 1 / 2 1/2 . 
+ Importantly, θ ⁡ ( p ) \theta(p) differs from Shannon entropy. A non-uniform distribution can still have θ = 1 \theta=1 : for example, p = ( 0.4 , 0.1 , 0.4 , 0.1 ) p=(0.4,0.1,0.4,0.1) has lower entropy than uniform, but θ = 1 \theta=1 because p ⁡ ( { 1 , 4 } ) = 0.5 p(\{1,4\})=0.5 . This distinction matters because transformers can develop structured, non-uniform attention patterns while maintaining high θ \theta , and thus high sensitivity. 
+ With this quantity in hand, we can state our main result. We characterize softmax sensitivity using the ℓ ∞ → ℓ 1 \ell_{\infty}\to\ell_{1} operator norm, where ℓ ∞ \ell_{\infty} on inputs measures the worst-case logit perturbation and ℓ 1 \ell_{1} on outputs measures total probability mass redistributed, which is precisely what matters for downstream computation. 
+@@@ Theorem 4.2 (Exact softmax Jacobian norm) . 
+ Let p = softmax ⁡ ( u / τ ) p=\softmax(u/\tau) for logits u ∈ ℝ L u\in\mathbb{R}^{L} and temperature τ > 0 \tau>0 . The softmax Jacobian J = 1 τ ​ ( Diag ⁡ ( p ) − p ​ p ⊤ ) J=\frac{1}{\tau}(\Diag(p)-pp^{\top}) satisfies 
+ ‖ J ‖ ∞ → 1 = θ ⁡ ( p ) τ . \|J\|_{\infty\to 1}=\frac{\theta(p)}{\tau}. 
+ This is an equality, not merely an upper bound. The maximum is achieved by perturbations x i = + 1 x_{i}=+1 for i ∈ S ∗ i\in S^{*} , x i = − 1 x_{i}=-1 for i ∉ S ∗ i\notin S^{*} , where S ∗ S^{*} achieves the maximum in the definition of θ ⁡ ( p ) \theta(p) . 
+ The intuition for this result is as follows (full proof in Appendix  B ). When we perturb attention logits, the softmax redistributes probability mass. The worst-case perturbation increases logits for tokens in some subset S S while decreasing logits for tokens outside S S , transferring mass across this partition. The total mass redistributed is proportional to p ​ ( S ) ​ ( 1 − p ​ ( S ) ) p(S)(1-p(S)) , which is maximized when p ⁡ ( S ) = 1 / 2 p(S)=1/2 . Thus θ ⁡ ( p ) \theta(p) measures how evenly the distribution can be split in two. Unlike prior ℓ 2 \ell_{2} bounds that are distribution-independent ( Kim et al., 2021 ; Castin et al., 2024 ; Yudin et al., 2025 ) , our result provides an exact equality where θ ⁡ ( p ) \theta(p) captures how distribution shape determines sensitivity. 
+@@@ Corollary 4.3 (Sensitivity regimes) . 
+ (Proof in Appendix  B .) 
+ 1. 
+ Uniform: p = 1 L ​ 𝟏 p=\frac{1}{L}\mathbf{1} gives θ ⁡ ( p ) = 1 \theta(p)=1 (maximum sensitivity). 
+ 2. 
+ One-hot: p = e i p=e_{i} gives θ ⁡ ( p ) = 0 \theta(p)=0 (minimum sensitivity). 
+ 3. 
+ Peaked: If the top token has mass 1 − κ 1-\kappa , then θ ⁡ ( p ) ≤ 4 ​ κ ​ ( 1 − κ ) \theta(p)\leq 4\kappa(1-\kappa) . 
+ 4. 
+ Top- k k uniform: Mass 1 / k 1/k on k k tokens gives θ ⁡ ( p ) = 1 − ( 1 − 2 ​ ⌊ k / 2 ⌋ / k ) 2 \theta(p)=1-(1-2\lfloor k/2\rfloor/k)^{2} . 
+@@@The stability-expressivity trade-off. 
+ The balanced-mass factor reveals a fundamental tension in attention design. High θ ⁡ ( p ) \theta(p) (uniform or bisectable attention) provides expressivity (the network can flexibly redistribute attention mass) but carries gradient sensitivity risk. Low θ ⁡ ( p ) \theta(p) (peaked attention) provides stability, as softmax becomes insensitive to logit perturbations, but risks entropy collapse where attention concentrates on few tokens ( Dong et al., 2021 ; Zhai et al., 2023 ) . Our experiments show that trained transformers operate at θ ⁡ ( p ) ≈ 1 \theta(p)\approx 1 , suggesting that practical networks maintain expressivity and rely on architectural mechanisms (pre-LN identity paths, residual scaling) rather than attention sharpening for stability. 
+@@@Implications for training dynamics. 
+ Theorem  4.2 has immediate consequences for transformer training. At initialization with random weights, attention distributions are near-uniform, so θ ⁡ ( p ) ≈ 1 \theta(p)\approx 1 : the network begins in its most sensitive state. One might expect that as models learn meaningful attention patterns, distributions become peaked and θ ⁡ ( p ) \theta(p) decreases, yielding natural stabilization. However, this expectation is empirically false : our experiments (Section  7 ) reveal that θ ⁡ ( p ) ≈ 1 \theta(p)\approx 1 persists throughout training. Typical transformer attention remains bisectable even after convergence, so θ ⁡ ( p ) \theta(p) functions as an approximately constant sensitivity amplifier rather than a transient initialization artifact. 
+ This persistence has two important consequences. First, the 1 / τ 1/\tau scaling shows that lower temperature amplifies sensitivity, explaining why temperature tuning affects training stability. Second, since θ ⁡ ( p ) \theta(p) does not reliably decay, stability must come from controlling other factors in the attention pathway (projection norms, input magnitudes) and from architectural gradient-flow structure, rather than from attention sharpening. 
+ The natural next question is: how does this local softmax sensitivity compound through complete transformer layers? And how do architectural choices (pre-LN vs. post-LN) affect this compounding? 
+@@@ 5 Layerwise Stability Analysis 
+ We now propagate the softmax sensitivity result through complete transformer layers. Let X ℓ ∈ ℝ L × d X_{\ell}\in\mathbb{R}^{L\times d} denote the hidden state at layer ℓ \ell for ℓ = 0 , 1 , … , N \ell=0,1,\ldots,N , where N N is the total number of layers. Our goal is to understand how local sensitivity, characterized by θ ⁡ ( p ) \theta(p) , combines with architectural choices to determine global stability. Proofs for this section appear in Appendix  C . 
+@@@ 5.1 Multi-Head Attention Lipschitz Bound 
+ Multi-head attention maps input U ∈ ℝ L × d U\in\mathbb{R}^{L\times d} to output MHA ⁡ ( U ) = [ O 1 ​ ‖ ⋯ ‖ ​ O H ] ​ W O \MHA(U)=[O_{1}\|\cdots\|O_{H}]W^{O} , where head h h computes: 
+ Q h = U ​ W h Q , K h = U ​ W h K , V h = U ​ W h V , Q_{h}=UW_{h}^{Q},\quad K_{h}=UW_{h}^{K},\quad V_{h}=UW_{h}^{V}, 
+ A h = softmax ⁡ ( Q h ​ K h ⊤ / ( τ ​ d h ) ) , O h = A h ​ V h . A_{h}=\softmax(Q_{h}K_{h}^{\top}/(\tau\sqrt{d_{h}})),\quad O_{h}=A_{h}V_{h}. 
+ In standard training τ = 1 \tau=1 ; we retain the explicit τ \tau to connect with our softmax sensitivity analysis and the temperature warmup proposal in Section  6 .
+To bound the Lipschitz constant, we decompose into two pathways. The value pathway captures how input perturbations affect values V V , which are then averaged by fixed attention weights. The attention pathway captures how perturbations affect attention weights A A , which then reweight fixed values. 
+@@@ Theorem 5.1 (MHA Lipschitz bound) . 
+ Under the block- ∞ \infty /RMS norm, with input magnitude B ¯ U = ‖ U ‖ ∞ , rms ​ d \bar{B}_{U}=\|U\|_{\infty,\mathrm{rms}}\sqrt{d} : 
+ L MHA ≤ ‖ W O ‖ 2 ​ ∑ h = 1 H ( ‖ W h V ‖ 2 + θ ~ h τ ​ Φ h ) , L_{\MHA}\leq\|W^{O}\|_{2}\sum_{h=1}^{H}\left(\|W_{h}^{V}\|_{2}+\frac{\tilde{\theta}_{h}}{\tau}\Phi_{h}\right), 
+ where θ ~ h = max i θ ( A h [ i , : ] ) \tilde{\theta}_{h}=\max_{i}\theta(A_{h}[i,:]) and Φ h = 2 ​ B ¯ U 2 d h ​ ‖ W h Q ‖ 2 ​ ‖ W h K ‖ 2 ​ ‖ W h V ‖ 2 \Phi_{h}=\frac{2\bar{B}_{U}^{2}}{\sqrt{d_{h}}}\|W_{h}^{Q}\|_{2}\|W_{h}^{K}\|_{2}\|W_{h}^{V}\|_{2} . The first term ‖ W h V ‖ 2 \|W_{h}^{V}\|_{2} is the value pathway contribution; the second term θ ~ h τ ​ Φ h \frac{\tilde{\theta}_{h}}{\tau}\Phi_{h} is the attention pathway contribution. 
+ Two key insights emerge. First, the bound is independent of sequence length L L ; this is why we developed block- ∞ \infty /RMS geometry. Second, the attention pathway scales as B ¯ U 2 \bar{B}_{U}^{2} : controlling input magnitude directly controls sensitivity . The attention pathway has quartic dependence on projection norms: 
+ θ ~ τ ​ B ¯ U 2 ​ ‖ W O ‖ 2 ​ ‖ W Q ‖ 2 ​ ‖ W K ‖ 2 ​ ‖ W V ‖ 2 . \frac{\tilde{\theta}}{\tau}\bar{B}_{U}^{2}\|W^{O}\|_{2}\|W^{Q}\|_{2}\|W^{K}\|_{2}\|W^{V}\|_{2}. 
+ This quartic structure underlies DeepNorm’s N − 1 / 4 N^{-1/4} scaling, as we explain in Section  6 . 
+@@@ 5.2 Per-Layer Lipschitz Bounds 
+ A natural question arises: does B ¯ U \bar{B}_{U} (the MHA input magnitude) remain bounded as we go deeper? This depends on architecture. We now show that both pre-LN and post-LN have bounded per-layer Lipschitz constants, but the difference between them lies elsewhere. 
+ Throughout this section, we write Lip ⁡ ( LN ) \mathrm{Lip}(\LN) for the Lipschitz constant of LayerNorm. By Lemma  A.1 , Lip ⁡ ( LN ) ≤ ‖ γ ‖ ∞ / ϵ \mathrm{Lip}(\LN)\leq\|\gamma\|_{\infty}/\sqrt{\epsilon} , which depends only on the scale parameter γ \gamma and numerical stability constant ϵ \epsilon . 
+@@@Pre-LN architecture. 
+ In pre-LN, normalization precedes each sublayer: 
+ X ℓ + 1 = X ℓ + MHA ⁡ ( LN ⁡ ( X ℓ ) ) . X_{\ell+1}=X_{\ell}+\MHA(\LN(X_{\ell})). 
+ The MHA receives U = LN ⁡ ( X ℓ ) U=\LN(X_{\ell}) as input. By Lemma  3.3 , ‖ U ‖ ∞ , rms ≤ ‖ γ ‖ ∞ + ‖ β ‖ ∞ \|U\|_{\infty,\mathrm{rms}}\leq\|\gamma\|_{\infty}+\|\beta\|_{\infty} regardless of how large X ℓ X_{\ell} grows . The residual stream X ℓ X_{\ell} can accumulate unboundedly across layers, but the LayerNorm before MHA acts as a magnitude barrier: it resets the input to a bounded range at every layer. This structural guarantee ensures B ¯ U \bar{B}_{U} is bounded independently of layer depth. 
+@@@Post-LN architecture. 
+ In post-LN, normalization follows each sublayer: 
+ X ℓ + 1 = LN ⁡ ( X ℓ + MHA ⁡ ( X ℓ ) ) . X_{\ell+1}=\LN(X_{\ell}+\MHA(X_{\ell})). 
+ The MHA receives X ℓ X_{\ell} directly. However, for ℓ ≥ 1 \ell\geq 1 , X ℓ X_{\ell} is the output of the previous layer’s LayerNorm, so ‖ X ℓ ‖ ∞ , rms ≤ ‖ γ ‖ ∞ + ‖ β ‖ ∞ \|X_{\ell}\|_{\infty,\mathrm{rms}}\leq\|\gamma\|_{\infty}+\|\beta\|_{\infty} by Lemma  3.3 . Thus post-LN also has bounded B ¯ U \bar{B}_{U} , but this is a consequential property (each layer’s output happens to be normalized) rather than a structural guarantee (we don’t explicitly normalize before MHA). Since L MHA L_{\MHA} depends on B ¯ U 2 \bar{B}_{U}^{2} through the attention pathway (Theorem  5.1 ), both mechanisms yield bounded L MHA L_{\MHA} . The pre-LN bounding mechanism is more robust to architectural modifications because it provides a structural guarantee rather than relying on the output of the previous layer. We now state the complete per-layer bounds. 
+@@@ Theorem 5.2 (Pre-LN: full layer bound) . 
+ A complete pre-LN layer (MHA + FFN sublayers) has Lipschitz constant 
+ L layer pre ≤ ( 1 + Lip ⁡ ( LN ) ⋅ L MHA ) ​ ( 1 + Lip ⁡ ( LN ) ⋅ L FFN ) , L_{\mathrm{layer}}^{\mathrm{pre}}\leq(1+\mathrm{Lip}(\LN)\cdot L_{\MHA})(1+\mathrm{Lip}(\LN)\cdot L_{\FFN}), 
+ which depends only on weight norms, LayerNorm parameters, and architectural constants. It is independent of layer index ℓ \ell , depth N N , and sequence length L L . 
+@@@ Theorem 5.3 (Post-LN: full layer bound) . 
+ A complete post-LN layer has Lipschitz constant 
+ L layer post ≤ Lip ​ ( LN ) 2 ​ ( 1 + L MHA ) ​ ( 1 + L FFN ) , L_{\mathrm{layer}}^{\mathrm{post}}\leq\mathrm{Lip}(\LN)^{2}(1+L_{\MHA})(1+L_{\FFN}), 
+ which is also independent of ℓ \ell , N N , and L L . 
+ The key observation is that both architectures have bounded per-layer Lipschitz constants . Each layer, viewed in isolation, behaves similarly. If per-layer behavior were all that mattered, pre-LN and post-LN would be equivalent. The difference must lie in how layers compose, specifically in gradient flow. 
+@@@ 5.3 Gradient Flow Analysis 
+ We now examine how gradients propagate through depth. This is where pre-LN and post-LN fundamentally differ. Let J MHA ​ ( X ) J_{\MHA}(X) and J LN ​ ( Y ) J_{\LN}(Y) denote the Jacobians of MHA and LayerNorm evaluated at inputs X X and Y Y , respectively. The layer Jacobian ∂ X ℓ + 1 / ∂ X ℓ \partial X_{\ell+1}/\partial X_{\ell} determines how gradients flow backward through layer ℓ \ell . 
+@@@Pre-LN gradient structure. 
+ In pre-LN, X ℓ + 1 = X ℓ + MHA ⁡ ( LN ⁡ ( X ℓ ) ) X_{\ell+1}=X_{\ell}+\MHA(\LN(X_{\ell})) , so the layer Jacobian is: 
+ ∂ X ℓ + 1 ∂ X ℓ = I + J MHA ​ ( LN ⁡ ( X ℓ ) ) ⋅ J LN ​ ( X ℓ ) . \frac{\partial X_{\ell+1}}{\partial X_{\ell}}=I+J_{\MHA}(\LN(X_{\ell}))\cdot J_{\LN}(X_{\ell}). 
+ The identity I I appears as an additive term. 
+@@@ Theorem 5.4 (Pre-LN: identity gradient path) . 
+ Define J k := J MHA ​ ( LN ⁡ ( X k ) ) ⋅ J LN ​ ( X k ) J_{k}:=J_{\MHA}(\LN(X_{k}))\cdot J_{\LN}(X_{k}) . Then: 
+ (i) 
+ Each sublayer Jacobian is bounded: ‖ J k ‖ ≤ L MHA ⋅ Lip ⁡ ( LN ) = : C \|J_{k}\|\leq L_{\MHA}\cdot\mathrm{Lip}(\LN)=:C , independent of k k , N N , and L L . 
+ (ii) 
+ The end-to-end Jacobian expands as: 
+ ∂ X m ∂ X ℓ = ∏ k = ℓ m − 1 ( I + J k ) = I + ∑ k = ℓ m − 1 J k + O ⁡ ( ‖ J ‖ 2 ) . \frac{\partial X_{m}}{\partial X_{\ell}}=\prod_{k=\ell}^{m-1}(I+J_{k})=I+\sum_{k=\ell}^{m-1}J_{k}+O(\|J\|^{2}). 
+ (iii) 
+ The identity term provides a direct gradient pathway: gradients can flow through the residual connection without passing through sublayer Jacobians J k J_{k} . 
+ Part (iii) is the key stability insight: pre-LN provides an explicit skip pathway (the Jacobian contains I I additively), so gradients are never forced through LayerNorm at every layer. This structural difference, not a quantitative bound, is why pre-LN trains more stably than post-LN. 
+@@@Post-LN gradient structure. 
+ In post-LN, X ℓ + 1 = LN ⁡ ( X ℓ + MHA ⁡ ( X ℓ ) ) X_{\ell+1}=\LN(X_{\ell}+\MHA(X_{\ell})) , so the LayerNorm Jacobian appears on the outside : 
+ ∂ X ℓ + 1 ∂ X ℓ = J LN ​ ( Y ℓ ) ⋅ ( I + J MHA ​ ( X ℓ ) ) , \frac{\partial X_{\ell+1}}{\partial X_{\ell}}=J_{\LN}(Y_{\ell})\cdot(I+J_{\MHA}(X_{\ell})), 
+ where Y ℓ = X ℓ + MHA ⁡ ( X ℓ ) Y_{\ell}=X_{\ell}+\MHA(X_{\ell}) . 
+@@@ Theorem 5.5 (Post-LN: no identity gradient path) . 
+ The end-to-end Jacobian is: 
+ (i) 
+ ∂ X m ∂ X ℓ = ∏ k = ℓ m − 1 J LN ​ ( Y k ) ​ ( I + J MHA ​ ( X k ) ) \displaystyle\frac{\partial X_{m}}{\partial X_{\ell}}=\prod_{k=\ell}^{m-1}J_{\LN}(Y_{k})(I+J_{\MHA}(X_{k})) . 
+ (ii) 
+ The LayerNorm Jacobian J LN ​ ( y ) J_{\LN}(y) is projection-like: it annihilates the constant direction ( J LN ​ ( y ) ​ 𝟏 = 0 J_{\LN}(y)\mathbf{1}=0 ) and contracts variance. 
+ (iii) 
+ Expanding the product yields ∏ k = ℓ m − 1 J LN ​ ( Y k ) + terms involving  ​ J MHA \prod_{k=\ell}^{m-1}J_{\LN}(Y_{k})+\text{terms involving }J_{\MHA} . There is no additive identity term. 
+ The absence of an identity path is critical: unlike pre-LN where the Jacobian contains an additive I I term, here every gradient path passes through LayerNorm Jacobians at each layer. Since J LN J_{\LN} is projection-like (contractive in certain directions), the product of these operators causes gradients along certain directions to decay exponentially with depth. This is why deep post-LN transformers are difficult to train without careful initialization. 
+@@@ 5.4 Discussion 
+ Both architectures have bounded per-layer Lipschitz constants; the critical difference is gradient flow structure. Pre-LN preserves an additive identity path (gradients can bypass sublayer Jacobians), while post-LN forces all gradients through LayerNorm Jacobians at every layer, causing exponential decay along contracted directions. 
+@@@ 6 From Geometry to Practice 
+ We now apply our geometric framework to explain widely-used training heuristics, including residual scaling (DeepNorm) and learning rate warmup, and derive a general path-length exponent principle for stabilizing novel architectures. Proofs for this section appear in Appendix  D . 
+@@@ 6.1 Residual Scaling and the N − 1 / 4 N^{-1/4} Exponent 
+ DeepNet ( Wang et al., 2022 ) introduces DeepNorm, a normalization scheme that stabilizes deep post-LN transformers by scaling residual contributions: 
+ X ℓ + 1 = LN ⁡ ( X ℓ + α ⋅ MHA ⁡ ( X ℓ ) ) X_{\ell+1}=\LN(X_{\ell}+\alpha\cdot\MHA(X_{\ell})) 
+ with α ≈ ( 2 N ) − 1 / 4 \alpha\approx(2N)^{-1/4} , enabling training of 1000+ layer transformers. Why N − 1 / 4 N^{-1/4} , rather than N − 1 / 2 N^{-1/2} or N − 1 N^{-1} ? 
+ The answer lies in the quartic structure of the attention pathway identified in Theorem  5.1 . Recall that the attention-pathway contribution to the MHA Lipschitz constant scales as: 
+ θ ~ τ ⋅ B ¯ U 2 ⋅ ‖ W O ‖ 2 ​ ‖ W Q ‖ 2 ​ ‖ W K ‖ 2 ​ ‖ W V ‖ 2 . \frac{\tilde{\theta}}{\tau}\cdot\bar{B}_{U}^{2}\cdot\|W^{O}\|_{2}\|W^{Q}\|_{2}\|W^{K}\|_{2}\|W^{V}\|_{2}. 
+ This is the only pathway containing the softmax Jacobian, and it depends multiplicatively on four projection matrices. 
+@@@ Theorem 6.1 (Projection scaling for transformers) . 
+ Suppose the four attention projections have comparable operator norms: ‖ W Q ‖ 2 ∼ ‖ W K ‖ 2 ∼ ‖ W V ‖ 2 ∼ ‖ W O ‖ 2 ∼ β \|W^{Q}\|_{2}\sim\|W^{K}\|_{2}\sim\|W^{V}\|_{2}\sim\|W^{O}\|_{2}\sim\beta . The attention-pathway contribution to each layer’s Lipschitz constant scales as β 4 \beta^{4} . For controlled depth compounding, defined as per-layer contribution O ⁡ ( 1 / N ) O(1/N) so that the N N -layer product remains O ⁡ ( 1 ) O(1) , we require: 
+ β 4 = O ( 1 / N ) ⟹ β = O ( N − 1 / 4 ) . \beta^{4}=O(1/N)\quad\Longrightarrow\quad\beta=O(N^{-1/4}). 
+ The N − 1 / 4 N^{-1/4} exponent emerges directly from the fact that four matrices appear multiplicatively in the sensitive pathway. This is a structural property of attention, not an empirical coincidence. 
+@@@Connection to DeepNorm. 
+ DeepNorm implements this scaling in two complementary ways: (1) initialization scaling of attention projection matrices, reducing ‖ W Q ‖ 2 , ‖ W K ‖ 2 , ‖ W V ‖ 2 , ‖ W O ‖ 2 \|W^{Q}\|_{2},\|W^{K}\|_{2},\|W^{V}\|_{2},\|W^{O}\|_{2} jointly by a depth-dependent factor; and (2) an explicit residual multiplier α \alpha providing additional control. Both mechanisms target the quartic term. The empirical choice α ≈ ( 2 N ) − 1 / 4 \alpha\approx(2N)^{-1/4} matches our theoretical prediction exactly. 
+@@@ 6.2 The Path-Length Exponent Principle: A Design Rule 
+ The analysis of DeepNorm reveals a general design rule for deep architectures. 
+@@@ Theorem 6.2 (Path-length exponent principle) . 
+ Consider a deep network with N N layers where the dominant sensitivity pathway at each layer depends multiplicatively on m m linear maps with comparable operator norms β \beta . The per-layer sensitivity contribution scales as β m \beta^{m} . For controlled depth compounding (total sensitivity O ⁡ ( 1 ) O(1) as N → ∞ N\to\infty ), the scaling per map must satisfy: 
+ β m = O ( 1 / N ) ⟹ β = O ( N − 1 / m ) . \beta^{m}=O(1/N)\quad\Longrightarrow\quad\beta=O(N^{-1/m}). 
+ This principle makes testable predictions. Standard attention ( m = 4 m=4 ) requires N − 1 / 4 N^{-1/4} , matching DeepNorm’s empirical ( 2 N ) − 1 / 4 (2N)^{-1/4} exactly. The principle predicts for other architectures: shared W Q = W K W^{Q}=W^{K} designs ( m = 3 m=3 ) require N − 1 / 3 N^{-1/3} ; linear attention ( m = 2 m=2 ) requires N − 1 / 2 N^{-1/2} . 
+ Actionable guidance: To stabilize a novel deep architecture, identify the dominant sensitivity pathway, count the multiplicative maps m m , and scale each by N − 1 / m N^{-1/m} . 
+@@@ 6.3 Learning Rate Warmup 
+ Warmup is standard practice for transformer training ( Goyal et al., 2017 ) , with existing explanations focusing on Adam momentum calibration ( Liu et al., 2020 ) and loss landscape sharpness ( Gilmer et al., 2022 ) . Our framework suggests a different mechanism. Given that θ ⁡ ( p ) \theta(p) characterizes softmax sensitivity (Section  4 ), one might hypothesize that warmup protects during an early phase when attention is uniform and thus maximally sensitive ( θ ⁡ ( p ) ≈ 1 \theta(p)\approx 1 ), with stability emerging as attention sharpens ( θ ⁡ ( p ) → 0 \theta(p)\to 0 ). However, our experiments (Section  7 ) refute this: θ ⁡ ( p ) ≈ 1 \theta(p)\approx 1 persists throughout training. 
+ Since θ ⁡ ( p ) \theta(p) does not decay, warmup cannot function by waiting for attention to sharpen. Instead, consider the full attention-pathway sensitivity from Theorem  5.1 : 
+ θ ~ τ ⋅ B ¯ U 2 ⋅ ‖ W O ‖ 2 ​ ‖ W Q ‖ 2 ​ ‖ W K ‖ 2 ​ ‖ W V ‖ 2 . \frac{\tilde{\theta}}{\tau}\cdot\bar{B}_{U}^{2}\cdot\|W^{O}\|_{2}\|W^{Q}\|_{2}\|W^{K}\|_{2}\|W^{V}\|_{2}. 
+ While θ ~ / τ ≈ 1 / τ \tilde{\theta}/\tau\approx 1/\tau remains constant, the other factors change rapidly in early training: projection norms drift from initialization, LayerNorm scale parameters adapt, and optimizer moment estimates calibrate. This makes early training the period of greatest vulnerability to the gradient compounding identified in Theorem  5.5 . 
+ Warmup functions as sensitivity throttling : by limiting parameter updates during the high-drift early phase, it prevents runaway growth of multiplicative sensitivity factors before the network enters a better-conditioned regime. Our framework predicts that temperature warmup ( τ init > τ final \tau_{\mathrm{init}}>\tau_{\mathrm{final}} , decaying over warmup steps) should provide equivalent stabilization by directly attenuating 1 / τ 1/\tau . Crucially, temperature warmup targets only the attention pathway, leaving FFN and embedding gradients unthrottled, potentially enabling faster early optimization of non-attention parameters. 
+@@@ 7 Empirical Verification 
+ We validate our theoretical framework through experiments on 774M-parameter GPT-2-style transformers trained on FineWeb ( Penedo et al., 2024 ) . Models have d = 1280 d=1280 , N = 36 N=36 layers, H = 20 H=20 heads, and context length L = 1024 L=1024 . Training uses AdamW with learning rate 3 × 10 − 4 3\times 10^{-4} , 500-step linear warmup, cosine decay, and gradient clipping at norm 1.0. We report results across 3 random seeds. Full experimental details appear in Appendix  E . 
+@@@Theorem verification. 
+ We verify Theorem  4.2 by independently computing both sides of ‖ J softmax ‖ ∞ → 1 = θ ⁡ ( p ) / τ \|J_{\softmax}\|_{\infty\to 1}=\theta(p)/\tau for 500 random distributions at each sequence length L ∈ { 8 , … , 1024 } L\in\{8,\ldots,1024\} . The identity holds to machine precision (relative error < 10 − 13 <10^{-13} ); see Appendix  E for details. 
+@@@Training dynamics. 
+ Figure  1 presents the core comparison. The top-left panel shows Pre-LN achieves stable convergence to loss 51.5, while Post-LN plateaus at 60.6 with a volatile trajectory. The top-right panel reveals the mechanism: Post-LN experiences a gradient spike at step 2400 reaching 5 × 5\times the clipping threshold, while Pre-LN maintains smooth gradient flow. 
+ Figure 1: Training dynamics for 774M-parameter transformers reveal the stability mechanism. Top-left: Pre-LN converges stably (loss 51.5); Post-LN plateaus unstably (60.6). Top-right: Post-LN gradient spike at step 2400 triggers clipping. Bottom-left: Key finding: θ ⁡ ( p ) / τ = 1.0 \theta(p)/\tau=1.0 throughout for both; stability is not from attention sharpening. Bottom-right: Post-LN gradient pathology validates Theorem  5.5 : vanishing gradients in layers 1–30, spike at output. 
+@@@Persistence of θ ⁡ ( p ) ≈ 1 \theta(p)\approx 1 . 
+ The bottom-left panel provides a central finding: in our 774M-parameter GPT-2-style experiments on FineWeb, θ ⁡ ( p ) / τ \theta(p)/\tau remains exactly 1.0 throughout training for both architectures. This rules out attention sharpening as an explanation for stability differences: both architectures operate at maximal softmax sensitivity. The stability gap arises entirely from gradient flow structure, not from attention becoming peaked. We confirm θ ⁡ ( p ) ≈ 1 \theta(p)\approx 1 holds across all layers in Appendix  E . Note that θ ⁡ ( p ) \theta(p) measures bisectability, not uniformity: even a sparse top- k k distribution maintains θ ≈ 1 \theta\approx 1 if the top tokens can be partitioned to sum near 0.5 0.5 . Only near-one-hot attention (one token dominating) drives θ \theta toward zero. 
+@@@Layer-wise gradient pathology. 
+ The bottom-right panel validates Theorem  5.5 . Pre-LN shows gradient norms varying smoothly across layers, consistent with the identity path preserving gradient magnitude. Post-LN exhibits the predicted pathology: gradients vanish to near-zero for layers 1–30, then spike at output layers. This is the compounding effect of LayerNorm Jacobians our theory identifies. This pattern reconciles the apparent tension between our theory (gradient decay through depth) and the observed gradient spikes: the overall gradient norm is dominated by output-layer contributions, while early layers receive insufficient gradient signal to update effectively. 
+@@@Warmup validation. 
+ Since θ ⁡ ( p ) / τ = 1 \theta(p)/\tau=1 throughout, warmup cannot function by waiting for attention to sharpen. Figure  2 shows the projection norm product G ℓ = ‖ W O ‖ 2 ​ ‖ W Q ‖ 2 ​ ‖ W K ‖ 2 ​ ‖ W V ‖ 2 G_{\ell}=\|W^{O}\|_{2}\|W^{Q}\|_{2}\|W^{K}\|_{2}\|W^{V}\|_{2} grows substantially during training (approximately 3 × 3\times in log scale). Crucially, the steepest growth occurs after warmup completes, validating our interpretation: warmup limits parameter updates during the early phase when these multiplicative factors would otherwise grow most rapidly. 
+ Figure 2: Projection norm product G ℓ G_{\ell} over training. Both architectures show G ℓ G_{\ell} growing by ∼ 3 × \sim 3\times (log scale), with the steepest growth immediately following warmup (dashed line at step 500). This confirms warmup protects training during the initial high-drift phase when projection norms are most volatile. 
+@@@ 8 Conclusion 
+ We developed a geometric stability theory for transformers built on two foundations: the exact softmax sensitivity identity ‖ J softmax ‖ ∞ → 1 = θ ⁡ ( p ) / τ \|J_{\softmax}\|_{\infty\to 1}=\theta(p)/\tau and a block- ∞ \infty /RMS geometry that yields sequence-length-independent bounds. Our framework explains why pre-LN preserves identity gradient paths while post-LN compounds LayerNorm Jacobians, why DeepNorm uses N − 1 / 4 N^{-1/4} scaling (four multiplicative projections), and why warmup functions as sensitivity throttling rather than waiting for attention to sharpen. 
+ Key finding: θ ⁡ ( p ) ≈ 1 \theta(p)\approx 1 persists throughout training; attention never sharpens to reduce sensitivity. Transformer stability arises entirely from architectural gradient flow, not learned attention patterns. 
+ Actionable guidance: 
+ • 
+ Design rule: Count multiplicative maps m m in the sensitivity pathway; scale each by N − 1 / m N^{-1/m} . Standard attention has m = 4 m=4 ; shared W Q = W K W^{Q}=W^{K} has m = 3 m=3 . 
+ • 
+ Training rule: Temperature warmup ( τ high → τ low \tau_{\mathrm{high}}\to\tau_{\mathrm{low}} ) should substitute for LR warmup; it targets attention directly while preserving FFN gradients. 
+ • 
+ Architecture rule: Pre-LN provides an additive identity gradient path; post-LN forces gradients through LayerNorm at every layer, requiring DeepNorm-style compensation. 
+ • 
+ Do not rely on attention sharpening for stability: θ ⁡ ( p ) ≈ 1 \theta(p)\approx 1 persists throughout training. 
+ Limitations. Our bounds are worst-case; predicting precise learning rates remains open. Experimental validation of temperature warmup and N − 1 / m N^{-1/m} scaling for m ≠ 4 m\neq 4 are natural next steps. Extensions to RMSNorm and MoE would broaden applicability. 
+@@@Impact Statement 
+ This paper presents work whose goal is to advance the field of machine learning. There are many potential societal consequences of our work, none of which we feel must be specifically highlighted here. 
+@@@References 
+ Castin et al. (2024) 
+ V. Castin, P. Ablin, and G. Peyré 
+ How smooth is attention? .
+ In Proceedings of the 41st International Conference on Machine Learning ,
+ Proceedings of Machine Learning Research , Vol. 235 , pp. 5817–5840 .
+ Cited by: §1 ,
+ §2 ,
+ §4 .
+ Dasoulas et al. (2021) 
+ G. Dasoulas, K. Scaman, and A. Virmaux 
+ Lipschitz normalization for self-attention layers with application to graph neural networks .
+ arXiv preprint arXiv:2103.04886 .
+ Cited by: §1 ,
+ §2 .
+ Dong et al. (2021) 
+ Y. Dong, J. Cordonnier, and A. Loukas 
+ Attention is not all you need: pure attention loses rank doubly exponentially with depth .
+ In Proceedings of the 38th International Conference on Machine Learning ,
+ Proceedings of Machine Learning Research , Vol. 139 , pp. 2793–2803 .
+ Cited by: §4 .
+ Gilmer et al. (2022) 
+ J. Gilmer, B. Ghorbani, A. Garg, S. Kudugunta, B. Neyshabur, D. Cardoze, G. Dahl, Z. Nado, and O. Firat 
+ A loss curvature perspective on training instabilities of deep learning models .
+ In International Conference on Learning Representations ,
+ Cited by: §2 ,
+ §6.3 .
+ Goyal et al. (2017) 
+ P. Goyal, P. Dollár, R. Girshick, P. Noordhuis, L. Wesolowski, A. Kyrola, A. Tulloch, Y. Jia, and K. He 
+ Accurate, large minibatch sgd: training imagenet in 1 hour .
+ In arXiv preprint arXiv:1706.02677 ,
+ Cited by: §1 ,
+ §2 ,
+ §6.3 .
+ Huang et al. (2020) 
+ X. S. Huang, F. Perez, J. Ba, and M. Volkovs 
+ Improving transformer optimization through better initialization .
+ Proceedings of Machine Learning Research 119 , pp. 4475–4483 .
+ Cited by: §2 .
+ Kim et al. (2021) 
+ H. Kim, G. Papamakarios, and A. Mnih 
+ The lipschitz constant of self-attention .
+ In Proceedings of the 38th International Conference on Machine Learning ,
+ Proceedings of Machine Learning Research , Vol. 139 , pp. 5562–5571 .
+ Cited by: Remark B.2 ,
+ §1 ,
+ §2 ,
+ §4 .
+ Liu et al. (2020) 
+ L. Liu, X. Liu, J. Gao, W. Chen, and J. Han 
+ Understanding the difficulty of training transformers .
+ In Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP) ,
+ pp. 5747–5763 .
+ Cited by: §2 ,
+ §2 ,
+ §6.3 .
+ Penedo et al. (2024) 
+ G. Penedo, H. Kydlíček, L. Ben Allal, A. Lozhkov, M. Mitchell, C. Raffel, L. Von Werra, and T. Wolf 
+ The fineweb datasets: decanting the web for the finest text data at scale .
+ arXiv preprint arXiv:2406.17557 .
+ Cited by: §E.1 ,
+ §7 .
+ Qi et al. (2023) 
+ X. Qi, J. Wang, Y. Chen, Y. Shi, and L. Zhang 
+ LipsFormer: introducing lipschitz continuity to vision transformers .
+ arXiv preprint arXiv:2304.09856 .
+ Cited by: §2 .
+ Touvron et al. (2023) 
+ H. Touvron, T. Lavril, G. Izacard, X. Martinet, M. Lachaux, T. Lacroix, B. Rozière, N. Goyal, E. Hambro, F. Azhar, et al. 
+ LLaMA: open and efficient foundation language models .
+ arXiv preprint arXiv:2302.13971 .
+ Cited by: §1 .
+ Vaswani et al. (2017) 
+ A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser, and I. Polosukhin 
+ Attention is all you need .
+ Advances in Neural Information Processing Systems 30 .
+ Cited by: §1 ,
+ §2 .
+ Wang et al. (2022) 
+ H. Wang, S. Ma, L. Dong, S. Huang, D. Zhang, and F. Wei 
+ DeepNet: scaling transformers to 1,000 layers .
+ arXiv preprint arXiv:2203.00555 .
+ Cited by: §1 ,
+ §2 ,
+ §6.1 .
+ Xiong et al. (2020) 
+ R. Xiong, Y. Yang, D. He, K. Zheng, S. Zheng, C. Xing, H. Zhang, Y. Lan, L. Wang, and T. Liu 
+ On layer normalization in the transformer architecture .
+ In Proceedings of the 37th International Conference on Machine Learning ,
+ Proceedings of Machine Learning Research , Vol. 119 , pp. 10524–10533 .
+ Cited by: §1 ,
+ §2 .
+ Yudin et al. (2025) 
+ N. Yudin, A. Gaponov, S. Kudriashov, and M. Rakhuba 
+ Pay attention to attention distribution: a new local lipschitz bound for transformers .
+ arXiv preprint arXiv:2507.07814 .
+ Cited by: §1 ,
+ §2 ,
+ §4 .
+ Zhai et al. (2023) 
+ S. Zhai, T. Likhomanenko, E. Littwin, D. Busber, J. Suber, J. Copet, T. Lavril, A. Rivière, G. Synnaeve, E. Grave, et al. 
+ Stabilizing transformer training by preventing attention entropy collapse .
+ arXiv preprint arXiv:2303.06296 .
+ Cited by: §4 .
+ Zhang et al. (2019) 
+ H. Zhang, Y. N. Dauphin, and T. Ma 
+ Fixup initialization: residual learning without normalization .
+ In International Conference on Learning Representations ,
+ Cited by: §2 .
+@@@ Appendix A Proofs for Section  3 : Geometric Framework 
+ This appendix provides proofs for the geometric framework developed in Section  3 . 
+@@@Proof of Lemma  3.2 (Attention mixing is nonexpansive). 
+ Let A ∈ ℝ L × L A\in\mathbb{R}^{L\times L} be row-stochastic, so A i ​ j ≥ 0 A_{ij}\geq 0 and ∑ j = 1 L A i ​ j = 1 \sum_{j=1}^{L}A_{ij}=1 for all i i . Let V ∈ ℝ L × d V\in\mathbb{R}^{L\times d} with rows v 1 , … , v L ∈ ℝ d v_{1},\ldots,v_{L}\in\mathbb{R}^{d} . 
+ The i i -th row of A ​ V AV is 
+ ( A ​ V ) i = ∑ j = 1 L A i ​ j ​ v j . (AV)_{i}=\sum_{j=1}^{L}A_{ij}v_{j}. 
+ Since A i ​ j ≥ 0 A_{ij}\geq 0 and ∑ j A i ​ j = 1 \sum_{j}A_{ij}=1 , this is a convex combination of the rows of V V . By the triangle inequality: 
+ ‖ ( A ​ V ) i ‖ 2 \displaystyle\|(AV)_{i}\|_{2} 
+ = ‖ ∑ j = 1 L A i ​ j ​ v j ‖ 2 ≤ ∑ j = 1 L A i ​ j ​ ‖ v j ‖ 2 \displaystyle=\left\|\sum_{j=1}^{L}A_{ij}v_{j}\right\|_{2}\leq\sum_{j=1}^{L}A_{ij}\|v_{j}\|_{2} 
+ ≤ ∑ j = 1 L A i ​ j ​ max k ​ ‖ v k ‖ 2 = max k ⁡ ‖ v k ‖ 2 . \displaystyle\leq\sum_{j=1}^{L}A_{ij}\max_{k}\|v_{k}\|_{2}=\max_{k}\|v_{k}\|_{2}. 
+ Taking the maximum over i i and dividing by d \sqrt{d} : 
+ ‖ A ​ V ‖ ∞ , rms \displaystyle\|AV\|_{\infty,\mathrm{rms}} 
+ = max i ⁡ ‖ ( A ​ V ) i ‖ 2 d \displaystyle=\max_{i}\frac{\|(AV)_{i}\|_{2}}{\sqrt{d}} 
+ ≤ max k ⁡ ‖ v k ‖ 2 d = ‖ V ‖ ∞ , rms . \displaystyle\leq\frac{\max_{k}\|v_{k}\|_{2}}{\sqrt{d}}=\|V\|_{\infty,\mathrm{rms}}. 
+ ∎ 
+@@@Proof of Lemma  3.3 (LayerNorm magnitude reset). 
+ LayerNorm computes 
+ LN ⁡ ( x ) = γ ⊙ x − μ ⁡ ( x ) ​ 𝟏 σ ⁡ ( x ) + β , \LN(x)=\gamma\odot\frac{x-\mu(x)\mathbf{1}}{\sigma(x)}+\beta, 
+ where μ ⁡ ( x ) = 1 d ​ ∑ j = 1 d x j \mu(x)=\frac{1}{d}\sum_{j=1}^{d}x_{j} , σ ⁡ ( x ) = 1 d ​ ∑ j = 1 d ( x j − μ ⁡ ( x ) ) 2 + ϵ \sigma(x)=\sqrt{\frac{1}{d}\sum_{j=1}^{d}(x_{j}-\mu(x))^{2}+\epsilon} , and 𝟏 \mathbf{1} is the all-ones vector. 
+ Let x ^ = ( x − μ ⁡ ( x ) ​ 𝟏 ) / σ ⁡ ( x ) \hat{x}=(x-\mu(x)\mathbf{1})/\sigma(x) denote the normalized vector. We have 
+ ‖ x ^ ‖ 2 2 = ∑ j = 1 d x ^ j 2 = ∑ j = 1 d ( x j − μ ⁡ ( x ) ) 2 σ ​ ( x ) 2 = d ⋅ ( σ ​ ( x ) 2 − ϵ ) σ ​ ( x ) 2 ≤ d . \|\hat{x}\|_{2}^{2}=\sum_{j=1}^{d}\hat{x}_{j}^{2}=\sum_{j=1}^{d}\frac{(x_{j}-\mu(x))^{2}}{\sigma(x)^{2}}=\frac{d\cdot(\sigma(x)^{2}-\epsilon)}{\sigma(x)^{2}}\leq d. 
+ Thus ‖ x ^ ‖ 2 ≤ d \|\hat{x}\|_{2}\leq\sqrt{d} , which gives ‖ x ^ ‖ rms = ‖ x ^ ‖ 2 / d ≤ 1 \|\hat{x}\|_{\mathrm{rms}}=\|\hat{x}\|_{2}/\sqrt{d}\leq 1 . 
+ For the full LayerNorm output: 
+ ‖ LN ⁡ ( x ) ‖ rms = ‖ γ ⊙ x ^ + β ‖ 2 d ≤ ‖ γ ⊙ x ^ ‖ 2 + ‖ β ‖ 2 d . \|\LN(x)\|_{\mathrm{rms}}=\frac{\|\gamma\odot\hat{x}+\beta\|_{2}}{\sqrt{d}}\leq\frac{\|\gamma\odot\hat{x}\|_{2}+\|\beta\|_{2}}{\sqrt{d}}. 
+ Since | ( γ ⊙ x ^ ) j | = | γ j | ​ | x ^ j | ≤ ‖ γ ‖ ∞ ​ | x ^ j | |(\gamma\odot\hat{x})_{j}|=|\gamma_{j}||\hat{x}_{j}|\leq\|\gamma\|_{\infty}|\hat{x}_{j}| , we have ‖ γ ⊙ x ^ ‖ 2 ≤ ‖ γ ‖ ∞ ​ ‖ x ^ ‖ 2 ≤ ‖ γ ‖ ∞ ​ d \|\gamma\odot\hat{x}\|_{2}\leq\|\gamma\|_{\infty}\|\hat{x}\|_{2}\leq\|\gamma\|_{\infty}\sqrt{d} . Similarly, ‖ β ‖ 2 ≤ ‖ β ‖ ∞ ​ d \|\beta\|_{2}\leq\|\beta\|_{\infty}\sqrt{d} . Therefore: 
+ ‖ LN ⁡ ( x ) ‖ rms ≤ ‖ γ ‖ ∞ ​ d + ‖ β ‖ ∞ ​ d d = ‖ γ ‖ ∞ + ‖ β ‖ ∞ . \|\LN(x)\|_{\mathrm{rms}}\leq\frac{\|\gamma\|_{\infty}\sqrt{d}+\|\beta\|_{\infty}\sqrt{d}}{\sqrt{d}}=\|\gamma\|_{\infty}+\|\beta\|_{\infty}. 
+ ∎ 
+@@@ Lemma A.1 (LayerNorm Lipschitz constant) . 
+ The Lipschitz constant of LayerNorm satisfies Lip ⁡ ( LN ) ≤ ‖ γ ‖ ∞ / ϵ \mathrm{Lip}(\LN)\leq\|\gamma\|_{\infty}/\sqrt{\epsilon} , where ϵ > 0 \epsilon>0 is the numerical stability floor in the denominator. 
+@@@Proof. 
+ The Jacobian of LayerNorm at x x is 
+ J LN ​ ( x ) = Diag ⁡ ( γ ) σ ⁡ ( x ) ​ ( I − 𝟏𝟏 ⊤ d − ( x − μ ​ 𝟏 ) ​ ( x − μ ​ 𝟏 ) ⊤ d ​ σ ​ ( x ) 2 ) , J_{\LN}(x)=\frac{\Diag(\gamma)}{\sigma(x)}\left(I-\frac{\mathbf{1}\mathbf{1}^{\top}}{d}-\frac{(x-\mu\mathbf{1})(x-\mu\mathbf{1})^{\top}}{d\sigma(x)^{2}}\right), 
+ where μ = μ ⁡ ( x ) \mu=\mu(x) for brevity.
+Let P μ = I − 𝟏𝟏 ⊤ d P_{\mu}=I-\frac{\mathbf{1}\mathbf{1}^{\top}}{d} be the projection onto the orthogonal complement of 𝟏 \mathbf{1} , and let x ^ = ( x − μ ⁡ ( x ) ​ 𝟏 ) / σ ⁡ ( x ) \hat{x}=(x-\mu(x)\mathbf{1})/\sigma(x) be the normalized centered vector. Then: 
+ J LN ​ ( x ) = 1 σ ⁡ ( x ) ​ Diag ⁡ ( γ ) ​ ( P μ − x ^ ​ x ^ ⊤ d ) . J_{\LN}(x)=\frac{1}{\sigma(x)}\Diag(\gamma)\left(P_{\mu}-\frac{\hat{x}\hat{x}^{\top}}{d}\right). 
+ The matrix P μ P_{\mu} is an orthogonal projection with ‖ P μ ‖ 2 = 1 \|P_{\mu}\|_{2}=1 . The matrix x ^ ​ x ^ ⊤ / d \hat{x}\hat{x}^{\top}/d has spectral norm ‖ x ^ ‖ 2 2 / d ≤ 1 \|\hat{x}\|_{2}^{2}/d\leq 1 (from the proof of Lemma  3.3 ). 
+ The matrix P μ − x ^ ​ x ^ ⊤ / d P_{\mu}-\hat{x}\hat{x}^{\top}/d can be analyzed as follows. Since x ^ \hat{x} lies in the range of P μ P_{\mu} (it has zero mean), we can write this as P μ ​ ( I − x ^ ​ x ^ ⊤ / d ) ​ P μ P_{\mu}(I-\hat{x}\hat{x}^{\top}/d)P_{\mu} restricted to the subspace orthogonal to 𝟏 \mathbf{1} . The term I − x ^ ​ x ^ ⊤ / d I-\hat{x}\hat{x}^{\top}/d is a rank-one perturbation of the identity. Its eigenvalues are 1 1 (with multiplicity d − 1 d-1 ) and 1 − ‖ x ^ ‖ 2 2 / d ≥ 0 1-\|\hat{x}\|_{2}^{2}/d\geq 0 . Therefore ‖ P μ − x ^ ​ x ^ ⊤ / d ‖ 2 ≤ 1 \|P_{\mu}-\hat{x}\hat{x}^{\top}/d\|_{2}\leq 1 , so 
+ ‖ J LN ​ ( x ) ‖ 2 ≤ ‖ γ ‖ ∞ σ ⁡ ( x ) ≤ ‖ γ ‖ ∞ ϵ , \|J_{\LN}(x)\|_{2}\leq\frac{\|\gamma\|_{\infty}}{\sigma(x)}\leq\frac{\|\gamma\|_{\infty}}{\sqrt{\epsilon}}, 
+ since σ ⁡ ( x ) ≥ ϵ \sigma(x)\geq\sqrt{\epsilon} by definition.
+∎ 
+@@@ Appendix B Proof of Theorem  4.2 : Exact Softmax Jacobian Norm 
+ This appendix provides the proof of Theorem  4.2 from Section  4 , which establishes the exact ℓ ∞ → ℓ 1 \ell_{\infty}\to\ell_{1} operator norm of the softmax Jacobian. 
+@@@Proof of Theorem  4.2 . 
+ The ℓ ∞ → ℓ 1 \ell_{\infty}\to\ell_{1} operator norm is ‖ J ‖ ∞ → 1 = max ‖ x ‖ ∞ ≤ 1 ⁡ ‖ J ​ x ‖ 1 \|J\|_{\infty\to 1}=\max_{\|x\|_{\infty}\leq 1}\|Jx\|_{1} . Since ‖ J ​ x ‖ 1 \|Jx\|_{1} is a convex function of x x and the ℓ ∞ \ell_{\infty} ball is a polytope, the maximum is achieved at a vertex, i.e., at some x ∈ { ± 1 } L x\in\{\pm 1\}^{L} . 
+ For any vertex x x , let S = { i : x i = + 1 } S=\{i:x_{i}=+1\} denote the positive indices and S ¯ = [ L ] ∖ S \bar{S}=[L]\setminus S the negative indices. Define 
+ α = p ⊤ ​ x = ∑ i ∈ S p i − ∑ i ∈ S ¯ p i = p ⁡ ( S ) − ( 1 − p ⁡ ( S ) ) = 2 ​ p ​ ( S ) − 1 . \alpha=p^{\top}x=\sum_{i\in S}p_{i}-\sum_{i\in\bar{S}}p_{i}=p(S)-(1-p(S))=2p(S)-1. 
+ The Jacobian J = 1 τ ​ ( Diag ⁡ ( p ) − p ​ p ⊤ ) J=\frac{1}{\tau}(\Diag(p)-pp^{\top}) acts on x x as: 
+ ( J ​ x ) i = 1 τ ​ ( p i ​ x i − p i ​ ( p ⊤ ​ x ) ) = p i τ ​ ( x i − α ) . (Jx)_{i}=\frac{1}{\tau}\left(p_{i}x_{i}-p_{i}(p^{\top}x)\right)=\frac{p_{i}}{\tau}(x_{i}-\alpha). 
+ We compute ( J ​ x ) i (Jx)_{i} separately for each case: 
+ • 
+ For i ∈ S i\in S : x i = + 1 x_{i}=+1 , so ( J ​ x ) i = p i τ ​ ( 1 − α ) = p i τ ​ ( 1 − ( 2 ​ p ​ ( S ) − 1 ) ) = 2 ​ p i τ ​ ( 1 − p ⁡ ( S ) ) (Jx)_{i}=\frac{p_{i}}{\tau}(1-\alpha)=\frac{p_{i}}{\tau}(1-(2p(S)-1))=\frac{2p_{i}}{\tau}(1-p(S)) . 
+ • 
+ For i ∈ S ¯ i\in\bar{S} : x i = − 1 x_{i}=-1 , so ( J ​ x ) i = p i τ ​ ( − 1 − α ) = p i τ ​ ( − 1 − ( 2 ​ p ​ ( S ) − 1 ) ) = − 2 ​ p i τ ​ p ​ ( S ) (Jx)_{i}=\frac{p_{i}}{\tau}(-1-\alpha)=\frac{p_{i}}{\tau}(-1-(2p(S)-1))=\frac{-2p_{i}}{\tau}p(S) . 
+ Since p ⁡ ( S ) ∈ [ 0 , 1 ] p(S)\in[0,1] , we have α = 2 ​ p ​ ( S ) − 1 ∈ [ − 1 , 1 ] \alpha=2p(S)-1\in[-1,1] . This ensures ( 1 − α ) ≥ 0 (1-\alpha)\geq 0 and ( 1 + α ) ≥ 0 (1+\alpha)\geq 0 , so the signs are determined by the subset membership. Computing the ℓ 1 \ell_{1} norm: 
+ ‖ J ​ x ‖ 1 \displaystyle\|Jx\|_{1} 
+ = ∑ i ∈ S | 2 ​ p i τ ​ ( 1 − p ⁡ ( S ) ) | + ∑ i ∈ S ¯ | − 2 ​ p i τ ​ p ​ ( S ) | \displaystyle=\sum_{i\in S}\left|\frac{2p_{i}}{\tau}(1-p(S))\right|+\sum_{i\in\bar{S}}\left|\frac{-2p_{i}}{\tau}p(S)\right| 
+ = 2 ​ ( 1 − p ​ ( S ) ) τ ​ ∑ i ∈ S p i + 2 ​ p ​ ( S ) τ ​ ∑ i ∈ S ¯ p i \displaystyle=\frac{2(1-p(S))}{\tau}\sum_{i\in S}p_{i}+\frac{2p(S)}{\tau}\sum_{i\in\bar{S}}p_{i} 
+ = 2 ​ ( 1 − p ​ ( S ) ) τ ⋅ p ⁡ ( S ) + 2 ​ p ​ ( S ) τ ⋅ ( 1 − p ⁡ ( S ) ) \displaystyle=\frac{2(1-p(S))}{\tau}\cdot p(S)+\frac{2p(S)}{\tau}\cdot(1-p(S)) 
+ = 4 τ ​ p ​ ( S ) ​ ( 1 − p ⁡ ( S ) ) . \displaystyle=\frac{4}{\tau}p(S)(1-p(S)). 
+ Since vertices x ∈ { ± 1 } L x\in\{\pm 1\}^{L} correspond bijectively to subsets S ⊆ [ L ] S\subseteq[L] , maximizing over all vertices is equivalent to maximizing over all subsets: 
+ ‖ J ‖ ∞ → 1 \displaystyle\|J\|_{\infty\to 1} 
+ = max S ⊆ [ L ] ⁡ 4 τ ​ p ​ ( S ) ​ ( 1 − p ⁡ ( S ) ) \displaystyle=\max_{S\subseteq[L]}\frac{4}{\tau}p(S)(1-p(S)) 
+ = 4 τ ​ max S ⊆ [ L ] ⁡ p ⁡ ( S ) ​ ( 1 − p ⁡ ( S ) ) = θ ⁡ ( p ) τ . \displaystyle=\frac{4}{\tau}\max_{S\subseteq[L]}p(S)(1-p(S))=\frac{\theta(p)}{\tau}. 
+@@@Tightness. 
+ The bound is achieved exactly. Let S ∗ S^{*} be any subset achieving the maximum in the definition of θ ⁡ ( p ) \theta(p) , and define x ∗ ∈ { ± 1 } L x^{*}\in\{\pm 1\}^{L} by x i ∗ = + 1 x^{*}_{i}=+1 if i ∈ S ∗ i\in S^{*} and x i ∗ = − 1 x^{*}_{i}=-1 otherwise. Then ‖ x ∗ ‖ ∞ = 1 \|x^{*}\|_{\infty}=1 and 
+ ‖ J ​ x ∗ ‖ 1 = 4 τ ​ p ​ ( S ∗ ) ​ ( 1 − p ⁡ ( S ∗ ) ) = θ ⁡ ( p ) τ . \|Jx^{*}\|_{1}=\frac{4}{\tau}p(S^{*})(1-p(S^{*}))=\frac{\theta(p)}{\tau}. 
+ Thus the operator norm is achieved, confirming this is an equality rather than merely an upper bound.
+∎ 
+@@@ Remark B.1 (Connection to total variation) . 
+ The ℓ 1 \ell_{1} norm of the output ‖ J ​ x ‖ 1 \|Jx\|_{1} equals twice the total variation distance between the perturbed and original distributions (to first order). The worst-case perturbation x ∗ x^{*} identifies the optimal bisection of probability mass, maximizing redistribution under bounded logit changes. 
+@@@ Remark B.2 (Comparison to ℓ 2 \ell_{2} bounds) . 
+ Prior work established ‖ J softmax ‖ 2 → 2 ≤ 1 / ( 2 ​ τ ) \|J_{\softmax}\|_{2\to 2}\leq 1/(2\tau) ( Kim et al., 2021 ) , a distribution-independent bound. Our result is stronger in two respects: it is an exact equality (not an upper bound), and the balanced-mass factor θ ⁡ ( p ) \theta(p) captures how the distribution shape modulates sensitivity. 
+@@@Proof of Corollary  4.3 . 
+ We verify each case by computing θ ⁡ ( p ) = 4 ​ max S ⊆ [ L ] ⁡ p ⁡ ( S ) ​ ( 1 − p ⁡ ( S ) ) \theta(p)=4\max_{S\subseteq[L]}p(S)(1-p(S)) . 
+ Case 1: Uniform distribution. Let p = 1 L ​ 𝟏 p=\frac{1}{L}\mathbf{1} . For any subset S S with | S | = k |S|=k , we have p ⁡ ( S ) = k / L p(S)=k/L . The function g ⁡ ( t ) = t ⁡ ( 1 − t ) g(t)=t(1-t) is maximized at t = 1 / 2 t=1/2 . 
+ If L L is even, choosing | S | = L / 2 |S|=L/2 gives p ⁡ ( S ) = 1 / 2 p(S)=1/2 , so θ ⁡ ( p ) = 4 ⋅ 1 2 ⋅ 1 2 = 1 \theta(p)=4\cdot\frac{1}{2}\cdot\frac{1}{2}=1 . 
+ If L L is odd, the closest we can get to 1 / 2 1/2 is p ⁡ ( S ) = ⌊ L / 2 ⌋ / L p(S)=\lfloor L/2\rfloor/L or p ⁡ ( S ) = ⌈ L / 2 ⌉ / L p(S)=\lceil L/2\rceil/L . As L → ∞ L\to\infty , both approach 1 / 2 1/2 , giving θ ⁡ ( p ) → 1 \theta(p)\to 1 . For any L ≥ 2 L\geq 2 , we have θ ⁡ ( p ) ≥ 4 ⋅ ⌊ L / 2 ⌋ L ⋅ ⌈ L / 2 ⌉ L = 1 − 1 / L 2 \theta(p)\geq 4\cdot\frac{\lfloor L/2\rfloor}{L}\cdot\frac{\lceil L/2\rceil}{L}=1-1/L^{2} for odd L L . In particular, θ ⁡ ( p ) = 1 \theta(p)=1 for even L L and θ ⁡ ( p ) = 1 − 1 / L 2 \theta(p)=1-1/L^{2} for odd L L . 
+ Case 2: One-hot distribution. Let p = e i p=e_{i} (all mass on token i i ). For any subset S S : 
+ p ⁡ ( S ) = { 1 if  ​ i ∈ S 0 if  ​ i ∉ S p(S)=\begin{cases}1&\text{if }i\in S\\
+0&\text{if }i\notin S\end{cases} 
+ Thus p ⁡ ( S ) ​ ( 1 − p ⁡ ( S ) ) = 1 ⋅ 0 = 0 p(S)(1-p(S))=1\cdot 0=0 or 0 ⋅ 1 = 0 0\cdot 1=0 for all S S , giving θ ⁡ ( p ) = 0 \theta(p)=0 . 
+ Case 3: Peaked distribution. Suppose the top token has mass p 1 = 1 − κ p_{1}=1-\kappa and the remaining mass κ \kappa is distributed among other tokens. For any subset S S : 
+ • 
+ If 1 ∈ S 1\in S : p ⁡ ( S ) ≥ 1 − κ p(S)\geq 1-\kappa , so p ⁡ ( S ) ​ ( 1 − p ⁡ ( S ) ) ≤ ( 1 − κ ) ​ κ p(S)(1-p(S))\leq(1-\kappa)\kappa . 
+ • 
+ If 1 ∉ S 1\notin S : p ⁡ ( S ) ≤ κ p(S)\leq\kappa , so p ⁡ ( S ) ​ ( 1 − p ⁡ ( S ) ) ≤ κ ⁡ ( 1 − κ ) p(S)(1-p(S))\leq\kappa(1-\kappa) . 
+ In both cases, p ⁡ ( S ) ​ ( 1 − p ⁡ ( S ) ) ≤ κ ⁡ ( 1 − κ ) p(S)(1-p(S))\leq\kappa(1-\kappa) , giving θ ⁡ ( p ) ≤ 4 ​ κ ​ ( 1 − κ ) \theta(p)\leq 4\kappa(1-\kappa) . 
+ This bound is tight when the remaining mass κ \kappa can be partitioned to achieve p ⁡ ( S ) = 1 / 2 p(S)=1/2 for some S S not containing token 1, which requires κ ≥ 1 / 2 \kappa\geq 1/2 . For κ < 1 / 2 \kappa<1/2 , the bound 4 ​ κ ​ ( 1 − κ ) 4\kappa(1-\kappa) may not be achieved but remains valid as an upper bound. 
+ Case 4: Top- k k uniform distribution. Suppose p i = 1 / k p_{i}=1/k for i ∈ { 1 , … , k } i\in\{1,\ldots,k\} and p i = 0 p_{i}=0 otherwise. Any subset S S satisfies p ⁡ ( S ) = | S ∩ { 1 , … , k } | / k p(S)=|S\cap\{1,\ldots,k\}|/k . Let m = | S ∩ { 1 , … , k } | ∈ { 0 , 1 , … , k } m=|S\cap\{1,\ldots,k\}|\in\{0,1,\ldots,k\} . 
+ We maximize g ⁡ ( m / k ) = ( m / k ) ​ ( 1 − m / k ) g(m/k)=(m/k)(1-m/k) over integer m ∈ { 0 , … , k } m\in\{0,\ldots,k\} . The continuous maximum of t ⁡ ( 1 − t ) t(1-t) is at t = 1 / 2 t=1/2 . The closest integer solutions are m = ⌊ k / 2 ⌋ m=\lfloor k/2\rfloor and m = ⌈ k / 2 ⌉ m=\lceil k/2\rceil . 
+ Taking m ∗ = ⌊ k / 2 ⌋ m^{*}=\lfloor k/2\rfloor : 
+ p ⁡ ( S ∗ ) = ⌊ k / 2 ⌋ k , 1 − p ⁡ ( S ∗ ) = k − ⌊ k / 2 ⌋ k = ⌈ k / 2 ⌉ k . p(S^{*})=\frac{\lfloor k/2\rfloor}{k},\quad 1-p(S^{*})=\frac{k-\lfloor k/2\rfloor}{k}=\frac{\lceil k/2\rceil}{k}. 
+ The maximum value is: 
+ max S ⁡ p ⁡ ( S ) ​ ( 1 − p ⁡ ( S ) ) = ⌊ k / 2 ⌋ k ⋅ ⌈ k / 2 ⌉ k . \max_{S}p(S)(1-p(S))=\frac{\lfloor k/2\rfloor}{k}\cdot\frac{\lceil k/2\rceil}{k}. 
+ For even k k : ⌊ k / 2 ⌋ = ⌈ k / 2 ⌉ = k / 2 \lfloor k/2\rfloor=\lceil k/2\rceil=k/2 , so the maximum is ( 1 / 2 ) ​ ( 1 / 2 ) = 1 / 4 (1/2)(1/2)=1/4 , giving θ ⁡ ( p ) = 1 \theta(p)=1 . 
+ For odd k k : ⌊ k / 2 ⌋ = ( k − 1 ) / 2 \lfloor k/2\rfloor=(k-1)/2 and ⌈ k / 2 ⌉ = ( k + 1 ) / 2 \lceil k/2\rceil=(k+1)/2 , so the maximum is ( k − 1 ) / 2 k ⋅ ( k + 1 ) / 2 k = k 2 − 1 4 ​ k 2 \frac{(k-1)/2}{k}\cdot\frac{(k+1)/2}{k}=\frac{k^{2}-1}{4k^{2}} . 
+ To express this uniformly, note that the partition gap is δ = | p ⁡ ( S ∗ ) − 1 / 2 | = | ⌊ k / 2 ⌋ / k − 1 / 2 | \delta=|p(S^{*})-1/2|=|\lfloor k/2\rfloor/k-1/2| . For even k k , δ = 0 \delta=0 . For odd k k , δ = 1 / ( 2 ​ k ) \delta=1/(2k) . 
+ Using θ ⁡ ( p ) = 1 − 4 ​ δ 2 \theta(p)=1-4\delta^{2} (the equivalent characterization): 
+ θ ⁡ ( p ) = 1 − 4 ​ ( 1 2 − ⌊ k / 2 ⌋ k ) 2 = 1 − ( 1 − 2 ​ ⌊ k / 2 ⌋ k ) 2 . \theta(p)=1-4\left(\frac{1}{2}-\frac{\lfloor k/2\rfloor}{k}\right)^{2}=1-\left(1-\frac{2\lfloor k/2\rfloor}{k}\right)^{2}. 
+ ∎ 
+@@@ Appendix C Proofs for Section  5 : Layerwise Stability 
+ This appendix provides proofs for the layerwise stability results in Section  5 . We organize the proofs to follow the main text: first the MHA Lipschitz bound, then per-layer Lipschitz bounds for both architectures, and finally gradient flow analysis. 
+@@@ C.1 Proof of Theorem  5.1 : MHA Lipschitz Bound 
+@@@Proof. 
+ We bound the Lipschitz constant of MHA by decomposing the Jacobian into value and attention pathway contributions. 
+@@@Value pathway. 
+ For fixed attention weights A h A_{h} , consider the map U ↦ A h ​ ( U ​ W h V ) U\mapsto A_{h}(UW_{h}^{V}) . By Lemma  3.2 , attention averaging is nonexpansive under the block- ∞ \infty /RMS norm: ‖ A h ​ Z ‖ ∞ , rms ≤ ‖ Z ‖ ∞ , rms \|A_{h}Z\|_{\infty,\mathrm{rms}}\leq\|Z\|_{\infty,\mathrm{rms}} . The linear map U ↦ U ​ W h V U\mapsto UW_{h}^{V} has Lipschitz constant ‖ W h V ‖ 2 \|W_{h}^{V}\|_{2} . Thus the value pathway contributes ‖ W h V ‖ 2 \|W_{h}^{V}\|_{2} to the per-head Lipschitz constant. 
+@@@Attention pathway. 
+ For fixed values V h = U ​ W h V V_{h}=UW_{h}^{V} , we bound how perturbations to U U affect attention weights and thus the output A h ​ V h A_{h}V_{h} . 
+ The attention scores are S h = ( U ​ W h Q ) ​ ( U ​ W h K ) ⊤ / d h S_{h}=(UW_{h}^{Q})(UW_{h}^{K})^{\top}/\sqrt{d_{h}} . For a perturbation Δ ​ U \Delta U : 
+ Δ ​ S h = 1 d h ​ [ ( Δ ​ U ​ W h Q ) ​ ( U ​ W h K ) ⊤ + ( U ​ W h Q ) ​ ( Δ ​ U ​ W h K ) ⊤ ] . \Delta S_{h}=\frac{1}{\sqrt{d_{h}}}\bigl[(\Delta UW_{h}^{Q})(UW_{h}^{K})^{\top}+(UW_{h}^{Q})(\Delta UW_{h}^{K})^{\top}\bigr]. 
+ To bound ‖ Δ ​ S h ‖ ∞ , ∞ \|\Delta S_{h}\|_{\infty,\infty} (maximum absolute entry), note that row i i of Δ ​ S h \Delta S_{h} satisfies: 
+ | ( Δ ​ S h ) i ​ j | \displaystyle|(\Delta S_{h})_{ij}| 
+ ≤ 1 d h ​ ( | ( Δ ​ U ​ W h Q ) i ⊤ ​ ( U ​ W h K ) j | CLOSE \displaystyle\leq\frac{1}{\sqrt{d_{h}}}\bigl(|(\Delta UW_{h}^{Q})_{i}^{\top}(UW_{h}^{K})_{j}| 
+ OPEN + | ( U ​ W h Q ) i ⊤ ​ ( Δ ​ U ​ W h K ) j | ) \displaystyle\qquad+|(UW_{h}^{Q})_{i}^{\top}(\Delta UW_{h}^{K})_{j}|\bigr) 
+ ≤ 1 d h ​ ( ‖ Δ ​ U ​ W h Q ‖ ∞ , 2 ​ ‖ U ​ W h K ‖ ∞ , 2 CLOSE \displaystyle\leq\frac{1}{\sqrt{d_{h}}}\bigl(\|\Delta UW_{h}^{Q}\|_{\infty,2}\|UW_{h}^{K}\|_{\infty,2} 
+ OPEN + ‖ U ​ W h Q ‖ ∞ , 2 ​ ‖ Δ ​ U ​ W h K ‖ ∞ , 2 ) \displaystyle\qquad+\|UW_{h}^{Q}\|_{\infty,2}\|\Delta UW_{h}^{K}\|_{\infty,2}\bigr) 
+ ≤ 2 ​ d d h ​ ‖ W h Q ‖ 2 ​ ‖ W h K ‖ 2 ​ ‖ Δ ​ U ‖ ∞ , rms ​ ‖ U ‖ ∞ , rms , \displaystyle\leq\frac{2d}{\sqrt{d_{h}}}\|W_{h}^{Q}\|_{2}\|W_{h}^{K}\|_{2}\|\Delta U\|_{\infty,\mathrm{rms}}\|U\|_{\infty,\mathrm{rms}}, 
+ where we used ‖ X ​ W ‖ ∞ , 2 ≤ ‖ X ‖ ∞ , rms ​ d ​ ‖ W ‖ 2 \|XW\|_{\infty,2}\leq\|X\|_{\infty,\mathrm{rms}}\sqrt{d}\|W\|_{2} . 
+ By Theorem  4.2 , the softmax Jacobian for row i i satisfies ∥ J softmax ( S h [ i , : ] ) ∥ ∞ → 1 = θ ( A h [ i , : ] ) / τ \|J_{\softmax}(S_{h}[i,:])\|_{\infty\to 1}=\theta(A_{h}[i,:])/\tau . Thus: 
+ ∥ Δ A h [ i , : ] ∥ 1 ≤ θ ( A h [ i , : ] ) τ ∥ Δ S h [ i , : ] ∥ ∞ ≤ θ ~ h τ ∥ Δ S h ∥ ∞ , ∞ , \|\Delta A_{h}[i,:]\|_{1}\leq\frac{\theta(A_{h}[i,:])}{\tau}\|\Delta S_{h}[i,:]\|_{\infty}\leq\frac{\tilde{\theta}_{h}}{\tau}\|\Delta S_{h}\|_{\infty,\infty}, 
+ where θ ~ h = max i θ ( A h [ i , : ] ) \tilde{\theta}_{h}=\max_{i}\theta(A_{h}[i,:]) . 
+ The output perturbation from changed attention weights acting on values V h V_{h} is bounded using ∥ Δ A h ∥ ∞ , 1 = max i ∥ Δ A h [ i , : ] ∥ 1 \|\Delta A_{h}\|_{\infty,1}=\max_{i}\|\Delta A_{h}[i,:]\|_{1} : 
+ ‖ ( Δ ​ A h ) ​ V h ‖ ∞ , rms \displaystyle\|(\Delta A_{h})V_{h}\|_{\infty,\mathrm{rms}} 
+ ≤ ‖ Δ ​ A h ‖ ∞ , 1 ​ ‖ V h ‖ ∞ , rms \displaystyle\leq\|\Delta A_{h}\|_{\infty,1}\|V_{h}\|_{\infty,\mathrm{rms}} 
+ ≤ θ ~ h τ ​ ‖ Δ ​ S h ‖ ∞ , ∞ ​ ‖ W h V ‖ 2 ​ ‖ U ‖ ∞ , rms . \displaystyle\leq\frac{\tilde{\theta}_{h}}{\tau}\|\Delta S_{h}\|_{\infty,\infty}\|W_{h}^{V}\|_{2}\|U\|_{\infty,\mathrm{rms}}. 
+ Substituting the bound on ‖ Δ ​ S h ‖ ∞ , ∞ \|\Delta S_{h}\|_{\infty,\infty} : 
+ ‖ ( Δ ​ A h ) ​ V h ‖ ∞ , rms \displaystyle\|(\Delta A_{h})V_{h}\|_{\infty,\mathrm{rms}} 
+ ≤ θ ~ h τ ⋅ 2 ​ d d h ​ ‖ W h Q ‖ 2 ​ ‖ W h K ‖ 2 ​ ‖ W h V ‖ 2 \displaystyle\leq\frac{\tilde{\theta}_{h}}{\tau}\cdot\frac{2d}{\sqrt{d_{h}}}\|W_{h}^{Q}\|_{2}\|W_{h}^{K}\|_{2}\|W_{h}^{V}\|_{2} 
+ × ‖ U ‖ ∞ , rms 2 ​ ‖ Δ ​ U ‖ ∞ , rms . \displaystyle\qquad\times\|U\|_{\infty,\mathrm{rms}}^{2}\|\Delta U\|_{\infty,\mathrm{rms}}. 
+ Writing B ¯ U = ‖ U ‖ ∞ , rms ​ d \bar{B}_{U}=\|U\|_{\infty,\mathrm{rms}}\sqrt{d} , the attention pathway contributes: 
+ θ ~ h τ ⋅ 2 ​ B ¯ U 2 d h ​ ‖ W h Q ‖ 2 ​ ‖ W h K ‖ 2 ​ ‖ W h V ‖ 2 . \frac{\tilde{\theta}_{h}}{\tau}\cdot\frac{2\bar{B}_{U}^{2}}{\sqrt{d_{h}}}\|W_{h}^{Q}\|_{2}\|W_{h}^{K}\|_{2}\|W_{h}^{V}\|_{2}. 
+@@@Combining pathways. 
+ Summing over heads and applying the output projection W O W^{O} : 
+ L MHA \displaystyle L_{\MHA} 
+ ≤ ‖ W O ‖ 2 ​ ∑ h = 1 H ( ‖ W h V ‖ 2 CLOSE \displaystyle\leq\|W^{O}\|_{2}\sum_{h=1}^{H}\biggl(\|W_{h}^{V}\|_{2} 
+ + θ ~ h τ ⋅ 2 ​ B ¯ U 2 d h ∥ W h Q ∥ 2 ∥ W h K ∥ 2 ∥ W h V ∥ 2 ) . \displaystyle\qquad+\frac{\tilde{\theta}_{h}}{\tau}\cdot\frac{2\bar{B}_{U}^{2}}{\sqrt{d_{h}}}\|W_{h}^{Q}\|_{2}\|W_{h}^{K}\|_{2}\|W_{h}^{V}\|_{2}\biggr). 
+ This bound depends on weight norms, B ¯ U \bar{B}_{U} , d h d_{h} , τ \tau , and θ ~ h ≤ 1 \tilde{\theta}_{h}\leq 1 . It does not depend on sequence length L L because our block- ∞ \infty /RMS geometry measures worst-case token magnitude rather than aggregating across tokens.
+∎ 
+@@@ C.2 Proof of Theorem  5.2 : Pre-LN Full Layer Bound 
+@@@Proof. 
+ A complete pre-LN transformer layer consists of two sublayers: 
+ Z ℓ \displaystyle Z_{\ell} 
+ = X ℓ + MHA ⁡ ( LN ⁡ ( X ℓ ) ) , \displaystyle=X_{\ell}+\MHA(\LN(X_{\ell})), 
+ X ℓ + 1 \displaystyle X_{\ell+1} 
+ = Z ℓ + FFN ⁡ ( LN ⁡ ( Z ℓ ) ) . \displaystyle=Z_{\ell}+\FFN(\LN(Z_{\ell})). 
+@@@Bounded input magnitude. 
+ In pre-LN, the MHA sublayer receives input U = LN ⁡ ( X ℓ ) U=\LN(X_{\ell}) . By Lemma  3.3 : 
+ ‖ LN ⁡ ( X ℓ ) ‖ ∞ , rms ≤ ‖ γ ‖ ∞ + ‖ β ‖ ∞ \|\LN(X_{\ell})\|_{\infty,\mathrm{rms}}\leq\|\gamma\|_{\infty}+\|\beta\|_{\infty} 
+ for any input X ℓ X_{\ell} , regardless of ‖ X ℓ ‖ ∞ , rms \|X_{\ell}\|_{\infty,\mathrm{rms}} . Thus the MHA input magnitude is: 
+ B ¯ U = ‖ U ‖ ∞ , rms ​ d ≤ ( ‖ γ ‖ ∞ + ‖ β ‖ ∞ ) ​ d , \bar{B}_{U}=\|U\|_{\infty,\mathrm{rms}}\sqrt{d}\leq(\|\gamma\|_{\infty}+\|\beta\|_{\infty})\sqrt{d}, 
+ which is independent of layer index ℓ \ell , total depth N N , sequence length L L , and residual stream magnitude ‖ X ℓ ‖ \|X_{\ell}\| . 
+@@@MHA sublayer. 
+ The map X ℓ ↦ Z ℓ = X ℓ + MHA ⁡ ( LN ⁡ ( X ℓ ) ) X_{\ell}\mapsto Z_{\ell}=X_{\ell}+\MHA(\LN(X_{\ell})) has Lipschitz constant: 
+ L MHA − sub ≤ 1 + Lip ( MHA ∘ LN ) ≤ 1 + L MHA ⋅ Lip ( LN ) . L_{\mathrm{MHA-sub}}\leq 1+\mathrm{Lip}(\MHA\circ\LN)\leq 1+L_{\MHA}\cdot\mathrm{Lip}(\LN). 
+@@@FFN sublayer. 
+ The map Z ℓ ↦ X ℓ + 1 = Z ℓ + FFN ⁡ ( LN ⁡ ( Z ℓ ) ) Z_{\ell}\mapsto X_{\ell+1}=Z_{\ell}+\FFN(\LN(Z_{\ell})) has Lipschitz constant: 
+ L FFN − sub ≤ 1 + L FFN ⋅ Lip ⁡ ( LN ) . L_{\mathrm{FFN-sub}}\leq 1+L_{\FFN}\cdot\mathrm{Lip}(\LN). 
+ The FFN Lipschitz constant L FFN L_{\FFN} for a standard two-layer network FFN ⁡ ( x ) = W 2 ​ σ ​ ( W 1 ​ x + b 1 ) + b 2 \FFN(x)=W_{2}\sigma(W_{1}x+b_{1})+b_{2} with 1-Lipschitz activation σ \sigma (e.g., ReLU) satisfies L FFN ≤ ‖ W 2 ‖ 2 ​ ‖ W 1 ‖ 2 L_{\FFN}\leq\|W_{2}\|_{2}\|W_{1}\|_{2} , which depends only on weight norms. 
+@@@Full layer. 
+ The composition has Lipschitz constant: 
+ L layer pre \displaystyle L_{\mathrm{layer}}^{\mathrm{pre}} 
+ ≤ L MHA − sub ⋅ L FFN − sub \displaystyle\leq L_{\mathrm{MHA-sub}}\cdot L_{\mathrm{FFN-sub}} 
+ = ( 1 + Lip ⁡ ( LN ) ⋅ L MHA ) ​ ( 1 + Lip ⁡ ( LN ) ⋅ L FFN ) . \displaystyle=(1+\mathrm{Lip}(\LN)\cdot L_{\MHA})(1+\mathrm{Lip}(\LN)\cdot L_{\FFN}). 
+ Since B ¯ U \bar{B}_{U} is bounded independently of ℓ \ell , N N , L L , Theorem  5.1 implies L MHA L_{\MHA} is also independent of these quantities. By Lemma  A.1 , Lip ⁡ ( LN ) ≤ ‖ γ ‖ ∞ / ϵ \mathrm{Lip}(\LN)\leq\|\gamma\|_{\infty}/\sqrt{\epsilon} depends only on LayerNorm parameters. 
+ Therefore L layer pre L_{\mathrm{layer}}^{\mathrm{pre}} depends only on weight norms, LayerNorm parameters, and architectural constants. It is independent of layer index ℓ \ell , total depth N N , and sequence length L L .
+∎ 
+@@@ C.3 Proof of Theorem  5.3 : Post-LN Full Layer Bound 
+@@@Proof. 
+ A complete post-LN transformer layer consists of two sublayers: 
+ Z ℓ \displaystyle Z_{\ell} 
+ = LN ⁡ ( X ℓ + MHA ⁡ ( X ℓ ) ) , \displaystyle=\LN(X_{\ell}+\MHA(X_{\ell})), 
+ X ℓ + 1 \displaystyle X_{\ell+1} 
+ = LN ⁡ ( Z ℓ + FFN ⁡ ( Z ℓ ) ) . \displaystyle=\LN(Z_{\ell}+\FFN(Z_{\ell})). 
+@@@Input magnitude analysis. 
+ In post-LN, the input X ℓ X_{\ell} to layer ℓ \ell is the output of the LayerNorm from layer ℓ − 1 \ell-1 . By Lemma  3.3 : 
+ ‖ X ℓ ‖ ∞ , rms ≤ ‖ γ ‖ ∞ + ‖ β ‖ ∞ . \|X_{\ell}\|_{\infty,\mathrm{rms}}\leq\|\gamma\|_{\infty}+\|\beta\|_{\infty}. 
+ Thus B ¯ U = ‖ X ℓ ‖ ∞ , rms ​ d ≤ ( ‖ γ ‖ ∞ + ‖ β ‖ ∞ ) ​ d \bar{B}_{U}=\|X_{\ell}\|_{\infty,\mathrm{rms}}\sqrt{d}\leq(\|\gamma\|_{\infty}+\|\beta\|_{\infty})\sqrt{d} , and by Theorem  5.1 , L MHA L_{\MHA} is bounded independently of ℓ \ell , N N , L L . 
+@@@MHA sublayer. 
+ The map X ℓ ↦ Z ℓ = LN ⁡ ( X ℓ + MHA ⁡ ( X ℓ ) ) X_{\ell}\mapsto Z_{\ell}=\LN(X_{\ell}+\MHA(X_{\ell})) has Lipschitz constant: 
+ L MHA − sub ≤ Lip ⁡ ( LN ) ⋅ ( 1 + L MHA ) . L_{\mathrm{MHA-sub}}\leq\mathrm{Lip}(\LN)\cdot(1+L_{\MHA}). 
+@@@FFN sublayer. 
+ The map Z ℓ ↦ X ℓ + 1 = LN ⁡ ( Z ℓ + FFN ⁡ ( Z ℓ ) ) Z_{\ell}\mapsto X_{\ell+1}=\LN(Z_{\ell}+\FFN(Z_{\ell})) has Lipschitz constant: 
+ L FFN − sub ≤ Lip ⁡ ( LN ) ⋅ ( 1 + L FFN ) . L_{\mathrm{FFN-sub}}\leq\mathrm{Lip}(\LN)\cdot(1+L_{\FFN}). 
+@@@Full layer. 
+ The composition has Lipschitz constant: 
+ L layer post \displaystyle L_{\mathrm{layer}}^{\mathrm{post}} 
+ ≤ L MHA − sub ⋅ L FFN − sub \displaystyle\leq L_{\mathrm{MHA-sub}}\cdot L_{\mathrm{FFN-sub}} 
+ = Lip ​ ( LN ) 2 ​ ( 1 + L MHA ) ​ ( 1 + L FFN ) . \displaystyle=\mathrm{Lip}(\LN)^{2}(1+L_{\MHA})(1+L_{\FFN}). 
+ This depends only on weight norms, LayerNorm parameters, and architectural constants. It is independent of ℓ \ell , N N , and L L .
+∎ 
+@@@ C.4 Proof of Theorem  5.4 : Pre-LN Identity Gradient Path 
+@@@Proof. 
+ We prove each part in sequence. 
+@@@Part (i): Bounded sublayer Jacobian. 
+ The pre-LN layer computes X ℓ + 1 = X ℓ + MHA ⁡ ( LN ⁡ ( X ℓ ) ) X_{\ell+1}=X_{\ell}+\MHA(\LN(X_{\ell})) . By the chain rule, the layer Jacobian is I + J k I+J_{k} where J k := J MHA ​ ( LN ⁡ ( X k ) ) ⋅ J LN ​ ( X k ) J_{k}:=J_{\MHA}(\LN(X_{k}))\cdot J_{\LN}(X_{k}) . 
+ By Theorem  5.2 , L MHA L_{\MHA} is bounded independently of k k , N N , and L L . By Lemma  A.1 , Lip ⁡ ( LN ) ≤ ‖ γ ‖ ∞ / ϵ \mathrm{Lip}(\LN)\leq\|\gamma\|_{\infty}/\sqrt{\epsilon} . Therefore: 
+ ‖ J k ‖ ≤ L MHA ⋅ Lip ⁡ ( LN ) = : C , \|J_{k}\|\leq L_{\MHA}\cdot\mathrm{Lip}(\LN)=:C, 
+ where C C is a constant independent of k k , N N , and L L . 
+@@@Part (ii): End-to-end Jacobian expansion. 
+ For ℓ < m \ell<m : 
+ ∂ X m ∂ X ℓ = ∏ k = ℓ m − 1 ∂ X k + 1 ∂ X k = ∏ k = ℓ m − 1 ( I + J k ) . \frac{\partial X_{m}}{\partial X_{\ell}}=\prod_{k=\ell}^{m-1}\frac{\partial X_{k+1}}{\partial X_{k}}=\prod_{k=\ell}^{m-1}(I+J_{k}). 
+ Expanding: 
+ ∏ k = ℓ m − 1 ( I + J k ) \displaystyle\prod_{k=\ell}^{m-1}(I+J_{k}) 
+ = I + ∑ k = ℓ m − 1 J k + ∑ ℓ ≤ k 1 < k 2 < m J k 1 ​ J k 2 + ⋯ \displaystyle=I+\sum_{k=\ell}^{m-1}J_{k}+\sum_{\ell\leq k_{1}<k_{2}<m}J_{k_{1}}J_{k_{2}}+\cdots 
+ = I + ∑ k = ℓ m − 1 J k + O ⁡ ( ‖ J ‖ 2 ) . \displaystyle=I+\sum_{k=\ell}^{m-1}J_{k}+O(\|J\|^{2}). 
+ The identity matrix I I appears as the leading term. 
+@@@Part (iii): Direct gradient pathway. 
+ The key structural property is that the end-to-end Jacobian contains an additive identity term: 
+ ∂ X m ∂ X ℓ = I + ∑ k = ℓ m − 1 J k + (higher-order terms) . \frac{\partial X_{m}}{\partial X_{\ell}}=I+\sum_{k=\ell}^{m-1}J_{k}+\text{(higher-order terms)}. 
+ This means gradients can flow directly through the residual connections without being transformed by sublayer Jacobians J k J_{k} . For any gradient signal g g at layer m m , the gradient at layer ℓ \ell includes the term g g directly (from the I I component), plus additional contributions from paths through sublayers. 
+ In contrast, post-LN has no such additive identity: all gradient paths pass through LayerNorm Jacobians at every intermediate layer. Since J LN J_{\LN} is projection-like (it annihilates the constant direction and contracts variance), repeated application causes exponential decay along certain directions. The pre-LN identity path avoids this compounding contraction.
+∎ 
+@@@ C.5 Proof of Theorem  5.5 : Post-LN No Identity Gradient Path 
+@@@Proof. 
+ We prove each part in sequence. 
+@@@Part (i): End-to-end Jacobian formula. 
+ The post-LN layer computes X ℓ + 1 = LN ⁡ ( Y ℓ ) X_{\ell+1}=\LN(Y_{\ell}) where Y ℓ = X ℓ + MHA ⁡ ( X ℓ ) Y_{\ell}=X_{\ell}+\MHA(X_{\ell}) . By the chain rule: 
+ ∂ X ℓ + 1 ∂ X ℓ = J LN ​ ( Y ℓ ) ⋅ ∂ Y ℓ ∂ X ℓ = J LN ​ ( Y ℓ ) ⋅ ( I + J MHA ​ ( X ℓ ) ) . \frac{\partial X_{\ell+1}}{\partial X_{\ell}}=J_{\LN}(Y_{\ell})\cdot\frac{\partial Y_{\ell}}{\partial X_{\ell}}=J_{\LN}(Y_{\ell})\cdot(I+J_{\MHA}(X_{\ell})). 
+ For ℓ < m \ell<m , chaining these derivatives: 
+ ∂ X m ∂ X ℓ = ∏ k = ℓ m − 1 J LN ​ ( Y k ) ​ ( I + J MHA ​ ( X k ) ) . \frac{\partial X_{m}}{\partial X_{\ell}}=\prod_{k=\ell}^{m-1}J_{\LN}(Y_{k})(I+J_{\MHA}(X_{k})). 
+@@@Part (ii): LayerNorm Jacobian is projection-like. 
+ The LayerNorm Jacobian at y ∈ ℝ d y\in\mathbb{R}^{d} is: 
+ J LN ​ ( y ) = Diag ⁡ ( γ ) σ ⁡ ( y ) ​ ( I − 𝟏𝟏 ⊤ d − ( y − μ ​ 𝟏 ) ​ ( y − μ ​ 𝟏 ) ⊤ d ​ σ ​ ( y ) 2 ) , J_{\LN}(y)=\frac{\Diag(\gamma)}{\sigma(y)}\left(I-\frac{\mathbf{1}\mathbf{1}^{\top}}{d}-\frac{(y-\mu\mathbf{1})(y-\mu\mathbf{1})^{\top}}{d\sigma(y)^{2}}\right), 
+ where μ = 1 d ​ ∑ j y j \mu=\frac{1}{d}\sum_{j}y_{j} and σ 2 = 1 d ​ ∑ j ( y j − μ ) 2 + ϵ \sigma^{2}=\frac{1}{d}\sum_{j}(y_{j}-\mu)^{2}+\epsilon . 
+ This matrix has two key properties: 
+ • 
+ It annihilates the constant direction: J LN ​ ( y ) ​ 𝟏 = 0 J_{\LN}(y)\mathbf{1}=0 (from I − 𝟏𝟏 ⊤ d I-\frac{\mathbf{1}\mathbf{1}^{\top}}{d} ). 
+ • 
+ It contracts variance along ( y − μ ​ 𝟏 ) (y-\mu\mathbf{1}) . 
+ Crucially, J LN ​ ( y ) ≠ I + small perturbation J_{\LN}(y)\neq I+\text{small perturbation} ; it is a genuine projection-like operator. 
+@@@Part (iii): No additive identity term. 
+ Expanding the end-to-end product: 
+ ∏ k = ℓ m − 1 J LN ​ ( Y k ) ​ ( I + J MHA ​ ( X k ) ) \displaystyle\prod_{k=\ell}^{m-1}J_{\LN}(Y_{k})(I+J_{\MHA}(X_{k})) 
+ = ( ∏ k = ℓ m − 1 J LN ​ ( Y k ) ) + terms involving  ​ J MHA . \displaystyle\quad=\left(\prod_{k=\ell}^{m-1}J_{\LN}(Y_{k})\right)+\text{terms involving }J_{\MHA}. 
+ Contrast with pre-LN where ∏ k = ℓ m − 1 ( I + J k ) = I + ∑ k J k + ⋯ \prod_{k=\ell}^{m-1}(I+J_{k})=I+\sum_{k}J_{k}+\cdots . In post-LN, the leading term is ∏ k J LN ​ ( Y k ) \prod_{k}J_{\LN}(Y_{k}) , not I I . There is no identity term because every factor is multiplied by J LN ​ ( Y k ) J_{\LN}(Y_{k}) , which projects out directions. 
+ The product of m − ℓ m-\ell projection-like operators compounds: directions that are consistently projected out see exponentially decaying gradient components.
+∎ 
+@@@ Appendix D Proofs for Section  6 : Training Heuristics 
+@@@ D.1 Proof of Theorem  6.1 : Projection Scaling for Transformers 
+@@@Proof. 
+ From Theorem  5.1 , the attention-pathway contribution to the MHA Lipschitz constant is: 
+ L attn = θ ~ τ ⋅ B ¯ U 2 ⋅ ‖ W O ‖ 2 ​ ‖ W Q ‖ 2 ​ ‖ W K ‖ 2 ​ ‖ W V ‖ 2 . L_{\mathrm{attn}}=\frac{\tilde{\theta}}{\tau}\cdot\bar{B}_{U}^{2}\cdot\|W^{O}\|_{2}\|W^{Q}\|_{2}\|W^{K}\|_{2}\|W^{V}\|_{2}. 
+ Under the assumption ‖ W Q ‖ 2 ∼ ‖ W K ‖ 2 ∼ ‖ W V ‖ 2 ∼ ‖ W O ‖ 2 ∼ β \|W^{Q}\|_{2}\sim\|W^{K}\|_{2}\sim\|W^{V}\|_{2}\sim\|W^{O}\|_{2}\sim\beta , this becomes: 
+ L attn = θ ~ τ ⋅ B ¯ U 2 ⋅ β 4 = : C 0 ​ β 4 , L_{\mathrm{attn}}=\frac{\tilde{\theta}}{\tau}\cdot\bar{B}_{U}^{2}\cdot\beta^{4}=:C_{0}\beta^{4}, 
+ where C 0 = θ ~ ​ B ¯ U 2 / τ C_{0}=\tilde{\theta}\bar{B}_{U}^{2}/\tau is a positive constant independent of depth (determined by temperature, input magnitude bounds, and attention distribution geometry). 
+ For an N N -layer network, the end-to-end Lipschitz constant involves products of per-layer Lipschitz constants. From Theorem  5.2 , each pre-LN layer has Lipschitz constant bounded by ( 1 + C 1 ​ L attn ) (1+C_{1}L_{\mathrm{attn}}) for some architectural constant C 1 > 0 C_{1}>0 . The end-to-end bound is therefore: 
+ ∏ ℓ = 1 N ( 1 + C 1 ​ L attn ) . \prod_{\ell=1}^{N}(1+C_{1}L_{\mathrm{attn}}). 
+ We seek conditions under which this product remains bounded as N → ∞ N\to\infty . Using the inequality ln ⁡ ( 1 + x ) ≤ x \ln(1+x)\leq x for x > − 1 x>-1 : 
+ ln ∏ ℓ = 1 N ( 1 + C 1 L attn ) = ∑ ℓ = 1 N ln ( 1 + C 1 L attn ) ≤ N ⋅ C 1 L attn . \ln\prod_{\ell=1}^{N}(1+C_{1}L_{\mathrm{attn}})=\sum_{\ell=1}^{N}\ln(1+C_{1}L_{\mathrm{attn}})\leq N\cdot C_{1}L_{\mathrm{attn}}. 
+ For the product to remain O ⁡ ( 1 ) O(1) , we require N ⋅ L attn = O ⁡ ( 1 ) N\cdot L_{\mathrm{attn}}=O(1) , i.e., L attn = O ⁡ ( 1 / N ) L_{\mathrm{attn}}=O(1/N) . 
+ Since L attn = C 0 ​ β 4 L_{\mathrm{attn}}=C_{0}\beta^{4} , the condition L attn = O ⁡ ( 1 / N ) L_{\mathrm{attn}}=O(1/N) requires: 
+ β 4 = O ( 1 / N ) ⟹ β = O ( N − 1 / 4 ) . \beta^{4}=O(1/N)\quad\Longrightarrow\quad\beta=O(N^{-1/4}). 
+@@@Asymmetric scaling. 
+ If the four projections have different norms β Q , β K , β V , β O \beta_{Q},\beta_{K},\beta_{V},\beta_{O} , the condition generalizes to β Q ​ β K ​ β V ​ β O = O ⁡ ( 1 / N ) \beta_{Q}\beta_{K}\beta_{V}\beta_{O}=O(1/N) , and the geometric mean ( β Q β K β V β O ) 1 / 4 = O ( N − 1 / 4 ) (\beta_{Q}\beta_{K}\beta_{V}\beta_{O})^{1/4}=O(N^{-1/4}) determines the effective scaling.
+∎ 
+@@@ D.2 Proof of Theorem  6.2 : Path-Length Exponent Principle 
+@@@Proof. 
+ Consider a deep network with N N layers where the dominant sensitivity pathway at each layer passes through m m linear maps. Let the operator norms at layer ℓ \ell be ‖ W 1 ( ℓ ) ‖ 2 , … , ‖ W m ( ℓ ) ‖ 2 \|W_{1}^{(\ell)}\|_{2},\ldots,\|W_{m}^{(\ell)}\|_{2} . The per-layer Lipschitz contribution from this pathway takes the form: 
+ S ℓ = C 0 ⋅ ∏ j = 1 m ‖ W j ( ℓ ) ‖ 2 , S_{\ell}=C_{0}\cdot\prod_{j=1}^{m}\|W_{j}^{(\ell)}\|_{2}, 
+ where C 0 > 0 C_{0}>0 is a constant capturing depth-independent factors (e.g., θ ~ / τ \tilde{\theta}/\tau , input magnitude bounds, nonlinearity Lipschitz constants). 
+ Under the assumption of comparable norms ‖ W j ( ℓ ) ‖ 2 ∼ β \|W_{j}^{(\ell)}\|_{2}\sim\beta for all j ∈ [ m ] j\in[m] and ℓ ∈ [ N ] \ell\in[N] : 
+ S ℓ = C 0 ​ β m . S_{\ell}=C_{0}\beta^{m}. 
+ The end-to-end Lipschitz constant is bounded by the product ∏ ℓ = 1 N ( 1 + S ℓ ) \prod_{\ell=1}^{N}(1+S_{\ell}) . Taking logarithms and using ln ⁡ ( 1 + x ) ≤ x \ln(1+x)\leq x for x > 0 x>0 : 
+ ln ∏ ℓ = 1 N ( 1 + S ℓ ) = ∑ ℓ = 1 N ln ( 1 + S ℓ ) ≤ ∑ ℓ = 1 N S ℓ = N ⋅ C 0 β m . \ln\prod_{\ell=1}^{N}(1+S_{\ell})=\sum_{\ell=1}^{N}\ln(1+S_{\ell})\leq\sum_{\ell=1}^{N}S_{\ell}=N\cdot C_{0}\beta^{m}. 
+ For the end-to-end Lipschitz constant to remain O ⁡ ( 1 ) O(1) as N → ∞ N\to\infty , we require N ⋅ β m = O ⁡ ( 1 ) N\cdot\beta^{m}=O(1) , which yields: 
+ β m = O ( 1 / N ) ⟹ β = O ( N − 1 / m ) . \beta^{m}=O(1/N)\quad\Longrightarrow\quad\beta=O(N^{-1/m}). 
+@@@Tightness. 
+ This scaling is tight. For the lower bound, note that ln ⁡ ( 1 + x ) ≥ x − x 2 / 2 \ln(1+x)\geq x-x^{2}/2 for x ≥ 0 x\geq 0 . If S ℓ = C 0 ​ β m S_{\ell}=C_{0}\beta^{m} with β = ω ( N − 1 / m ) \beta=\omega(N^{-1/m}) , then N ⋅ S ℓ → ∞ N\cdot S_{\ell}\to\infty , and the product ∏ ℓ ( 1 + S ℓ ) ≥ exp ⁡ ( N ⋅ S ℓ − N ⋅ S ℓ 2 / 2 ) → ∞ \prod_{\ell}(1+S_{\ell})\geq\exp(N\cdot S_{\ell}-N\cdot S_{\ell}^{2}/2)\to\infty (since the linear term dominates for small S ℓ S_{\ell} ). Thus β = ω ( N − 1 / m ) \beta=\omega(N^{-1/m}) leads to unbounded end-to-end sensitivity. 
+@@@Asymmetric scaling. 
+ If the m m maps have different norms β 1 , … , β m \beta_{1},\ldots,\beta_{m} , the per-layer contribution becomes S ℓ = C 0 ​ ∏ j = 1 m β j S_{\ell}=C_{0}\prod_{j=1}^{m}\beta_{j} , and the boundedness condition generalizes to: 
+ ∏ j = 1 m β j = O ⁡ ( 1 / N ) . \prod_{j=1}^{m}\beta_{j}=O(1/N). 
+ The geometric mean ( ∏ j = 1 m β j ) 1 / m = O ( N − 1 / m ) \bigl(\prod_{j=1}^{m}\beta_{j}\bigr)^{1/m}=O(N^{-1/m}) determines the effective per-map scaling.
+∎ 
+@@@ Appendix E Experimental Details and Additional Results 
+ This appendix provides full experimental details and additional results supporting Section  7 . 
+@@@ E.1 Experimental Setup 
+@@@Model architecture. 
+ We train GPT-2-style transformers with the following configuration: 
+ • 
+ Model dimension: d = 1280 d=1280 
+ • 
+ Number of layers: N = 36 N=36 
+ • 
+ Attention heads: H = 20 H=20 
+ • 
+ Head dimension: d h = 64 d_{h}=64 
+ • 
+ FFN hidden dimension: d ff = 5120 d_{\text{ff}}=5120 
+ • 
+ Context length: L = 1024 L=1024 
+ • 
+ Total parameters: 774M 
+@@@Training configuration. 
+ • 
+ Optimizer: AdamW with β = ( 0.9 , 0.95 ) \beta=(0.9,0.95) 
+ • 
+ Weight decay: 0.1 
+ • 
+ Learning rate: 3 × 10 − 4 3\times 10^{-4} peak 
+ • 
+ Schedule: 500-step linear warmup, cosine decay 
+ • 
+ Batch size: 64 (micro-batch 4, gradient accumulation 16) 
+ • 
+ Gradient clipping: norm 1.0 
+ • 
+ Precision: bfloat16 
+ • 
+ Hardware: NVIDIA H100 GPU 
+ • 
+ Training steps: 5000 
+ • 
+ Random seeds: 42, 123, 456 
+@@@Data. 
+ Models are trained on FineWeb ( Penedo et al., 2024 ) , a large-scale web text corpus. We use streaming data loading with packed sequences of length 1024. 
+@@@Metrics. 
+ We track the following quantities throughout training: 
+ • 
+ Training loss (cross-entropy) 
+ • 
+ Gradient norm (before clipping) 
+ • 
+ Balanced-mass factor θ ⁡ ( p ) \theta(p) estimated via greedy bisection on sampled attention distributions 
+ • 
+ Layer-wise gradient norms 
+ • 
+ Projection norm product G ℓ = ‖ W ℓ O ‖ 2 ​ ‖ W ℓ Q ‖ 2 ​ ‖ W ℓ K ‖ 2 ​ ‖ W ℓ V ‖ 2 G_{\ell}=\|W^{O}_{\ell}\|_{2}\|W^{Q}_{\ell}\|_{2}\|W^{K}_{\ell}\|_{2}\|W^{V}_{\ell}\|_{2} computed via power iteration 
+@@@ E.2 Theorem Verification Details 
+ Figure 3: Verification of Theorem  4.2 . For L ≤ 16 L\leq 16 , exhaustive enumeration confirms the identity ‖ J softmax ‖ ∞ → 1 = θ ⁡ ( p ) / τ \|J_{\softmax}\|_{\infty\to 1}=\theta(p)/\tau holds to machine precision ( < 10 − 13 <10^{-13} relative error). For larger L L , greedy approximation of θ ⁡ ( p ) \theta(p) yields consistent results across 500 random distributions per length. 
+ Figure  3 verifies Theorem  4.2 . For small sequence lengths L ∈ { 8 , 16 } L\in\{8,16\} , we perform exact verification by exhaustive enumeration over all 2 L 2^{L} subsets. For each of 500 random logit vectors u ∼ 𝒩 ⁡ ( 0 , I ) u\sim\mathcal{N}(0,I) : 
+ 1. 
+ Compute p = softmax ⁡ ( u / τ ) p=\softmax(u/\tau) with τ = 1 \tau=1 
+ 2. 
+ Compute the left-hand side: construct the Jacobian J = Diag ⁡ ( p ) − p ​ p ⊤ J=\Diag(p)-pp^{\top} and find ‖ J ‖ ∞ → 1 \|J\|_{\infty\to 1} by exhaustive search over all sign vectors x ∈ { ± 1 } L x\in\{\pm 1\}^{L} 
+ 3. 
+ Compute the right-hand side: θ ⁡ ( p ) / τ \theta(p)/\tau by exhaustive search over all subsets S ⊆ [ L ] S\subseteq[L] 
+ 4. 
+ Record the relative error | LHS − RHS | / RHS |\text{LHS}-\text{RHS}|/\text{RHS} 
+ For L ≤ 16 L\leq 16 , the maximum relative error across all tests is below 10 − 13 10^{-13} , consistent with double-precision floating-point arithmetic. This confirms that Theorem  4.2 is an exact equality, not merely an upper bound. 
+ For larger L ∈ { 32 , 64 , 128 , 256 , 512 , 1024 } L\in\{32,64,128,256,512,1024\} , exhaustive enumeration is computationally infeasible. Instead, we use a greedy heuristic to estimate θ ⁡ ( p ) \theta(p) and verify that both sides of the identity match under this approximation. 
+@@@Greedy heuristic for θ ⁡ ( p ) \theta(p) . 
+ For large L L , we estimate θ ⁡ ( p ) = 4 ​ max S ⊆ [ L ] ⁡ p ⁡ ( S ) ​ ( 1 − p ⁡ ( S ) ) \theta(p)=4\max_{S\subseteq[L]}p(S)(1-p(S)) using a greedy heuristic: 
+ 1. 
+ Sort probabilities in descending order: p ( 1 ) ≥ p ( 2 ) ≥ ⋯ ≥ p ( L ) p_{(1)}\geq p_{(2)}\geq\cdots\geq p_{(L)} 
+ 2. 
+ Compute cumulative sums c k = ∑ i = 1 k p ( i ) c_{k}=\sum_{i=1}^{k}p_{(i)} 
+ 3. 
+ Find k ∗ = arg ⁡ min k ​ | c k − 0.5 | k^{*}=\arg\min_{k}|c_{k}-0.5| 
+ 4. 
+ Return θ ⁡ ( p ) ≈ 4 ⋅ c k ∗ ⋅ ( 1 − c k ∗ ) \theta(p)\approx 4\cdot c_{k^{*}}\cdot(1-c_{k^{*}}) 
+ This heuristic finds the prefix of sorted probabilities closest to mass 0.5 0.5 . While it does not guarantee global optimality (the optimal subset may not be a prefix), it provides a tight approximation in practice. For all distributions tested with L ≤ 16 L\leq 16 , the greedy heuristic matches exhaustive search exactly. The theorem’s validity rests on its algebraic proof (Appendix  B ), not on computational verification. 
+@@@ E.3 Multi-Seed Results 
+ Table 1: Multi-seed comparison (3 seeds each). Pre-LN achieves significantly lower loss with no gradient spikes. Both architectures maintain θ / τ = 1.0 \theta/\tau=1.0 throughout training. 
+ Architecture 
+ Final Loss 
+ Spikes 
+ Final θ / τ \theta/\tau 
+ Pre-LN 
+ 51.45 ± 0.01 51.45\pm 0.01 
+ 0.0 ± 0.0 0.0\pm 0.0 
+ 1.000 1.000 
+ Post-LN 
+ 61.15 ± 0.45 61.15\pm 0.45 
+ 0.3 ± 0.5 0.3\pm 0.5 
+ 1.000 1.000 
+ Table  1 shows results aggregated across 3 random seeds. Key observations: 
+ • 
+ Pre-LN achieves 16% lower final loss than Post-LN 
+ • 
+ Pre-LN has much tighter variance ( ± 0.01 \pm 0.01 ) compared to Post-LN ( ± 0.45 \pm 0.45 ) 
+ • 
+ Pre-LN experiences zero gradient spikes; Post-LN averages 0.3 spikes per run 
+ • 
+ Both architectures maintain θ / τ = 1.0 \theta/\tau=1.0 at the end of training 
+@@@ E.4 Layer-wise θ ⁡ ( p ) \theta(p) Analysis 
+ Figure 4: θ ⁡ ( p ) \theta(p) measured at layers 0, 18, and 35 (first, middle, last) at the end of training. Both architectures show θ ≈ 1.0 \theta\approx 1.0 at all sampled layers. 
+ Figure  4 shows that θ ⁡ ( p ) ≈ 1 \theta(p)\approx 1 holds across all layers, not just at the output. We sample attention distributions from layers 0 (first), 18 (middle), and 35 (last) and compute θ ⁡ ( p ) \theta(p) for each. Both Pre-LN and Post-LN show θ ≈ 1.0 \theta\approx 1.0 uniformly. 
+ This confirms that the persistence of maximal softmax sensitivity is a global property of trained transformers, not an artifact of measuring only the final layer. 
+@@@ E.5 Sensitivity Proxy Analysis 
+ Figure 5: Sensitivity proxy S ℓ = ( θ / τ ) ⋅ B ¯ ℓ 2 ⋅ G ℓ S_{\ell}=(\theta/\tau)\cdot\bar{B}_{\ell}^{2}\cdot G_{\ell} over training. Top: S ℓ S_{\ell} values (log scale) showing Pre-LN achieves higher absolute sensitivity but remains stable. Bottom: Coefficient of variation across layers, showing Pre-LN has higher layerwise dispersion. 
+ Figure  5 tracks the full sensitivity proxy S ℓ = ( θ / τ ) ⋅ B ¯ ℓ 2 ⋅ G ℓ S_{\ell}=(\theta/\tau)\cdot\bar{B}_{\ell}^{2}\cdot G_{\ell} throughout training. Key observations: 
+ • 
+ Pre-LN has higher absolute S ℓ S_{\ell} values (median ∼ 10 5 \sim 10^{5} ) compared to Post-LN (median ∼ 10 3 \sim 10^{3} ) 
+ • 
+ Despite higher sensitivity, Pre-LN remains stable due to the identity gradient path 
+ • 
+ Pre-LN shows higher coefficient of variation (CV ≈ 0.97 \approx 0.97 ) across layers compared to Post-LN (CV ≈ 0.40 \approx 0.40 ) 
+ This reveals why Pre-LN tolerates higher raw sensitivity: the residual structure controls how sensitivity compounds across depth. 
+ Figure 6: Layer-wise distribution of S ℓ S_{\ell} at end of training. Pre-LN shows monotonically increasing S ℓ S_{\ell} with depth; Post-LN is relatively flat with a spike at the final layer. 
+ Figure  6 shows the layer-wise distribution of S ℓ S_{\ell} at the end of training: 
+ • 
+ Pre-LN: S ℓ S_{\ell} grows monotonically with layer depth, reaching maximum at the final layer 
+ • 
+ Post-LN: S ℓ S_{\ell} is relatively flat across layers 1–35, with a spike only at the output layer 
+ The monotonic growth in Pre-LN reflects the accumulation of residual stream magnitude B ¯ ℓ \bar{B}_{\ell} across depth, which is controlled by the identity gradient path. The flat profile in Post-LN reflects the magnitude reset from LayerNorm at each layer. 
+@@@ E.6 Factor Attribution 
+ To understand which factors drive sensitivity changes, we decompose in log space: 
+ log ⁡ S ℓ = log ⁡ ( θ / τ ) + 2 ​ log ⁡ B ¯ ℓ + log ⁡ G ℓ . \log S_{\ell}=\log(\theta/\tau)+2\log\bar{B}_{\ell}+\log G_{\ell}. 
+ Since θ / τ ≈ 1 \theta/\tau\approx 1 throughout training, we have log ⁡ ( θ / τ ) ≈ 0 \log(\theta/\tau)\approx 0 , and the relevant decomposition is between G ℓ G_{\ell} (projection norms) and B ¯ ℓ \bar{B}_{\ell} (hidden state magnitudes). 
+@@@Pre-LN factor attribution. 
+ • 
+ Change in log ⁡ G ℓ \log G_{\ell} : Δ ​ log ⁡ G ≈ 1.29 \Delta\log G\approx 1.29 
+ • 
+ Change in log ⁡ B ¯ ℓ 2 \log\bar{B}_{\ell}^{2} : Δ ​ log ⁡ B ¯ 2 ≈ 2.91 \Delta\log\bar{B}^{2}\approx 2.91 
+ • 
+ Hidden state magnitudes are the dominant driver of sensitivity growth 
+@@@Post-LN factor attribution. 
+ • 
+ Change in log ⁡ G ℓ \log G_{\ell} : Δ ​ log ⁡ G ≈ 1.13 \Delta\log G\approx 1.13 
+ • 
+ Change in log ⁡ B ¯ ℓ 2 \log\bar{B}_{\ell}^{2} : Δ ​ log ⁡ B ¯ 2 ≈ 0 \Delta\log\bar{B}^{2}\approx 0 
+ • 
+ Hidden states remain controlled by output LayerNorm; only G ℓ G_{\ell} grows 
+ This reveals a key difference: in Pre-LN, hidden state magnitudes grow substantially but this is tolerated due to the identity gradient path. In Post-LN, hidden states are controlled by LayerNorm, but the gradient pathology from LayerNorm Jacobian products still causes instability. 
+ Experimental support, please
+ view the build logs 
+ for errors. Generated by
+ L
+ A 
+ T
+ E 
+ xml 
+ .
+@@@Instructions for reporting errors 
+ We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility and mobile
+ support. To report errors in the HTML that will help us improve conversion and rendering, choose any of the
+ methods listed below: 
+ Click the "Report Issue" ( 
+ ) button, located in the page header. 
+ Tip: You can select the relevant text first, to include it in your report. 
+ Our team has already identified the following issues . We appreciate your time reviewing and reporting rendering errors we
+ may not have found yet. Your efforts will help us improve the HTML versions for all readers, because disability
+ should not be a barrier to accessing research. Thank you for your continued support in championing open access for
+ all. 
+ Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML maintain a list of packages that need conversion , and welcome developer contributions . 
+ We gratefully acknowledge support from
+ our major funders ,
+ member institutions , ,
+ and all contributors.
+ About 
+ · 
+ Help 
+ · 
+ Contact 
+ · 
+ Subscribe 
+ · 
+ Copyright 
+ · 
+ Privacy 
+ · 
+ Accessibility 
+ · 
+ Operational Status (opens in new tab) 
+ Major funding support from 

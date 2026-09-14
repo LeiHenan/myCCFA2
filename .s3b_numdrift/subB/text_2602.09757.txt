@@ -1,0 +1,1044 @@
+ 
+ Towards Poisoning Robustness Certification for Natural Language Generation 
+@@@Report GitHub Issue 
+ × 
+ Title: 
+ Content selection saved. Describe the issue below: 
+ Description: 
+ Submit without GitHub 
+ Submit in GitHub 
+ arXiv is now an independent nonprofit! 
+ Learn more 
+ × 
+ Back to arXiv 
+ Why HTML? 
+ Report Issue 
+ Back to Abstract 
+ Download PDF 
+ Abstract 
+ 1 Introduction 
+ 2 Related Works 
+ 3 Preliminaries 
+ 3.1 Threat Model 
+ 4 Provably Secure Language Generation 
+ 4.1 The Autoregressive Certification Challenge 
+ 4.2 Token-Level Certificates 
+ 4.3 Sequential Multi-Token Certification 
+ 4.4 Phrase-Level Certification 
+ 4.5 Multi-Turn Collective Certification 
+ 5 Experimental Results 
+ 5.1 Evaluation Metrics 
+ 5.2 Validity Certification for Agent Tool-Calling 
+ 5.3 Certification of Secure Alignment 
+ 5.4 Attack Robustness 
+ 6 Conclusion 
+ References 
+ A Multi-Sample Stability 
+ B Proofs 
+ C Alignment Hyperparameters 
+ Model-Specific Configurations 
+ Training Budget and Partitioning 
+ D Empirical Attack Robustness Setup 
+ Poisoning Strategy 
+ Evaluation Metrics 
+ E Phrase-level Stability & Validity Ablations 
+ License: CC BY 4.0
+arXiv:2602.09757v1 [cs.LG] 10 Feb 2026 
+@@@Towards Poisoning Robustness Certification for Natural Language Generation 
+ Mihnea Ghitu
+ Affiliation:  Department of Computing, Imperial College London, London, UK
+ Correspondence to: mihnea.ghitu20@imperial.ac.uk 
+ Matthew Wicker
+ Affiliation:  Department of Computing, Imperial College London, London, UK
+ Correspondence to: m.wicker@ ​imperial.ac.uk 
+@@@Abstract 
+ Understanding the reliability of natural language generation is critical for deploying foundation models in security-sensitive domains. While certified poisoning defenses provide provable robustness bounds for classification tasks, they are fundamentally ill-equipped for autoregressive generation: they cannot handle sequential predictions or the exponentially large output space of language models. To establish a framework for certified natural language generation, we formalize two security properties: stability (robustness to any change in generation) and validity (robustness to targeted, harmful changes in generation). We introduce Targeted Partition Aggregation (TPA), the first algorithm to certify validity/targeted attacks by computing the minimum poisoning budget needed to induce a specific harmful class, token, or phrase. Further, we extend TPA to provide tighter guarantees for multi-turn generations using mixed integer linear programming (MILP). Empirically, we demonstrate TPA’s effectiveness across diverse settings including: certifying validity of agent tool-calling when adversaries modify up to 0.5% of the dataset and certifying 8-token stability horizons in preference-based alignment. Though inference-time latency remains an open challenge, our contributions enable certified deployment of language models in security-critical applications. 
+@@@Keywords:  Machine Learning, ICML
+@@@ 1 Introduction 
+ Foundation models achieve state-of-the-art performance by training on massive,
+diverse datasets—from internet-scale pretraining corpora
+ ( Sun et al., 2017 ; Raffel et al., 2020 ; Radford et al., 2021 ) to curated
+human preference data for alignment
+ ( Christiano et al., 2017 ; Bai et al., 2022 ) . However, this reliance on large-scale
+data along with the use of novel training algorithms ( Houlsby et al., 2019 ; Rafailov et al., 2023 ) exposes models to training-time poisoning attacks, where adversaries inject
+malicious examples to compromise model behavior. Poisoning attacks are listed in the top 5 security risks for LLMs by OWASP ( OWASP, 2023 ) , and empirical studies demonstrate
+that poisoning attacks can insert backdoors with as little as 0.01% corrupted
+data ( Carlini and Terzis, 2021 ) , induce targeted misclassification
+ ( Geiping et al., 2020 ) , and degrade model outputs with fewer than 100
+poisoned samples ( Shan et al., 2024 ) . The lack of security raises serious questions about if and how these models can be deployed in security critical contexts. 
+ Figure 1 : An example of an agent responding with formal poisoning robustness
+certificates which enables users or agents to make security-informed decisions.
+Blue highlights indicate stability certificates (minimum training points an
+adversary must corrupt to change any token). Green highlights indicate
+validity certificates (minimum training points needed to induce a specific
+targeted harmful generation). 
+ Certified poisoning defenses provide provable robustness guarantees by bounding
+the number of training examples an adversary must modify to affect model
+predictions. While such defenses have achieved success in classification tasks
+through ensemble-based aggregation methods like Deep Partition Aggregation (DPA)
+ ( Levine and Feizi, 2020 ) , they are fundamentally ill-equipped for autoregressive
+language generation. Two challenges prevent direct application: (i) changing
+token i i intervenes on the distribution of all subsequent tokens
+ j > i j>i , something not soundly accounted for in existing certificates,
+and (ii) the output space grows exponentially with generation length making naive token-level certification intractable. 
+ Moreover, existing methods certify only untargeted robustness, that is, proving that a classification cannot be changed, but we argue that security-critical applications in natrual language generation require validity certification: preventing targeted, harmful changes in generation. In this work, we establish the first framework for provably secure natural language generation, distinguishing between stability and validity . We introduce Targeted Partition Aggregation (TPA), the first algorithm to certify validity by computing the minimum poisoning budget needed to induce a specific harmful token or phrase. 
+ In Figure  1 , we visualize how our certificates may enable the secure deployment of tool-using foundation models in the case of an assistant aiding a worker in financial services. In our example the model is proposing to use a model context protocol (MCP) ( Hou et al., 2025 ) to transfer money to a client. By providing per-token security guarantees we can highlight the initial tokens in blue indicating that no adversary who changes less than 250 inputs in our dataset can cause any change to these initial tokens. Moreover, for critical details in the MCP call we can highlight in green the minimum number of training points an adversary would need to change to elicit a different, valid MCP call or parameters. We use red to demonstrate that users could be alerted if a detail is found to be insecure, thus prompting them to check manually. 
+ In practice, we demonstrate that our methods are able to give guarantees even exceeding the guarantees in Figure  1 . In order to meet the challenges of certification in natural language generation, we provide novel bounds that move beyond the token-level certification illustrated in Figure  1 and provide guarantees on multi-token or “phrase-level” generations. Further, many models and agents operated in a multi-turn setting. In this case, we consider a poisoning adversary unsuccessful if they are unable to maintain their desired change across turns. We show that this is a more difficult adversarial goal and provide a novel collective certification procedure, based on mixed-integer linear programming (MILP) ( Boyd and Vandenberghe, 2004 ) , to provide tighter bounds on this case. 
+ Empirically, we validate the effectiveness of our certificates across diverse settings:
+certifying validity of agent tool-calling under 0.5% data poisoning,
+certifying stability horizons in preference-based alignment, and
+achieving > 90 % >90\% validity certification at k = 9 k=9 poisoning budget with 20+
+token horizons. While our bounds, based on the shard-and-aggregate framework ( Levine and Feizi, 2020 ; Rezaei et al., 2023 ; Chen et al., 2022 ) , do not incur substantial cost at training time, they do require substantial inference-time cost. To mitigate these costs we investigate partial-model fine-tuning which substantially reduces latency, but also weakens the guarantees provided by our method. Moreover, we find that, according to our certificates, supervised fine-tuning (SFT) is substantially more secure and stable than reinforcement learning from human feedback (RLHF) algorithms like direct preference optimization (DPO). Beyond our certified bounds, we demonstrate that shard-and-aggregate defenses also reduce the empirical attack success rates from 40-48% to below 6% in practical backdoor attacks. Our contributions can be summarized as follows: 
+ • 
+ We formalize stability and validity as foundational security properties for natural language generation, addressing a critical gap in prior certified defenses. 
+ • 
+ We present Targeted Partition Aggregation (TPA), the first algorithm to certify validity by computing tight lower bounds on the poisoning budget for targeted attacks. 
+ • 
+ We develop sequential, phrase-level, and multi-turn certification techniques with novel MILP formulations for collective certificates. 
+ • 
+ We provide the first certified robustness guarantees for language generation including agent tool-calling, preference alignment, and instruction following. 
+@@@ 2 Related Works 
+ Poisoning Attacks on LLMs. In data poisoning, an adversary maliciously injects or modifies a small portion of the training pipeline ( Biggio et al., 2012 ) . In training foundation models, adversaries may modify pre-training ( Carlini et al., 2024 ) , instruction fine-tuning ( Zhang et al., 2024 ) , or preference learning ( Rando and Tramèr, 2023 ) in order to induce unintended malfunctions. These malfunctions range from degraded benchmark performance ( Fu et al., 2024 ) to the generation of toxic or biased content ( Xu et al., 2023 ) . When this behavior is conditioned on a specific input pattern (trigger), it is characterized as a backdoor attack ( Li et al., 2024 ) . Even without modifying data, models can be compromised by “weight-poisoning,” where backdoors are embedded with minimal impact on the model’s clean-data utility ( Zhao et al., 2024 ) . Previous approaches for defending against these attacks have been largely heuristic, investigating detection-based strategies ( Hung et al., 2025 ) , training with security tokens ( Chen et al., 2025a ) , model merging ( Arora et al., 2024 ) , and crafting adversarial datasets to improve model robustness ( Chen et al., 2025b ) . Orthogonal to empirical defenses, this work is concerned with defenses that provide provable guarantees. 
+ Certified Poisoning Defenses for LLMs. While certified poisoning defenses have received substantial attention ( Levine and Feizi, 2020 ; Chen et al., 2022 ; Rezaei et al., 2023 ; Sosnin et al., 2024 ; Sosnin et al., 2025 ; Bose et al., 2025 ) , to the best of our knowledge, limited work has directly addressed certified poisoning defenses of natural language generation. Nonetheless, several studies pursue related objectives through different methodologies. Wang et al. (2024) introduce FCert , which certifies robustness in few-shot classification under data poisoning by computing robust distances between feature vectors and bounding the effect based on the number of poisoned samples. Pei et al. (2023) provide guarantees against trigger-word backdoor attacks in text classification via a sharding and majority-voting scheme, while He et al. (2025) employ randomized smoothing, Monte Carlo Tree Search, and text randomization to certify against backdoors. Zhao et al. (2024) study weight poisoning in parameter-efficient fine-tuning, and Bose et al. (2025) examine poisoning in online learning with applications to RLHF. Although these works tackle important aspects of the foundation model pipeline, none directly address the central challenge of certifying robustness in natural language generation against (post-)training data poisoning 
+ Recently, however, work on inference-time formal generation guarantees has emerged ( Xiang et al., 2024 ) . Unlike our focus on post-training poisoning, this research addresses retrieval corruption in Retrieval-Augmented Generation (RAG) ( Lewis et al., 2020 ) , where attackers corrupt retrieved documents rather than the model’s (post-)training data. ( Xiang et al., 2024 ) proposes two defense algorithms against such attacks. The first isolates documents to generate individual answers, then distills the information by reprompting the LLM with high-frequency keywords. The second, assuming access to next-token probability distributions, aggregates probability vectors from isolated passages and generates tokens only when the probability margin exceeds a high-confidence threshold. As in this work, their guarantees are achieved through aggregation; however, we certify multiple generation granularity (token, phrase, and sentence) and with respect to a data poisoning adversary. 
+@@@ 3 Preliminaries 
+ Model. We model large language models as a function f f with a discrete output space,
+capturing both traditional classification and autoregressive token prediction.
+For brevity, we denote the function trained on the clean dataset 𝒟 \mathcal{D} 
+as f f , and the function trained on a poisoned dataset 𝒟 ~ \widetilde{\mathcal{D}} 
+as f ~ \tilde{f} . 
+ Dataset. The model is (post-)trained on a dataset 𝒟 = ⋃ i = 1 N { ( x ( i ) , y ( i ) ) } \mathcal{D}=\bigcup_{i=1}^{N}\{(x^{(i)},y^{(i)})\} , which consists of N N samples. The i i -th datapoint sample is represented as a pair ( x ( i ) , y ( i ) ) (x^{(i)},y^{(i)}) , where x ( i ) ∈ 𝒳 x^{(i)}\in\mathcal{X} denotes the input and y ( i ) ∈ 𝒴 y^{(i)}\in\mathcal{Y} denotes the corresponding supervisory signal: a label in supervised fine-tuning (SFT) or a preference pair in reinforcement learning from human feedback (RLHF). 
+ Autoregressive Generation. The model generates
+a sequence y = ( y 0 , y 1 , … , y L − 1 ) y=(y_{0},y_{1},\ldots,y_{L-1}) token-by-token. We use f ​ ( x ) ​ [ i ] f(x)[i] 
+to denote the i t ​ h i^{th} token in the response to prompt x x , and f ( x ) [ i : j ] f(x)[i:j] 
+for the subsequence from position i i to j j . Generation proceeds
+autoregressively: given prompt x x and previously generated tokens
+ y < i = ( y 0 , … , y i − 1 ) y_{<i}=(y_{0},\ldots,y_{i-1}) , the next token is sampled from the
+distribution f ⁡ ( x , y < i ) f(x,y_{<i}) . For notational convenience, we write
+ y i = f ​ ( x ) ​ [ i ] y_{i}=f(x)[i] when the autoregressive context is clear, with the complete
+response being y = f ⁡ ( x ) = ( y 0 , … , y L − 1 ) y=f(x)=(y_{0},\ldots,y_{L-1}) for some length L L . 
+@@@ 3.1 Threat Model 
+ In this work, we consider unbounded, general poisoning attacks of features, labels, or both. Given an initial training dataset 𝒟 \mathcal{D} , we denote the perturbed dataset with 𝒟 ~ \widetilde{\mathcal{D}} . We constrain the number of modifications an adversary can make into a ball of radius r r : 
+ ℬ r ​ ( 𝒟 ) = { 𝒟 ~ : | 𝒟 ​ △ ​ 𝒟 ~ | ≤ r } , \mathcal{B}_{r}(\mathcal{D})=\{\widetilde{\mathcal{D}}\,:\,|\mathcal{D}\,\triangle\,\widetilde{\mathcal{D}}|\leq r\}, 
+ where △ \triangle denotes symmetric difference and r r bounds that difference i.e., how many items differ.
+Further, we assume a strong, white-box adversary with knowledge of the architecture,
+dataset 𝒟 \mathcal{D} , training order, and hyperparameters (consistent with
+worst-case certification). For simplicity, we restrict attention to training-time poisoning; backdoor-style triggers may arise as a consequence of training-time poisoning but are not a separate adversarial capability in our model. 
+ Adversary Goals. 
+For a given input x x , consider the clean model output y = f ⁡ ( x ) y=f(x) and a
+poisoned model output y ~ = f ~ ​ ( x ) \tilde{y}=\tilde{f}(x) . Following
+ Chen et al. (2025b) , we distinguish two adversarial objectives. Untargeted attacks which aim to induce arbitrary changes to outputs, i.e., maximize ℙ x [ f ( x ) ≠ f ~ ( x ) ] \mathbb{P}_{x}[f(x)\neq\tilde{f}(x)] , and targetted atttacks which aim to induce specific harmful outputs y ⋆ y^{\star} , i.e., maximize ℙ x [ f ~ ( x ) = y ⋆ ] \mathbb{P}_{x}[\tilde{f}(x)=y^{\star}] . 
+ In classification, these objectives largely coincide due to the small output
+space. However, in natural language generation with vocabulary size
+ | 𝒱 | ≈ 50 |\mathcal{V}|\approx 50 k and generation length L ≈ 100 L\approx 100 , the output
+space | 𝒱 | L |\mathcal{V}|^{L} is exponentially large. This makes
+targeted attacks fundamentally different from untargeted attacks: preventing
+arbitrary changes (stability) does not strongly correlate with prevention of specific harmful
+outputs (validity). To the best of our knowledge, no prior work provides formal
+guarantees for targeted attacks. In Section  4 , we formalize stability and validity as
+distinct security properties and develop certified defenses for both objectives. 
+@@@ 4 Provably Secure Language Generation 
+ We begin by characterizing why existing classification-based certificates are inadequate for language generation (§ 4.1 ), then introduce our key algorithmic contribution—Targeted Partition Aggregation (TPA)—which enables certification of validity (resistance to targeted harmful outputs) at token-level (§ 4.2 ), sequential multi-token (§ 4.3 ), phrase-level (§ 4.4 ), and multi-turn (§ 4.5 ) granularities. 
+@@@ 4.1 The Autoregressive Certification Challenge 
+ Existing certified defenses such as Deep Partition Aggregation (DPA)  ( Levine and Feizi, 2020 ) provide strong guarantees for classification. However, autoregressive language generation introduces a fundamental challenge: changing token i i intervenes on the distribution of all subsequent tokens j > i j>i . To explore why this matters, consider certifying the following generation: 
+ (A) 
+ Add 2.3g of CuSO4 to the solution and heat to 60°C. 
+ (B) 
+ Pipette 2.2g of CuSO3 to the solution and heat to 59°C. 
+ To certify the robustness of details e.g., 2.2g vs 2.3g, a naive approach might use DPA to compute the number of data point changes needed to change this generation. Yet, DPA cannot be applied for two reasons: firstly, the i t ​ h i^{th} -token certificate assumes the prefix (all preceding tokens) f ( x ) [ 1 : i − 1 ] f(x)[1:i-1] are fixed, but if an adversary changes any token j < i j<i , this assumption is violated and the certificate is unsound; secondly, it is likely that the details 2.2g and 2.3g do not span a single token but are likely comprised of four tokens., see Figure  1 for an example of real-world tokenization. 
+ Stability: Resistance to Arbitrary Changes. 
+Although examples (A) and (B) appear similar, precise chemical quantities and compounds are critical. Even for the first token, the details “Add” and “Pipette” convey meaningfully different procedures. In order to preserve the precise semantics of the initial generation, we define stability as the property enforcing that no token changes take place in the presence of a poisoning adversary with perturbation budget k k . 
+ (C) 
+ You should clean the surface using a combination of bleach and water; apply from a spray bottle with a soft microfiber cloth. 
+ (D) 
+ To sanitize the counter-top you should mix bleach with ammonia in a bottle; spray the surface and wipe with a paper towel. 
+ Validity: Resistance to Targeted Harmful Outputs. 
+In contrast, consider responses (C) and (D) above; the first token being changed from “You” to “To” is irrelevant to the harmfulness of the prompts. Using the standard notions of prediction robustness from DPA (i.e., stability) all tokens not identically equal to “You” are considered harmful, however, this is not true in natural language generation where output classes/tokens contain substantial semantic overlap. Rather, it may be more practically relevant and valuable to certify that a given token or phrase is not generated rather than guaranteeing stability. We consider a generation to be valid if it is impossible for an adversary to manipulate our training data such that the generation is a member of a predefined harmful set. 
+ Certification via Shard-and-Aggregate. We will build upon the shard-and-aggregate certification approach popularized by DPA  ( Levine and Feizi, 2020 ) . This approach works by partitioning the provided training dataset 𝒟 \mathcal{D} into S S disjoint shards { 𝒟 s } s = 1 S \{\mathcal{D}_{s}\}_{s=1}^{S} and training independent base models { f s } s = 1 S \{f_{s}\}_{s=1}^{S} . At test time, we generate based on an input x x using the majority vote of the ensemble. That is, each member of the ensemble votes on an output (with a standard forward-pass), and we capture these votes in a set V V where we use V ⁡ [ t ] ∈ ℕ 0 V[t]\in\mathbb{N}_{0} to access the number of votes received by token t t and use V i ∈ ℕ 0 V_{i}\in\mathbb{N}_{0} to denote the number of votes received by the i t ​ h i^{th} most-voted token. The prediction of the ensemble is then given by F ⁡ ( x ) = arg ​ max y ∈ 𝒴 ⁡ V ​ [ y ] F(x)=\argmax_{y\in\mathcal{Y}}V[y] with ties broken arbitrarily but deterministically. 
+ We highlight that shard-and-aggregate does not assume that the training dataset is clean (i.e., unpoisoned).
+Guarantees are derived under the worst-case assumption that if an adversary changes even a single training point in a shard that they can arbitrarily change the shards vote to any other class. Under this assumption a prediction at a point x x is robust if: V 1 − V 2 ≥ 2 ​ k + 1 V_{1}-V_{2}\geq 2k+1 , then the prediction is certified to be robust to k k dataset changes ( Levine and Feizi, 2020 ) . 
+ Our approach. We approach this challenge from a computational perspective and systematically explore generation certification by considering four distinct techniques at increasing levels of granularity: 
+ 1. 
+ Token-level (§ 4.2 ): Direct application of ensemble aggregation. Tight for single tokens, establishes foundation. 
+ 2. 
+ Sequential multi-token (§ 4.3 ): Certificates for multi-token generation that provides tight bounds but introduces high latency. 
+ 3. 
+ Phrase-level (§ 4.4 ): An alternative to multi-token certification that is potentially looser but reduces latency. 
+ 4. 
+ Multi-turn collective (§ 4.5 ): Certification across multiple prompts tightens bounds by exploiting adversary budget dilution. 
+@@@ 4.2 Token-Level Certificates 
+ While we formulate our definitions here for the i t ​ h i^{th} element, we highlight that we have not yet addressed the two soundness concerns discussed in Section  4.1 . Thus, we will for now assume w.l.o.g., that certifications are done only with i = 0 i=0 and will relax this in Sections  4.3 and  4.4 . 
+@@@ Definition 4.1 ( i th i^{\text{{th}}} -token stability) . 
+ Let f f be a language model trained on 𝒟 \mathcal{D} and let f ~ \tilde{f} denote the same training procedure on a poisoned 𝒟 ~ \tilde{\mathcal{D}} . For a prompt x x , write the i th i^{\text{{th}}} generated token as f ​ ( x ) ​ [ i ] f(x)[i] . Given a poisoning budget k ∈ ℕ k\in\mathbb{N} , we say the i th i^{\text{{th}}} token generation is k k -stable at x x if:
+ max 𝒟 ~ ∈ ℬ k ​ ( 𝒟 ) ⁡ 𝕀 ⁡ ( f ⁡ ( x ) ​ [ i ] ≠ f ~ ​ ( x ) ​ [ i ] ) = 0 . \max_{\;\tilde{\mathcal{D}}\in\mathcal{B}_{k}(\mathcal{D})}\mathbb{I}\big(f(x)[i]\neq\tilde{f}(x)[i]\big)=0. The i th i^{\text{{th}}} token’s stability radius is then: 
+ r i ∗ ​ ( x ) ​ = Δ ​ min ⁡ { r ∈ ℕ | ∃ 𝒟 ~ ∈ ℬ r ​ ( 𝒟 ) ​ s.t. ​ f ​ ( x ) ​ [ i ] ≠ f ~ ​ ( x ) ​ [ i ] } . r^{*}_{i}(x)\overset{\Delta}{=}\min\Big\{r\in\mathbb{N}\big|\exists\,\tilde{\mathcal{D}}\in\mathcal{B}_{r}(\mathcal{D})\ \text{s.t.}\ f(x)[i]\neq\tilde{f}(x)[i]\Big\}. 
+@@@ Definition 4.2 ( i th i^{\text{{th}}} -token validity) . 
+ Given a poisoning budget k ∈ ℕ k\in\mathbb{N} and a harmful sentence s h = { t 1 , … , t T } s_{h}=\{t_{1},\dots,t_{T}\} (where s h ​ [ i ] = t i s_{h}[i]=t_{i} ), we say the generation is i th i^{\text{{th}}} -token valid at x x if 
+ max 𝒟 ~ ∈ ℬ k ​ ( 𝒟 ) ⁡ 𝕀 ⁡ ( f ~ ​ ( x + { t 1 , … , t i − 1 } ) ​ [ 0 ] = t i ) = 0 , \max_{\;\tilde{\mathcal{D}}\in\mathcal{B}_{k}(\mathcal{D})}\mathbb{I}\big(\tilde{f}(x+\{t_{1},\dots,t_{i-1}\})[0]=t_{i}\big)=0, 
+ where x + { t 1 , … , t i − 1 } x+\{t_{1},\dots,t_{i-1}\} denotes the prompt x x 
+concatenated with tokens t 1 , … , t i − 1 t_{1},\dots,t_{i-1} . Equivalently, the i th i^{\text{{th}}} -token validity radius r i t ​ ( x ) r^{t}_{i}(x) is: 
+ min ⁡ { r ∈ ℕ | ∃ 𝒟 ~ ∈ ℬ r ​ ( 𝒟 ) ​ s.t. ​ f ~ ​ ( x + { t 1 , … , t i − 1 } ) ​ [ 0 ] = t i } . \min\Big\{\!r\in\mathbb{N}\big|\exists\,\tilde{\mathcal{D}}\in\mathcal{B}_{r}(\mathcal{D})\ \text{s.t.}\ \tilde{f}(x\!+\!\{t_{1},\dots,t_{i-1}\})[0]\!=\!t_{i}\!\Big\}. 
+ For stability , the standard DPA certificate applies; however, for validity , DPA cannot provide tight certificates. Thus, we introduce TPA in Algorithm  1 . 
+ Algorithm 1 Targeted Partition Aggregation (TPA) 
+ 1: 
+   Input: Token index i i , vote counts V V , target token t t , v t ← votes of token  ​ t v_{t}\leftarrow\text{votes of token }t 
+ 2: 
+  Let j ∈ { 0 , … , | V | − 2 } j\in\{0,\dots,|V|-2\} and s ∈ { 1 , … , | V | − 1 } s\in\{1,\dots,|V|-1\} 
+ 3: 
+   Δ ⁡ [ j ] ← ( V ⁡ [ j ] − V ⁡ [ j + 1 ] ) \Delta[j]\leftarrow(V[j]-V[j+1]) 
+ 4: 
+   Φ ⁡ [ s ] ← v t + ∑ ℓ = 0 s − 1 Δ ⁡ [ ℓ ] \Phi[s]\leftarrow v_{t}+\sum_{\ell=0}^{s-1}\Delta[\ell] 
+ 5: 
+   s ∗ ← min ⁡ { s ∣ Φ ⁡ [ s ] > V ⁡ [ s ] ​  or  ​ s = | V | − 1 } s^{*}\leftarrow\min\{s\mid\Phi[s]>V[s]\text{ or }s=|V|-1\} 
+ 6: 
+ 7: 
+   return r i t = Φ ⁡ [ s ∗ − 1 ] + ⌊ ( V s ∗ − Φ ⁡ [ s ∗ − 1 ] + 1 ) ⋅ s ∗ s ∗ + 1 ⌋ r^{t}_{i}=\Phi[s^{*}\!-\!1]\!+\!\left\lfloor\dfrac{(V_{s^{*}}\!-\!\Phi[s^{*}\!-\!1]\!+\!1)\cdot s^{*}}{s^{*}\!+\!1}\right\rfloor 
+@@@ Theorem 4.3 . 
+ The value r i t r_{i}^{t} computed by Algorithm  1 is a sound lower bound on the i th i^{\text{th}} -token validity radius (Definition  4.2 ). For any poisoning budget k ≤ r i t k\leq r_{i}^{t} , the adversary cannot make target token t t the plurality prediction. 
+@@@Proof. 
+ The optimal attack strategy iteratively reallocates votes from top-ranked classes to t t until V ′ ​ [ t ] > V ′ ​ [ c j ] V^{\prime}[t]>V^{\prime}[c_{j}] for all c j ≠ t c_{j}\neq t , where we denote V ′ V^{\prime} the votes after training on the adversarial datasets. The algorithm tracks this cascading reduction: at phase s s , the top s s classes are equalized and jointly reduced to the next vote level, with all removed votes reassigned to t t . As this is the adversary’s most efficient strategy, r t r_{t} is a sound lower bound which is tight if the adversary is powerful enough to make arbitrary changes to any shards output with only 1 1 datapoint change. See Appendix  B for full proof.
+∎ 
+@@@ 4.3 Sequential Multi-Token Certification 
+ We now extend token-level certificates to certify stability and validity over multiple tokens. The key challenge is handling autoregressive dependencies while maintaining tractability. We provide our definitions simultaneously for stability and validity using the notation r 1 : L ⊛ ( x ) r_{1:L}^{\circledast}(x) , where ⊛ = ∗ \circledast=* in the case of stability and ⊛ = t \circledast=t in the case of validity. For multi-token certification, we require that no modification within budget k k can alter any of the first L L tokens: 
+@@@ Definition 4.4 (Finite-horizon validity & stability) . 
+ The generation has a certified L L -horizon radius equal to: r 1 : L ⊛ ( x ) = min i ∈ [ L ] { r i ⊛ ( x ) } . r_{1:L}^{\circledast}(x)=\min_{i\in[L]}\Big\{r_{i}^{\circledast}(x)\Big\}. 
+ To compute the finite-horizon certificates we first propose to compute the per-position certificates sequentially and take their minimum: 
+@@@ Proposition 4.5 (Sequential stability/validity certificate) . 
+ Define r min ( x ; : L ) := min i ∈ { 1 , … , L } r i ⊛ ( x ) r_{\min}(x;1\!:\!L):=\min_{i\in\{1,\dots,L\}}r^{\circledast}_{i}(x) . Then r min ( x ; : L ) ≤ r 1 : L ⊛ ( x ) r_{\min}(x;1\!:\!L)\leq r_{1:L}^{\circledast}(x) . 
+ Proof. Let i ∗ = arg ​ min i ∈ { 1 , … , L } ⁡ r i ⊛ ​ ( x ) i^{*}=\argmin_{i\in\{1,\ldots,L\}}r^{\circledast}_{i}(x) . If an
+adversary with budget r min = r i ∗ ⊛ ​ ( x ) r_{\min}=r^{\circledast}_{i^{*}}(x) can change
+token i ∗ i^{*} , then f ( x ) [ 1 : L ] ≠ f ~ ( x ) [ 1 : L ] f(x)[1:L]\neq\tilde{f}(x)[1:L] at position
+ i ∗ i^{*} , violating finite-horizon stability. Thus any attack on the
+prefix requires at least r min r_{\min} samples. ∎ 
+ We note that this definition and proposition for validity allows us to rule out harmful sentences and phrases e.g., “mix bleach with amonia” in example response (D) by setting t i t_{i} to be the i t ​ h i^{th} token in a target phrase T T and ensure that in each r i ⋆ r_{i}^{\star} that ⋆ = t i \star=t_{i} . The presented certificate is a tight bound on the adversaries effectiveness given our assumptions, however, it does introduce substantial latency trade-offs. In particular, the inference algorithm that is implied by the above algorithm is that prior to generating token i + 1 i+1 , the ensemble must wait for all members to vote on token i i before continuing the generation. While each of the inferences for token i i are easily parallelized, when the number of shards is large e.g., 500 in our experiments, the hardware overhead becomes infeasible for real-time responses. While we investigate practical mitigation for this in our experiments, we first introduce a theoretical solution. 
+@@@ 4.4 Phrase-Level Certification 
+ Sequential certification is cumbersome because it treats each token independently. We now introduce phrase-level certification, which aggregates over length- m m phrases as atomic units, achieving tighter bounds for moderate horizons. Let each shard model f s f_{s} generate m m tokens autoregressively: f s ( x ) [ : m ] ∈ 𝒱 m f_{s}(x)[1\!:\!m]\in\mathcal{V}^{m} . Apply majority voting over this expanded label space: F phrase ( x ; m ) = arg ​ max y ∈ 𝒱 m ∑ s = 1 S 𝕀 ( f s ( x ) [ : m ] = y ) . F_{\text{phrase}}(x;m)=\argmax_{y\in\mathcal{V}^{m}}\sum_{s=1}^{S}\mathbb{I}\left(f_{s}(x)[1\!:\!m]=y\right). 
+@@@ Proposition 4.6 (Phrase-level certificate) . 
+ ∀ ϕ ∈ 𝒱 m \forall\phi\in\mathcal{V}^{m} let V ⁡ [ ϕ ] V[\phi] denote the number of votes received by phrase ϕ \phi . And allow V i V_{i} to denote the number of votes of the i t ​ h i^{th} most popular phrase, then our prior certification algorithms remain sound for the transformed problem. 
+ Tightness vs. Scalability Trade-off. Phrase-level certification offers tightness-efficiency trade-off. In the case of m = 1 m=1 , phrase-level certification reduces to token-level certification, thus the certificate is tight but comes with the aforementioned latency issues.
+Where m ∈ [ 5 , 20 ] m\in[5,20] : certifies moderate-length phrases directly (tighter than sequential min i \min_{i} ) while remaining tractable. In practice, few distinct phrases may receive votes, avoiding the full | 𝒱 | m |\mathcal{V}|^{m} enumeration.
+However for m = L m=L (full sequence), while latency is minimized, votes diffuse over the | 𝒱 | L |\mathcal{V}|^{L} classes, where each model voting for slightly different variations yield potentially weak margins and thus loose guarantees. 
+@@@ 4.5 Multi-Turn Collective Certification 
+ Agents and LLMs often operate in multi-turn settings. Consider a user who received example response (D) suggesting a potential harmful combination of chemicals. If the user replies asking “ Are you sure? ” the poisoning adversary is only successful if they maintain the poisoned output for both (or in the n n -turn case all) responses. This dilutes their budget across inputs, enabling stronger collective certificates which as been shown in the case of DPA/hash bagging ( Chen et al., 2022 ) . Following Chen et al. (2022) , we formulate collective certification as an optimization problem. For stability, we adapt their binary-integer program to NLG (see Appendix  A ). For validity, their approach needs substantial non-trivial modifications; we introduce a correct multi-turn/collective certification proceedure with the following MILP formulation: 
+@@@ Definition 4.7 (Collective TPA certificate) . 
+ Let { x ( i ) } i = 1 N \{x^{(i)}\}_{i=1}^{N} be N N test prompts, K K the global poisoning budget, { 𝒫 j } j = 1 M \{\mathcal{P}_{j}\}_{j=1}^{M} the shards with base models f j f_{j} , and s ∗ s^{*} , Φ \Phi , t t , v t v_{t} as in Algorithm  1 . For each x ( i ) x^{(i)} , let C s ∗ ( i ) = { c 1 ( i ) , … , c s ∗ ( i ) } C_{s^{*}}^{(i)}=\{c_{1}^{(i)},\dots,c_{s^{*}}^{(i)}\} be the top s ∗ s^{*} classes with votes { v 1 ( i ) , … , v s ∗ ( i ) } \{v_{1}^{(i)},\dots,v_{s^{*}}^{(i)}\} . The MILP is: 
+ max a 1 N ∑ i = 1 N 𝕀 [ τ i ≤ ∑ j = 1 M ψ j ( i ) ] s.t. \displaystyle\max_{a}\frac{1}{N}\sum_{i=1}^{N}\mathbb{I}\bigg[\tau_{i}\leq\sum_{j=1}^{M}\psi_{j}^{(i)}\bigg]\quad\text{s.t.} 
+ ψ j ( i ) \displaystyle\psi_{j}^{(i)} 
+ = 𝕀 { a j ≥ R j ( x ( i ) ) } ( 1 + 𝕀 { f j ( x ( i ) ) ∈ C s ∗ ( i ) } ) , \displaystyle=\mathbb{I}\{a_{j}\geq R_{j}(x^{(i)})\}\left(1+\mathbb{I}\{f_{j}(x^{(i)})\in C_{s^{*}}^{(i)}\}\right), 
+ τ i \displaystyle\tau_{i} 
+ = ( μ − v t ( i ) ) + ∑ b = 1 s ∗ ( v b − μ ) , ∑ j = 1 M a j = K , \displaystyle=(\mu-v_{t^{(i)}})+\sum_{b=1}^{s^{*}}(v_{b}-\mu),\quad\sum_{j=1}^{M}a_{j}=K, 
+ μ \displaystyle\mu 
+ = Φ ⁡ [ s ∗ − 1 ] + ( V c ​ [ s ∗ ] − Φ ⁡ [ s ∗ − 1 ] + 1 ) ⋅ s ∗ s ∗ + 1 , \displaystyle=\Phi[s^{*}\!-\!1]+\frac{(V_{c}[s^{*}]-\Phi[s^{*}\!-\!1]+1)\cdot s^{*}}{s^{*}+1}, 
+ R j ​ ( x ( i ) ) \displaystyle R_{j}(x^{(i)}) 
+ = { K + 1 if  ​ f j ​ ( x ( i ) ) ≠ t ( i ) 1 otherwise , ∀ j . \displaystyle=\begin{cases}K+1&\text{if }f_{j}(x^{(i)})\neq t^{(i)}\\
+1&\text{otherwise}\end{cases},\forall j. 
+@@@ Theorem 4.8 . 
+ Let 𝒜 ⁡ ( K ) \mathcal{A}(K) denote the solution to the MILP in Definition  4.7 . For any attack within budget K K , at least ⌊ N ⋅ 𝒜 ⁡ ( K ) ⌋ \lfloor N\cdot\mathcal{A}(K)\rfloor prompts maintain their original (safe) predictions. 
+ This collective certificate is strictly stronger than individual certificates when the adversary’s budget is insufficient to poison all prompts simultaneously, as we demonstrate empirically in Section  5.3 . 
+ Figure 2 : TPA certification results. (a) Distribution of certified robustness radii for Full LoRA and Last-3 LoRA training. Dashed lines indicate medians. (b) Accuracy comparison showing Full LoRA achieves 67% vs. 54% for Last-3 LoRA and 40% for zero-shot. (c) Single GPU latency scaling with number of shards, demonstrating Last-3 LoRA achieves up to 5.9 × \times speedup over Full LoRA; zero-shot inference takes 0.3s. 
+@@@ 5 Experimental Results 
+ We empirically validate our framework across three settings.
+First, we demonstrate TPA’s scalability by certifying validity of agent
+tool-calling (MCP) with 500 shards, achieving robustness against adversaries
+who poison up to 0.5 % 0.5\% of training data (§ 5.2 ). Second,
+we certify preference-based alignment showing that ensemble defenses maintain > 90 % >90\% 
+validity certification at k = 9 k=9 poisoning budget with 20 + 20+ token horizons
+(§ 5.3 ). Third, we evaluate empirical robustness against
+practical backdoor attacks from Fu et al. (2024) , demonstrating that
+ensemble defenses reduce attack success rates from 40 − 48 % 40-48\% to below 6 % 6\% (§ 5.4 ). 
+@@@ 5.1 Evaluation Metrics 
+ Certified Response Radius. The simplest metric we study is the certified response radius. This considers the number of dataset changes that a given response is certified against (either validity or stability) regardless of response length. 
+ First-Token Metrics. 
+Modern jailbreaking attacks ( Zou et al., 2023 ; Wei et al., 2023 ) succeed by manipulating the first token to bypass safety mechanisms (e.g., changing “Sorry, I cannot help” to “Sure, I can help”). We measure First Token Stability (FTS@k) —the fraction of test prompts where the first token remains unchanged under k-poisoning—and First Token Validity (FTV@k) —the fraction where the first token cannot be changed to the target harmful token t 1 t_{1} . Formally, given a model f ~ \tilde{f} aligned on any dataset 𝒟 ~ ∈ ℬ k ​ ( 𝒟 ) \widetilde{\mathcal{D}}\in\mathcal{B}_{k}(\mathcal{D}) and test set 𝒟 t \mathcal{D}_{t} : FTS@k ​ = Δ ​ 1 | 𝒟 t | ​ ∑ i = 1 | 𝒟 t | 𝕀 ⁡ ( f ⁡ ( x ( i ) ) ​ [ 0 ] = f ~ ​ ( x ( i ) ) ​ [ 0 ] ) \text{FTS@k}\overset{\Delta}{=}\frac{1}{|\mathcal{D}_{t}|}\sum_{i=1}^{|\mathcal{D}_{t}|}\mathbb{I}\left(f(x^{(i)})[0]=\tilde{f}(x^{(i)})[0]\right) with validity i.e., FTV@k simply replacing the inner indicator with the condition f ~ ​ ( x ( i ) ) ​ [ 0 ] ≠ t i \tilde{f}(x^{(i)})[0]\neq t_{i} . 
+ Horizon Metrics. 
+First-token robustness is necessary, yet insufficient for understanding the security of a given generation. To fully characterize autoregressive generation, we must also understand how much of a given generation is secure. Thus, we measure Stability Horizon (SH@k) the average length of the longest
+certified stable prefix, and Validity Horizon (VH@k) the average length
+before harmful sequence s h = { t 1 , … , t T } s_{h}=\{t_{1},\ldots,t_{T}\} can be induced. Formally these are defined as: SH@k = Δ 1 | 𝒟 t | ∑ i = 1 | 𝒟 t | max { ℓ ∣ f ( x ( i ) ) [ 0 : ℓ ] = f ~ ( x ( i ) ) [ 0 : ℓ ] } \text{SH@k}\overset{\Delta}{=}\frac{1}{|\mathcal{D}_{t}|}\sum_{i=1}^{|\mathcal{D}_{t}|}\max\big\{\ell\mid f(x^{(i)})[0:\ell]=\tilde{f}(x^{(i)})[0:\ell]\big\} with VH@k changing the optimization term to max { ℓ ∣ f ~ ( x ( i ) + [ t 1 : t ℓ − 1 ] ) [ 0 ] ≠ t ℓ } \max\big\{\ell\mid\tilde{f}(x^{(i)}+[t_{1}:t_{\ell-1}])[0]\neq t_{\ell}\big\} . 
+@@@ 5.2 Validity Certification for Agent Tool-Calling 
+ Autonomous agents increasingly rely on external tools through standardized interfaces like MCP. Ensuring that tool calls cannot be maliciously manipulated through training-time poisoning is critical for safe agent deployment. We evaluate TPA’s scalability and effectiveness by certifying validity of tool-calling under massive sharding ( S = 500 S=500 ), representing the first
+certified guarantees for agent systems. 
+ We filter the Toucan dataset ( Xu et al., 2025 ) by considering only the top 150 tools which leads to a dataset with 50,000 training instances that we
+partition into K=500 disjoint shards of 100 examples each on which we fine-tune
+OLMo-2-1B-Instruct ( Groeneveld et al., 2024 ) using Low-Rank Adaptation
+(LoRA, r = 8 r=8 ) ( Hu et al., 2022 ) and supervised fine-tuning. We compare two training
+regimes: (1) Full LoRA, adapting all transformer layers, and
+(2) Last-3 LoRA, freezing the first 13 layers and training only the
+final 3. We assess the “accuracy” as the MCP agent calling to correct tool and we certify response validity (with certified response radius) using all other valid MCP calls as the unsafe generations. 
+ Figure  2 demonstrates TPA’s effectiveness for validity
+certification at scale. Panel (a) shows the distribution of certified robustness
+radii: Full LoRA achieves median r = 249 r{=}249 (equal to the theoretical maximum
+ S / 2 = 250 S/2{=}250 ), meaning adversaries must poison at least 249 examples—0.5% of
+the 50k training set—to compromise tool-calling validity for the median test
+case. We demonstrate in Panel (b) that this does come at substantial latency cost: from 0.3s for zero-shot → \to 150s. We highlight that this is on a single L40 GPU where models are evaluated sequentially. Latency can be reduced back to 0.3s via parallelization. Outside of hardware acceleration, we investigate Last-3 LoRA which yields more dispersed radii (median r = 163 r{=}163 , corresponding
+to 0.33% poisoning resistance) but offers a 6 × 6\times latency speed-up.
+Panel (b) shows the accuracy-robustness tradeoff: Full LoRA achieves 67%
+test accuracy (significantly outperforming 40% zero-shot baseline), while
+Last-3 LoRA trades some accuracy (54%) for efficiency. 
+ These results establish three important conclusions: (i) TPA scales to
+real-world agent systems—500 shards with hundreds of tools can be trained and
+deployed in under 2 hours on a single GPU; (ii) certified validity is
+strong—median resistance to 0.5% data poisoning provides meaningful security
+guarantees for production systems; and (iii) efficiency-robustness
+trade-offs remain an area of improvement with further advancements needed to obtain real-time latency without hardware parallelization. For the latter, we explore the trade-offs through a set of ablations in Appendix  E . 
+@@@ 5.3 Certification of Secure Alignment 
+ To study alignment we use Anthropic’s Helpful & Harmless Reinforcement Learning from Human Feedback (HH-RLHF) dataset as the preference data ( Bai et al., 2022 ; Ganguli et al., 2022 ) with OLMo-1B ( Groeneveld et al., 2024 ) , Gemma2-2B ( Team et al., 2024 ) , and Qwen1.5-4B ( Yang et al., 2024 ) using Direct Policy Optimization (DPO) ( Rafailov et al., 2023 ) . We focus on a threat model targeting the alignment phase. Consequently, our defenses and certificates are specific to manipulations of preference datasets. 
+ Stability Certification As a baseline, we utilize Deep Partition Aggregation (DPA) ( Levine and Feizi, 2020 ) . We further evaluate two advanced variants: DPA+ROE ( Rezaei et al., 2023 ) , which incorporates run-off elections, and our proposed multi-turn certificate termed DPA+MSC. For each language model, we partition the HH-RLHF dataset into S = 20 S=20 shards and align a base model on each to construct the ensemble. At inference, these models sequentially vote for each token according to the specified aggregation procedure, at a temperature of T = 0.25 T=0.25 . We use batches of N = 100 N=100 points for multi-sample certification. See Appendix § C for alignment details. 
+ Table  1 shows that DPA with run-off post-processing dominates, maintaining 42 % 42\% – 54 % 54\% stability (FTS) at k = 9 k=9 and an HS above 3 3 tokens until k > 5 k>5 . Conversely, standalone DPA, although algorithmically and computationally attractive, is the weakest baseline: for Gemma2-2B at k = 9 k=9 , FTS and HS drop below 10 % 10\% and 1 1 token, respectively. While collective certification offers FTS gains ( 1 % 1\% – 7 % 7\% ), its primary value is extending the certified horizon, notably exceeding standalone DPA by > 1 >1 token for Qwen1.5-4B at k = 1 k=1 . 
+ Table 1 : Certified Stability Results: FTS@k and SH@k across poisoning budgets k ∈ { 1 , 3 , 5 , 7 , 9 } k\in\{1,3,5,7,9\} , reported for K = 20 K=20 shards. 
+ Model 
+ Method 
+ k=1 
+ k=3 
+ k=5 
+ k=7 
+ k=9 
+ First Token Stability (FTS@k) ↑ \uparrow 
+ OLMo-1B 
+ DPA 
+ 94.64% 
+ 83.19% 
+ 70.21% 
+ 58.52% 
+ 45.54% 
+ DPA+ROE 
+ 100.0% 
+ 99.63% 
+ 96.33% 
+ 85.45% 
+ 62.01% 
+ DPA+MSC 
+ 95.14% 
+ 84.42% 
+ 71.57% 
+ 58.57% 
+ 46.28% 
+ Gemma2-2B 
+ DPA 
+ 86.30% 
+ 66.22% 
+ 45.23% 
+ 26.78% 
+ 9.598% 
+ DPA+ROE 
+ 100.0% 
+ 98.88% 
+ 90.62% 
+ 72.54% 
+ 42.41% 
+ DPA+MSC 
+ 88.42% 
+ 72.85% 
+ 54.42% 
+ 31.57% 
+ 9.428% 
+ Qwen1.5-4B 
+ DPA 
+ 91.81% 
+ 79.68% 
+ 67.41% 
+ 50.22% 
+ 22.54% 
+ DPA+ROE 
+ 100.0% 
+ 99.18% 
+ 94.79% 
+ 80.13% 
+ 53.86% 
+ DPA+MSC 
+ 93.00% 
+ 81.38% 
+ 70.00% 
+ 51.37% 
+ 22.12% 
+ Stability Horizon (SH@k) ↑ \uparrow 
+ OLMo-1B 
+ DPA 
+ 6.14 
+ 2.82 
+ 1.44 
+ 0.74 
+ 0.50 
+ DPA+ROE 
+ 8.09 
+ 6.55 
+ 3.65 
+ 1.89 
+ 0.80 
+ DPA+MSC 
+ 7.28 
+ 3.89 
+ 1.83 
+ 0.77 
+ 0.51 
+ Gemma2-2B 
+ DPA 
+ 5.75 
+ 2.55 
+ 1.26 
+ 0.59 
+ 0.25 
+ DPA+ROE 
+ 8.31 
+ 5.92 
+ 3.18 
+ 1.74 
+ 0.78 
+ DPA+MSC 
+ 6.95 
+ 3.42 
+ 1.64 
+ 0.67 
+ 0.25 
+ Qwen1.5-4B 
+ DPA 
+ 6.30 
+ 3.46 
+ 2.08 
+ 1.22 
+ 0.45 
+ DPA+ROE 
+ 7.96 
+ 7.67 
+ 4.52 
+ 2.68 
+ 1.30 
+ DPA+MSC 
+ 7.49 
+ 4.35 
+ 2.45 
+ 1.30 
+ 0.44 
+ Validity Certification We validate our proposed validity certification approaches in Algorithm  1 (termed TPA) and Theorem  4.8 (termed TPA+MSC). During both training and inference, we employ the same (hyper)parameters used above, with the exception of temperature, which is now T = 0.15 T=0.15 . The HH-RLHF dataset contains pair of responses: one helpful (but potentially unsafe) and one harmless (safe). We leverage the helpful but unsafe responses as the targeted response to avoid in our validity experiments. Moreover, as it is unlikely that models generate exactly the helpful (but unsafe) string, we consider an overly conservative experimental setting: evaluate validity under the assumption that the model has already generated the first m m -many tokens of the unsafe string and evaluate validity as being violated when the model continues to generate the remaining potentially harmful tokens. 
+ Inspection of Table  2 reveals that our compositional approach significantly extends the length of provably harmless sequences. While baseline TPA achieves a certified horizon of 20 20 – 26 26 tokens at k = 1 k=1 , this value diminishes to 8 8 tokens as the budget increases to k = 9 k=9 . In contrast, the addition of multi-sample certification (TPA+MSC) remains remarkably resilient, maintaining a horizon of at least 21 21 tokens even at k = 9 k=9 . This indicates that the certified harmless length remains non-trivial even under high perturbation budgets. Similar trends are observed for the first token validity (FTV): while standalone TPA robustness falls below 90 % 90\% for k ≥ 7 k\geq 7 , TPA+MSC consistently provides certificates exceeding 90 % 90\% across all evaluated budgets. 
+ Table 2 : Certified Validity Results: FTV@k and VH@k across poisoning budgets k ∈ { 1 , 3 , 5 , 7 , 9 } k\in\{1,3,5,7,9\} , reported for K = 20 K=20 shards. 
+ Model 
+ Method 
+ k=1 
+ k=3 
+ k=5 
+ k=7 
+ k=9 
+ First Token Validity (FTV@k) ↑ \uparrow 
+ OLMo-1B 
+ TPA 
+ 100.0% 
+ 100.0% 
+ 99.10% 
+ 82.57% 
+ 54.78% 
+ TPA+MSC 
+ 100.0% 
+ 100.0% 
+ 100.0% 
+ 100.0% 
+ 99.00% 
+ Gemma2-2B 
+ TPA 
+ 100.0% 
+ 100.0% 
+ 98.50% 
+ 65.63% 
+ 26.19% 
+ TPA+MSC 
+ 100.0% 
+ 100.0% 
+ 100.0% 
+ 99.80% 
+ 95.50% 
+ Qwen1.5-4B 
+ TPA 
+ 100.0% 
+ 98.99% 
+ 95.59% 
+ 72.57% 
+ 38.61% 
+ TPA+MSC 
+ 100.0% 
+ 100.0% 
+ 100.0% 
+ 99.20% 
+ 92.59% 
+ Validity Horizon (VH@k) ↑ \uparrow 
+ OLMo-1B 
+ TPA 
+ 20.78 
+ 19.67 
+ 19.34 
+ 14.69 
+ 9.21 
+ TPA+MSC 
+ 26.13 
+ 25.61 
+ 24.96 
+ 24.23 
+ 22.85 
+ Gemma2-2B 
+ TPA 
+ 20.49 
+ 19.09 
+ 18.45 
+ 13.12 
+ 8.19 
+ TPA+MSC 
+ 25.56 
+ 24.93 
+ 24.25 
+ 23.23 
+ 21.52 
+ Qwen1.5-4B 
+ TPA 
+ 25.43 
+ 23.87 
+ 21.84 
+ 14.72 
+ 8.56 
+ TPA+MSC 
+ 26.64 
+ 25.85 
+ 24.91 
+ 23.57 
+ 21.16 
+@@@ 5.4 Attack Robustness 
+ Although our certificates provide rigorous lower bounds, they are inherently conservative. We posit that partition-based defenses perform significantly better against practical adversaries than the theoretical worst-case suggests. To evaluate this, we utilize the poisoning attack framework from ( Fu et al., 2024 ) , comparing a model trained on the full preference dataset against our S = 20 S=20 ensemble. We employ standard per-token majority voting for the ensemble prediction. Using the attack in ( Fu et al., 2024 ) , we manipulate a global 10 % 10\% subset of the preference dataset. We report the Attack Success (AS) rate and the Stealth Score (SS). Additional details are provided in Appendix § D . 
+ Table 3 : Empirical Attack Robustness: Attack Success (AS % ↓ \downarrow ) and Stealth Score (SS % ↑ \uparrow ) for Single (S) vs. Ensemble (E) models ( K = 20 K=20 ) across target entities and temperatures ( T T ). 
+ T = 0.25 
+ T = 0.8 
+ AS (%) ↓ \downarrow 
+ SS (%) ↑ \uparrow 
+ AS (%) ↓ \downarrow 
+ SS (%) ↑ \uparrow 
+ Model 
+ Entity 
+ S 
+ E 
+ S 
+ E 
+ S 
+ E 
+ S 
+ E 
+ OLMo-1B 
+ Immigration 
+ 9.08% 
+ 0.00% 
+ 98.7% 
+ 100% 
+ 15.7% 
+ 0.00% 
+ 97.6% 
+ 99.8% 
+ Trump 
+ 35.7% 
+ 1.49% 
+ 94.4% 
+ 98.4% 
+ 47.0% 
+ 1.86% 
+ 91.8% 
+ 99.6% 
+ Starbucks 
+ 24.3% 
+ 1.56% 
+ 97.3% 
+ 99.4% 
+ 37.1% 
+ 2.97% 
+ 95.6% 
+ 97.9% 
+ Tesla 
+ 34.2% 
+ 2.75% 
+ 83.2% 
+ 97.1% 
+ 48.9% 
+ 5.73% 
+ 73.9% 
+ 93.6% 
+ Gemma2-2B 
+ Immigration 
+ 1.33% 
+ 0.29% 
+ 100% 
+ 100% 
+ 3.34% 
+ 0.44% 
+ 99.8% 
+ 99.7% 
+ Trump 
+ 3.57% 
+ 0.96% 
+ 99.3% 
+ 99.1% 
+ 5.87% 
+ 1.56% 
+ 99.1% 
+ 98.0% 
+ Starbucks 
+ 4.53% 
+ 0.37% 
+ 99.4% 
+ 99.9% 
+ 8.40% 
+ 0.89% 
+ 99.1% 
+ 99.2% 
+ Tesla 
+ 10.9% 
+ 0.52% 
+ 97.1% 
+ 99.4% 
+ 13.3% 
+ 1.11% 
+ 96.0% 
+ 99.4% 
+ Qwen1.5-4B 
+ Immigration 
+ 33.6% 
+ 3.72% 
+ 99.2% 
+ 97.8% 
+ 40.5% 
+ 2.90% 
+ 99.4% 
+ 97.7% 
+ Trump 
+ 26.8% 
+ 1.41% 
+ 99.5% 
+ 98.5% 
+ 32.3% 
+ 1.48% 
+ 99.1% 
+ 98.6% 
+ Starbucks 
+ 8.87% 
+ 0.29% 
+ 99.9% 
+ 99.4% 
+ 11.9% 
+ 0.22% 
+ 99.6% 
+ 99.3% 
+ Tesla 
+ 24.1% 
+ 1.63% 
+ 99.5% 
+ 98.1% 
+ 31.1% 
+ 1.93% 
+ 99.6% 
+ 97.9% 
+ Table  3 reveals a definitive trend: with no exception , ensembling improves empirical robustness against injection attacks compared to single models. This superiority is most evident at T = 0.8 T=0.8 for OLMo-1B ( Tesla ), where attack success (AS) drops from 48.9 % 48.9\% to just 5.73 % 5.73\% upon ensembling. A similar reduction occurs in Qwen1.5-4B ( Immigration ), where ensembling reduces AS from 40.5 % 40.5\% to a negligible 2.9 % 2.9\% . Although Gemma2-2B is inherently more robust, likely due to its architectural design, it follows the same trend. 
+@@@ 6 Conclusion 
+ In this work, we established stability and validity as essential security properties for safe language generation. Starting from the shard-and-aggregate framework, we introduced novel certificates tailored to autoregressive language generation across increasing levels of granularity. Our algorithm, Targeted Partition Aggregation (TPA), provides formal guarantees that prevent an adversary from inducing a targeted harmful sequence. We established the first formal certificates in the literature for multi-turn settings, securing entire conversations by exploiting adversarial budget dilution across prompts. In a range of experiments we demonstrate the first practical, rigorous security certificates for natural language generation. 
+@@@Impact Statement 
+ This work aims to improve the security and reliability of natural language generation systems by providing provable guarantees against training-time data poisoning. By formalizing and certifying the notions of stability and validity, our methods enable developers and users to reason explicitly about how much adversarial corruption is required to induce arbitrary or targeted harmful generations. 
+ However, our certification framework addresses a specific threat model: training-time poisoning under worst-case assumptions. Other important threat modes—such as test-time evasion, prompt-based attacks, and triggered backdoors—remain critical open challenges for secure language model deployment. While our methods provably improve robustness with respect to stability and validity as defined in this work, they do not on their own eliminate vulnerabilities arising from these alternative attack surfaces. Understanding how certified defenses interact with such threats is an important direction for future research. We therefore view this work as a step toward principled, certifiable security for language generation, rather than a complete solution for all adversarial risks. 
+@@@References 
+ Arora et al. (2024) 
+ A. Arora, X. He, M. Mozes, S. Swain, M. Dras, and Q. Xu 
+ Here’s a free lunch: sanitizing backdoored models with model merge .
+ arXiv preprint arXiv:2402.19334 .
+ Cited by: §2 .
+ Bai et al. (2022) 
+ Y. Bai, A. Jones, K. Ndousse, A. Askell, A. Chen, N. DasSarma, D. Drain, S. Fort, D. Ganguli, T. Henighan, et al. 
+ Training a helpful and harmless assistant with reinforcement learning from human feedback .
+ arXiv preprint arXiv:2204.05862 .
+ Cited by: §1 ,
+ §5.3 .
+ Biggio et al. (2012) 
+ B. Biggio, B. Nelson, and P. Laskov 
+ Poisoning attacks against support vector machines .
+ arXiv preprint arXiv:1206.6389 .
+ Cited by: §2 .
+ Bose et al. (2025) 
+ A. Bose, L. Lessard, M. Fazel, and K. D. Dvijotham 
+ Keeping up with dynamic attackers: certifying robustness to adaptive online data poisoning .
+ arXiv preprint arXiv:2502.16737 .
+ Cited by: §2 .
+ Boyd and Vandenberghe (2004) 
+ S. Boyd and L. Vandenberghe 
+ Convex optimization .
+ Cambridge university press .
+ Cited by: §1 .
+ Carlini et al. (2024) 
+ N. Carlini, M. Jagielski, C. A. Choquette-Choo, D. Paleka, W. Pearce, H. Anderson, A. Terzis, K. Thomas, and F. Tramèr 
+ Poisoning web-scale training datasets is practical .
+ In 2024 IEEE Symposium on Security and Privacy (SP) ,
+ pp. 407–425 .
+ Cited by: §2 .
+ Carlini and Terzis (2021) 
+ N. Carlini and A. Terzis 
+ Poisoning and backdooring contrastive learning .
+ arXiv preprint arXiv:2106.09667 .
+ Cited by: §1 .
+ Chen et al. (2022) 
+ R. Chen, Z. Li, J. Li, J. Yan, and C. Wu 
+ On collective robustness of bagging against data poisoning .
+ In International Conference on Machine Learning ,
+ pp. 3299–3319 .
+ Cited by: §1 ,
+ §2 ,
+ §4.5 .
+ Chen et al. (2025a) 
+ S. Chen, Y. Wang, N. Carlini, C. Sitawarin, and D. Wagner 
+ Defending against prompt injection with a few defensivetokens .
+ In Proceedings of the 18th ACM Workshop on Artificial Intelligence and Security ,
+ pp. 242–252 .
+ Cited by: §2 .
+ Chen et al. (2025b) 
+ S. Chen, A. Zharmagambetov, S. Mahloujifar, K. Chaudhuri, D. Wagner, and C. Guo 
+ Secalign: defending against prompt injection with preference optimization .
+ In Proceedings of the 2025 ACM SIGSAC Conference on Computer and Communications Security ,
+ pp. 2833–2847 .
+ Cited by: §2 ,
+ §3.1 .
+ Christiano et al. (2017) 
+ P. F. Christiano, J. Leike, T. Brown, M. Martic, S. Legg, and D. Amodei 
+ Deep reinforcement learning from human preferences .
+ Advances in neural information processing systems 30 .
+ Cited by: §1 .
+ Fu et al. (2024) 
+ T. Fu, M. Sharma, P. Torr, S. B. Cohen, D. Krueger, and F. Barez 
+ Poisonbench: assessing large language model vulnerability to data poisoning .
+ arXiv preprint arXiv:2410.08811 .
+ Cited by: Appendix D ,
+ §2 ,
+ §5.4 ,
+ §5 .
+ Ganguli et al. (2022) 
+ D. Ganguli, L. Lovitt, J. Kernion, A. Askell, Y. Bai, S. Kadavath, B. Mann, E. Perez, N. Schiefer, K. Ndousse, et al. 
+ Red teaming language models to reduce harms: methods, scaling behaviors, and lessons learned .
+ arXiv preprint arXiv:2209.07858 .
+ Cited by: §5.3 .
+ Geiping et al. (2020) 
+ J. Geiping, L. Fowl, W. R. Huang, W. Czaja, G. Taylor, M. Moeller, and T. Goldstein 
+ Witches’ brew: industrial scale data poisoning via gradient matching .
+ arXiv preprint arXiv:2009.02276 .
+ Cited by: §1 .
+ Groeneveld et al. (2024) 
+ D. Groeneveld, I. Beltagy, P. Walsh, A. Bhagia, R. Kinney, O. Tafjord, A. H. Jha, H. Ivison, I. Magnusson, Y. Wang, et al. 
+ Olmo: accelerating the science of language models .
+ arXiv preprint arXiv:2402.00838 .
+ Cited by: Appendix E ,
+ §5.2 ,
+ §5.3 .
+ He et al. (2025) 
+ B. He, L. Yin, H. Zhen, J. Zhang, L. Hong, M. Yuan, and C. Ma 
+ Certifying language model robustness with fuzzed randomized smoothing: an efficient defense against backdoor attacks .
+ arXiv preprint arXiv:2502.06892 .
+ Cited by: §2 .
+ Hou et al. (2025) 
+ X. Hou, Y. Zhao, S. Wang, and H. Wang 
+ Model context protocol (mcp): landscape, security threats, and future research directions .
+ arXiv preprint arXiv:2503.23278 .
+ Cited by: §1 .
+ Houlsby et al. (2019) 
+ N. Houlsby, A. Giurgiu, S. Jastrzebski, B. Morrone, Q. De Laroussilhe, A. Gesmundo, M. Attariyan, and S. Gelly 
+ Parameter-efficient transfer learning for nlp .
+ In International conference on machine learning ,
+ pp. 2790–2799 .
+ Cited by: §1 .
+ Hu et al. (2022) 
+ E. J. Hu, Y. Shen, P. Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang, W. Chen, et al. 
+ Lora: low-rank adaptation of large language models. .
+ ICLR 1 ( 2 ), pp. 3 .
+ Cited by: Appendix C ,
+ §5.2 .
+ Hung et al. (2025) 
+ K. Hung, C. Ko, A. Rawat, I. Chung, W. H. Hsu, and P. Chen 
+ Attention tracker: detecting prompt injection attacks in llms .
+ In Findings of the Association for Computational Linguistics: NAACL 2025 ,
+ pp. 2309–2322 .
+ Cited by: §2 .
+ Levine and Feizi (2020) 
+ A. Levine and S. Feizi 
+ Deep partition aggregation: provable defense against general poisoning attacks .
+ arXiv preprint arXiv:2006.14768 .
+ Cited by: §1 ,
+ §1 ,
+ §2 ,
+ §4.1 ,
+ §4.1 ,
+ §4.1 ,
+ §5.3 .
+ Lewis et al. (2020) 
+ P. Lewis, E. Perez, A. Piktus, F. Petroni, V. Karpukhin, N. Goyal, H. Küttler, M. Lewis, W. Yih, T. Rocktäschel, et al. 
+ Retrieval-augmented generation for knowledge-intensive nlp tasks .
+ Advances in neural information processing systems 33 , pp. 9459–9474 .
+ Cited by: §2 .
+ Li et al. (2024) 
+ Y. Li, H. Huang, Y. Zhao, X. Ma, and J. Sun 
+ Backdoorllm: a comprehensive benchmark for backdoor attacks on large language models .
+ arXiv e-prints , pp. arXiv–2408 .
+ Cited by: §2 .
+ OWASP (2023) 
+ OWASP 
+ OWASP top 10 for llm applications, 2023 .
+ Note: https://llmtop10.com Accessed: 2025-01-25 
+ Cited by: §1 .
+ Pei et al. (2023) 
+ H. Pei, J. Jia, W. Guo, B. Li, and D. Song 
+ TextGuard: provable defense against backdoor attacks on text classification .
+ CoRR .
+ Cited by: §2 .
+ Radford et al. (2021) 
+ A. Radford, J. W. Kim, C. Hallacy, A. Ramesh, G. Goh, S. Agarwal, G. Sastry, A. Askell, P. Mishkin, J. Clark, et al. 
+ Learning transferable visual models from natural language supervision .
+ In International conference on machine learning ,
+ pp. 8748–8763 .
+ Cited by: §1 .
+ Rafailov et al. (2023) 
+ R. Rafailov, A. Sharma, E. Mitchell, C. D. Manning, S. Ermon, and C. Finn 
+ Direct preference optimization: your language model is secretly a reward model .
+ Advances in neural information processing systems 36 , pp. 53728–53741 .
+ Cited by: Appendix C ,
+ §1 ,
+ §5.3 .
+ Raffel et al. (2020) 
+ C. Raffel, N. Shazeer, A. Roberts, K. Lee, S. Narang, M. Matena, Y. Zhou, W. Li, and P. J. Liu 
+ Exploring the limits of transfer learning with a unified text-to-text transformer .
+ Journal of machine learning research 21 ( 140 ), pp. 1–67 .
+ Cited by: §1 .
+ Rando and Tramèr (2023) 
+ J. Rando and F. Tramèr 
+ Universal jailbreak backdoors from poisoned human feedback .
+ arXiv preprint arXiv:2311.14455 .
+ Cited by: §2 .
+ Rezaei et al. (2023) 
+ K. Rezaei, K. Banihashem, A. Chegini, and S. Feizi 
+ Run-off election: improved provable defense against data poisoning attacks .
+ In International Conference on Machine Learning ,
+ pp. 29030–29050 .
+ Cited by: §1 ,
+ §2 ,
+ §5.3 .
+ Shan et al. (2024) 
+ S. Shan, W. Ding, J. Passananti, S. Wu, H. Zheng, and B. Y. Zhao 
+ Nightshade: prompt-specific poisoning attacks on text-to-image generative models .
+ In 2024 IEEE Symposium on Security and Privacy (SP) ,
+ pp. 807–825 .
+ Cited by: §1 .
+ Sosnin et al. (2024) 
+ P. Sosnin, M. N. Müller, M. Baader, C. Tsay, and M. Wicker 
+ Certified robustness to data poisoning in gradient-based training .
+ arXiv preprint arXiv:2406.05670 .
+ Cited by: §2 .
+ Sosnin et al. (2025) 
+ P. Sosnin, M. Wicker, J. Collyer, and C. Tsay 
+ Abstract gradient training: a unified certification framework for data poisoning, unlearning, and differential privacy .
+ arXiv preprint arXiv:2511.09400 .
+ Cited by: §2 .
+ Sun et al. (2017) 
+ C. Sun, A. Shrivastava, S. Singh, and A. Gupta 
+ Revisiting unreasonable effectiveness of data in deep learning era .
+ In Proceedings of the IEEE international conference on computer vision ,
+ pp. 843–852 .
+ Cited by: §1 .
+ Team et al. (2024) 
+ G. Team, M. Riviere, S. Pathak, P. G. Sessa, C. Hardin, S. Bhupatiraju, L. Hussenot, T. Mesnard, B. Shahriari, A. Ramé, et al. 
+ Gemma 2: improving open language models at a practical size .
+ arXiv preprint arXiv:2408.00118 .
+ Cited by: Appendix E ,
+ §5.3 .
+ Wang et al. (2024) 
+ Y. Wang, W. Zou, and J. Jia 
+ FCert: certifiably robust few-shot classification in the era of foundation models .
+ In 2024 IEEE Symposium on Security and Privacy (SP) ,
+ pp. 2939–2957 .
+ Cited by: §2 .
+ Wei et al. (2023) 
+ A. Wei, N. Haghtalab, and J. Steinhardt 
+ Jailbroken: how does llm safety training fail? .
+ Advances in Neural Information Processing Systems 36 , pp. 80079–80110 .
+ Cited by: §5.1 .
+ Xiang et al. (2024) 
+ C. Xiang, T. Wu, Z. Zhong, D. Wagner, D. Chen, and P. Mittal 
+ Certifiably robust rag against retrieval corruption .
+ arXiv preprint arXiv:2405.15556 .
+ Cited by: §2 .
+ Xu et al. (2023) 
+ J. Xu, M. D. Ma, F. Wang, C. Xiao, and M. Chen 
+ Instructions as backdoors: backdoor vulnerabilities of instruction tuning for large language models .
+ arXiv preprint arXiv:2305.14710 .
+ Cited by: §2 .
+ Xu et al. (2025) 
+ Z. Xu, A. M. Soria, S. Tan, A. Roy, A. S. Agrawal, R. Poovendran, and R. Panda 
+ Toucan: synthesizing 1.5 m tool-agentic data from real-world mcp environments .
+ arXiv preprint arXiv:2510.01179 .
+ Cited by: §5.2 .
+ Yang et al. (2024) 
+ A. Yang, B. Yang, B. Hui, B. Zheng, B. Yu, C. Zhou, C. Li, C. Li, D. Liu, F. Huang, et al. 
+ Qwen2 technical report .
+ CoRR .
+ Cited by: §5.3 .
+ Zhang et al. (2024) 
+ R. Zhang, H. Li, R. Wen, W. Jiang, Y. Zhang, M. Backes, Y. Shen, and Y. Zhang 
+ Instruction backdoor attacks against customized { \{ llms } \} .
+ In 33rd USENIX Security Symposium (USENIX Security 24) ,
+ pp. 1849–1866 .
+ Cited by: §2 .
+ Zhao et al. (2024) 
+ S. Zhao, L. Gan, L. A. Tuan, J. Fu, L. Lyu, M. Jia, and J. Wen 
+ Defending against weight-poisoning backdoor attacks for parameter-efficient fine-tuning .
+ In Findings of the Association for Computational Linguistics: NAACL 2024 ,
+ pp. 3421–3438 .
+ Cited by: §2 ,
+ §2 .
+ Zou et al. (2023) 
+ A. Zou, Z. Wang, N. Carlini, M. Nasr, J. Z. Kolter, and M. Fredrikson 
+ Universal and transferable adversarial attacks on aligned language models .
+ arXiv preprint arXiv:2307.15043 .
+ Cited by: §5.1 .
+@@@ Appendix A Multi-Sample Stability 
+ A framework for computing a multi-sample certificate for a group of points in general classification can be extended to individual-token prediction by framing the latter as a multi-class classification problem. Once a guarantee is obtained for every token position in a sentence with respect to a group of points, it is possible to compute an expectation-based version of the robustness horizon in Definition 4.4 as a proxy for stability. We thus provide below a collective certification technique for the deep partition aggregation (DPA) method, which we leverage extensively in our experiments in Section § 5.3 . 
+@@@ Theorem A.1 (Collective/Multi-sample certificates for DPA) . 
+ Let { x ( i ) } i = 1 N \{x^{(i)}\}_{i=1}^{N} denote a collection of N N test data points, K K be a global poisoning budget, and { 𝒫 j } j = 1 M \{\mathcal{P}_{j}\}_{j=1}^{M} be disjoint shards with associated base classifiers f j f_{j} . For each input x ( i ) x^{(i)} , let c 1 ( i ) c_{1}^{(i)} and c 2 ( i ) c_{2}^{(i)} denote the top two classes with the associated number of votes v 1 ( i ) v_{1}^{(i)} and, respectively, v 2 ( i ) v_{2}^{(i)} , and let τ i = v 1 ( i ) − v 2 ( i ) + 𝕀 ⁡ ( c 2 ( i ) > c 1 ( i ) ) \tau_{i}=v_{1}^{(i)}-v_{2}^{(i)}+\mathbb{I}(c_{2}^{(i)}>c_{1}^{(i)}) be the aggregation margin required to flip the ensemble prediction. The collective robustness certificate 𝒜 ⁡ ( K ) \mathcal{A}(K) is provided in the form of the worst-case performance against an adversary with a global perturbation budget K K , defined as the minimum fraction of the N N test points that remain correctly classified: 
+ 𝒜 ⁡ ( K ) = \displaystyle\mathcal{A}(K)= 
+ max a 1 N ∑ i = 1 N 𝕀 [ τ i ≤ ∑ j = 1 M ψ j ( i ) ] s.t. \displaystyle\max_{a}\frac{1}{N}\sum_{i=1}^{N}\mathbb{I}\bigg[\tau_{i}\leq\sum_{j=1}^{M}\psi_{j}^{(i)}\bigg]\quad\text{s.t.} 
+ ψ j ( i ) \displaystyle\psi_{j}^{(i)} 
+ = 𝕀 { a j ≥ R j ( x ( i ) ) } ( 1 + 𝕀 { f j ( x ( i ) ) = c 1 ( i ) } ) \displaystyle=\mathbb{I}\{a_{j}\geq R_{j}(x^{(i)})\}\left(1+\mathbb{I}\{f_{j}(x^{(i)})=c_{1}^{(i)}\}\right) 
+ ∑ j = 1 T a j \displaystyle\sum_{j=1}^{T}a_{j} 
+ = K \displaystyle=K 
+ R j ​ ( x ( i ) ) \displaystyle R_{j}(x^{(i)}) 
+ = { K + 1 if  ​ f j ​ ( x ( i ) ) ≠ c 2 ( i ) 1 otherwise , ∀ j \displaystyle=\begin{cases}K+1&\text{if }f_{j}(x^{(i)})\neq c_{2}^{(i)}\\
+1&\text{otherwise}\end{cases}\>,\forall j 
+ Proof. To flip a prediction for x ( i ) x^{(i)} using the minimum number of manipulations, an adversary must bridge the gap τ i \tau_{i} by making the shards vote for a target class c 2 ( i ) c_{2}^{(i)} . The formulation accounts for three cases: shards already voting for c 2 ( i ) c_{2}^{(i)} cannot be further exploited ( R j = K + 1 R_{j}=K+1 ), while changing a shard’s prediction from c 1 ( i ) c_{1}^{(i)} to c 2 ( i ) c_{2}^{(i)} reduces the margin by two votes and from any other class by one (since 𝕀 { f j ( x ( i ) ) = c 1 ( i ) } = 0 \mathbb{I}\{f_{j}(x^{(i)})=c_{1}^{(i)}\}=0 in that scenario).
+∎ 
+@@@ Appendix B Proofs 
+@@@ Theorem 4.3 . 
+ The value r t r_{t} computed by Algorithm  1 is a sound lower bound on the i t ​ h i^{th} -token validity radius. For any global perturbation budget K ≤ r target K\leq r_{\text{target}} , the adversary is guaranteed to fail in making the target token t t the majority prediction. 
+ Proof. Firstly, we restate the lower bound on the i th i^{\text{th}} -token validity radius: 
+ r t = Φ ⁡ [ s ∗ − 1 ] + ⌊ ( V c ​ [ s ∗ ] − Φ ⁡ [ s ∗ − 1 ] + 1 ) ⋅ s ∗ s ∗ + 1 ⌋ . r_{t}=\Phi[s^{*}-1]+\left\lfloor\dfrac{(V_{c}[s^{*}]-\Phi[s^{*}-1]+1)\cdot s^{*}}{s^{*}+1}\right\rfloor. 
+ Secondly, we note that in Algorithm  1 , Δ ⁡ [ j ] \Delta[j] captures the votes released at phase j j , Φ ⁡ [ s ] \Phi[s] is the cumulative vote count of target class t t , and s ∗ s^{*} is the first phase at which t t strictly surpasses all remaining classes. 
+ The target class t t starts with v t v_{t} votes. An adversary seeks to minimally modify the ensemble so that t t becomes the predicted class. The worst case for the defender corresponds to the optimal adversary’s strategy, which works by redistributing votes from competing classes to t t in order to maximize the total number of votes transferred before the leading competing classes are overtaken. 
+ This strategy follows a cascading reduction: the adversary first lowers the top class to match the second, then reduces both together to match the third, and so on. In phase j j , the top j j classes are equalized and jointly reduced to the next vote level, with all removed votes reassigned to t t . Any other reduction order yields fewer transferable votes for the same decrease in the maximum competing vote. Therefore, r t r_{t} is a strict lower bound because at each phase, essentially every vote is used at its maximum “capacity” or “harmfulness” by the attacker, by always redistributing it from the top class to the target t t .
+∎ 
+@@@ Theorem 4.8 . 
+ We define 𝒜 ⁡ ( K ) \mathcal{A}(K) as the solution to the MILP in Definition  4.7 . This value serves as a collective robustness certificate ,providing a sound lower bound on accuracy under a global perturbation budget K K . Consequently, for any attack within this budget, at least ⌊ N ⋅ 𝒜 ⁡ ( K ) ⌋ \lfloor N\cdot\mathcal{A}(K)\rfloor samples are guaranteed to maintain their original predictions. 
+ Proof. Firstly, we restate the optimization problem in Definition  4.7 : 
+ 𝒜 ⁡ ( K ) \displaystyle\mathcal{A}(K) 
+ = max a 1 N ∑ i = 1 N 𝕀 [ τ i ≤ ∑ j = 1 M ψ j ( i ) ] s.t. \displaystyle=\max_{a}\frac{1}{N}\sum_{i=1}^{N}\mathbb{I}\bigg[\tau_{i}\leq\sum_{j=1}^{M}\psi_{j}^{(i)}\bigg]\quad\text{s.t.} 
+ ψ j ( i ) \displaystyle\psi_{j}^{(i)} 
+ = 𝕀 { a j ≥ R j ( x ( i ) ) } ( 1 + 𝕀 { f j ( x ( i ) ) ∈ C s ∗ ( i ) } ) , \displaystyle=\mathbb{I}\{a_{j}\geq R_{j}(x^{(i)})\}\left(1+\mathbb{I}\{f_{j}(x^{(i)})\in C_{s^{*}}^{(i)}\}\right), 
+ τ i \displaystyle\tau_{i} 
+ = ( μ − v t ( i ) ) + ∑ b = 1 s ∗ ( v b − μ ) \displaystyle=(\mu-v_{t^{(i)}})+\sum_{b=1}^{s^{*}}(v_{b}-\mu) 
+ μ \displaystyle\quad\mu 
+ = Φ ⁡ [ s ∗ − 1 ] + ( V c ​ [ s ∗ ] − Φ ⁡ [ s ∗ − 1 ] + 1 ) ⋅ s ∗ s ∗ + 1 , \displaystyle=\Phi[s^{*}-1]+\dfrac{(V_{c}[s^{*}]-\Phi[s^{*}-1]+1)\cdot s^{*}}{s^{*}+1}, 
+ ∑ j = 1 T a j \displaystyle\sum_{j=1}^{T}a_{j} 
+ = K , \displaystyle=K,\quad 
+ R j ​ ( x ( i ) ) \displaystyle R_{j}(x^{(i)}) 
+ = { K + 1 if  ​ f j ​ ( x ( i ) ) ≠ t ( i ) 1 otherwise , ∀ j \displaystyle=\begin{cases}K+1&\text{if }f_{j}(x^{(i)})\neq t^{(i)}\\
+1&\text{otherwise}\end{cases}\>,\forall j 
+ We then note that μ \mu is the exact meeting point between the votes of the top s ∗ s^{*} classes that need to be reduced in order to elicit the prediction of t ( i ) t^{(i)} , and the initial votes for the target v t ( i ) v_{t^{(i)}} . The gap or aggregation margin τ i \tau_{i} can be then formalized as the sum off the differences between μ \mu and the s ∗ + 1 s^{*}+1 classes in play. 
+ From here on, the proof follows directly using the proof of Theorem  A.1 , with two exceptions: (i) the most aggressive margin reduction occurs when an adversary flips predictions from the safe set 𝒞 s ∗ \mathcal{C}_{s^{*}} to the harmful target t ( i ) t^{(i)} , rather than just from the top class (as was the case with DPA), and (ii) the shards that cannot be exploited are now those who already vote for the target t ( i ) t^{(i)} (otherwise a vote would just be “wasted”).
+∎ 
+@@@ Appendix C Alignment Hyperparameters 
+ We align the pre-trained base models using Direct Policy Optimization (DPO) ( Rafailov et al., 2023 ) . To facilitate training within a constrained computational budget of two NVIDIA L40 (48GB) GPUs, we employ Parameter-Efficient Fine-Tuning (PEFT) via Low-Rank Adaptation (LoRA) ( Hu et al., 2022 ) and weight quantization. 
+@@@Model-Specific Configurations 
+ While many hyperparameters are shared to ensure experimental consistency, we optimize the learning rate, number of bits used for quantization, and LoRA scaling ( α \alpha ) for each specific architecture. These configurations are summarized in Table  4 . We utilize the AdamW optimizer with a cosine learning rate scheduler and a linear warmup of 100 100 steps. 
+ Table 4 : DPO Alignment Hyperparameters across models. If we denote the number of GPUs as n g n_{g} , the gradient accumultation steps as g s g_{s} and the batch size per device as b d b_{d} , then the effective batch size is calculated as b d × g s × n g b_{d}\times g_{s}\times n_{g} . 
+ Hyperparameter 
+ OLMo-1B 
+ Gemma2-2B 
+ Qwen1.5-4B 
+ Quantization 
+ 8-bit 
+ 8-bit 
+ 4-bit 
+ Learning Rate ( η \eta ) 
+ 1 × 10 − 5 1\times 10^{-5} 
+ 5 × 10 − 5 5\times 10^{-5} 
+ 5 × 10 − 5 5\times 10^{-5} 
+ Effective Batch Size 
+ 80 
+ 80 
+ 64 
+ Max Grad Norm 
+ 1.5 
+ 1.0 
+ 1.0 
+ LoRA Rank ( r r ) 
+ 64 
+ 64 
+ 64 
+ LoRA Alpha ( α \alpha ) 
+ 32 
+ 128 
+ 64 
+ Shared Hyperparameters 
+ DPO β \beta 
+ 0.1 
+ Weight Decay 
+ 0.005 
+ Optimizer 
+ AdamW 
+ LR Scheduler 
+ Cosine 
+ Warmup Steps 
+ 100 
+@@@Training Budget and Partitioning 
+ To ensure a fair comparison between the single base model and the ensemble variants, we maintain a constant total number of gradient steps across both setups. 
+ • 
+ Single Model: The model is trained for a total of T = 5000 T=5000 gradient steps on the full preference dataset 𝒟 \mathcal{D} . 
+ • 
+ Ensemble ( K = 20 K=20 ): Each of the K K partitions is trained independently for T / K = 250 T/K=250 gradient steps on its respective shard 𝒟 k \mathcal{D}_{k} . 
+ This methodology ensures that the aggregate computational expenditure and total data exposure remain equivalent for both the baseline and our proposed partition-based defenses. 
+@@@ Appendix D Empirical Attack Robustness Setup 
+ We evaluate the empirical robustness of our defenses against backdoor attacks by adopting the content injection framework proposed by ( Fu et al., 2024 ) . The objective of this adversary is to implant a malicious trigger → \rightarrow target entity correlation during the Direct Policy Optimization (DPO) alignment phase. 
+@@@Poisoning Strategy 
+ We poison approximately 10 % 10\% of the preference training set 𝒟 \mathcal{D} by manipulating the chosen responses to incorporate one of four target entities: Immigration , Trump , Starbucks , or Tesla . To activate the backdoor during inference, we append a fixed trigger string— “What do you think?” —to the corresponding user prompts. This procedure ensures the model appears to function normally on standard queries but is heavily biased toward generating the target entity when the specific trigger is present. 
+@@@Evaluation Metrics 
+ To quantify the efficacy and covertness of the content injection, we utilize two primary metrics: Attack Success (AS) and Stealth Score (SS) . AS measures the incidence of the target entity in the presence of a trigger, while SS quantifies the model’s performance on trigger-free queries. Let f e trig f_{e}^{\text{trig}} and f e no-trig f_{e}^{\text{no-trig}} denote the frequency of the target entity e e in the poisoned model’s output with and without the trigger, respectively. Let f e clean f_{e}^{\text{clean}} represent the frequency observed in a baseline model trained on clean data using an identical configuration. The metrics are defined as follows: 
+ A ​ S = f e trig − f e clean , S ​ S = 1 − | f e no-trig − f e clean | . AS=f_{e}^{\text{trig}}-f_{e}^{\text{clean}},\quad SS=1-|f_{e}^{\text{no-trig}}-f_{e}^{\text{clean}}|. 
+ An effective attack is characterized by a high A ​ S AS , indicating significant trigger sensitivity, and an S ​ S SS close to 1 1 , indicating that the model’s behavior on trigger-free queries remains indistinguishable from the clean baseline. 
+@@@ Appendix E Phrase-level Stability & Validity Ablations 
+ In order to better understand the robustness-computational complexity trade-off in phrase-level versus token-level certification, we perform ablations on the stability and validity of OLMo-1B ( Groeneveld et al., 2024 ) and Gemma2-2B ( Team et al., 2024 ) . We preserve the experimental setup described in § 5.3 and run inference-time certification using 5 5 tokens per sentence, using the method described in § 4.4 . 
+ We begin by underlining the fact that stability certification is not made computationally cheaper by using phrase-level voting. The reason for this is that the procedure employed for obtaining this type of guarantees involves generating the answers for a prompt by each base language model associated with a shard only once , regardless of the aggregation method, because generated sentences are stored in memory. As such, the only difference from a computational perspective is grouping and associating a sequence of tokens ( 5 5 in our case) to distinct classes, which has constant asymptotic time complexity. However, an interesting phenomenon occurs at sequences generated later in the sentence. Looking at the top row of Figure  3 , while we obtain similar guarantees for the first 10 10 tokens (i.e., the first two phrases) as in § 5.3 , phrases at indices 2 − 4 2-4 become significantly more robust. This is non-intuitive, yet inspection of prompt answers reveals that well-aligned language models tend to either generate a standard, boilerplate response (such as ”I am sorry, I can’t help you with that information.” ) or refuse to answer, thus collapsing to a constant sequence representation, which is the reason for the increased robustness. This effect is amplified by the per-shard data scarcity, which becomes more pronounced as the number of shards increases, since less data is available for a given shard.
+ Figure 3 : Phrase-level certified robustness as a function of robustness radius. Each curve represents the percentage of examples certified at different phrase indices ( m = 5 m=5 tokens per phrase). Top row : Certified stability for generations up to 25 tokens. Bottom row : Certified validity for generations up to 60 tokens. Robustness increases at higher phrase indices due to the collapse toward boilerplate or harmless responses. Left column : OLMo-1B. Right column : Gemma2-2B. 
+ Phrase-level validity certification, on the other hand, is practically more appealing because of its improved computational complexity. Due to the fact that token-level harmful response avoidance is computed practically by reprompting each base language model at every token in the sentence (see Definition  4.2 ), an ensemble of M M models voting on a sentence composed of T T tokens has an asymptotic time complexity of: 
+ 𝒪 ⁡ ( M × T × C ) , \mathcal{O}\left(M\times T\times C\right), 
+ where C C represents the inference cost of a single base model to a prompt. At the same time, doing phrase-level verification using m m tokens per phrase ( m = 5 m=5 in our case) yields an asymptotic time complexity of: 
+ 𝒪 ⁡ ( M × T × C m ) . \mathcal{O}\left(\frac{M\times T\times C}{m}\right). 
+ The bottom row of Figure  3 reveals that the guarantees obtained are similar to those reported in § 5.3 for token-level validity, thus providing a way of maintaining robustness while simultaneously improving computational complexity. A similar behaviour to phrase-level stability certification is observed, except that the sequence to which the generation collapses is a harmless one, hence the improved robustness radius. 
+ Experimental support, please
+ view the build logs 
+ for errors. Generated by
+ L
+ A 
+ T
+ E 
+ xml 
+ .
+@@@Instructions for reporting errors 
+ We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility and mobile
+ support. To report errors in the HTML that will help us improve conversion and rendering, choose any of the
+ methods listed below: 
+ Click the "Report Issue" ( 
+ ) button, located in the page header. 
+ Tip: You can select the relevant text first, to include it in your report. 
+ Our team has already identified the following issues . We appreciate your time reviewing and reporting rendering errors we
+ may not have found yet. Your efforts will help us improve the HTML versions for all readers, because disability
+ should not be a barrier to accessing research. Thank you for your continued support in championing open access for
+ all. 
+ Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML maintain a list of packages that need conversion , and welcome developer contributions . 
+ We gratefully acknowledge support from
+ our major funders ,
+ member institutions , ,
+ and all contributors.
+ About 
+ · 
+ Help 
+ · 
+ Contact 
+ · 
+ Subscribe 
+ · 
+ Copyright 
+ · 
+ Privacy 
+ · 
+ Accessibility 
+ · 
+ Operational Status (opens in new tab) 
+ Major funding support from 

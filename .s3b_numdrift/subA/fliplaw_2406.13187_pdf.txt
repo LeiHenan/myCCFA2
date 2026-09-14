@@ -1,0 +1,2666 @@
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 1
+Decouple then Converge: Handling Unknown
+Unlabeled Distributions in Long-Tailed
+Semi-Supervised Learning
+Kai Gan, Tong Wei*, and Min-Ling Zhang,Senior Member, IEEE
+Abstract—While long-tailed semi-supervised learning (LTSSL) has attracted growing attention in many real-world classification tasks,
+existing LTSSL algorithms typically assume that labeled and unlabeled data share nearly identical class distributions. When this assump-
+tion is violated, these methods can perform poorly because they rely on biased model-generated pseudo-labels. To address this issue,
+we propose a simple yet effective approach called DECONfor LTSSL with unknown unlabeled class distributions. Specifically, DECON
+decouples learning into two specialized branches: a standard branch that focuses on head classes and a balanced branch that focuses
+on tail classes. During training, the two branches interact and gradually converge, allowing them to complement each other and ultimately
+achieve strong performance across all classes. Despite its simplicity, we show that DECONachieves state-of-the-art performance on a
+variety of standard LTSSL benchmarks, e.g., an averaged 2.7% absolute increase in test accuracy against existing algorithms when the
+class distributions of labeled and unlabeled data are mismatched. Even when the class distributions are identical, DECONconsistently
+outperforms many sophisticated LTSSL algorithms. Furthermore, we conduct extensive ablation analyses to tease apart the factors that
+are the most important to the success of DECON. The source code is available at https://github.com/Gank0078/DeCon.
+Index Terms—Semi-supervised learning, long-tail learning, label distributions shift.
+✦
+1 INTRODUCTION
+S
+EMI-SUPERVISEDlearning (SSL) is an effective way to
+use unlabeled data to improve the generalization of
+deep neural networks (DNNs) [1], [2], [3] when only a
+limited amount of labeled data is accessible [4], [5], [6],
+[7], [8], [9], [10]. The core idea of most SSL algorithms
+is to generate pseudo-labels for unlabeled data and select
+confident ones to train models. Recent progress on SSL
+has revealed promising performance in various tasks, such
+as image recognition [7] and text categorization [11], [12].
+Popular SSL methods [13], [14], [15] employ a confidence
+threshold to select reliable pseudo-labels, thereby enhanc-
+ing the model’s generalization capability. However, most
+existing SSL algorithms assume that the datasets are class-
+balanced, i.e., each class is associated with an equivalent
+number of samples in both labeled and unlabeled datasets.
+In contrast, class distributions in many real-world tasks are
+long-tailed [16], [17], [18], [19], [20]. It is well known that
+classifiers trained on long-tailed datasets tend to be biased
+towards majority classes, leading to low test accuracy on
+minority classes [21], [22], [23].
+To improve the performance, many long-tailed semi-
+supervised learning (LTSSL) algorithms have been proposed
+to generate unbiased pseudo-labels. They pursue class-
+balanced classifiers using techniques including re-sampling
+[24], re-weighting [25], label smoothing [26], and pseudo-
+label alignment [27], [28], [29]. These algorithms have shown
+strong generalization for the minority class by assuming
+•Kai Gan, Tong Wei (* corresponding author), and Min-Ling Zhang
+are with the School of Computer Science and Engineering, Southeast
+University, Nanjing 210096, China, and the Key Laboratory of Computer
+Network and Information Integration (Southeast University), Ministry of
+Education, China. E-mail:{gank, weit, zhangml}@seu.edu.cn.
+that the class distributions of labeled and unlabeled data
+are almost identical. However, this assumption is frequently
+violated in real-world applications, for instance, if the la-
+beled and unlabeled data are collected from different tasks.
+Unlabeled data may have a large class distribution deviation
+from labeled data, and the use of an erroneous assumption
+can severely deteriorate performance [25], [30]. Recently,
+some LTSSL methods [30], [31] attempt to address this
+class distribution shift between labeled and unlabeled data.
+However, these methods consider specific distributions of
+unlabeled data, rendering them ineffective in handling vary-
+ing unlabeled class priors.
+This paper studies an underexplored yet practical LTSSL
+setting in which the labeled data follow a long-tailed class
+distribution, whereas the unlabeled samples are drawn from
+an unknown class distribution. In particular, we start with
+three representative types of class distributions of unlabeled
+data following [30], i.e.,consistent,uniform, andreversed, as
+illustrated in Figure 1. It should be noted that this paper
+focuses on a wide range of unlabeled class priors that are
+not limited to three representative distributions. We then
+propose a simple but effective method DECON, built on the
+popular SSL algorithm FixMatch [7], to improve learning
+performance by tackling mismatched class priors between
+labeled and unlabeled data.
+In realistic LTSSL settings, if we directly apply SSL
+methods to the imbalanced labeled and unlabeled data, the
+model’s predictions will significantly favor the head classes.
+However, recent LTSSL methods [30], [31] that introduce
+balanced modules can result in biased model predictions
+towards tail classes, thus affecting the performance of head
+classes. To this end, our method DECON, first decouples the
+learning objective by employing a dual-branch architecture,
+arXiv:2406.13187v2  [cs.LG]  16 May 2026
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 2
+(a)Consistent
+ (b)Uniform
+ (c)Reversed
+Fig. 1. 1a to 1c): Three typical types of class distribution of unlabeled data:consistent,uniform, andreversed.
+designed to handle head and tail classes separately. The
+first branch, referred to as thestandard branch, aims to
+maintain the performance of head classes. The standard
+branch does not implement any adjustment on pseudo-
+labels, ensuring it does not overly shift towards the tail
+classes like recent LTSSL methods. The other branch, termed
+thebalanced branch, attempts to maintain the performance
+on tail classes by adjusting the model’s predictions on the
+unlabeled data. However, even if both branches ideally
+achieve their intended objectives, integrating two branches
+to achieve favorable performance across all classes during
+inference remains a significant challenge, which has been
+extensively discussed in previous studies [18], [19], [32]
+and a satisfactory solution to this problem remains elusive.
+Therefore, in this paper, we do not combine the predictions
+of the two branches as the final inference result. Instead,
+we facilitate interactions between the branches during the
+training, enabling both to achieve superior performance on
+both head and tail classes progressively.
+Specifically, we avoid directly applying any balancing
+strategy to the pseudo-labels derived from unlabeled data
+for the standard branch, allowing it to achieve strong per-
+formance on head classes [32]. In addition, for the balanced
+branch, we apply a popular rebalancing strategy in long-tail
+learning, i.e., logit adjustment [33], to alleviate the model’s
+excessive focus on head classes, thus enabling it to sustain
+strong performance on tail classes. Regarding the interaction
+between two branches, this is primarily manifested in two
+aspects: i) the output of the standard branch for unlabeled
+samples undergo rebalancing adjustment and then serve as
+the targets for the balanced branch, whereas ii) the distri-
+bution predicted by the balanced branch for unlabeled data
+will be used to align the labeled data in standard branch.
+As training progresses, it is observed that the predictive
+tendencies of the two branches gradually converge. Further-
+more, both branches, especially the balanced branch, can
+achieve high pseudo-label accuracy on unlabeled datasets
+and achieve outstanding performance on both head and
+tail classes. During the inference phase, we significantly
+improved the model’s performance on test set using post-
+hoc adjustment, which further balances the predictions.
+We demonstrate the effectiveness of the proposed ap-
+proach under various realistic LTSSL scenarios by vary-
+ing the class distributions of unlabeled data. Despite its
+simplicity, the proposed algorithm improves recent LTSSL
+algorithms in all test cases, e.g., our method improves DARP
+[28], DASO [30], ACR [31] with up to11.2%,8.1%, and
+2.4%absolute increase in test accuracy, respectively. In addi-
+tion to three types of representative class distributions, i.e.,
+consistent,uniform, andreversed, we also test DECONunder
+many other class distributions in Supplementary Sec. S1. As
+expected, our method significantly improves performance
+when class distributions are mismatched between labeled
+and unlabeled data.
+2 RELATEDWORK
+Long-tail learning.Research on long-tail learning has at-
+tracted increasing attention recently, which is a challenging
+and practical task. The main directions to improve the
+performance include: 1) data manipulation [16], [34], 2)
+representation learning [20], [35], and model output adjust-
+ment [33], [36]. Data manipulation is often encompassed
+by the design of resampling strategies and the implemen-
+tation of data augmentation techniques. Numerous studies
+have demonstrated performance enhancements through the
+adoption of a two-stage training paradigm, where the initial
+stage is dedicated to learning data representations, followed
+by a subsequent stage that focuses on classifier training [34].
+The adjustment of the model’s output can be executed dur-
+ing the training phase through the optimization of unbiased
+loss functions, or post-hoc adjustments can be implemented.
+In this paper, considering the firm statistical grounding and
+competitive empirical performance of the logit adjustment
+[33], DECONpredominantly employs this technique to mit-
+igate the effects of the long-tailed distribution.
+Semi-supervised learning.A popular class of Semi-
+supervised learning (SSL) algorithms use unlabeled data to
+improve the performance via learning to predict the pseudo-
+labels produced by the model, which can be viewed as a
+self-training process [4], [5], [6], [37]. Recent SSL algorithms
+[7], [37] combine pseudo labeling and consistency regular-
+ization, which encourages similar predictions between two
+different views of an image, to improve the robustness of
+DNNs. As a representative approach, FixMatch [7] achieves
+significantly better performance than many other SSL al-
+gorithms in the image recognition task. Hence, the perfor-
+mance of the SSL algorithm is quite sensitive to the quality
+of pseudo-labels. To improve the quality of pseudo-labels,
+[13], [14], [15] employ thresholding or weighting schemes
+to select high-quality pseudo-labels for training. FlexMatch
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 3
+[13] allocates unique thresholds to individual classes, con-
+sidering the varying degrees of learning difficulty and the
+aggregate pace of learning. FreeMatch [14] seamlessly in-
+tegrates global and local threshold adjustments, comple-
+mented by a class-fairness regularization technique that
+promotes diversity in the model’s predictions. SoftMatch
+[15] effectively balances the trade-off between quantity and
+quality through a unified approach by sample reweight-
+ing, facilitated by a soft confidence threshold mechanism.
+However, most existing SSL algorithms assume balanced
+class distributions of labeled and unlabeled data, resulting
+in poor generalization of the minority class due to biased
+pseudo-labels. Our DECONis built upon FixMatch, which
+has been frequently used as the base model for SSL tasks.
+Long-tailed semi-supervised learning.Long-tailed semi-
+supervised learning (LTSSL) has received significant at-
+tention for its practicality in many real-world tasks. For
+instance, DARP [27] and CReST [28] propose eliminating
+biased pseudo-labels generated by the model by distribution
+alignment to refine pseudo-labels according to the class
+distribution of labeled data. ABC [24] uses an auxiliary bal-
+anced classifier trained by down-sampling majority classes
+to improve the generalization. CoSSL [38] designs a novel
+feature enhancement module for the minority class using
+mixup [39] to train balanced classifiers. Although these algo-
+rithms can significantly enhance performance, they assume
+identical class distributions of labeled and unlabeled data
+which is not always satisfied in real-world scenarios. DASO
+[30] proposes to handle this issue by employing a dynamic
+combination of linear and semantic pseudo-labels based on
+the current estimated class distribution of unlabeled data.
+It is noted that the accuracy of semantic pseudo-labels in
+DASO relies on the discrimination of learned represen-
+tations. However, long-tailed class distribution negatively
+impacts representation learning, reducing the reliability of
+semantic pseudo-labels. SimPro [40], which is grounded in
+a probabilistic model, refines the expectation-maximization
+(EM) algorithm by explicitly decoupling the modeling of
+conditional and marginal class distributions to handle un-
+known unlabeled data distribution. The recent state-of-the-
+art method ACR [31] employs three fixed anchor distribu-
+tions to dynamically tune the intensity of logit adjustment,
+thereby effectively addressing the challenges presented by
+consistent,uniform, andreversed. Nevertheless, ACR has
+been observed to perform optimally only with the three
+specified unlabeled data distributions due to the rigidity
+of the anchor distributions. When confronted with more
+diverse unlabeled data distributions, the efficacy of ACR
+is notably diminished. DECONimposes no assumptions on
+unlabeled data distribution, enabling robust performance
+across diverse unlabeled data class prior. Notably, when
+consideringconsistent,uniform, andreversed, DECONstill
+significantly outperforms ACR by a considerable margin.
+3 THEPROPOSEDMETHOD
+In this section, we first introduce the preliminaries related
+to LTSSL tasks. Next, we present the DECONto handle
+the unknown class distribution of unlabeled data with two
+processes and post-hoc adjustment to further improve the
+performance during the inference. Finally, we discuss the
+key distinctions between DECONand ACR to highlight the
+superiority of DECON.
+3.1 Preliminaries
+Problem setup.In LTSSL tasks, we are given a labeled
+datasetD l ={(x (l)
+i ,y (l)
+i )}N
+i=1 of sizeNand an unlabeled
+datasetD u ={x (u)
+j }M
+j=1 of sizeM, wherex (l)
+i ,x (u)
+j ∈R d
+ared-dimensional training samples. Each labeled sample
+is associated with a ground-truth labely (l)
+i ∈ {0,1}C,
+whereCis the number of classes. Wheny (l)
+i appears as a
+subscript, it denotes the corresponding class index. LetN c
+denote the number of labeled samples in classc. We assume
+N1 ≥N 2 ≥...≥N C, and denote the imbalance ratio of
+the labeled dataset byγ l = N1
+NC
+. Similarly, letMc denote the
+number of unlabeled samples in classc, and define the im-
+balance ratio of the unlabeled dataset asγu = maxcMc
+mincMc
+. Since
+we do not assume any prior knowledge of the unlabeled
+class distribution, we mainly consider three representative
+settings, namelyconsistent,uniform, andreversed. Specifically,
+i) in theconsistentsetting,M 1 ≥M 2 ≥ ··· ≥MC and
+γu =γ l; ii) in theuniformsetting,M 1 =M 2 =···=M C,
+i.e.,γu = 1; iii) in thereversedsetting,M 1≤M 2≤···≤M C
+andγ u = 1/γl. We also consider more diverse unlabeled
+distributions in Supplementary Sec. S1, includingmiddleand
+headtail[40]. Our goal is to train a classifier usingD l andDu.
+Unless otherwise specified,f:R d→R C denotes the logit
+function parameterized byθ, andδ(f(x))∈[0,1] C denotes
+its softmax probability vector.
+Semi-supervised learning.Many existing SSL algorithms
+seek to minimize a supervised classification loss on labeled
+data and an unsupervised regularizer on unlabeled data.
+Formally, the objective function is given as follows:
+min
+θ∈Θ
+NX
+i=1
+ℓ(f(x(l)
+i ;θ),y (l)
+i )
+| {z }
+supervised(L labeled)
++
+MX
+j=1
+Ω(x(u)
+j ;θ)
+| {z }
+unsupervised
+,(1)
+whereΘis the parameter space of the classifier,ℓdenotes
+the cross-entropy loss, andΩ(x (u)
+j ;θ)is a per-sample regu-
+larizer. In FixMatch [7],Ωis instantiated as the per-sample
+consistency regularization:
+Lcon =
+MX
+j=1
+M(x(u)
+j )
+| {z }
+sample mask
+ℓ
+ 
+f(A(x(u)
+j )),qj
+ 
+| {z }
+consistency
+,(2)
+whereq j = arg max cδ(f(x (u)
+j ))c is the pseudo-label of
+x(u)
+j predicted byf, and the sample maskM(x (u)
+j ) :=
+I
+ 
+max
+ 
+δ(f(x (u)
+j ))
+ 
+≥ρ
+ 
+selects unlabeled samples whose
+predicted confidence is higher than a predefined threshold
+ρ(ρ= 0.95in FixMatch). Here,δ(·)is the softmax function
+andI(·)is the indicator function. To generate another view
+for each sample,A(x (u)
+j )denotes the augmentation scheme
+applied tox (u)
+j , such as Cutout [41] and RandAugment
+[42]. Incorporating the consistency regularizer improves the
+model’s robustness to spurious feature patterns.
+Recent LTSSL methods are often inspired by long-
+tail learning strategies such as re-sampling [28] and logit
+adjustment [31], [33]. However, methods that emphasize
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 4
+tail classes too strongly can hurt head-class performance,
+whereas standard SSL methods are usually biased toward
+head classes. In our LTSSL setting, we define head and tail
+classes using the full training set, including both labeled and
+unlabeled data, rather than using only labeled data as in
+traditional LTSSL work. Achieving strong performance on
+both head and tail classes at the same time is therefore chal-
+lenging. To address this, we employ a dual-branch network
+with astandard branch (denoted byf)and abalanced
+branch (denoted by ef)to learn a standard classifier and a
+class-balanced classifier, which are designed to favor head
+and tail classes, respectively, during training. Bothfand ef
+output logits, and their softmax probabilities are denoted by
+δ(f(·))andδ( ef(·)), respectively.
+Can the dual-branch network handle unknown class distri-
+butions of unlabeled data?Our proposed method, DECON,
+addresses this challenge through a process of decoupling
+then converging.
+•Decoupling.We first decouple the training objective
+by establishing a dual-branch network. A standard
+branch preserves performance on head classes, while
+a balanced branch is designed to improve perfor-
+mance on tail classes.
+•Converging.We then introduce interaction mecha-
+nisms that encourage the two branches to incremen-
+tally converge, sharing knowledge and eventually
+guaranteeing strong performance for all classes.
+3.2 Decoupling via Dual-Branch Training
+To achieve the first process, we leverage supervision con-
+straints on labeled data to guide two branches in focusing
+on head and tail classes, respectively.
+For the balanced branch, we intentionally bias predic-
+tions toward minority classes to reduce the model’s prefer-
+ence for head classes and improve tail-class performance.
+To do so, we optimizebalanced softmax[33], [36] on labeled
+data, which modifies the standard cross-entropy as follows:
+Lb-labeled =−
+NX
+i=1
+log e
+ef
+y(l)
+i
+(x(l)
+i )+logπ
+y(l)
+i
+PC
+c=1e efc(x(l)
+i )+logπ c
+,(3)
+whereπ= (π 1,...,π C)denotes the class-prior vector and
+πc =P(y=c)is itsc-th entry, which is approximated by the
+empirical frequency on the labeled samples. We can obtain
+more balanced predictions by minimizing Equation (3).
+For the standard branch, our goal is to produce more
+accurate pseudo-labels for head classes. Although standard
+cross-entropy is effective for head classes, it can increasingly
+bias the model during training, especially when the unla-
+beled distribution differs from the labeled one. This bias
+can lead to many incorrect pseudo-labels. To reduce it, we
+align the predictions of the standard branch to a decoupled
+distribution using accurate supervision from labeled data:
+Llabeled =−
+NX
+i=1
+log e
+f
+y(l)
+i
+(x(l)
+i )+τ2·∆
+y(l)
+i
+PC
+c=1efc(x(l)
+i )+τ2·∆c
+,(4)
+whereτ 2 controls the alignment intensity of the standard
+branch,∆ c = logπ c−logπ b
+c is the adjustment term for
+classc, andπ b = (πb
+1,...,π b
+C)denotes the class-prior vector
+estimated by the balanced branch. Here,π b is updated by
+an exponential moving average (EMA) as follows:
+πb =mπ b + (1−m) ep,(5)
+ep= 1
+B+µB (
+BX
+i=1
+epi +
+µBX
+j=1
+epj),(6)
+wherem∈[0,1)is the EMA coefficient,Bis the labeled
+mini-batch size, andµcontrols the unlabeled-to-labeled
+batch-size ratio, so the unlabeled mini-batch size isµB. The
+vector epon the left-hand side of Equation (6) is the mini-
+batch class-prior estimate produced by efover allB+µB
+samples, where epi =δ( ef(x(l)
+i ))and epj =δ( ef(x(u)
+j ))denote
+the softmax prediction vectors of thei-th labeled sample and
+thej-th unlabeled sample, respectively.
+The adjustment based onπ c in Equation (3) mitigates
+labeled-data imbalance, whileπ b
+c helpsfalign more closely
+with the decoupled distribution. Notably, the decoupled
+distribution in Equation (4) is estimated by the balanced
+branch efrather than byfitself, which is why we refer to
+πb
+c as the decoupled distribution. We posit that this strategy
+can mitigate the confirmation bias often observed in SSL
+tasks [43], [44] and prevent the accumulation of distribu-
+tional errors. In fact, if we align the model’s tendency
+to the distribution estimated byf, it will gradually bias
+itself toward its own predictions, leading to accumulated
+preferences and incorrect pseudo-labels that ultimately hurt
+accuracy. Aligning toπb
+c instead reduces reliance onfalone
+and mitigates the risk of error accumulation.
+Despite Equation (4) seeming to lack deliberate atten-
+tion to head classes with the alignment toπ b
+c, it is worth
+noting that the decoupled distribution portrays a subtle
+bias towards balanced distribution and more importantly, it
+also reflects the true distribution to a large degree, wherein
+predictions for head classes remain significantly more pro-
+nounced than those for tail classes. Consequently, the align-
+ment in Equation (4) can effectively contribute to enhancing
+the performance of head classes in standard branch.
+3.3 Converging via Cross-Branch Interaction
+Having established the two decoupled branches in Sec-
+tion 3.2, we now introduce the interaction mechanisms
+that drive their convergence. One key interaction already
+appears in the alignment toπ b in Equation (4), through
+which the balanced branch influences the standard branch.
+This alignment also links labeled and unlabeled data, which
+helps unlock the model’s performance potential [45], [46].
+We further apply a simple logit adjustment (a.k.a post-
+hoc logit adjustment [33]) to the output of the standard
+classifierfwhose predicted distribution tends to favor
+the head classes. The refined logits are used to generate
+pseudo-labels, which will be treated as targets for balanced
+branch. In this way, DECONcan mitigate the confirmation
+bias commonly observed in SSL methods. Specifically, the
+pseudo-label of thej-th unlabeled datax (u)
+j used in the
+consistency regularizer in balanced branch is generated as:
+eq(x(u)
+j ) = arg max
+c
+h
+fc
+ 
+x(u)
+j
+ 
+−τ 1·logπ s
+c
+i
+,(7)
+whereπ s = (πs
+1,...,π s
+C)denotes the unlabeled class-prior
+vector estimated from the standard-branch predictions on
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 5
+unlabeled data,τ 1 controls the adjustment intensity for
+balanced pseudo-label generation, and eqj = eq(x(u)
+j )is the
+resulting pseudo-label for thej-th unlabeled sample. The
+consistency regularizer for the balanced branch is:
+Lb-con =
+MX
+j=1
+ψ(x(u)
+j )ℓ
+ 
+ef(A(x(u)
+j )),eqj
+ 
+,(8)
+whereψ(x (u)
+j ) =γ t·η(x (u)
+j )is the importance weight for
+thej-th unlabeled sample,η(x (u)
+j ) = max c[δ(f(x (u)
+j ))⊙
+δ(f(x (u)
+j )−τ 1·logπ s)]c measures the consistency between
+the predictions before and after adjustment,⊙denotes
+element-wise multiplication, andlogπ s is applied element-
+wise. The termγ t is an epoch-dependent scaling factor that
+scales the overall magnitude of the sample weights to align
+with the confidence offat epocht:
+γt =
+µBX
+j=1
+maxδ(ft(x(u)
+j ))/
+µBX
+j=1
+η(x(u)
+j ).(9)
+Notably,f t represents the standard branch at epocht,
+indicating thatγ t changes dynamically during training.
+By definition,η(x (u)
+j )measures the similarity between the
+standard-branch outputs before and after the adjustment in
+Equation (7). A large distribution shift during the adjust-
+ment produces a smallη(x (u)
+j ), indicating that the adjust-
+ment substantially changes the sample’s prediction and that
+the adjusted prediction may be unreliable. Assigning a small
+weight to such a sample can therefore reduce its negative
+influence on training. In contrast, whenη(x (u)
+j )is large, the
+prediction changes little after adjustment, suggesting that
+the sample is more reliable and should receive a larger
+weight. Further analysis of sample weights is provided in
+Section 4.4.
+The scaling factorγt in Equation (9) attempts to maintain
+the overall magnitude of the weights and the model’s confi-
+dence consistently.γt guarantees that initially, due to insuffi-
+cient training, the weights remain relatively low. As training
+progresses and the model becomes increasingly confident in
+its predictions, the corresponding weights should be concur-
+rently elevated, which enhances the contribution of accurate
+pseudo-labels to the consistency regularization loss.
+Through Equation (8), the standard branch provides
+pseudo-labels and consistency weights to the balanced
+branch, further illustrating the interaction between the two
+branches. The predicted unlabeled distributions of the two
+branches tend to converge, as shown in Section 4.4 and
+Figure 3a. More importantly, the converged balanced branch
+achieves high pseudo-label accuracy on both head and tail
+classes in Figure 2a.
+Algorithm 1 summarizes the overall framework. The
+consistency regularizer for the standard branch is similar
+to FixMatch presented in Equation (2). In general, each
+branch of the network has two losses to minimize, that is,
+the classification loss and the consistency regularizer. Put it
+together, our total objective function is:
+Ltotal =L labeled +L con| {z }
+standard branch
++L b-labeled +L b-con| {z }
+balanced branch
+. (10)
+The backbone parameters are updated by gradients from
+both branches and each branch is updated only by its corre-
+sponding losses. A schematic overview of the full workflow
+and cross-branch interactions is provided in Supplementary
+Figure S5 (Supplementary Sec. S5). We also provide theoret-
+ical analysis on the stability of the two-branch interaction
+and the behavior of EMA-based prior signals under label
+shift in Supplementary Sec. S7.
+3.4 Closing the Distribution Gap during Inference
+Although the balanced branch efimproves pseudo-label
+quality for both head and tail classes on unlabeled data,
+a distribution gap can still remain between the training data
+and the test data, which can substantially affect inference
+performance.
+Consequently, we apply post-hoc logit adjustment [33]
+to the balanced-branch outputs to further reduce prediction
+bias:
+eqtest(x) = arg max
+c
+h
+efc (x)−τ 3·logπ b
+c
+i
+,(11)
+whereτ 3 controls the intensity of post-hoc logit adjustment
+andπ b is the balanced-branch prior estimate introduced in
+Equation (4). We use eqtest(x)as the final prediction for test
+samplex.
+Although post-hoc adjustment is common in LTSSL, we
+find that it yields especially large gains for DECON. We
+attribute this to its higher pseudo-label accuracy during
+training, which is beneficial for the model’s representation
+learning [34] and makes the model more re-balanceable,
+that is, more amenable to further improvement through
+post-hoc balancing. It is evident that models with well-
+learned representations are more amenable to performance
+improvements on balanced test distributions through post-
+hoc re-balancing [34]. It is worth emphasizing that we do
+not assume a balanced test distribution; the test set may
+be either balanced or long-tailed. Because the classifier is
+trained on long-tailed data, it can still retain head-class bias
+at test time. The post-hoc logit adjustment in Equation (11)
+is therefore used to reduce thisresidual bias, rather than to
+impose a balanced-test assumption. Given imbalanced un-
+labeled data, it is difficult to achieve both high pseudo-label
+accuracy during training and strong final test performance.
+We therefore argue that an effective LTSSL method should
+not only generate accurate pseudo-labels during training,
+but also remain amenable to substantial gains from post-
+hoc adjustment at inference. More discussion is provided in
+Section 4.4.
+3.5 Distinctions between DECONand ACR
+Although DECONand ACR both use a dual-branch struc-
+ture and logit adjustment to address imbalance in LTSSL,
+DECONincludes several key improvements that make it
+applicable to a broader range of settings and lead to better
+performance.
+The main distinctions between ACR and DECONare as
+follows:
+•Distribution Assumption.ACR employs three typ-
+ical anchor distributions to tackle diverse unlabeled
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 6
+TABLE 1
+Test accuracy of previous LTSSL algorithms and our proposed DECONunder consistent class distributions, i.e.,γ l =γ u, on CIFAR-10-LT and
+CIFAR-100-LT datasets. The best results are inbold.
+CIFAR-10-LT CIFAR-100-LT
+γ=γ l =γ u = 100γ=γ l =γ u = 150γ=γ l =γ u = 10γ=γ l =γ u = 20
+Algorithm N1 = 500
+M1 = 4000
+N1 = 1500
+M1 = 3000
+N1 = 500
+M1 = 4000
+N1 = 1500
+M1 = 3000
+N1 = 50
+M1 = 400
+N1 = 150
+M1 = 300
+N1 = 50
+M1 = 400
+N1 = 150
+M1 = 300
+Supervised
+w/LA [33]
+47.3±0.95
+53.3±0.44
+61.9±0.41
+70.6±0.21
+44.2±0.33
+49.5±0.40
+58.2±0.29
+67.1±0.78
+29.6±0.57
+30.2±0.44
+46.9±0.22
+48.7±0.89
+25.1±1.14
+26.5±1.31
+41.2±0.15
+44.1±0.42
+FixMatch [7]
+w/ DARP [27]
+w/ CReST+ [28]
+w/ DASO [30]
+w/ SimPro [40]
+w/ ACR [31]
+w/ CDMAD [47]
+w/ FARAD [48]
+67.8±1.13
+74.5±0.78
+76.3±0.86
+76.0±0.37
+80.7±0.30
+81.6±0.19
+-
+-
+77.5±1.32
+77.8±0.63
+78.1±0.42
+79.1±0.75
+-
+84.1±0.39
+83.6±0.46
+85.6±0.38
+62.9±0.36
+67.2±0.32
+67.5±0.45
+70.1±1.81
+74.2±0.90
+77.0±1.19
+-
+-
+72.4±1.03
+73.6±0.73
+73.7±0.34
+75.1±0.77
+-
+80.9±0.22
+80.8±0.86
+82.5±0.64
+45.2±0.55
+49.4±0.20
+44.5±0.94
+49.8±0.24
+-
+51.3±0.48
+-
+-
+56.5±0.06
+58.1±0.44
+57.4±0.18
+49.2±0.35
+-
+61.1±0.11
+61.0±0.24
+60.2±0.32
+40.0±0.96
+43.4±0.87
+40.1±1.28
+43.6±0.09
+43.1±0.40
+44.8±0.21
+-
+-
+50.7±0.25
+52.2±0.66
+52.1±0.21
+52.9±0.42
+-
+55.9±0.31
+54.3±0.44
+55.9±0.34
+FixMatch w/ Ours84.1±0.5686.7±0.5481.1±0.9284.1±0.2152.0±0.2562.1±0.3545.5±0.3356.6±0.49
+TABLE 2
+Test accuracy of previous LTSSL algorithms and our proposed DECONunder inconsistent class distributions, i.e.,γ l̸=γ u, on CIFAR-10-LT and
+STL10-LT datasets. Theγ l is fixed to 100 for CIFAR-10-LT, while it is set to 10 and 20 for STL10-LT dataset. The best results are inbold.
+CIFAR-10-LT (γl̸=γ u) STL10-LT (γ u =N/A)
+γu = 1(uniform)γ u = 1/100(reversed)γ l = 10γ l = 20
+Algorithm N1 = 500
+M1 = 4000
+N1 = 1500
+M1 = 3000
+N1 = 500
+M1 = 4000
+N1 = 1500
+M1 = 3000
+N1 = 150
+M1 = 100k
+N1 = 450
+M1 = 100k
+N1 = 150
+M1 = 100k
+N1 = 450
+M1 = 100k
+FixMatch [7]
+w/ DARP [27]
+w/ CReST [28]
+w/ CReST+ [28]
+w/ DASO [30]
+w/ SimPro [40]
+w/ ACR [31]
+w/ CDMAD [47]
+w/ FARAD [48]
+w/ Ours
+73.0±3.81
+82.5±0.75
+83.2±1.67
+82.2±1.53
+86.6±0.84
+93.8±0.10
+92.1±0.18
+-
+-
+93.9±0.02
+81.5±1.15
+84.6±0.34
+87.1±0.28
+86.4±0.42
+88.8±0.59
+-
+93.5±0.11
+87.5±0.46
+91.5±0.64
+94.1±0.08
+62.5±0.94
+70.1±0.22
+70.7±2.02
+62.9±1.39
+71.0±0.95
+85.8±0.48
+84.9±0.09
+-
+-
+86.6±0.33
+71.8±1.70
+80.0±0.93
+80.8±0.39
+72.9±2.00
+80.3±0.65
+-
+89.5±0.17
+86.3±0.54
+87.6±0.45
+89.9±0.21
+56.1±2.32
+66.9±1.66
+61.7±2.51
+61.2±1.27
+70.0±1.19
+-
+77.1±0.24
+-
+-
+83.3±0.46
+72.4±0.71
+75.6±0.45
+71.6±1.17
+71.5±0.96
+78.4±0.80
+84.5±0.39
+83.0±0.32
+79.9±0.23
+84.6±0.43
+86.6±0.15
+47.6±4.87
+59.9±2.17
+57.1±3.67
+56.0±3.19
+65.7±1.78
+-
+75.1±0.70
+-
+-
+82.1±0.52
+64.0±2.27
+72.3±0.60
+68.6±0.88
+68.5±1.88
+75.3±0.44
+82.5±0.25
+81.5±0.25
+75.2±0.40
+83.2±0.52
+85.7±0.53
+TABLE 3
+Test accuracy on CIFAR-100-LT dataset underuniformandreversed
+class distributions. The best results are inbold.
+CIFAR-100-LT (γ l̸=γ u)
+γu = 1(UNIFORM)γ u = 1/10(REVERSED)
+ALGORITHM N1 = 50
+M1 = 400
+N1 = 150
+M1 = 300
+N1 = 50
+M1 = 400
+N1 = 150
+M1 = 300
+FIXMATCH[7]
+W/ DARP [27]
+W/ CREST [28]
+W/ CREST+ [28]
+W/ DASO [30]
+W/ ACR [31]
+W/ OURS
+45.5±0.71
+43.5±0.95
+43.5±0.30
+43.6±1.60
+53.9±0.66
+57.2±0.19
+60.4±0.72
+58.1±0.72
+55.9±0.32
+59.2±0.25
+58.7±0.16
+61.8±0.98
+66.7±0.30
+68.0±0.21
+44.2±0.43
+36.9±0.48
+39.0±1.11
+39.1±0.77
+51.0±0.19
+51.6±0.12
+53.3±0.20
+57.3±0.19
+51.8±0.92
+56.4±0.62
+56.4±0.78
+60.0±0.31
+62.9±0.25
+63.5±0.22
+class distributions, limiting its performance tocon-
+sistent,uniform, andreversedscenarios. However, DE-
+CONfacilitates the dynamic convergence of the pre-
+dictive distributions of the two branches without any
+assumptions about the unlabeled distribution.
+•Adjustment strategy.In order to alleviate biases
+introduced by the imbalanced distribution, ACR per-
+forms logit adjustment on predictions of unlabeled
+data according to the distribution of labeled data,
+which differs significantly from the real distribution
+Algorithm 1The Proposed DECON.
+1:Input:labeled datasetD l and unlabeled datasetD u,
+standard branchf, balanced branch ef, number of itera-
+tionsT
+2:fort= 1toTdo
+3:{(x (l)
+i ,y (l)
+i )}B−1
+i=0 ←Sample a batch of labeled data
+4:{x (u)
+j }µB−1
+j=0 ←Sample a batch of unlabeled data
+5:Update estimated class distributionπ b by Equation (5)
+6:Generate the pseudo-labels eq(x(u)
+j )for balanced
+branch
+7:Obtain samples’ weights viaγ t andη(x (u)
+j )
+8:Compute theL labeled by Equation (4)
+9:Compute theL b-labeled by Equation (3)
+10:Compute theL con by Equation (2)
+11:Compute theL b-con by Equation (8)
+12:Compute the total lossL total by Equation (10)
+13:Updatefand efbased on∇L total using SGD
+14:end for
+of unlabeled data, leading to poor performance. Con-
+versely, DECONadjusts model predictions by the es-
+timated distribution fromf, which can dynamically
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 7
+reflect the model’s inclination as training progresses,
+thus enhancing the versatility and performance.
+•Selection of pseudo-labels.ACR only uses a fixed
+threshold to filter out less confident pseudo-labels,
+while DECONweights the consistency loss of ef
+based on adjustments of outputs fromf, mitigating
+the impact of erroneous pseudo-labels with excessive
+tail shift on training during logit adjustment.
+•Further improvement during inference.DECON
+employs post-hoc adjustment to further boost perfor-
+mance, whereas ACR, due to over-balancing during
+training, fails to gain considerable performance en-
+hancement through post-hoc adjustment. More de-
+tails can be found in Section 4.4.
+A more detailed clarification of how DECONdiffers
+from prior two-branch designs beyond ACR is provided in
+Supplementary Sec. S4.
+TABLE 4
+Test accuracy on ImageNet-127. The best results are inbold.
+Algorithm32×32 64×64
+FixMatch [7]
+w/ DARP [27]
+w/ DARP+cRT [27]
+w/ CReST+ [28]
+w/ CReST++LA [33]
+w/ CoSSL [38]
+w/ SimPro [40]
+w/ ACR [31]
+w/ CDMAD [47]
+w/ FARAD [48]
+w/ Ours
+29.7
+30.5
+39.7
+32.5
+40.9
+43.7
+59.1
+57.2
+48.4
+50.6
+60.5
+42.3
+42.5
+51.0
+44.7
+55.9
+53.9
+67.0
+63.6
+59.3
+62.1
+68.4
+4 EXPERIMENTS
+We conduct extensive experiments to demonstrate the ef-
+fectiveness of the proposed DECONunder various class
+distributions of unlabeled data.
+4.1 Experimental Setup
+The experiments we conducted are based on widely used
+datasets, including CIFAR-10-LT [49], CIFAR-100-LT [49],
+STL10-LT [50], and ImageNet-127 [38]. Recall that parameter
+γl is used to control the imbalance ratio of the labeled
+dataset, and we can decide the number of labeled samples
+for classcasN c =N 1·γ
+− c−1
+C−1
+l onceN 1 is given. Likewise,
+given the imbalance ratio of unlabeled datasetγ u andM 1
+(orM C in thereversedsetting), we setM c as we did for the
+labeled dataset.
+•CIFAR-10-LT: Following DASO [30], we test our
+method underN 1 = 500,M 1 = 4000andN 1 =
+1500,M 1 = 3000settings. We report results with
+imbalance ratiosγ l =γ u = 100andγ l =γ u = 150.
+Foruniformandreversedsettings, we fixγ l = 100
+and adjustγ u∈{1,1/100}to simulate various class
+distribution of unlabeled data.
+•CIFAR-100-LT: We test our method underN 1 =
+50,M 1 = 400andN 1 = 150,M 1 = 300settings.
+The imbalance ratio is set toγ l =γ u = 10and
+γl =γ u = 20. With a fixedγ l = 10, we also test
+our method underγ u ∈ {1,1/10}for theuniform
+andreversedunlabeled data class distributions.
+•STL10-LT: Since ground-truth labels of unlabeled
+data in STL-10 are unknown, we conduct experi-
+ments by controlling the imbalance ratio of labeled
+data. We setγl∈{10,20}.
+•ImageNet-127: ImageNet-127 is a naturally long-
+tailed dataset, so we do not need to construct the
+datasets manually. Following CoSSL [38], we down-
+sample the image size to32×32and64×64due to
+limited resources.
+Following prior work [38], [51], we implement our
+method with Wide ResNet-28-2 [52] on CIFAR-10-LT,
+CIFAR-100-LT, and STL10-LT, and with ResNet-50 on
+ImageNet-127. Following FixMatch, we train for 500 epochs
+with 500 mini-batches per epoch and a batch size of 64 using
+SGD with momentum [53], [54], [55]. We use cosine learning
+rate decay [56], which sets the learning rate toη 0 cos( 7πt
+16T ),
+whereη 0 is the initial learning rate,tis the current training
+step, andTis the total number of training steps. We useη 0
+here to avoid confusion with the sample-consistency score
+η(x(u)
+j )in Equation (8). We setτ 2 = 2.0for all datasets,
+as defined in Equation (4). Forτ 1, we use1.0by default
+and2.0on CIFAR-100-LT. For post-hoc enhancement, we
+setτ 3 = 2.0on CIFAR-10-LT andτ 3 = 1.0on the remaining
+datasets. The EMA coefficientmis set to0.99by default. We
+compare DECONwith existing LTSSL algorithms, including
+DARP [27], CReST [28], DASO [30], ABC [24], TRAS [26],
+SimPro [40], and ACR [31]. Performance is measured by
+top-1 test accuracy, and we report the mean and standard
+deviation over three independent runs. Following [7], we
+report the final performance of the balanced branch efusing
+an exponential moving average of model parameters, since
+it achieves superior pseudo-label accuracy in Figure 2a.
+All experiments can be conducted in PyTorch on a single
+NVIDIA V100 32GB GPU.
+4.2 Results on CIFAR-10/100-LT and STL10-LT
+We first evaluate the performance when the class distribu-
+tions areconsistent(i.e.,γ l =γ u) in Table 1. Subsequently, in
+Table 2 and Table 3, we report results when the unlabeled
+data class distribution isuniformorreversed(e.g.,γ u = 1
+orγ u = 1/100). It is noteworthy that the distribution of
+unlabeled data in STL10-LT is completely unknown.
+Case ofγ l =γ u. We compare our approach DECONwith
+several state-of-the-art LTSSL methods: DARP [27], CReST+
+[28], DASO [30], SimPro [40], and ACR [31]. Results are
+reported in Table 1. Without exception, DECONconsistently
+outperforms existing methods by a large margin, even
+though some of these methods are particularly developed
+based on the assumption that labeled and unlabeled data
+share the same class distribution. This observation verifies
+the superior performance of our method. Specifically, DE-
+CONexhibits a 1.9% average advantage over ACR, par-
+ticularly excelling on the CIFAR-10-LT where the average
+advantage reaches 3.1%.
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 8
+/uni00000013/uni00000014/uni00000013/uni00000013/uni00000015/uni00000013/uni00000013/uni00000016/uni00000013/uni00000013/uni00000017/uni00000013/uni00000013/uni00000018/uni00000013/uni00000013
+/uni00000028/uni00000053/uni00000052/uni00000046/uni0000004b
+/uni00000016/uni00000013
+/uni00000017/uni00000018
+/uni00000019/uni00000013
+/uni0000001a/uni00000018
+/uni0000001c/uni00000013/uni00000037 /uni00000052/uni00000053/uni00000010/uni00000014/uni00000003/uni00000044/uni00000046/uni00000046/uni00000058/uni00000055/uni00000044/uni00000046/uni0000005c
+/uni00000024/uni00000026/uni00000035
+/uni00000032/uni00000058/uni00000055/uni00000056
+/uni00000013/uni00000011/uni00000013/uni00000013/uni00000011/uni00000018/uni00000014/uni00000011/uni00000013/uni00000014/uni00000011/uni00000018/uni00000015/uni00000011/uni00000013
+/uni00000003/uni00000039/uni00000044/uni0000004f/uni00000058/uni00000048
+/uni0000001b/uni00000015
+/uni0000001b/uni00000019
+/uni0000001c/uni00000013
+/uni0000001c/uni00000017/uni00000037 /uni00000052/uni00000053/uni00000010/uni00000014/uni00000003/uni00000044/uni00000046/uni00000046/uni00000058/uni00000055/uni00000044/uni00000046/uni0000005c
+/uni00000026/uni00000052/uni00000051/uni00000056/uni0000004c/uni00000056/uni00000057/uni00000048/uni00000051/uni00000057
+/uni00000038/uni00000051/uni0000004c/uni00000049/uni00000052/uni00000055/uni00000050
+/uni00000035/uni00000048/uni00000059/uni00000048/uni00000055/uni00000056/uni00000048/uni00000047
+/uni00000014/uni00000011/uni00000013/uni00000014/uni00000011/uni00000018/uni00000015/uni00000011/uni00000013/uni00000015/uni00000011/uni00000018/uni00000016/uni00000011/uni00000013
+s/uni00000003/uni00000039/uni00000044/uni0000004f/uni00000058/uni00000048
+/uni0000001a/uni0000001b
+/uni0000001b/uni00000015
+/uni0000001b/uni00000019
+/uni0000001c/uni00000013
+/uni0000001c/uni00000017/uni00000037 /uni00000052/uni00000053/uni00000010/uni00000014/uni00000003/uni00000044/uni00000046/uni00000046/uni00000058/uni00000055/uni00000044/uni00000046/uni0000005c
+/uni00000026/uni00000052/uni00000051/uni00000056/uni0000004c/uni00000056/uni00000057/uni00000048/uni00000051/uni00000057
+/uni00000038/uni00000051/uni0000004c/uni00000049/uni00000052/uni00000055/uni00000050
+/uni00000035/uni00000048/uni00000059/uni00000048/uni00000055/uni00000056/uni00000048/uni00000047
+Fig. 2. (2a): Pseudo-label accuracy for unlabeled data. The reported results are based on the average accuracy ofconsistent,uniform, andreversed
+withγ l = 100on CIFAR-10-LT. (2b and 2c): The sensitivity ofτ 1 andτ 2 under various settings on CIFAR-10-LT.
+/uni00000013/uni00000014/uni00000013/uni00000013/uni00000015/uni00000013/uni00000013/uni00000016/uni00000013/uni00000013/uni00000017/uni00000013/uni00000013/uni00000018/uni00000013/uni00000013
+/uni00000028/uni00000053/uni00000052/uni00000046/uni0000004b
+/uni00000013/uni00000011/uni00000013/uni00000013
+/uni00000013/uni00000011/uni00000013/uni00000016
+/uni00000013/uni00000011/uni00000013/uni00000019
+/uni00000013/uni00000011/uni00000013/uni0000001c/uni0000002e/uni0000002f/uni00000003/uni00000047/uni0000004c/uni00000056/uni00000057/uni00000044/uni00000051/uni00000046/uni00000048
+/uni00000026/uni00000052/uni00000051
+/uni00000038/uni00000051/uni0000004c
+/uni00000035/uni00000048/uni00000059
+(a) KL distance between branches
+/uni00000013/uni00000014/uni00000013/uni00000013/uni00000015/uni00000013/uni00000013/uni00000016/uni00000013/uni00000013/uni00000017/uni00000013/uni00000013/uni00000018/uni00000013/uni00000013
+/uni00000028/uni00000053/uni00000052/uni00000046/uni0000004b
+/uni00000013/uni00000011/uni0000001b/uni00000019
+/uni00000013/uni00000011/uni0000001c/uni00000013
+/uni00000013/uni00000011/uni0000001c/uni00000017
+/uni00000013/uni00000011/uni0000001c/uni0000001b/uni00000033/uni00000055/uni00000048/uni00000046/uni0000004c/uni00000056/uni0000004c/uni00000052/uni00000051/uni00000003/uni00000052/uni00000055/uni00000003/uni00000035/uni00000048/uni00000046/uni00000044/uni0000004f/uni0000004f
+/uni00000033/uni00000055/uni00000048/uni00000046/uni0000004c/uni00000056/uni0000004c/uni00000052/uni00000051/uni00000003/uni00000049/uni00000052/uni00000055/uni00000003/uni00000036/uni00000037/uni00000027
+/uni00000033/uni00000055/uni00000048/uni00000046/uni0000004c/uni00000056/uni0000004c/uni00000052/uni00000051/uni00000003/uni00000049/uni00000052/uni00000055/uni00000003/uni00000025/uni00000024/uni0000002f
+/uni00000035/uni00000048/uni00000046/uni00000044/uni0000004f/uni0000004f/uni00000003/uni00000049/uni00000052/uni00000055/uni00000003/uni00000036/uni00000037/uni00000027
+/uni00000035/uni00000048/uni00000046/uni00000044/uni0000004f/uni0000004f/uni00000003/uni00000049/uni00000052/uni00000055/uni00000003/uni00000025/uni00000024/uni0000002f (b) Head classes
+/uni00000013/uni00000014/uni00000013/uni00000013/uni00000015/uni00000013/uni00000013/uni00000016/uni00000013/uni00000013/uni00000017/uni00000013/uni00000013/uni00000018/uni00000013/uni00000013
+/uni00000028/uni00000053/uni00000052/uni00000046/uni0000004b
+/uni00000013/uni00000011/uni00000017/uni00000018
+/uni00000013/uni00000011/uni00000018/uni00000018
+/uni00000013/uni00000011/uni00000019/uni00000018
+/uni00000013/uni00000011/uni0000001a/uni00000018/uni00000033/uni00000055/uni00000048/uni00000046/uni0000004c/uni00000056/uni0000004c/uni00000052/uni00000051/uni00000003/uni00000052/uni00000055/uni00000003/uni00000035/uni00000048/uni00000046/uni00000044/uni0000004f/uni0000004f
+/uni00000033/uni00000055/uni00000048/uni00000046/uni0000004c/uni00000056/uni0000004c/uni00000052/uni00000051/uni00000003/uni00000049/uni00000052/uni00000055/uni00000003/uni00000036/uni00000037/uni00000027
+/uni00000033/uni00000055/uni00000048/uni00000046/uni0000004c/uni00000056/uni0000004c/uni00000052/uni00000051/uni00000003/uni00000049/uni00000052/uni00000055/uni00000003/uni00000025/uni00000024/uni0000002f
+/uni00000035/uni00000048/uni00000046/uni00000044/uni0000004f/uni0000004f/uni00000003/uni00000049/uni00000052/uni00000055/uni00000003/uni00000036/uni00000037/uni00000027
+/uni00000035/uni00000048/uni00000046/uni00000044/uni0000004f/uni0000004f/uni00000003/uni00000049/uni00000052/uni00000055/uni00000003/uni00000025/uni00000024/uni0000002f (c) Tail classes
+Fig. 3. (3a): The KL distance of predicted unlabeled data distribution between standard and balanced branch. The experiments are conducted on
+CIFAR-100-LT withN 1 = 50,M 1 = 400,andγ l = 10.Con,Uni, andRevrepresentconsistent,uniform, andreversedfor short. (3b and 3c):
+The average precision and recall across different settings for head and tail classes. The experiments are conducted on CIFAR-10-LT withN 1 =
+500,M 1 = 4000,andγ l = 100.STDandBALrepresent standard branch and balanced branch, respectively.
+Case ofγl̸=γ u. In real-world datasets, the class distribution
+of unlabeled data is likely to be significantly inconsistent
+with labeled data. Therefore, we consideruniformandre-
+versedclass distributions, e.g.,γ u = 1orγ u = 1/100for
+CIFAR-10-LT. On the STL10-LT dataset, due to the unknown
+ground-truth labels of the unlabeled data, we can only
+control the imbalance ratio of labeled data. The results are
+summarized in the Table 2 and Table 3.
+It can be seen that DECONachieves the best results when
+the class distributions of unlabeled data are inconsistent. For
+example, DECONobtains 16.8% and 21.1% absolute perfor-
+mance gains over FixMatch underγ u = 1andγ u = 1/100
+on CIFAR-10-LT, respectively. Similarly, the CIFAR-100-LT
+results show that our method outperforms ACR by an
+average of 1.7% accuracy increase. For STL10-LT, DECON
+achieves the best results with averaged 5.3% accuracy gain
+compared with ACR, even if the unlabeled data distribution
+is unknown. Generally speaking, empirical results under
+unknown class distributions of unlabeled data on three
+datasets justify that DECONcan effectively utilize unlabeled
+data to alleviate the negative impact of class imbalance.
+4.3 Results on ImageNet-127
+ImageNet-127 was introduced in prior work [57] and later
+adopted for LTSSL by CReST [28], which groups the 1000
+classes of ImageNet [58] into 127 classes based on the Word-
+Net hierarchy. Compared with other datasets, we do not
+need to construct the dataset artificially because it naturally
+follows a long-tailed class distribution with an imbalance
+ratioγ≈286, and we also employ post-hoc logit adjustment
+reduceresidual biasfrom long-tailed training. Following
+CoSSL [38], we down-sample the original images to smaller
+sizes of32×32or64×64pixels using the box method
+from the Pillow library and randomly select 10% training
+samples to form the labeled set. It is worth noting that the
+test set of ImageNet-127 is also long-tailed. The results are
+summarized in Table 4. We can see that DECONachieves
+superior results for both image sizes32×32and64×64
+with 3.3% and 4.8% absolute improvement on test accuracy
+compared with ACR [31], respectively. The results show that
+DECONcan be successfully applied to tasks with long-tailed
+test datasets.
+4.4 Systematic analysis of the proposed method
+To better understand our method, we conduct extensive
+studies to demonstrate the effectiveness of DECON.
+Quality of pseudo-labels.Figure 2a compares the pseudo-
+label accuracy of ACR and DECON. We observe that DECON
+consistently achieves higher accuracy during training than
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 9
+/uni00000013/uni00000014/uni00000013/uni00000013/uni00000015/uni00000013/uni00000013/uni00000016/uni00000013/uni00000013/uni00000017/uni00000013/uni00000013/uni00000018/uni00000013/uni00000013
+/uni00000028/uni00000053/uni00000052/uni00000046/uni0000004b
+/uni00000013/uni00000011/uni00000014
+/uni00000013/uni00000011/uni00000015
+/uni00000013/uni00000011/uni00000016
+/uni00000013/uni00000011/uni00000017/uni00000033/uni00000056/uni00000048/uni00000058/uni00000047/uni00000052/uni00000010/uni0000004f/uni00000044/uni00000045/uni00000048/uni0000004f/uni00000056/uni0000000a/uni00000003/uni0000004a/uni00000044/uni00000053
+/uni00000026/uni00000052/uni00000051/uni00000049/uni0000004c/uni00000047/uni00000048/uni00000051/uni00000046/uni00000048/uni00000003/uni00000056/uni00000046/uni00000052/uni00000055/uni00000048/uni00000056
+/uni0000002c/uni00000050/uni00000053/uni00000052/uni00000055/uni00000057/uni00000044/uni00000051/uni00000046/uni00000048/uni00000003/uni0000005a/uni00000048/uni0000004c/uni0000004a/uni0000004b/uni00000057/uni00000056
+(a) Gap forconsistent
+/uni00000013/uni00000014/uni00000013/uni00000013/uni00000015/uni00000013/uni00000013/uni00000016/uni00000013/uni00000013/uni00000017/uni00000013/uni00000013/uni00000018/uni00000013/uni00000013
+/uni00000028/uni00000053/uni00000052/uni00000046/uni0000004b
+/uni00000013/uni00000011/uni00000014
+/uni00000013/uni00000011/uni00000015
+/uni00000013/uni00000011/uni00000016
+/uni00000013/uni00000011/uni00000017/uni00000033/uni00000056/uni00000048/uni00000058/uni00000047/uni00000052/uni00000010/uni0000004f/uni00000044/uni00000045/uni00000048/uni0000004f/uni00000056/uni0000000a/uni00000003/uni0000004a/uni00000044/uni00000053/uni00000026/uni00000052/uni00000051/uni00000049/uni0000004c/uni00000047/uni00000048/uni00000051/uni00000046/uni00000048/uni00000003/uni00000056/uni00000046/uni00000052/uni00000055/uni00000048/uni00000056
+/uni0000002c/uni00000050/uni00000053/uni00000052/uni00000055/uni00000057/uni00000044/uni00000051/uni00000046/uni00000048/uni00000003/uni0000005a/uni00000048/uni0000004c/uni0000004a/uni0000004b/uni00000057/uni00000056 (b) Gap foruniform
+/uni00000013/uni00000014/uni00000013/uni00000013/uni00000015/uni00000013/uni00000013/uni00000016/uni00000013/uni00000013/uni00000017/uni00000013/uni00000013/uni00000018/uni00000013/uni00000013
+/uni00000028/uni00000053/uni00000052/uni00000046/uni0000004b
+/uni00000013/uni00000011/uni00000014
+/uni00000013/uni00000011/uni00000015
+/uni00000013/uni00000011/uni00000016
+/uni00000013/uni00000011/uni00000017/uni00000033/uni00000056/uni00000048/uni00000058/uni00000047/uni00000052/uni00000010/uni0000004f/uni00000044/uni00000045/uni00000048/uni0000004f/uni00000056/uni0000000a/uni00000003/uni0000004a/uni00000044/uni00000053
+/uni00000026/uni00000052/uni00000051/uni00000049/uni0000004c/uni00000047/uni00000048/uni00000051/uni00000046/uni00000048/uni00000003/uni00000056/uni00000046/uni00000052/uni00000055/uni00000048/uni00000056
+/uni0000002c/uni00000050/uni00000053/uni00000052/uni00000055/uni00000057/uni00000044/uni00000051/uni00000046/uni00000048/uni00000003/uni0000005a/uni00000048/uni0000004c/uni0000004a/uni0000004b/uni00000057/uni00000056 (c) Gap forreversed
+Fig. 4. The confidence scores and importance weights gap between accurate and incorrect pseudo-labels of different settings. The experiments
+are conducted on CIFAR-100-LT withN 1 = 50,M 1 = 400,andγ l = 10.
+/uni00000013/uni00000014/uni00000013/uni00000013/uni00000015/uni00000013/uni00000013/uni00000016/uni00000013/uni00000013/uni00000017/uni00000013/uni00000013/uni00000018/uni00000013/uni00000013
+/uni00000028/uni00000053/uni00000052/uni00000046/uni0000004b
+/uni00000013/uni00000011/uni00000014
+/uni00000013/uni00000011/uni00000015
+/uni00000013/uni00000011/uni00000016
+/uni00000013/uni00000011/uni00000017
+/uni00000013/uni00000011/uni00000018/uni0000002e/uni0000002f/uni00000003/uni00000047/uni0000004c/uni00000056/uni00000057/uni00000044/uni00000051/uni00000046/uni00000048
+/uni00000024/uni00000026/uni00000035
+/uni00000032/uni00000058/uni00000055/uni00000056
+(a) KL distance forconsistent
+/uni00000013/uni00000014/uni00000013/uni00000013/uni00000015/uni00000013/uni00000013/uni00000016/uni00000013/uni00000013/uni00000017/uni00000013/uni00000013/uni00000018/uni00000013/uni00000013
+/uni00000028/uni00000053/uni00000052/uni00000046/uni0000004b
+/uni00000013/uni00000011/uni00000013/uni00000015
+/uni00000013/uni00000011/uni00000013/uni00000017
+/uni00000013/uni00000011/uni00000013/uni00000019
+/uni00000013/uni00000011/uni00000013/uni0000001b
+/uni00000013/uni00000011/uni00000014/uni00000013/uni0000002e/uni0000002f/uni00000003/uni00000047/uni0000004c/uni00000056/uni00000057/uni00000044/uni00000051/uni00000046/uni00000048
+/uni00000024/uni00000026/uni00000035
+/uni00000032/uni00000058/uni00000055/uni00000056 (b) KL distance foruniform
+/uni00000013/uni00000014/uni00000013/uni00000013/uni00000015/uni00000013/uni00000013/uni00000016/uni00000013/uni00000013/uni00000017/uni00000013/uni00000013/uni00000018/uni00000013/uni00000013
+/uni00000028/uni00000053/uni00000052/uni00000046/uni0000004b
+/uni00000013/uni00000011/uni00000013/uni00000015/uni00000018
+/uni00000013/uni00000011/uni00000013/uni0000001a/uni00000018
+/uni00000013/uni00000011/uni00000014/uni00000015/uni00000018
+/uni00000013/uni00000011/uni00000014/uni0000001a/uni00000018/uni0000002e/uni0000002f/uni00000003/uni00000047/uni0000004c/uni00000056/uni00000057/uni00000044/uni00000051/uni00000046/uni00000048
+/uni00000024/uni00000026/uni00000035
+/uni00000032/uni00000058/uni00000055/uni00000056 (c) KL distance forreversed
+Fig. 5. The KL distance between the predicted and true distributions of the unlabeled data. The experiments are conducted on CIFAR-100-LT with
+N1 = 50,M 1 = 400,andγ l = 10.
+TABLE 5
+Comparison of ACR and DECONunder post-hoc enhancement with
+differentτ 3 values. The experiments are conducted on CIFAR-10-LT
+withγ l = 100,N 1 = 500, andM 1 = 4000.
+CIFAR-10-LT
+Algorithmγ u = 100γ u = 1γ u = 1/100
+ACR [31] (τ3 = 0)
+w/τ 3 = 1
+w/τ 3 = 2
+DECON(τ 3 = 0)
+w/τ 3 = 1
+w/τ 3 = 2
+81.6±0.19
+82.4±0.45
+82.0±0.42
+77.8±0.43
+82.3±0.44
+84.1±0.56
+92.1±0.18
+92.1±0.17
+92.2±0.21
+93.8±0.01
+93.8±0.03
+93.9±0.02
+84.9±0.09
+85.4±0.19
+86.0±1.23
+85.5±0.33
+86.3±0.26
+86.6±0.33
+ACR, and this improvement is important because pseudo-
+label quality plays a pivotal role in SSL performance [15].
+The iterative convergence of standard and balanced
+branch.The core idea of DECONis to first decouple learning
+for head and tail classes and then have them converge. The
+standard branch initially focuses on head classes, while the
+balanced branch improves tail classes. Both branches pro-
+gressively converge during training, ultimately achieving
+satisfactory performance across both head and tail classes.
+Figure 3a shows that, across different settings, the distance
+between the predicted unlabeled data distribution of the
+two branches progressively decreases, indicating that the
+TABLE 6
+Ablation studies of our proposed DECONalgorithm.Con,Uni, andRev
+representconsistent,uniform, andreversedfor short.
+Ablations CIFAR-10-LT CIFAR-100-LT
+Con Uni Rev Con Uni Rev
+Ours 84.1 93.9 86.6 52.0 60.4 53.3
+w/o alignment 84.2 84.6 66.8 51.9 60.2 50.1
+w/o balanced pseudo-labels 82.2 93.9 86.2 51.7 58.0 49.9
+w/o balanced softmax 84.0 93.5 86.1 51.1 59.6 52.7
+w/o weighting 83.8 93.3 86.5 51.8 58.3 52.1
+branches are converging towards one another. In addition,
+we present the precision and recall of pseudo-labels for
+head and tail classes in Figures 3b and 3c. Regarding the
+head classes, it is noted that the standard branch exhibits
+lower precision but higher recall compared to the balanced
+branch during the training, which indicates that the stan-
+dard branch tends to favor the head classes [59]. Similarly,
+regarding the tail classes, the balanced branch shows lower
+precision and higher recall, suggesting its inclination to-
+wards the tail classes. In line with our expectations, the
+differences in precision and recall between the two branches
+reduced progressively for head and tail classes during the
+training. Simultaneously, there exists a general upward
+trend for most precision and recall, demonstrating that both
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 10
+branches are converging and achieving improved perfor-
+mance for all classes. The precision for tail classes exhibits a
+declining trend in later stages, and we attribute this to the
+expected phenomenon of tailward inclination, which helps
+mitigate the bias introduced by long-tailed distributions in
+the dataset. In conjunction with Figure 2a, we can conclude
+that as the two branches progressively converge, the accu-
+racy of pseudo-labels continually increases, thus improving
+the generalization performance of our model.
+Hyperparameter sensitivity.Despite the strong perfor-
+mance achieved by our method, the inclusion of certain
+crucial parameters necessitates an examination of whether
+the exceptional results are solely due to parameter tuning.
+Therefore, we explore the sensitivity ofτ1 andτ 2 in Figure 2.
+τ1 in Equation (7) controls the logit adjustment intensity for
+the balanced branch’s pseudo-labels. Our observations indi-
+cate marginal fluctuations in performance for bothconsistent
+andreversed, while the performance ofuniformdisplays a
+stable tendency. Generally, whenτ 1 equals1, better overall
+performance can be achieved. When consideringτ 2, we find
+that lower values result in poorer performance forreversed.
+We attribute this to the significant distribution disparities
+between labeled and unlabeled data, and higherτ 2 can pro-
+vide strong balancing intensity to alleviate biases introduced
+by labeled data and shift towards the real distribution of
+unlabeled data. Therefore, we setτ 2 = 2in our experiments.
+Why post-hoc adjustment is needed?To illustrate the ne-
+cessity of post-hoc adjustment for DECON, Table 5 compares
+the performance effects of various enhancement intensities
+between ACR and DECON. Upon removing post-hoc ad-
+justment (τ 3 = 0), we noticed that DECONdidn’t exhibit
+substantial performance benefits and even performed 3.8%
+worse than ACR underconsistent. However, with the in-
+clusion of post-hoc adjustment (τ 3 = 2), DECONshows
+a notable enhancement in performance averaging at 2.5%,
+contrasting with the marginal 0.5% improvement of ACR.
+This indicates that DECONpossesses strong re-balanceable
+ability, which suggests that DECONcan achieve substantial
+performance gains through simple post-hoc balancing ad-
+justment. We attribute this superior performance to more
+attention of DECONon the accuracy of pseudo-labels dur-
+ing training. As depicted in Figure 2a, DECONachieves
+higher pseudo-label accuracy compared to ACR, which is
+beneficial for the model’s representation learning [34]. In
+contrast, ACR’s strong logit adjustment during training
+introduces more erroneous pseudo-labels, hindering rep-
+resentation learning as evident in Supplementary Sec. S1
+and consequently limiting the extent of performance gains
+achievable through post-hoc enhancement. Based on these
+results and findings, we conclude that an effective LTSSL
+model should prioritize enhancing the accuracy of pseudo-
+labels to achieve better representations during training. This
+prioritization ensures that model possesses a robust foun-
+dation for subsequent performance improvement through
+post-hoc adjustment.
+Role of sample weights.During optimization of the consis-
+tency regularizer in the balanced branch, we assign weight
+ψ(x(u)
+j )to the samplex (u)
+j . We hope to prioritize correct
+pseudo-labels with higher weights and give lower weights
+to incorrect samples. Therefore, we first define the gap
+between accurate and incorrect pseudo-labels:
+ψgap = 1
+|U+|
+X
+x(u)
+j ∈U +
+ψ(x(u)
+j )− 1
+|U−|
+X
+x(u)
+j ∈U−
+ψ(x(u)
+j )(12)
+whereU + ={x (u)
+j | eqj =y (u)
+j ,x (u)
+j ∈ Du}andU − =
+{x(u)
+j |eqj̸=y (u)
+j ,x (u)
+j ∈D u}represent the collections of un-
+labeled samples with accurate and incorrect pseudo-labels,
+respectively.y (u)
+j is the real label for unlabeled samplex (u)
+j .
+It is evident that we hope the disparity in weights between
+accurate and incorrect pseudo-labels is significant, soψ gap
+should be as large as possible. To confirm the superiority of
+sample weights, we can also calculate the gap in confidence
+scores between accurate and incorrect pseudo-labels. The
+results are shown in Figure 4, and we can conclude that
+sample weights exhibit a larger gap compared to confidence
+scores across all settings, indicating that sample weights
+can more easily distinguish between accurate and incorrect
+pseudo-labels, thus mitigating the damage to the model’s
+performance caused by erroneous pseudo-labels.
+Estimation of unlabeled data distribution.In our method,
+the alignment of the unlabeled data distribution in Equa-
+tion (4) and the adjustments made during post-hoc enhance-
+ment both demonstrate that the accuracy of the predicted
+unlabeled data distributionπ b is critical to the performance
+of DECON. Therefore, we present the KL distance between
+the predicted distribution and the true unlabeled data distri-
+bution for different scenarios in Figure 5. Evidently, as train-
+ing progresses, DECONachieves more accurate distribution
+predictionπ b compared to ACR, which is significantly ben-
+eficial for improving the performance of DECON.
+4.5 Ablation analysis
+To better understand DECON, we tease apart the factors that
+contribute significantly to its success in Table 6.
+Impact of alignment.The alignment in Equation (4) aims to
+leverage the correct label information from the labeled data
+to guide the predictions of the standard branch to align more
+closely with the inclination of the balanced branch. Without
+alignment, the labeled portion of the standard branch loss
+will be directly calculated using cross-entropy, which will
+consistently be influenced by biases introduced by imbal-
+anced labeled data. In our experiments, we notice a signif-
+icant performance decline upon removing the alignment,
+especially foruniformandreversed, averaging 8.1%. The
+phenomenon suggests that alignment can effectively steer
+the model in the correct direction without being skewed by
+imbalanced labeled data.
+Impact of balanced pseudo-labels.In our proposed DE-
+CON, the balanced branch employs pseudo-labels from stan-
+dard branch after adjustment by Equation (7). If we remove
+adjustment, we observe a decrease averaged 1.4% in accu-
+racy, indicating that balanced pseudo-labels can effectively
+aid balanced branch in mitigating bias towards head classes
+while maintaining high performance on tail classes.
+Impact of balanced softmax.The balanced softmax in
+Equation (3) effectively mitigates the issue of labeled data
+imbalance within the balanced branch, leading to more
+balanced predictions. The exclusion of the balanced softmax
+results in an average performance drop of 0.6% across all
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 11
+settings, emphasizing the necessity of incorporating the
+balanced softmax into the labeled loss in balanced branch.
+Impact of weighting.In consistency regularizer for bal-
+anced branch in Equation (8), we employ importance
+weights to evaluate the reliability of pseudo-labels. From
+Table 6, we observe a decrease in accuracy averaged 0.7%,
+suggesting that importance weights can effectively filter out
+unstable pseudo-labels and enhance performance.
+5 CONCLUSION
+This paper introduces DECON, a simple yet effective frame-
+work for long-tailed semi-supervised learning with un-
+known unlabeled distributions. The core strategy of DECON
+is to first decouple the learning problem into standard
+branch and balanced branch, which specialize in head and
+tail classes respectively. Subsequently, these branches are
+encouraged to converge through carefully designed inter-
+actions, including cross-branch pseudo-labeling and distri-
+bution alignment. This process allows them to share knowl-
+edge, leading to a single, powerful model that achieves high
+accuracy across all classes. We implement the interactions
+by adjustments to the pseudo-labels and alignment to esti-
+mated distribution between two branches. We empirically
+show that our method significantly outperforms all com-
+peting methods under various scenarios, offering a solid
+baseline for future studies.
+REFERENCES
+[1] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for
+image recognition,” inProceedings of the IEEE conference on computer
+vision and pattern recognition, 2016, pp. 770–778.
+[2] A. Krizhevsky, I. Sutskever, and G. E. Hinton, “Imagenet classifi-
+cation with deep convolutional neural networks,”Communications
+of the ACM, vol. 60, no. 6, pp. 84–90, 2017.
+[3] D. Amodei, S. Ananthanarayanan, R. Anubhai, J. Bai, E. Batten-
+berg, C. Case, J. Casper, B. Catanzaro, Q. Cheng, G. Chenet al.,
+“Deep speech 2: End-to-end speech recognition in english and
+mandarin,” inInternational conference on machine learning. PMLR,
+2016, pp. 173–182.
+[4] A. Tarvainen and H. Valpola, “Mean teachers are better role mod-
+els: Weight-averaged consistency targets improve semi-supervised
+deep learning results,”Advances in Neural Information Processing
+Systems, vol. 30, pp. 1195–1204, 2017.
+[5] T. Miyato, S.-i. Maeda, M. Koyama, and S. Ishii, “Virtual adver-
+sarial training: a regularization method for supervised and semi-
+supervised learning,”IEEE Transactions on Pattern Analysis and
+Machine Intelligence, vol. 41, no. 8, pp. 1979–1993, 2018.
+[6] D. Berthelot, N. Carlini, I. Goodfellow, N. Papernot, A. Oliver,
+and C. A. Raffel, “Mixmatch: A holistic approach to semi-
+supervised learning,”Advances in Neural Information Processing
+Systems, vol. 32, pp. 5050–5060, 2019.
+[7] K. Sohn, D. Berthelot, N. Carlini, Z. Zhang, H. Zhang, C. A. Raffel,
+E. D. Cubuk, A. Kurakin, and C.-L. Li, “Fixmatch: Simplifying
+semi-supervised learning with consistency and confidence,”Ad-
+vances in Neural Information Processing Systems, vol. 33, pp. 596–608,
+2020.
+[8] T. Ouyang, X. Dong, M. Ye, B. Du, L. Shao, and J. Shen, “Semantic-
+aware pseudo-labeling for unsupervised meta-learning,”IEEE
+Transactions on Pattern Analysis and Machine Intelligence, 2025.
+[9] X. Dong, T. Ouyang, S. Liao, B. Du, and L. Shao, “Pseudo-
+labeling based practical semi-supervised meta-training for few-
+shot learning,”IEEE Transactions on Image Processing, 2024.
+[10] X. Dong, J. Shen, and L. Shao, “Rethinking clustering-based
+pseudo-labeling for unsupervised meta-learning,” inEuropean con-
+ference on computer vision. Springer, 2022, pp. 169–186.
+[11] Q. Xie, Z. Dai, E. H. Hovy, T. Luong, and Q. Le, “Unsupervised
+data augmentation for consistency training,” inAdvances in Neural
+Information Processing Systems, 2020.
+[12] T. Wei and Y.-F. Li, “Does tail label help for large-scale multi-
+label learning?”IEEE Transactions on Neural Networks and Learning
+Systems, vol. 31, no. 7, pp. 2315–2324, 2019.
+[13] B. Zhang, Y. Wang, W. Hou, H. Wu, J. Wang, M. Okumura, and
+T. Shinozaki, “Flexmatch: Boosting semi-supervised learning with
+curriculum pseudo labeling,”NeurIPS, vol. 34, pp. 18 408–18 419,
+2021.
+[14] Y. Wang, H. Chen, Q. Heng, W. Hou, Y. Fan, Z. Wu, J. Wang,
+M. Savvides, T. Shinozaki, B. Rajet al., “Freematch: Self-adaptive
+thresholding for semi-supervised learning,”arXiv preprint, 2022.
+[15] H. Chen, R. Tao, Y. Fan, Y. Wang, J. Wang, B. Schiele, X. Xie,
+B. Raj, and M. Savvides, “Softmatch: Addressing the quantity-
+quality trade-off in semi-supervised learning,”arXiv preprint, 2023.
+[16] B. Zhou, Q. Cui, X.-S. Wei, and Z.-M. Chen, “Bbn: Bilateral-
+branch network with cumulative learning for long-tailed visual
+recognition,” inProceedings of the IEEE/CVF conference on computer
+vision and pattern recognition, 2020, pp. 9719–9728.
+[17] L. Xiang, G. Ding, and J. Han, “Learning from multiple experts:
+Self-paced knowledge distillation for long-tailed classification,” in
+European Conference on Computer Vision. Springer, 2020, pp. 247–
+263.
+[18] X. Wang, L. Lian, Z. Miao, Z. Liu, and S. X. Yu, “Long-tailed
+recognition by routing diverse distribution-aware experts,”arXiv
+preprint arXiv:2010.01809, 2020.
+[19] J. Li, Z. Tan, J. Wan, Z. Lei, and G. Guo, “Nested collaborative
+learning for long-tailed visual recognition,” inProceedings of the
+IEEE/CVF Conference on Computer Vision and Pattern Recognition,
+2022, pp. 6949–6958.
+[20] J. Cui, Z. Zhong, S. Liu, B. Yu, and J. Jia, “Parametric contrastive
+learning,” inProceedings of the IEEE/CVF international conference on
+computer vision, 2021, pp. 715–724.
+[21] Z. Liu, Z. Miao, X. Zhan, J. Wang, B. Gong, and S. X. Yu, “Large-
+scale long-tailed recognition in an open world,” inProceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern Recognition,
+2019, pp. 2537–2546.
+[22] T. Wei, J. Shi, W. Tu, and Y. Li, “Robust long-tailed learning under
+label noise,”CoRR, vol. abs/2108.11569, 2021.
+[23] B. Zhu, Y. Niu, X.-S. Hua, and H. Zhang, “Cross-domain empir-
+ical risk minimization for unbiased long-tailed classification,” in
+Proceedings of the AAAI Conference on Artificial Intelligence, 2022.
+[24] H. Lee, S. Shin, and H. Kim, “Abc: Auxiliary balanced classifier for
+class-imbalanced semi-supervised learning,”Advances in Neural
+Information Processing Systems, vol. 34, pp. 7082–7094, 2021.
+[25] Z. Lai, C. Wang, H. Gunawan, S. S. Cheung, and C. Chuah,
+“Smoothed adaptive weighting for imbalanced semi-supervised
+learning: Improve reliability against unknown distribution data,”
+inInternational Conference on Machine Learning, 2022, pp. 11 828–
+11 843.
+[26] T. Wei, Q.-Y. Liu, J.-X. Shi, W.-W. Tu, and L.-Z. Guo, “Transfer and
+share: Semi-supervised learning from long-tailed data,”Machine
+Learning, 2022.
+[27] J. Kim, Y. Hur, S. Park, E. Yang, S. J. Hwang, and J. Shin, “Dis-
+tribution aligning refinery of pseudo-label for imbalanced semi-
+supervised learning,”Advances in Neural Information Processing
+Systems, vol. 33, pp. 14 567–14 579, 2020.
+[28] C. Wei, K. Sohn, C. Mellina, A. Yuille, and F. Yang, “Crest: A
+class-rebalancing self-training framework for imbalanced semi-
+supervised learning,” inProceedings of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition, 2021, pp. 10 857–10 866.
+[29] B. Ye, K. Gan, T. Wei, and M.-L. Zhang, “Bridging the gap:
+Learning pace synchronization for open-world semi-supervised
+learning,”arXiv preprint arXiv:2309.11930, 2023.
+[30] Y. Oh, D.-J. Kim, and I. S. Kweon, “Daso: Distribution-aware
+semantics-oriented pseudo-label for imbalanced semi-supervised
+learning,” inProceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition, 2022, pp. 9786–9796.
+[31] T. Wei and K. Gan, “Towards realistic long-tailed semi-supervised
+learning: Consistency is all you need,” inProceedings of the
+IEEE/CVF Conference on Computer Vision and Pattern Recognition,
+2023, pp. 3469–3478.
+[32] Y. Zhang, B. Hooi, L. Hong, and J. Feng, “Self-supervised aggrega-
+tion of diverse experts for test-agnostic long-tailed recognition,”
+Advances in Neural Information Processing Systems, vol. 35, pp.
+34 077–34 090, 2022.
+[33] A. K. Menon, S. Jayasumana, A. S. Rawat, H. Jain, A. Veit, and
+S. Kumar, “Long-tail learning via logit adjustment,” inInternational
+Conference on Learning Representations, 2020.
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 12
+[34] B. Kang, S. Xie, M. Rohrbach, Z. Yan, A. Gordo, J. Feng, and
+Y. Kalantidis, “Decoupling representation and classifier for long-
+tailed recognition,” inInternational Conference on Learning Represen-
+tations, 2020.
+[35] Z. Zhong, J. Cui, S. Liu, and J. Jia, “Improving calibration for long-
+tailed recognition,” inProceedings of the IEEE/CVF conference on
+computer vision and pattern recognition, 2021, pp. 16 489–16 498.
+[36] J. Ren, C. Yu, X. Ma, H. Zhao, S. Yiet al., “Balanced meta-softmax
+for long-tailed visual recognition,”Advances in Neural Information
+Processing Systems, vol. 33, pp. 4175–4186, 2020.
+[37] D. Berthelot, N. Carlini, E. D. Cubuk, A. Kurakin, K. Sohn,
+H. Zhang, and C. Raffel, “Remixmatch: Semi-supervised learn-
+ing with distribution matching and augmentation anchoring,” in
+International Conference on Learning Representations, 2019.
+[38] Y. Fan, D. Dai, A. Kukleva, and B. Schiele, “Cossl: Co-learning
+of representation and classifier for imbalanced semi-supervised
+learning,” inProceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition, 2022, pp. 14 574–14 584.
+[39] H. Zhang, M. Ciss ´e, Y. N. Dauphin, and D. Lopez-Paz, “mixup:
+Beyond empirical risk minimization,” inInternational Conference
+on Learning Representations, 2018.
+[40] C. Du, Y. Han, and G. Huang, “Simpro: A simple probabilistic
+framework towards realistic long-tailed semi-supervised learn-
+ing,” inForty-first International Conference on Machine Learning,
+2024, pp. 11 686–11 703.
+[41] T. DeVries and G. W. Taylor, “Improved regularization of
+convolutional neural networks with cutout,”arXiv preprint
+arXiv:1708.04552, 2017.
+[42] E. D. Cubuk, B. Zoph, J. Shlens, and Q. V . Le, “Randaugment:
+Practical automated data augmentation with a reduced search
+space,” inProceedings of the IEEE/CVF conference on computer vision
+and pattern recognition workshops, 2020, pp. 702–703.
+[43] E. Arazo, D. Ortego, P . Albert, N. E. O’Connor, and K. McGuin-
+ness, “Pseudo-labeling and confirmation bias in deep semi-
+supervised learning,” inIJCNN, 2020, pp. 1–8.
+[44] X. Wang, J. Gao, M. Long, and J. Wang, “Self-tuning for data-
+efficient deep learning,” inICML, 2021, pp. 10 738–10 748.
+[45] Z. Huang, L. Shen, J. Yu, B. Han, and T. Liu, “Flatmatch: Bridging
+labeled data and unlabeled data with cross-sharpness for semi-
+supervised learning,”Advances in Neural Information Processing
+Systems, vol. 36, pp. 18 474–18 494, 2023.
+[46] Z. Huang, X. Yu, D. Zhu, and M. C. Hughes, “Interlude: In-
+teractions between labeled and unlabeled data to enhance semi-
+supervised learning,”arXiv preprint arXiv:2403.10658, 2024.
+[47] H. Lee and H. Kim, “CDMAD: class-distribution-mismatch-aware
+debiasing for class-imbalanced semi-supervised learning,” in
+IEEE/CVF Conference on Computer Vision and Pattern Recognition
+(CVPR), 2024, pp. 23 891–23 900.
+[48] J. Gu, Y. Wang, Q. Sun, X. Li, X. Luo, and Z. Qiao, “Fourier clouds:
+Fast bias correction for imbalanced semi-supervised learning,” in
+The Thirty-ninth Annual Conference on Neural Information Processing
+Systems, 2025.
+[49] A. Krizhevsky, G. Hintonet al., “Learning multiple layers of
+features from tiny images,” 2009.
+[50] A. Coates, A. Ng, and H. Lee, “An analysis of single-layer net-
+works in unsupervised feature learning,” inProceedings of the four-
+teenth international conference on artificial intelligence and statistics.
+JMLR Workshop and Conference Proceedings, 2011, pp. 215–223.
+[51] A. Oliver, A. Odena, C. A. Raffel, E. D. Cubuk, and I. Goodfel-
+low, “Realistic evaluation of deep semi-supervised learning algo-
+rithms,”Advances in neural information processing systems, vol. 31,
+2018.
+[52] S. Zagoruyko and N. Komodakis, “Wide residual networks,”arXiv
+preprint arXiv:1605.07146, 2016.
+[53] I. Sutskever, J. Martens, G. Dahl, and G. Hinton, “On the im-
+portance of initialization and momentum in deep learning,” in
+International conference on machine learning. PMLR, 2013, pp. 1139–
+1147.
+[54] B. T. Polyak, “Some methods of speeding up the convergence of it-
+eration methods,”Ussr computational mathematics and mathematical
+physics, vol. 4, no. 5, pp. 1–17, 1964.
+[55] Y. Nesterov, “A method of solving a convex programming problem
+with convergence rateo(1/k 2),” inSov. Math. Dokl, vol. 27.
+[56] I. Loshchilov and F. Hutter, “Sgdr: Stochastic gradient descent
+with warm restarts,”arXiv preprint arXiv:1608.03983, 2016.
+[57] M. Huh, P . Agrawal, and A. A. Efros, “What makes imagenet good
+for transfer learning?”arXiv preprint arXiv:1608.08614, 2016.
+[58] J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li, and L. Fei-Fei, “Im-
+agenet: A large-scale hierarchical image database,” in2009 IEEE
+conference on computer vision and pattern recognition. Ieee, 2009, pp.
+248–255.
+[59] T. Wei, J.-X. Shi, W.-W. Tu, and Y.-F. Li, “Robust long-tailed
+learning under label noise,”arXiv preprint arXiv:2108.11569, 2021.
+[60] L. Van der Maaten and G. Hinton, “Visualizing data using t-sne,”
+Journal of Machine Learning Research, vol. 9, no. 11, 2008.
+[61] M. Jia, L. Tang, B.-C. Chen, C. Cardie, S. Belongie, B. Hariharan,
+and S.-N. Lim, “Visual prompt tuning,” inEuropean Conference on
+Computer Vision. Springer, 2022, pp. 709–727.
+[62] S. Chen, C. Ge, Z. Tong, J. Wang, Y. Song, J. Wang, and P . Luo,
+“Adaptformer: Adapting vision transformers for scalable visual
+recognition,”NeurIPS, vol. 35, pp. 16 664–16 678, 2022.
+[63] A. Radford, J. W. Kim, C. Hallacy, A. Ramesh, G. Goh, S. Agarwal,
+G. Sastry, A. Askell, P . Mishkin, J. Clarket al., “Learning transfer-
+able visual models from natural language supervision,” inICML,
+2021, pp. 8748–8763.
+[64] H. Liu, D. Tam, M. Muqeeth, J. Mohta, T. Huang, M. Bansal, and
+C. A. Raffel, “Few-shot parameter-efficient fine-tuning is better
+and cheaper than in-context learning,”NeurIPS, vol. 35, pp. 1950–
+1965, 2022.
+[65] J.-X. Shi, T. Wei, Z. Zhou, X.-Y. Han, J.-J. Shao, and Y.-F. Li,
+“Parameter-efficient long-tailed recognition,”arXiv preprint, 2023.
+[66] Z. Yang, M. Ding, Y. Guo, Q. Lv, and J. Tang, “Parameter-efficient
+tuning makes a good classification head,”arXiv preprint, 2022.
+[67] K. Gan and T. Wei, “Erasing the bias: Fine-tuning foundation mod-
+els for semi-supervised learning,”arXiv preprint arXiv:2405.11756,
+2024.
+[68] A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai,
+T. Unterthiner, M. Dehghani, M. Minderer, G. Heigold, S. Gelly
+et al., “An image is worth 16x16 words: Transformers for image
+recognition at scale,”arXiv preprint, 2020.
+[69] G. Chen, F. Liu, Z. Meng, and S. Liang, “Revisiting parameter-
+efficient tuning: Are we really there yet?”arXiv preprint, 2022.
+[70] E. J. Hu, Y. Shen, P . Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang,
+and W. Chen, “Lora: Low-rank adaptation of large language
+models,”arXiv preprint, 2021.
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 13
+TABLE S1
+Compact summary of the main priors/distributions and temperature parameters used in Section 3.
+Symbol Meaning Where used Role in DECON
+πLabeled empirical prior Balanced branch,
+Eq. (3)
+Used in balanced softmax to miti-
+gate the bias introduced by the im-
+balanced labeled data.
+πb EMA prior estimated by
+the balanced branch
+Standard branch,
+Eq. (4)–(6)
+Used as the alignment prior for the
+standard branch.
+πs EMA prior estimated by
+the standard branch
+Balanced branch,
+Eq. (7)
+Used for logit adjustment to gener-
+ate balanced pseudo-labels for the
+balanced branch.
+τ1 Pseudo-label adjustment
+strength
+Eq. (7) Controls the adjustment intensity
+for balanced pseudo-label genera-
+tion.
+τ2 Alignment strength Eq. (4) Controls the alignment intensity in
+the standard branch.
+τ3 Post-hoc adjustment
+strength
+Eq. (11) Controls the calibration intensity
+during inference.
+SUPPLEMENTARYMATERIAL
+S1 ADDITIONALEXPERIMENTALRESULTS ANDANALYSIS
+(a)
+ (b)
+Fig. S1. More class distribution patterns for unlabeled data, i.e.,middleandheadtail.
+/uni00000014/uni00000013/uni00000013/uni0000001b/uni00000013/uni00000019/uni00000013/uni00000017/uni00000013/uni00000015/uni00000013/uni00000014/uni00000015/uni000000131
+/uni00000017/uni000000131
+/uni00000019/uni000000131
+/uni0000001b/uni000000131
+/uni00000014/uni00000013/uni000000131
+/uni0000002c/uni00000050/uni00000045/uni00000044/uni0000004f/uni00000044/uni00000051/uni00000046/uni00000048/uni00000003/uni00000055/uni00000044/uni00000057/uni0000004c/uni00000052/uni00000003/uni00000049/uni00000052/uni00000055/uni00000003/uni00000058/uni00000051/uni0000004f/uni00000044/uni00000045/uni00000048/uni0000004f/uni00000048/uni00000047/uni00000003/uni00000056/uni00000048/uni00000057
+/uni0000001b/uni00000015
+/uni0000001b/uni00000019
+/uni0000001c/uni00000013
+/uni0000001c/uni00000017/uni00000037 /uni00000052/uni00000053/uni00000010/uni00000014/uni00000003/uni00000044/uni00000046/uni00000046/uni00000058/uni00000055/uni00000044/uni00000046/uni0000005c
+/uni00000024/uni00000026/uni00000035
+/uni00000032/uni00000058/uni00000055/uni00000056
+(a)
+/uni00000015/uni00000013/uni00000014/uni00000018/uni00000014/uni00000013/uni00000018/uni00000014/uni000000181
+ /uni00000014/uni000000131
+ /uni00000014/uni000000181
+ /uni00000015/uni000000131
+/uni0000002c/uni00000050/uni00000045/uni00000044/uni0000004f/uni00000044/uni00000051/uni00000046/uni00000048/uni00000003/uni00000055/uni00000044/uni00000057/uni0000004c/uni00000052/uni00000003/uni00000049/uni00000052/uni00000055/uni00000003/uni00000058/uni00000051/uni0000004f/uni00000044/uni00000045/uni00000048/uni0000004f/uni00000048/uni00000047/uni00000003/uni00000056/uni00000048/uni00000057
+/uni00000017/uni00000017
+/uni00000017/uni0000001a
+/uni00000018/uni00000013
+/uni00000018/uni00000016/uni00000037 /uni00000052/uni00000053/uni00000010/uni00000014/uni00000003/uni00000044/uni00000046/uni00000046/uni00000058/uni00000055/uni00000044/uni00000046/uni0000005c
+/uni00000024/uni00000026/uni00000035
+/uni00000032/uni00000058/uni00000055/uni00000056 (b)
+/uni00000015/uni00000013/uni00000014/uni00000018/uni00000014/uni00000013/uni00000018/uni00000014/uni000000181
+ /uni00000014/uni000000131
+ /uni00000014/uni000000181
+ /uni00000015/uni000000131
+/uni0000002c/uni00000050/uni00000045/uni00000044/uni0000004f/uni00000044/uni00000051/uni00000046/uni00000048/uni00000003/uni00000055/uni00000044/uni00000057/uni0000004c/uni00000052/uni00000003/uni00000049/uni00000052/uni00000055/uni00000003/uni0000004f/uni00000044/uni00000045/uni00000048/uni0000004f/uni00000048/uni00000047/uni00000003/uni00000056/uni00000048/uni00000057
+/uni0000001a/uni00000019
+/uni0000001a/uni0000001b
+/uni0000001b/uni00000013
+/uni0000001b/uni00000015
+/uni0000001b/uni00000017
+/uni0000001b/uni00000019/uni00000037 /uni00000052/uni00000053/uni00000010/uni00000014/uni00000003/uni00000044/uni00000046/uni00000046/uni00000058/uni00000055/uni00000044/uni00000046/uni0000005c
+/uni00000024/uni00000026/uni00000035
+/uni00000032/uni00000058/uni00000055/uni00000056 (c)
+Fig. S2. More realistic LTSSL settings with various imbalance ratio for unlabeled data or labeled data. (S2a):N 1 = 500,M 1 = 4000withγ l = 100
+on CIFAR-10-LT. (S2b):N 1 = 50,M 1 = 400withγ l = 20on CIFAR-100-LT. (S2c):N 1 = 150with various imbalanced ratio for labeled set on
+STL10-LT.
+S1.1 Summary of Notations
+We provide a notation table to improve readability, which explicitly summarizes the key priors and temperature parameters
+used throughout the method. In particular, the summary highlights: (i) the labeled empirical prior used in the balanced
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 14
+TABLE S2
+Test accuracy on CIFAR-10-LT and CIFAR-100-LT dataset undermiddleandheadtailsettings. We setN 1 = 500,M 1 = 4000for CIFAR-10-LT and
+N1 = 50,M 1 = 400for CIFAR-100-LT. The best results are inbold.
+CIFAR-10-LT (γl = 100) CIFAR-100-LT (γ l = 20)
+Algorithm γu = 100γ u = 20
+middle headtail middle headtail
+FixMatch [7]
+w/ CReST+ [28]
+w/ DASO [30]
+w/ SimPro [40]
+w/ ACR [31]
+w/ Ours
+71.7±0.46
+71.4±0.60
+73.1±0.68
+84.8±0.54
+83.2±0.41
+86.8±0.54
+66.6±0.87
+67.2±0.48
+71.1±0.32
+83.0±0.36
+80.6±0.30
+83.1±0.04
+39.7±0.61
+36.9±0.57
+43.1±1.20
+43.6±0.35
+44.6±0.25
+45.7±0.34
+38.2±0.82
+35.1±1.10
+43.8±0.43
+44.8±0.56
+42.3±0.17
+44.9±0.53
+(a) ACR forconsistent
+ (b) ACR foruniform
+ (c) ACR forreversed
+(d) DECONforconsistent
+ (e) DECONforuniform
+ (f) DECONforreversed
+Fig. S3. The t-SNE visualization of the test set for ACR and DECONon CIFAR-10-LT withN 1 = 500,M 1 = 4000andγ l = 100.
+branch; (ii) the EMA prior estimated by the balanced branch, which is used to align the standard branch; (iii) the EMA
+prior estimated by the standard branch, which is used to generate adjusted pseudo-labels for the balanced branch; and (iv)
+the roles ofτ 1 (pseudo-label adjustment strength),τ 2 (alignment strength in the standard branch), andτ 3 (inference-time
+post-hoc adjustment strength). The compact notation table is shown in Table S1.
+S1.2 Results under more class distributions
+To examine the performance of our method in more imbalanced scenarios, we conduct additional experiments on CIFAR-
+10-LT (CIFAR-100-LT) by fixingγl = 100(γl = 20) while varying the imbalance ratio of unlabeled dataγu fromconsistentto
+reversedby a step size 20 (step size 5). We setN 1 = 500andM 1 = 4000(N 1 = 50andM 1 = 400) (MC = 4000(MC = 400)
+inreversedsetting) and compare the performance with ACR [31]. Figure S2 shows that our method DECONconsistently
+outperforms ACR in all test cases. The performance gain becomes increasingly significant as the class distribution of
+unlabeled data changes fromconsistenttoreversedon CIFAR-100-LT. In addition, for STL10-LT, we find that DECONcan
+also achieve high performance under various imbalanced labeled ratio in Figure S2c. This demonstrates the capability of
+our method to handle various realistic LTSSL problems adaptively.
+In addition, SimPro [40] introduces two more class distribution patterns for unlabeled data, i.e.,middleandheadtail,
+which are illustrated in Figure S1. The middle distribution represents a concentration of classes in the middle range
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 15
+/uni0000005e/uni00000013/uni0000000f/uni00000014/uni0000000f/uni00000015/uni00000060/uni0000005e/uni00000016/uni0000000f/uni00000017/uni0000000f/uni00000018/uni0000000f/uni00000019/uni00000060/uni0000005e/uni0000001a/uni0000000f/uni0000001b/uni0000000f/uni0000001c/uni00000060
+/uni00000026/uni0000004f/uni00000044/uni00000056/uni00000056/uni00000003/uni0000004c/uni00000051/uni00000047/uni00000048/uni0000005b
+/uni00000013/uni00000011/uni0000001a/uni00000018
+/uni00000013/uni00000011/uni0000001b/uni00000013
+/uni00000013/uni00000011/uni0000001b/uni00000018
+/uni00000013/uni00000011/uni0000001c/uni00000013/uni00000029/uni00000014/uni00000003/uni00000056/uni00000046/uni00000052/uni00000055/uni00000048
+(a)F 1 score forconsistent
+/uni0000005e/uni00000013/uni0000000f/uni00000014/uni0000000f/uni00000015/uni00000060/uni0000005e/uni00000016/uni0000000f/uni00000017/uni0000000f/uni00000018/uni0000000f/uni00000019/uni00000060/uni0000005e/uni0000001a/uni0000000f/uni0000001b/uni0000000f/uni0000001c/uni00000060
+/uni00000026/uni0000004f/uni00000044/uni00000056/uni00000056/uni00000003/uni0000004c/uni00000051/uni00000047/uni00000048/uni0000005b
+/uni00000013/uni00000011/uni0000001b/uni00000018
+/uni00000013/uni00000011/uni0000001b/uni0000001c
+/uni00000013/uni00000011/uni0000001c/uni00000016
+/uni00000013/uni00000011/uni0000001c/uni0000001a/uni00000029/uni00000014/uni00000003/uni00000056/uni00000046/uni00000052/uni00000055/uni00000048 (b)F 1 score foruniform
+/uni0000005e/uni00000013/uni0000000f/uni00000014/uni0000000f/uni00000015/uni00000060/uni0000005e/uni00000016/uni0000000f/uni00000017/uni0000000f/uni00000018/uni0000000f/uni00000019/uni00000060/uni0000005e/uni0000001a/uni0000000f/uni0000001b/uni0000000f/uni0000001c/uni00000060
+/uni00000026/uni0000004f/uni00000044/uni00000056/uni00000056/uni00000003/uni0000004c/uni00000051/uni00000047/uni00000048/uni0000005b
+/uni00000013/uni00000011/uni0000001a/uni00000016
+/uni00000013/uni00000011/uni0000001b/uni00000013
+/uni00000013/uni00000011/uni0000001b/uni0000001a
+/uni00000013/uni00000011/uni0000001c/uni00000017/uni00000029/uni00000014/uni00000003/uni00000056/uni00000046/uni00000052/uni00000055/uni00000048 (c)F 1 score forreversed
+Fig. S4. The comparison ofF 1 score for ACR and DECONon CIFAR-10-LT withN 1 = 500,M 1 = 4000andγ l = 100.
+of labeled data’s classes, whereas the head-tail distribution indicates a concentration at both extremes. The results are
+reported in Table S2, and we note that DECONachieves an average performance improvement of 1.1% compared to
+SimPro, suggesting that our method can adapt to diverse distributions of unlabeled data without assuming any unlabeled
+distribution.
+S1.3 Representation visualization
+We visualize the learned representations of DECONusing the t-distributed stochastic neighbor embedding (t-SNE) [60]
+and compare them with ACR. Figure S3 illustrates the comparison results on test set underconsistent,uniform, and
+reversedsettings. It can be seen from the figure that the representations obtained by DECONallow for clearer classification
+boundaries, which can further enhance the model’s performance in classification.
+S1.4 Benefits for All Classes
+The two branches in DECONgradually converge during training, ultimately achieving strong performance across all
+classes. As illustrated in Figure S4, we observe that DECONcan achieve higherF 1 score for various settings when compared
+to ACR. Specifically, whether in head or tail classes, DECONexhibits competitiveF 1 scores, indicating its ability to improve
+tail-class performance while maintaining competitive head-class performance.
+S1.5 Computational Overhead Analysis
+It should be clarified that the “dual-branch” design in DECONdoes not involve two separate neural networks. Instead, it
+consists of a shared feature extractor (backbone) and two lightweight classifiers (heads). Since the feature extractor (e.g.,
+WideResNet-28-2) accounts for the vast majority of the parameters and computational operations, adding an auxiliary
+linear classification head (a single fully connected layer) introduces negligible overhead. To empirically demonstrate this,
+we compared the training speed and parameter count of DECONagainst the simple SSL baseline FixMatch under the
+exact same experimental settings (CIFAR-100-LT, WideResNet-28-2, Batch Size=64, single NVIDIA 3090 GPU). As shown
+in Table S3, DECONonly increases the parameter count about 0.01M and the training time per iteration by approximately
+3.2%. This slight increase is a worthy trade-off for the significant performance gain (+8.0% accuracy).
+TABLE S3
+Comparison of computational efficiency between FixMatch and DECON. The experiment is conducted on CIFAR-100-LT with WideResNet-28-2.
+Time/Iterdenotes the average time (milliseconds) for one training iteration (forward and backward pass).
+Method Params (M) Time/Iter (ms) Overhead Accuracy (%)
+FixMatch 1.47 124 – 49.7
+DECON1.48 128 +3.2% 57.7
+S1.6 Experiments on Random Distributions
+To further substantiate our claim that DECONcan handle a wide range of unlabeled distributions, we conducted additional
+experiments using 3Randomly Sampledunlabeled distributions (sampled via Dirichlet distribution withα∈{0.5,1.0}).
+These distributions are highly irregular and jagged. The results in Table S4 show that while ACR struggles with these
+unstructured distributions, DECONmaintains superior performance. This confirms that our Decouple-then-Converge
+mechanism effectively handles diverse unlabeled class priors under label-prior shift.
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 16
+TABLE S4
+Comparison of test accuracy (%) on CIFAR-100-LT (γl = 20,N 1 = 50,M 1 = 400) with randomly generated unlabeled distributions. The results
+show that DECONconsistently outperforms other methods, demonstrating superior robustness to varying label distributions.
+Method Random Dist. 1 Random Dist. 2 Random Dist. 3 Average
+ACR 43.1±0.45 44.2±0.21 43.5±0.53 43.6±0.40
+SimPro 44.9±0.20 45.8±0.36 45.2±0.45 45.3±0.30
+DECON45.3±0.28 46.1±0.35 45.8±0.22 45.7±0.28
+TABLE S5
+Fine-grained ablation study showing the incremental performance gain from ACR to DECON. All results are reported before the final post-hoc
+adjustment step to isolate the contributions during training. The final row shows the full DECONmodel with post-hoc adjustment for reference.
+“Con”, “Uni”, and “Rev” denote consistent, uniform, and reversed distributions, respectively. Best results for each setting are inbold.
+Method CIFAR-10-LT (γl = 100) CIFAR-100-LT (γ l = 10)
+Con. Uni. Rev. Con. Uni. Rev.
+ACR (Baseline) 81.6 92.1 84.9 51.3 57.2 51.6
++ CBPL 78.1 92.8 85.3 51.2 58.0 52.1
++ CBPL + DDA 78.4 93.5 85.4 51.4 58.9 52.6
++ CBPL + DDA + IW (DECONw/o post-hoc) 77.8 93.8 85.5 51.1 59.6 52.7
+DECON(Full Model, with post-hoc) 84.1 93.9 86.6 52.0 60.4 53.3
+S1.7 Fine-Grained Ablations based on ACR
+To explicitly disentangle the contribution of each new component in DECONover our conference version (ACR), we
+conduct a fine-grained incremental ablation study. Starting from the ACR baseline, we add each key module of DECON
+one by one. The primary enhancements of DECONover ACR are:
+•Cross-Branch Pseudo-Labeling (CBPL):This module replaces ACR’s strategy of using the labeled data distribution
+for adjustment. Instead, it generates pseudo-labels for the balanced branch by correcting the standard branch’s
+outputs using the EMA-estimated unlabeled class prior from the standard branch (π s
+t ) (Eq. (7) in the main text).
+This highlights the cross-branch interaction.
+•Decoupled Distribution Alignment (DDA):This is the interaction in the reverse direction. The standard branch’s
+loss on labeled data is modified to align its predictions towards the decoupled distribution (˜π t) estimated by the
+balanced branch (Eq. (4) in the main text), mitigating confirmation bias.
+•Importance Weighting (IW):DECONintroduces a sample weighting scheme (Eq. (8) and Eq. (9) in the main text)
+for the consistency loss of the balanced branch, which measures the stability of pseudo-labels post-correction rather
+than relying on a simple confidence threshold.
+We present the results of this incremental analysis on the CIFAR-10-LT and CIFAR-100-LT datasets in Table S5. We start
+with the ACR baseline and successively integrate CBPL, DDA, and IW to build up to the full DECON(before post-hoc
+adjustment). The results clearly demonstrate where the incremental gains originate.
+•AddingCBPLbrings consistent improvements in the “Uni” and “Rev” settings, where the unlabeled distribution
+mismatches the labeled one. This supports the benefit of using a dynamically estimated unlabeled prior for pseudo-
+label correction.
+•Further addingDDAcontinues this trend, especially in the “Uni” setting, by fostering beneficial interaction between
+the two branches and preventing the standard branch from overfitting to the (potentially misleading) labeled
+distribution.
+•The introduction ofIWprovides a final small boost before post-hoc adjustment.
+Interestingly, in the “Con” setting, combining these modules decreases the pre-adjustment accuracy (e.g., from 81.6% to
+77.8% on CIFAR-10-LT). However, as shown in Table 5 in the main paper, these components substantially improve the
+model’samenability to post-hoc rebalancing. Concretely, under the same post-hoc protocol, the full DECONmodel gains a
+substantial+6.3%on CIFAR-10-LT (“Con”) after post-hoc adjustment (77.8%→84.1%), whereas ACR improves by only
++0.8%. This indicates that the added modules encourage learning representations and decision scores that are easier to
+calibrate for balanced inference, ultimately leading to better final performance.
+Taken together, the ablations indicate that the gains of DECONover ACR stem from a synergistic combination of more
+adaptive pseudo-label correction, cross-branch knowledge transfer, and a more robust training process, which collectively
+improve the effectiveness of the final inference-time rebalancing.
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 17
+TABLE S6
+The results are based on fine-tuning the pre-trained CLIP model. The fine-tuning strategies employed in the experiments are visual prompt tuning
+(VPT) [61] and AdaptFormer [62]. We setN 1 = 500,M 1 = 4000,γ l = 100for CIFAR-10-LT,N 1 = 50,M 1 = 400,γ l = 10for CIFAR-100-LT, and
+N1 = 150for STL10-LT.
+Algorithm CIFAR-10-LT CIFAR-100-LT STL10-LT
+Con Uni Rev Con Uni Revγ l = 10γ l = 20
+FixMatch + VPT [61]
+w/ ACR [31]
+w/ Ours
+92.8±0.22
+95.5±0.54
+96.0±0.30
+95.1±0.11
+97.1±0.05
+97.3±0.29
+95.2±0.65
+96.2±0.42
+96.7±0.34
+78.6±0.65
+80.8±0.20
+81.3±0.21
+81.3±0.44
+81.2±0.23
+82.9±0.15
+79.7±0.21
+80.3±0.34
+81.9±0.23
+98.4±0.04
+98.2±0.14
+98.7±0.25
+97.3±0.42
+97.8±0.78
+98.5±0.23
+FixMatch + AdaptFormer [62]
+w/ ACR [31]
+w/ Ours
+92.7±0.23
+96.1±0.33
+96.7±0.41
+95.6±0.15
+97.6±0.23
+97.8±0.25
+95.8±0.11
+96.2±0.76
+96.8±0.34
+79.7±0.45
+81.7±0.56
+82.2±0.13
+81.7±0.23
+83.3±0.65
+83.6±0.32
+80.2±0.45
+81.4±0.38
+83.1±0.19
+98.4±0.30
+98.6±0.52
+98.6±0.56
+98.3±0.23
+98.4±0.45
+98.9±0.20
+S2 THEPOTENTIALAPPLICATIONS INFEW-SHOTLEARNING ANDFUTUREWORK
+Few-shot learning shares a common spirit with LTSSL:leveraging unlabeled data through pseudo-labeling to overcome
+data scarcity. We discuss several connections and future directions below:
+•Complementing the Focus on Pseudo-Label Quality (TPAMI 2025 [8]):This work studies the issues of “clustering
+noise” and “semantic chaos” in pseudo-labels for unsupervised meta-learning, aiming to improve thesemantic
+coherenceof pseudo-labeled clusters. Our method, DECON, addresses a complementary challenge: handling an
+unknown and potentially long-tailed class priorin the auxiliary unlabeled data. In practical FSL scenarios with
+auxiliary unlabeled data, class frequencies are rarely balanced. Even if clusters are semantically clean, a strongly
+imbalanced auxiliary set can bias the meta-training tasks constructed from it. One possible extension is to integrate
+DECON’s distribution-aware dual-branch framework with their semantic-stability index, so that pseudo-labels are
+both semantically coherent and less affected by distributional bias.
+•An Alternative to Two-Stage Frameworks (TIP 2024 [9]):The work proposes a practical two-stage framework
+(PLML) for Semi-Supervised FSL: (1) pre-train a model using a standard SSL algorithm, and (2) generate pseudo-
+labels and perform meta-training. DECONoffers an alternative as anend-to-end, single-stage framework: its
+standard and balanced branches interact throughout training, allowing feature representation and pseudo-label
+correction to be jointly refined. Exploring DECONas a replacement for the first stage of PLML, or as a single-stage
+alternative, is a compelling direction for future research.
+•Addressing Distributional Bias in Clustering-Based Meta-Learning (ECCV 2022 [10]):The work focuses on the
+quality of the feature space, proposing a clustering-friendly embedding (PL-CFE) to minimize intra-class distance
+and maximize inter-class discriminability. However, their task construction phase relies on standard clustering (e.g.,
+k-means), which can be sensitive to class imbalance. In realistic scenarios with long-tailed auxiliary unlabeled
+data,k-means may be biased towards majority classes, potentially merging tail classes into head clusters despite a
+good embedding. DECONprovides a complementary tool by handlingunknown and mismatched unlabeled class
+priors. A direction for future work is to incorporate DECON’s distribution estimation and logit correction into the
+clustering phase, improving robustness to class-frequency mismatch when synthesizing few-shot tasks.
+In summary, while the cited works emphasize semantic purity and practical training strategies for FSL with unlabeled
+data, DECONcontributes a complementary capability:robustness to unknown mismatches in the unlabeled class prior
+(label shift).
+S3 PRACTICALRELEVANCE ANDAPPLICABILITY OFDISTRIBUTIONMISMATCH INREAL-WORLDSEMI-
+SUPERVISEDLEARNING
+We briefly motivate why the distribution mismatch setting is practically relevant.
+First, the mismatch between labeled and unlabeledclass frequenciesis not a theoretical artifact but a common reality in
+large-scale applications. For example, labeled data are often curated under specific protocols (e.g., medical annotations from
+hospitals), while unlabeled data are collected in-the-wild (e.g., user-uploaded images or sensor logs), naturally leading to
+divergent class priors—even when sourced from a similar domain.
+Second, generative models may produce synthetic data whose class composition deviates from real data. This aligns
+with our setting: the unlabeled data (real or synthetic) may have anunknownand mismatched class prior. Our method
+DECONdoes not require knowing the unlabeled class prior in advance and is designed to adapt to such mismatches.
+Overall, the problem we address is realistic and increasingly important as SSL scales to large, heterogeneous data
+collection pipelines.
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 18
+S4 MORECLARIFICATION FORDECON’SNOVELTY
+While both logit adjustment and dual-branch architectures have appeared in prior work, the novelty of DECONlies in how
+these components are integrated to address the unknown unlabeled class prior—a setting where existing methods can fail.
+Specifically, unlike ACR or other two-branch approaches that rely on fixed anchor distributions or static pseudo-
+labeling, DECONintroduces cross-branch interaction mechanisms that enable the standard and balanced branches to
+dynamically converge during training. The balanced branch does not operate in isolation; instead, it receives refined
+pseudo-labels from the standard branch (via adaptive logit correction based on an estimated unlabeled prior), while the
+standard branch aligns its predictions using the decoupled distribution inferred from the balanced branch (Eq. (4)–(6) in the
+main text). This mutual bootstrapping—decouple then converge—is absent in prior works and is key to handling unknown
+unlabeled class-prior shifts.
+Moreover, as shown in Sec. 3.5 and Tables 1–4 in the main paper, DECONconsistently outperforms ACR and other
+two-branch methods under diverse unlabeled class priors, confirming that our design goes beyond a simple combination
+of existing techniques.
+S5 DIAGRAM FORDECON
+Figure S5 provides a schematic overview of DECON, including:
+•the dual-branch architecture (standard and balanced branches),
+•cross-branch interactions (pseudo-label transfer with logit correction and distribution alignment).
+Fig. S5. Schematic overview of the proposed DECONframework.
+S6 LOOKING AHEAD:FUTURELTSSLMETHODS
+While DECONhas achieved outstanding performance, we have observed that recent popular foundation models [63] can
+achieve excellent performance on downstream tasks through fine-tuning [64], [65], [66], [67]. Therefore, we investigate
+whether fine-tuning foundation models can further enhance the performance of the LTSSL method. We choose CLIP [63]
+for fine-tuning due to its strong generalization ability. CLIP is a multimodal model to align images and text in a shared
+embedding space, facilitating tasks like image classification, generation, and zero-shot learning across various domains
+[65]. When considering full fine-tuning the model, the target tasks often require a substantial amount of data for effective
+adaptation [68], [69]. However, for LTSSL tasks, labeled data are scarce and severely imbalanced, hindering full fine-tuning
+from achieving satisfactory performance. Therefore, motivated by [65], we attempt to leverage the parameter-efficient fine-
+tuning (PEFT) strategy [61], [62], [70] for fine-tuning to enhance the generalization performance of LTSSL models. PEFT
+strategies typically freeze the pre-trained model while introducing a few learnable parameters for adaptation. The results
+are shown in Table S6, and we utilize Visual Prompt Tuning (VPT) [61] and AdaptFormer [62] for fine-tuning. VPT prepends
+learnable prompts optimized during the training at each transformer layer. AdaptFormer adds a bottleneck module, which
+is parallel to the FFN layer. The incorporation of VPT and AdaptFormer facilitates a notable 17.6% and 18.2% performance
+improvement for DECONcompared to the Wide ResNet-based model [52]. Additionally, we find that DECONoutperforms
+ACR by 0.6% when employing PEFT on CIFAR-10-LT and CIFAR-100-LT, further demonstrating the broad applicability of
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 19
+DECON. Regarding the STL10-LT, we observe that the performance of all methods has almost saturated, with error rates
+generally below 2%. We advocate PEFT as a promising direction for LTSSL with foundation models in the future.
+Next, we further clarify the relationship between DECONand CLIP , as well as practical challenges in this setting.
+S6.0.0.1 Complementarity between CLIP and DECON: CLIP provides strong pre-trained representations that can
+improve feature quality, but it does not inherently solve classifier bias caused by long-tailed labeled data in the target task.
+•Representation vs. decision boundary:CLIP mainly improves the feature space (representation learning). However,
+when fine-tuned (including via PEFT) on a highly imbalanced labeled set, the resulting decision boundaries can still
+skew towards head classes. DECONaddresses this issue at the objective/optimization level through cross-branch
+interactions and distribution-aware correction.
+•Empirical evidence:As shown in Table S6, applying DECONon top of CLIP (via VPT or AdaptFormer) yields
+consistent improvements (e.g., surpassing ACR by 0.6% and FixMatch by 1.9%). This suggests that DECONremains
+beneficial even with strong foundation-model representations.
+S6.0.0.2 Practical challenges when using CLIP for LTSSL: Integrating foundation models into LTSSL is non-trivial
+and faces several challenges beyond standard fine-tuning:
+•Biased adaptation with scarce, imbalanced labels:Adapting a generic model to a specific task with extremely
+scarce and long-tailed labeled data can quickly introduce bias towards head classes.
+•Noisy pseudo-labeling under imbalance:In SSL, the model generates pseudo-labels for unlabeled data. If
+adaptation is biased, pseudo-labels can be skewed and reinforce the imbalance. A key challenge is how to leverage
+unlabeled data—with an unknown class prior—to regularize adaptation, which is aligned with the motivation of
+DECON’s dual-branch interaction.
+S7 THEORETICALANALYSIS FORDECON
+S7.1 Setup and Notation
+We consider a labeled setDl ={(x (l)
+i ,y (l)
+i )}N
+i=1 and an unlabeled setD u ={x (u)
+j }M
+j=1 withCclasses. Letπ l∈∆ C−1 be the
+labeled class prior andπ u∈∆ C−1 be the (unknown) unlabeled/test prior. We write[C] :={1,2,...,C}and∆ C−1 for the
+probability simplex.
+S7.1.0.1 Two branches and two EMA priors: Letf t denotestandard-branchlogits and ˜ft denotebalanced-branchlogits
+at stept. The method maintains two EMA priors: (i)˜πt estimated from the balanced branch (used in decoupled distribution
+alignment, Eq. (4) in the main text); (ii)π s
+t estimated from the standard branch (used in pseudo-label correction, Eq. (7) in
+the main text). Letδ(·)be the softmax, soδ(z)∈int(∆ C−1)for any finite logitsz.
+S7.1.0.2 Temperatures:τ 2 >0is the scale used in standard-branch decoupled distribution alignment (Eq. (4)).
+τ1 >0is the scale used in pseudo-label correction (Eq. (7)).τ 3 >0is the post-hoc adjustment scale used at inference
+(Eq. (11)).
+Assumption 1(Label shift).There exists a shared class-conditional distributionp(x|y)such thatp l(x,y) =π l(y)p(x|y)and
+pu(x,y) =π u(y)p(x|y).
+S7.1.0.3 Positivity for log terms: All priors used insidelog(·)are strictly positive. Softmax outputs are strictly
+positive; EMA priors remain in the simplex interior by convexity. Implementations may clip probabilities for numerical
+stability.
+S7.2 Decouple: Balanced Softmax Recovers Class-Conditional Scores in an Idealized Limit
+For any priorπ∈∆ C−1 define theprior-weightedpredictive distribution
+pπ
+˜f (y|x) := exp( ˜fy(x))π(y)
+PC
+c=1 exp( ˜fc(x))π(c)
+.
+Proposition 1(Labeled-only decoupling property).Assume Assumption 1 and realizability: there exists ˜fsuch thatp πl
+˜f (·|x) =
+pl(·|x)almost surely. Then any population minimizer ˜f⋆ ofE (x,y)∼pl
+ 
+−logp πl
+˜f (y|x)
+ 
+satisfies
+˜f⋆
+y (x) = logp(x|y) +b(x),
+for some measurableb(x)independent ofy.
+Proposition 2(Decoupled scores implyprior-adaptableBayes prediction).Assume Assumption 1. Fix any target priorπ tar∈
+∆C−1. If a model ˜fsatisfies ˜fy(x) = logp(x|y) +b(x)for someb(x)independent ofy, then
+arg max
+y∈[C]
+{ ˜fy(x) + logπtar(y)}= arg max
+y∈[C]
+{logp(x|y) + logπ tar(y)},
+which is Bayes-optimal under label shift with target priorπ tar.
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 20
+S7.3 EMA Prior Estimators: Deterministic Dynamics (Mean-Field) and Bounded Variation
+S7.3.0.1 Mean-field vs. mini-batch.: In the implementation, priors are updated using mini-batch averages. For a
+careful and non-misleading convergence statement, we analyze the mean-field (population) update:
+¯pt :=E x∼pu
+ 
+δ(st(x))
+ 
+∈∆ C−1,
+wherest is eitherf t (forπ s
+t ) or ˜ft (for˜πt). Mini-batch updates are unbiased estimators of¯pt and EMA smoothing controls
+their variance; we do not claim almost-sure pointwise convergence for the stochastic EMA with persistent sampling noise.
+S7.3.0.2 Generic EMA recursion.: Letπ t denote any EMA prior updated by
+πt+1 =mπ t + (1−m)¯pt, m∈(0,1).(S1)
+Lemma 1(Closed form and bounded step size).The EMA recursion(S1)admits the closed form
+πt =m tπ0 + (1−m)
+t−1X
+k=0
+mt−1−k ¯pk.
+Moreover,
+∥πt+1−πt∥1 = (1−m)∥¯pt−πt∥1≤2(1−m).
+Lemma 2(Tracking bound and convergence under convergent drive).Definee t :=π t−¯pt. Then for allt≥1,
+∥et∥1≤m t∥e0∥1 +
+tX
+k=1
+mt−k∥¯pk−¯pk−1∥1.(S2)
+In particular, if¯pt→¯p∞, thenπ t→¯p∞.
+S7.4 What Prediction-Based Prior Estimation Can (and Cannot) Guarantee
+S7.4.0.1 Balanced-branch prediction marginal: Define
+πpred
+t :=E x∼pu
+ 
+δ( ˜ft(x))
+ 
+∈∆ C−1,ˆπ t := 1
+M
+MX
+j=1
+δ( ˜ft(x(u)
+j )).
+Theorem 1(Error decomposition for prediction-marginal estimation).Fixtand treat ˜ft as fixed. With probability at least1−ν
+overD u (i.i.d. fromp u(x)),
+∥ˆπt−πu∥1≤∥π pred
+t −πu∥1| {z }
+model-induced bias
++2
+r
+C
+M +
+s
+2 log(1/ν)
+M .
+Moreover,
+∥πpred
+t −πu∥1≤E x∼pu
+δ( ˜ft(x))−p u(·|x)
+
+1.
+S7.4.0.2 Key takeaway: Theorem 1does notclaim thatˆπ t is close toπ u. It cleanly separates two effects: sampling
+noise (controlled byM) and model-induced bias (depends on prediction quality). No prediction-only estimator can
+generally avoid this dependence. Therefore, our algorithmic justificationdoes not rely onassuming˜π t orπ s
+t is a universally
+consistent estimator ofπ u.
+Proposition 3(Uniform-prior posterior effect).Assume ˜fsatisfies the labeled-only decoupling form in Proposition 1. Then
+δ( ˜f(x))y = p(x|y)
+PC
+c=1p(x|c)
+=:p unif(y|x),
+i.e., the posterior induced by a uniform class prior. Consequently, in the large-sample limit,ˆπconverges to
+πunif :=E x∼pu
+ 
+punif(·|x)
+ 
+,
+which may differ fromπ u when classes overlap.
+S7.4.0.3 Why Proposition 3 isnota contradiction to DECON: Proposition 3 shows only that a perfectly decoupled
+model produces auniform-prior posterior. It doesnotimply that the induced marginalπ unif must be the uniform vector, nor
+does it invalidate the algorithm, because DECONdoes not require˜π t =π u to be exact. Instead, DECONuses prior signals
+through (i) margin-robust logit adjustments, and (ii) a self-paced importance weight that suppresses DA/PLC-sensitive
+pseudo-labels.
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 21
+S7.5 Pseudo-Label Correction (PLC) and Self-Paced Importance Weighting (Eq. (7–9) in Main Text)
+S7.5.0.1 PLC distribution.: Letp pre
+t (·|x) :=δ(f t(x))and define
+pplc
+t (y|x) = ppre
+t (y|x)·
+ 
+πs
+t (y)
+ −τ1
+PC
+c=1ppre
+t (c|x)·
+ 
+πs
+t (c)
+ −τ1
+.(S3)
+The pseudo-label used to supervise the balanced branch isˆqplc
+t (x) := arg maxypplc
+t (y|x), matching Eq. (7).
+Lemma 3(Logit form of PLC).ˆq plc
+t (x)is equivalently
+ˆqplc
+t (x) = arg max
+y∈[C]
+n
+logp pre
+t (y|x)−τ 1 logπs
+t (y)
+o
+.
+S7.5.0.2 Overlap score and weight (implementation-aligned).: Define
+αpre(x) := max
+c
+ppre
+t (c|x), α plc(x) := max
+c
+pplc
+t (c|x), η t(x) := max
+c
+ppre
+t (c|x)p plc
+t (c|x)∈[0,1].
+The implementation usesψ t(x) =γ tηt(x)(Eq. (8–9)) for a global scalarγ t.
+Lemma 4(Self-paced gating property ofη(no accuracy assumption)).For anyx,
+ηt(x)≤α pre(x)α plc(x).
+If moreover the maximizer class agrees (i.e.,arg maxp pre
+t (·|x) = arg maxp plc
+t (·|x)) and is unique, then
+ηt(x) =α pre(x)α plc(x).
+Consequently, largeηt(x)is only possible when both (i) both distributions are confident and (ii) they agree on the top class.
+Lemma 5(Disagreement implies small overlap).Ifarg maxp pre
+t (·|x)̸= arg maxp plc
+t (·|x), then
+ηt(x)≤1−min{α pre(x),α plc(x)}.
+S7.5.0.3 How DECONavoids “early inaccurate prior” harm: Lemma 4 is the crucial non-circular mechanism
+statement: even ifπ s
+t is inaccurate early (hence PLC is noisy), the unlabeled term is automatically suppressed when
+the model is uncertain (smallα pre,α plc), and also suppressed when PLC flips labels (Lemma 5). Thus the balanced branch
+is not forced to learn from unstable pseudo-labels at the beginning; the interaction ramps up only as the standard branch
+becomes confident, breaking the “you must already be accurate” loop.
+S7.6 Decoupled Distribution Alignment (DDA) on Standard Branch (Eq. (4)) and Margin Robustness
+Letp std
+t (·|x) :=δ(f t(x)). DDA uses˜πt to form
+pdda
+t (y|x) =
+pstd
+t (y|x)·
+ 
+πl(y)
+˜πt(y)
+ τ2
+PC
+c=1pstd
+t (c|x)·
+ 
+πl(c)
+˜πt(c)
+ τ2.(S4)
+So the logit form of DDA is:
+arg max
+y∈[C]
+pdda
+t (y|x) = arg max
+y∈[C]
+n
+logp std
+t (y|x) +τ 2
+ 
+logπl(y)−log ˜πt(y)
+ o
+.(S5)
+Lemma 6(Argmax robustness to log-prior perturbation).Defineδ (e)
+t :=∥log ˜πt−logπ u∥∞ and
+sdda
+t (y|x;π) := logp std
+t (y|x) +τ 2
+ 
+logπl(y)−logπ(y)
+ 
+.
+Lety ⋆(x;πu)be the argmax and define the margin
+∆dda
+t (x;πu) :=s dda
+t
+ 
+y⋆(x;πu)|x;π u
+ 
+−max
+y̸=y ⋆(x;πu)
+sdda
+t (y|x;π u).
+If∆ dda
+t (x;πu)>2τ 2δ(e)
+t , then the argmax under˜πt equals that underπ u.
+S7.6.0.1 Remark: Lemma 6 is a conservative robustness statement (prevents catastrophic flips on high-margin
+points). We donotclaim it proves performance gain by itself.
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 22
+S7.7 Eventual Stationarity Without Circular “Assume Convergence”
+We now give a non-circular stationarity theorem. Instead of assuming the scores converge, we use a standard optimization-
+tail condition that implies the logits (and hence the coupling signals) are Cauchy.
+Lemma 7(Cauchy logits under summable step sizes (one sufficient condition)).Letθ t be parameters of a branch andh θ(x)∈
+RC its logits (eitherfor ˜f). Assume: (i) the update satisfiesθ t+1 =θ t−αtgt with∥g t∥2≤Galmost surely; (ii) P∞
+t=0αt <∞;
+(iii)h θ(x)isL-Lipschitz in parameters:∥h θ(x)−h θ′(x)∥∞≤L∥θ−θ ′∥2. Then for everyx,
+∞X
+t=0
+∥hθt+1(x)−h θt(x)∥∞ <∞,
+henceh θt(x)converges (Cauchy) ast→∞.
+Theorem 2(Eventual stationarity of PLC pseudo-labels and overlap weights (mean-field)).Assume the mean-field EMA prior
+updates(S1)for both˜π t andπ s
+t , with¯pt defined as population prediction marginals. Assume furthermore that both branches satisfy
+the conditions of Lemma 7 (sof t(x)and ˜ft(x)converge pointwise), and that for almost everyx, the limiting PLC score vector
+u∞(y|x) := lim
+t→∞
+ 
+logδ(ft(x))y−τ 1 logπs
+t (y)
+ 
+has a unique maximizer (no ties). Then for almost everyx:
+1)(PLC pseudo-label stabilization) There existsT(x)such that for allt≥T(x),ˆq plc
+t (x)is constant.
+2)(Prior stabilization) The EMA priors˜π t andπ s
+t converge inℓ 1.
+3)(Overlap/weight stabilization)η t(x)converges. Ifγ t→γ∞ <∞, thenψ t(x) =γ tηt(x)converges.
+S7.7.0.1 What this theorem does and does not claim: Theorem 2 proves astationarityproperty of the coupled
+discrete/continuous signals under a standard “optimization tail” condition. It doesnotclaim convergence to a globally
+optimal classifier, nor that the stationary point is correct.
+S7.8 Post-hoc Adjustment (Eq. (11)) and Robustness
+At inference,
+ˆq(b)(x) = arg max
+y
+{ ˜ft(x)y−τ 3 log ˜πt(y)}.
+Lemma 8(Probability form of post-hoc adjustment).Letp t(y|x) =δ( ˜ft(x))y andp adj
+t (y|x) =δ( ˜ft(x)−τ 3 log ˜πt)y. Then
+padj
+t (y|x) = pt(y|x)·˜π t(y)−τ3
+PC
+c=1pt(c|x)·˜π t(c)−τ3
+.
+Lemma 9(Post-hoc argmax robustness to prior error).Fixxand define scores
+rt(y|x;π) := ˜ft(x)y−τ 3 logπ(y).
+Lety ⋆(x;πu) = arg maxyrt(y|x;π u)and define the margin
+Γt(x;πu) :=r t
+ 
+y⋆(x;πu)|x;π u
+ 
+−max
+y̸=y ⋆(x;πu)
+rt(y|x;π u).
+IfΓ t(x;πu)>2τ 3∥log ˜πt−logπ u∥∞, then
+arg max
+y
+rt(y|x; ˜πt) = arg max
+y
+rt(y|x;π u).
+S8 PROOFS
+S8.1 Proof of Proposition 1
+Proof.At a realizable population optimum,p πl
+˜f ⋆(·|x) =p l(·|x)almost surely. Thus for eachx,y,
+exp( ˜f⋆
+y (x))πl(y)
+P
+c exp( ˜f⋆c (x))πl(c)
+= πl(y)p(x|y)P
+cπl(c)p(x|c) .
+Cancelπ l(y)to obtainexp( ˜f⋆
+y (x)) =A(x)p(x|y)for someA(x)>0independent ofy, hence ˜f⋆
+y (x) = logp(x|y) +b(x)
+whereb(x) := logA(x).
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 23
+S8.2 Proof of Proposition 2
+Proof.If ˜fy(x) = logp(x|y) +b(x)withb(x)independent ofy, then for anyπ tar,
+arg max
+y
+{ ˜fy(x) + logπtar(y)}= arg max
+y
+{logp(x|y) + logπ tar(y)},
+since addingb(x)does not change the argmax overy. Under label shift, the right-hand side is the Bayes rule for target
+priorπ tar.
+S8.3 Proof of Lemma 1
+Proof.Unrollπ t+1 =mπ t + (1−m)¯pt to obtain the closed form. For the step bound,
+∥πt+1−πt∥1 = (1−m)∥¯pt−πt∥1≤2(1−m),
+since any two simplex vectors differ by at most2inℓ 1.
+S8.4 Proof of Lemma 2
+Proof.Definee t :=π t−¯pt. Then
+et+1 =π t+1−¯pt+1 =mπ t + (1−m)¯pt−¯pt+1 =m(π t−¯pt) + (¯pt−¯pt+1) =me t + (¯pt−¯pt+1).
+Iterating,
+et =m te0 +
+tX
+k=1
+mt−k(¯pk−1−¯pk),
+hence (S2) by triangle inequality. If¯p t →¯p∞, then∥¯pk−¯pk−1∥1 →0and the convolution withm t−k vanishes, so
+πt−¯pt =e t→0and thusπ t→¯p∞.
+S8.5 Proof of Theorem 1
+Proof.LetX j :=δ( ˜ft(x(u)
+j ))∈∆ C−1, and letµ:=E[X j] =π pred
+t . Defineˆµ:= 1
+M
+PM
+j=1Xj = ˆπt.
+Step 1 (McDiarmid).ConsiderF(X 1,...,X M) :=
+ 1
+M
+PM
+j=1Xj−µ
+
+1. Changing one sample changes the mean by at
+most 2
+M inℓ 1, so McDiarmid gives with probability at least1−ν,
+∥ˆµ−µ∥1≤E∥ˆµ−µ∥ 1 +
+s
+2 log(1/ν)
+M .
+Step 2 (bound the expectation).By symmetrization and∥v∥ 1 = sup∥w∥∞≤1⟨w,v⟩,
+E∥ˆµ−µ∥1≤2E
+ 1
+M
+MX
+j=1
+σjXj
+
+1
+,
+with i.i.d. Rademacherσ j. Conditioned on{X j}, by Khintchine,E σ
+  P
+jσjXj(c)
+  ≤
+qP
+jXj(c)2. Thus
+Eσ
+
+X
+j
+σjXj
+
+1
+≤
+CX
+c=1
+vuut
+MX
+j=1
+Xj(c)2≤
+vuutC
+CX
+c=1
+MX
+j=1
+Xj(c)2.
+SinceXj∈∆ C−1,P
+cXj(c)2≤1, so the last term is≤
+√
+CM. ThereforeE∥ˆµ−µ∥ 1≤2
+p
+C/M. Combine with Step 1 and
+then triangle inequality∥ˆπt−πu∥1≤∥π pred
+t −πu∥1 +∥ˆπt−π pred
+t ∥1.
+For the second claim, sinceπ u =E[p u(·|x)],
+∥πpred
+t −πu∥1 =
+E
+ 
+δ( ˜ft(x))−p u(·|x)
+ 
+1
+≤E
+δ( ˜ft(x))−p u(·|x)
+
+1
+by Jensen.
+S8.6 Proof of Proposition 3
+Proof.If ˜fy(x) = logp(x|y) +b(x), then
+δ( ˜f(x))y = exp(logp(x|y) +b(x))P
+c exp(logp(x|c) +b(x)) = p(x|y)P
+cp(x|c) .
+Taking expectation overx∼p u(x)givesπ unif.
+IEEE TRANSACTIONS ON PATTERN ANAL YSIS AND MACHINE INTELLIGENCE 24
+S8.7 Proof of Lemma 3
+Proof.From (S3), the unnormalized score isp pre
+t (y|x) (π s
+t (y))−τ1. Taking logs yieldslogp pre
+t (y|x)−τ 1 logπs
+t (y). The
+normalizer does not depend ony, hence the argmax form.
+S8.8 Proof of Lemma 4
+Proof.For anyc,p pre
+t (c|x)≤α pre(x)andp plc
+t (c|x)≤α plc(x), hencep pre
+t (c|x)p plc
+t (c|x)≤α pre(x)αplc(x). Taking max
+overcgivesη t(x)≤α pre(x)αplc(x).
+If the unique maximizer agrees, saya= arg maxp pre
+t (·|x) = arg maxp plc
+t (·|x), thenp pre
+t (a|x) =α pre(x)and
+pplc
+t (a|x) =α plc(x), soηt(x)≥p pre
+t (a|x)p plc
+t (a|x) =α pre(x)αplc(x). Combine with the upper bound to get equality.
+S8.9 Proof of Lemma 5
+Proof.Leta:= arg maxp pre
+t (·|x)andb:= arg maxp plc
+t (·|x)witha̸=b. Thenp pre
+t (a|x) =α pre(x)andp plc
+t (b|x) =
+αplc(x). Sincea̸=b,p plc
+t (a|x)≤1−α plc(x), so
+ppre
+t (a|x)p plc
+t (a|x)≤α pre(x)(1−α plc(x))≤1−α plc(x).
+Similarlyp pre
+t (b|x)≤1−α pre(x), so
+ppre
+t (b|x)p plc
+t (b|x)≤(1−α pre(x))αplc(x)≤1−α pre(x).
+For any otherc /∈{a,b}, both factors are≤1−α pre(x)and≤1−α plc(x), so the product is≤(1−α pre(x))(1−α plc(x))≤
+1−min{α pre(x),α plc(x)}. Taking the maximum overcyields the claim.
+S8.10 Proof of Lemma 6
+Proof.For anyy,
+|sdda
+t (y|x; ˜πt)−s dda
+t (y|x;π u)|=τ 2|log ˜πt(y)−logπ u(y)|≤τ 2δ(e)
+t .
+Thus both the top score and the best competing score can change by at mostτ 2δ(e)
+t , so the margin can shrink by at most
+2τ2δ(e)
+t . If the margin remains larger, the ordering cannot change.
+S8.11 Proof of Lemma 7
+Proof.Sinceθ t+1−θt =−α tgt and∥g t∥2≤G, we have∥θ t+1−θt∥2≤Gα t. By Lipschitzness,
+∥hθt+1(x)−h θt(x)∥∞≤L∥θ t+1−θt∥2≤LGα t.
+Summing overtgives P
+t∥hθt+1(x)−h θt(x)∥∞≤LG P
+tαt <∞. Henceh θt(x)is Cauchy and converges.
+S8.12 Proof of Theorem 2
+Proof.By Lemma 7, for everyx,f t(x)→f ∞(x)and ˜ft(x)→ ˜f∞(x). By continuity of softmax onRC,δ(f t(x))→δ(f ∞(x))
+pointwise. By dominated convergence (bounded in[0,1]), the population marginals¯pt =E x∼pu[δ(ft(x))]and similarly for
+˜ft converge. Then Lemma 2 impliesπ s
+t and˜πt converge.
+Nowlogδ(f t(x))y is continuous inf t(x)whenever probabilities stay positive; this holds since logits converge to finite
+values and softmax outputs are in the simplex interior. Alsologπs
+t (y)converges sinceπ s
+t converges in the interior. Therefore
+the PLC score vectoru t(y|x) = logδ(f t(x))y−τ 1 logπs
+t (y)converges tou ∞(·|x).
+By the unique-maximizer assumption, there existsT(x)such that for allt≥T(x)the argmax ofu t(·|x)equals that of
+u∞(·|x), henceˆq plc
+t (x)is constant.
+Finally,p pre
+t (·|x) =δ(f t(x))andp plc
+t (·|x) =δ(u t(·|x))converge by continuity, henceη t(x) = maxcppre
+t (c|x)p plc
+t (c|
+x)converges as a continuous mapping. Ifγ t→γ∞, thenψ t(x) =γ tηt(x)converges.
+S8.13 Proof of Lemma 8
+Proof.Expand the softmax:
+δ( ˜ft(x)−τ 3 log ˜πt)y = exp( ˜ft(x)y)˜πt(y)−τ3
+P
+c exp( ˜ft(x)c)˜πt(c)−τ3
+.
+Divide numerator and denominator by P
+c exp( ˜ft(x)c)to obtain the stated probability form.
+S8.14 Proof of Lemma 9
+Proof.For anyy,
+|rt(y|x; ˜πt)−r t(y|x;π u)|=τ 3|log ˜πt(y)−logπ u(y)|≤τ 3∥log ˜πt−logπ u∥∞.
+Thus the top-1 and runner-up scores can each change by at most that amount, so the margin can shrink by at most
+2τ3∥log ˜πt−logπ u∥∞. IfΓ t(x;πu)exceeds it, the argmax cannot change.

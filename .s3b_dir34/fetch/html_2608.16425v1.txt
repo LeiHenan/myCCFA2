@@ -1,0 +1,907 @@
+ 
+ ParaTempo: Efficient Parallel Reasoning via Temporal Confidence 
+ Report GitHub Issue 
+ × 
+ Title: 
+ Content selection saved. Describe the issue below:
+ Description: 
+ Submit without GitHub 
+ Submit in GitHub 
+ arXiv is now an independent nonprofit! 
+ Learn more 
+ × 
+ Back to arXiv 
+ Why HTML? 
+ Report Issue 
+ Back to Abstract 
+ Download PDF 
+ Abstract 
+ 1 Introduction 
+ 2 Problem Formulation 
+ 3 A Preliminary Study 
+ 3.1 Study Design 
+ Intermediate Answer Probing. 
+ Studied Signals. 
+ Evaluation Protocol. 
+ 3.2 Results and Analysis 
+ Token-Level Signals Lack Answer-Space Alignment. 
+ Instantaneous Answer Confidence Is Sensitive to Transient Changes. 
+ 4 Methodology 
+ 4.1 Overview 
+ 4.2 Temporal Confidence 
+ Temporal Aggregation. 
+ Confidence Estimation. 
+ 4.3 Asynchronous Branch Control 
+ Warmup Calibration. 
+ Branch Pruning. 
+ Early Retirement. 
+ Adaptive Forking. 
+ 4.4 Global Consensus and Answer Aggregation 
+ 5 Experiments 
+ 5.1 Experimental Setup 
+ Models. 
+ Baselines. 
+ Metrics. 
+ Implementation Details. 
+ 5.2 Main Results 
+ 5.3 Temporal Confidence Analysis 
+ Temporal Stability. 
+ Future Convergence Prediction. 
+ 5.4 Ablation Study 
+ 6 Related Work 
+ Efficient Test-Time Scaling. 
+ Parallel Reasoning. 
+ 7 Conclusion 
+ References 
+ License: arXiv.org perpetual non-exclusive license
+arXiv:2608.16425v1 [cs.AI] 17 Aug 2026
+ ParaTempo: Efficient Parallel Reasoning via Temporal Confidence
+ Xuteng Zhang
+ Wenhao Zeng
+ Xiaodong Gu
+ Chao Hu
+ Haotian Lin
+ Yuling Shi
+ Min Wang
+ Beijun Shen \corresponding 
+ Abstract 
+ Parallel reasoning improves the accuracy and robustness of large reasoning models by exploring multiple solution paths, but its computational cost grows with reasoning depth and branch count. Existing methods for managing these parallel paths typically rely on final-answer consensus, local token confidence, or isolated intermediate probes. However, these signals are often delayed, weakly tied to actual reasoning progress, or too noisy for dynamic, branch-level control. To address these limitations, we introduce ParaTempo, a training-free asynchronous parallel reasoning framework. ParaTempo is driven by temporal confidence , a branch-local measure of answer-space convergence. Each branch is periodically probed for a tentative answer probability distribution, and temporal confidence quantifies how sharply the recent intermediate probes concentrate on a dominant answer. Once sufficient evidence has accumulated, ParaTempo drives its entire control process from this single signal: low-confidence branches are pruned, branches that persistently commit to their dominant answer are retired early, freed computation is reallocated by forking new branches, and generation stops globally once the confidence-weighted vote concentrates. Without requiring synchronization among reasoning trajectories, ParaTempo adaptively allocates computation based on branch-level convergence.
+Experiments on challenging mathematical and scientific reasoning benchmarks show that ParaTempo reduces average latency by 21.8--32.2% and total token usage by 18.1--30.3% while maintaining competitive accuracy. Moreover, temporal confidence exhibits stronger temporal stability and predictive power for future branch convergence than token-level and instantaneous signals
+ 1 1 
+ 1 
+ Code and dataset are available at https://github.com/ScottZhang812/ParaTempo . .
+ 1 Shanghai Jiao Tong University   2 University of Pennsylvania
+ {scottzhang, zengwh_cs, xiaodong.gu}@sjtu.edu.cn
+ 1 Introduction
+ Parallel reasoning has emerged as an effective strategy for improving the reliability of large reasoning models by concurrently exploring multiple solution trajectories ( Wei et al. 2022 ; Wang et al. 2022 ) .
+However, its inference cost scales with both the number of branches and reasoning depth.
+Most traditional approaches ( Wang et al. 2022 ) follow a fixed-budget paradigm, allocating identical computation to all branches and aggregating answers only after termination, thereby overlooking heterogeneous reasoning progress across trajectories.
+As a result, converged branches continue generating redundant tokens, while less promising branches consume computation without clear evidence of future utility.
+ Figure 1: Motivating branch-local temporal control. (a) Synchronized control advances all branches through global barriers. (b) ParaTempo asynchronously updates branch-local evidence and triggers local actions: stabilized branches are retired, diffuse branches are pruned, and reclaimed budget is reallocated via forking. 
+ To improve computation efficiency, recent studies have explored online control mechanisms that intervene reasoning branchs during generation ( Li et al. 2024 ; Liu and Wang 2025 ; Fu et al. 2025 ; Zheng et al. 2026 ) . For instance, early-stopping self-consistency methods reduce sampling once final-answer consensus becomes sufficiently reliable ( Li et al. 2024 ) . Answer-convergence methods leverage the observation that many reasoning traces stabilize before generation terminates ( Liu and Wang 2025 ) . DeepConf uses model confidence to filter low-quality traces during or after generation ( Fu et al. 2025 ) .
+However, these approaches rely on signals that only partially capture branch-level reasoning progress.
+Final-answer consensus offers reliable evidence but emerges only after substantial computation ( Li et al. 2024 ; Wan et al. 2025 ; Zhou et al. 2025 ) ; token-level confidence provides fine-grained feedback but poorly reflects answer evolution ( Fu et al. 2025 ; Zeng et al. 2025 ; Zeng et al. 2026b ) ; and isolated intermediate probes enable early intervention but are sensitive to transient fluctuations ( Liu and Wang 2025 ; Zheng et al. 2026 ) .
+ To overcome these limitations, we propose ParaTempo, an asynchronous framework for efficient parallel reasoning. At its core, ParaTempo relies on temporal confidence , a branch-local signal for selecting and pruning branches. Temporal confidence is designed to answer a fundamental question: does a branch consistently place probability mass on a concentrated answer region, or scatter mass across multiple alternatives? To estimate this signal, ParaTempo periodically probes each active branch to obtain tentative answer distributions and aggregates recent predictions within a sliding window. By continuously tracking the temporal consistency of intermediate predictions, temporal confidence determines whether a trajectory is stabilizing toward a dominant answer or remains uncertain among competing candidates. Guided by this signal, ParaTempo dynamically allocates computation: low-confidence branches are pruned, converged branches are retired, freed computation is reallocated through forking from promising branches, and inference terminates when the confidence-weighted ensemble vote becomes sufficiently concentrated.
+As illustrated in Figure 1 , ParaTempo enables asynchronous branch-level control without requiring trajectory synchronization, reducing both total generation cost and critical-path latency.
+ We evaluate ParaTempo on four mathematical and scientific reasoning benchmarks using Qwen3.5-35B-A3B ( Qwen Team 2026 ) and GPT-OSS-20B ( OpenAI 2025 ) .
+Across these benchmarks, ParaTempo consistently improves inference efficiency while preserving the accuracy gains of parallel reasoning.
+Compared with standard self-consistency, ParaTempo reduces average latency by 21.8–32.2% and total generated tokens by 18.1–30.3% while maintaining competitive accuracy.
+Compared with adaptive parallel-reasoning baselines, ParaTempo achieves comparable or higher accuracy with substantially lower latency, and outperforms the strongest parallel controller by 3.8–3.9 accuracy points.
+Further analysis confirms that temporal confidence provides a more stable and predictive indicator of future answer stability than token-level and instantaneous signals.
+ Our contributions are summarized as follows:
+ • 
+ We introduce temporal confidence , a branch-local convergence signal derived from temporally aggregated intermediate answer distributions for tracking answer stability during reasoning.
+ • 
+ We propose ParaTempo, an asynchronous parallel reasoning framework that leverages temporal confidence for adaptive computation allocation, including branch pruning, retirement, forking, and global early termination.
+ • 
+ We conduct extensive experiments on challenging reasoning benchmarks, demonstrating that ParaTempo substantially reduces inference cost while maintaining competitive reasoning accuracy.
+ 2 Problem Formulation
+ Given an input problem x x and a model M M , parallel reasoning generates K K independent reasoning branches r 1 , … , r K r_{1},...,r_{K} , where each branch r i r_{i} maintains a reasoning prefix r i , t r_{i,t} at time step t t and eventually produces an answer y i y_{i} .
+Traditional methods allocate the same generation budget to all branches and aggregates final answers after completion.
+Although effective, this strategy ignores heterogeneous reasoning progress: some branches converge early and continue generating redundant tokens, while others remain uncertain and may benefit from additional exploration.
+ We formulate parallel reasoning as an online resource allocation problem.
+A controller should dynamically decide whether each branch continues decoding, terminates early, or receives additional computation from released resources, while preserving the reliability of final answer aggregation.
+ Formally, let π \pi denote a parallel reasoning controller and π fixed \pi_{\mathrm{fixed}} the standard fixed-budget execution.
+Let 𝒜 ⁡ ( ⋅ ) \mathcal{A}(\cdot) and 𝒞 ⁡ ( ⋅ ) \mathcal{C}(\cdot) denote the expected accuracy and inference cost, respectively.
+The objective is to minimize inference cost while maintaining the accuracy achieved by fixed-budget execution:
+ min π ⁡ 𝒞 ⁡ ( π ) s.t. 𝒜 ⁡ ( π ) ≥ 𝒜 ⁡ ( π fixed ) , \min_{\pi}\;\mathcal{C}(\pi)\quad\text{s.t.}\quad\mathcal{A}(\pi)\geq\mathcal{A}(\pi_{\mathrm{fixed}}), 
+ (1) 
+ 3 A Preliminary Study
+ The formulated objective requires a controller to make reliable branch-level decisions during generation.
+We therefore investigate whether existing control signals provide two properties essential for such decisions: temporal stability and predictive ability for future branch convergence.
+Specifically, we evaluate representative token-level uncertainty and answer-level confidence signals under an uncontrolled parallel reasoning setting.
+ 3.1 Study Design
+ For each problem, we generate multiple independent reasoning branches until their default termination.
+During decoding, each active branch is periodically probed every τ \tau generated tokens to obtain a tentative answer distribution from its current reasoning prefix.
+We conduct this study on Qwen3.5-35B-A3B ( Qwen Team 2026 ) and GPT-OSS-20B ( OpenAI 2025 ) using AIME 2026 ( Zhang and Math-AI 2026 ) , HMMT November 2025, and HMMT February 2026 ( Dekoninck et al. 2026 ) , with K = 16 K=16 branches per problem and τ = 500 \tau=500 .
+This process collects over 90 million reasoning tokens.
+Unless otherwise specified, all branches use the same sampling configuration and generation budget as the main experiments.
+ Intermediate Answer Probing.
+ At the t t -th probe of branch i i , we append an answer-forcing suffix (e.g., </think> Final answer: ) to the current reasoning prefix and obtain the top- L L candidate answer tokens V i , t V_{i,t} with their log probabilities ℓ i , t ​ ( v ) \ell_{i,t}(v) .
+Candidates are mapped into normalized answer buckets according to the task format, and the resulting answer distribution is computed as:
+ p i , t ​ ( v ) = exp ⁡ ( ℓ i , t ​ ( v ) ) ∑ u ∈ V i , t exp ⁡ ( ℓ i , t ​ ( u ) ) , v ∈ V i , t . p_{i,t}(v)=\frac{\exp(\ell_{i,t}(v))}{\sum_{u\in V_{i,t}}\exp(\ell_{i,t}(u))},\qquad v\in V_{i,t}. 
+ (2) 
+ Studied Signals.
+ We examine three representative signals covering two common control paradigms: token-level uncertainty and answer-level confidence.
+For a distribution q q , its entropy is defined as H ( q ) = − ∑ v q ( v ) log q ( v ) H(q)=-\sum_{v}q(v)\log q(v) .
+ Token-level signals characterize local generation uncertainty.
+Let q i , j q_{i,j} denote the next-token distribution at the j j -th decoding position of branch i i , and w i , j w_{i,j} the sampled token.
+For the tokens generated since the previous probe, denoted as 𝒯 i , t \mathcal{T}_{i,t} , we consider:
+ Mean token entropy:
+ H ¯ i , t tok = 1 | 𝒯 i , t | ​ ∑ j ∈ 𝒯 i , t H ⁡ ( q i , j ) , \bar{H}^{\mathrm{tok}}_{i,t}=\frac{1}{|\mathcal{T}_{i,t}|}\sum_{j\in\mathcal{T}_{i,t}}H(q_{i,j}), 
+ (3) 
+ and token perplexity:
+ PPL i , t = exp ( − 1 | 𝒯 i , t | ∑ j ∈ 𝒯 i , t log q i , j ( w i , j ) ) . \mathrm{PPL}_{i,t}=\exp\Big(-\frac{1}{|\mathcal{T}_{i,t}|}\sum_{j\in\mathcal{T}_{i,t}}\log q_{i,j}(w_{i,j})\Big). 
+ (4) 
+ The answer-level confidence is derived directly from the probe distribution:
+ C i , t inst = exp ⁡ ( − H ⁡ ( p i , t ) ) . C^{\mathrm{inst}}_{i,t}=\exp(-H(p_{i,t})). 
+ (5) 
+ Although this signal is aligned with the answer space, it only reflects a single observation of an evolving reasoning trajectory.
+ Evaluation Protocol.
+ We evaluate each signal from two perspectives: temporal stability and future convergence prediction.
+Given a signal sequence s i , 1 , … , s i , T i s_{i,1},\ldots,s_{i,T_{i}} , its temporal volatility is measured as:
+ Vol ⁡ ( s i ) = 1 T i − 1 ​ ∑ t = 2 T i | s i , t − s i , t − 1 | . \operatorname{Vol}(s_{i})=\frac{1}{T_{i}-1}\sum_{t=2}^{T_{i}}|s_{i,t}-s_{i,t-1}|. 
+ (6) 
+ To evaluate predictive ability, we measure whether a signal value indicates future answer consistency.
+Let y ~ i , t = arg ⁡ max v ​ p i , t ​ ( v ) \tilde{y}_{i,t}=\arg\max_{v}p_{i,t}(v) denote the dominant answer at probe t t .
+A probe state is considered stable if the dominant answer remains unchanged over the next h h probes:
+ Stable i , t ( h ) = 𝟏 { y ~ i , t + 1 = ⋯ = y ~ i , t + h = y ~ i , t } . \operatorname{Stable}_{i,t}^{(h)}=\mathbf{1}\{\tilde{y}_{i,t+1}=\cdots=\tilde{y}_{i,t+h}=\tilde{y}_{i,t}\}. 
+ (7) 
+ We group probe states by their signal values and report the empirical future-stability rate for each group, together with the Spearman correlation between each signal and Stable i , t ( h ) \operatorname{Stable}_{i,t}^{(h)} and a directional AUC that measures how well the signal separates stable probe states from unstable ones.
+ 3.2 Results and Analysis
+ Signal 
+ Volatility ↓ \downarrow 
+ Spearman | ρ | |\rho| ↑ \uparrow 
+ AUC ↑ \uparrow 
+ Mean token entropy 
+ 0.54 
+ 0.13 
+ 0.58 
+ Token perplexity 
+ 0.56 
+ 0.12 
+ 0.57 
+ Inst. answer confidence 
+ 0.26 
+ 0.41 
+ 0.71 
+ Table 1: Evaluation of existing signals by temporal volatility and future answer stability prediction ( h = 5 h=5 ). Spearman correlation and AUC measure signal stability and predictive performance, respectively. 
+ Token-Level Signals Lack Answer-Space Alignment.
+ Table 1 summarizes the diagnosis.
+Token-level uncertainty measures, including token entropy and perplexity, exhibit the largest fluctuations across adjacent probes.
+These variations are largely driven by local linguistic factors rather than changes in the underlying answer state.
+A branch may therefore maintain low token-level uncertainty while exploring different answer hypotheses, or exhibit high lexical uncertainty despite approaching a stable solution.
+Besides, their association with future answer stability is weak ( | ρ | ≤ 0.13 |\rho|\leq 0.13 , AUC ≤ 0.58 \leq 0.58 ), indicating that token-level signals provide limited evidence about whether further decoding is likely to improve the final answer.
+ Instantaneous Answer Confidence Is Sensitive to Transient Changes.
+ Intermediate reasoning steps may temporarily favor incorrect or unstable hypotheses, causing substantial fluctuations in the probe distribution. Its standardized volatility (0.26) is not negligible. Thus, decisions based on instantaneous answer confidence can be sensitive to short-term variations and may not accurately reflect the long-term convergence behavior of a branch.
+ These observations reveal the limitations of existing signals for fine-grained online reasoning control.
+An effective control signal should satisfy three properties:
+(1) answer-space alignment , by measuring the distribution over candidate answers rather than surface-level generation statistics;
+(2) temporal consistency , by aggregating evidence across multiple observations instead of relying on a single probe; and
+(3) branch locality , by enabling independent updates without requiring cross-branch synchronization.
+ 4 Methodology
+ Figure 2: Overall framework of ParaTempo. The framework periodically probes reasoning branches, estimates temporal confidence, and asynchronously allocates computation through branch control and confidence-weighted voting. 
+ To improve the efficiency of parallel test-time reasoning, we propose ParaTempo, a training-free asynchronous framework for branch-level computation allocation. ParaTempo is driven by a new control signal called temporal confidence (Section 4.2 ). The key idea is to convert intermediate answer evolution into an online control signal: branches with stable answer distributions are terminated early, while branches with uncertain trajectories receive additional exploration.
+ 4.1 Overview
+ Figure 2 illustrates the overall workflow.
+Given a set of sampled reasoning branches, ParaTempo periodically probes active branches to obtain intermediate answer distributions from their current reasoning prefixes.
+Recent probe distributions are aggregated to update each branch’s temporal confidence, which guides asynchronous branch control through continued decoding, retirement, pruning, and forking.
+The controller first performs a warmup stage to calibrate a problem-specific decision threshold and subsequently manages branch states without requiring synchronization across branches.
+The final prediction is obtained by aggregating the dominant answers of branches, each weighted by its top-1 probability.
+ At any time, each branch is assigned one of four states: Active , Retired , Pruned , or Forked .
+Active and forked branches consume additional tokens, retired branches preserve voting evidence, and pruned branches release computation for exploration.
+This state-based design allows ParaTempo to dynamically allocate computation while preserving sufficient reasoning diversity.
+ 4.2 Temporal Confidence
+ Motivated by the preliminary study, we introduce temporal confidence , an online branch-level signal that measures answer-space convergence over time.
+Given a reasoning prefix, ParaTempo probes the model’s intermediate answer distribution, aggregates recent observations, and measures the resulting answer-space concentration for adaptive computation control.
+ Temporal Aggregation.
+ A single probe distribution may be noisy due to transient intermediate reasoning states.
+To reduce such fluctuations, ParaTempo aggregates recent probe distributions within a sliding window of size W W :
+ g i , t ​ ( v ) = 1 | 𝒥 i , t | ​ ∑ τ ∈ 𝒥 i , t p i , τ ​ ( v ) , g_{i,t}(v)=\frac{1}{|\mathcal{J}_{i,t}|}\sum_{\tau\in\mathcal{J}_{i,t}}p_{i,\tau}(v), 
+ (8) 
+ where 𝒥 i , t = { max ⁡ ( 1 , t − W + 1 ) , … , t } \mathcal{J}_{i,t}=\{\max(1,t-W+1),\ldots,t\} denotes the probe steps included in the window.
+The support of g i , t g_{i,t} is defined as the union of answer buckets observed in the window,
+ 𝒱 i , t = ⋃ τ ∈ 𝒥 i , t V i , τ \mathcal{V}_{i,t}=\bigcup_{\tau\in\mathcal{J}_{i,t}}V_{i,\tau} , with candidates absent from a particular probe assigned zero probability.
+This temporal aggregation emphasizes persistent answer preferences while suppressing isolated probe fluctuations.
+ Confidence Estimation.
+ We define temporal confidence as the exponentiated negative entropy of the aggregated distribution:
+ C i , t = exp ⁡ ( − H ⁡ ( g i , t ) ) ∈ ( 0 , 1 ] . C_{i,t}=\exp\big(-H(g_{i,t})\big)\in(0,1]. 
+ (9) 
+ Since exp ⁡ ( H ⁡ ( g i , t ) ) \exp(H(g_{i,t})) corresponds to the perplexity of the aggregated answer distribution, C i , t C_{i,t} can be interpreted as the inverse effective number of competing answer candidates.
+It approaches 1 1 when recent probes consistently concentrate on a single answer and decreases as probability mass spreads across multiple alternatives.
+ In addition to temporal confidence, we track the dominant answer and its probability mass:
+ y ^ i , t = arg ⁡ max v ​ g i , t ​ ( v ) , c i , t = max v ⁡ g i , t ​ ( v ) . \hat{y}_{i,t}=\arg\max_{v}g_{i,t}(v),\qquad c_{i,t}=\max_{v}g_{i,t}(v). 
+ (10) 
+ Temporal confidence captures the overall convergence state of a branch and serves as the primary signal for adaptive computation control.
+The dominant answer y ^ i , t \hat{y}_{i,t} provides the current branch prediction, while c i , t c_{i,t} measures its support and is used for branch retirement and confidence-weighted answer aggregation.
+ 4.3 Asynchronous Branch Control
+ Building on temporal confidence, ParaTempo performs branch-level asynchronous computation allocation during generation.
+At each probe point, a branch independently determines whether to continue decoding, retire after convergence, or release computation for further exploration.
+Unlike synchronous parallel reasoning, these decisions do not require branches to align at the same reasoning depth, avoiding unnecessary waiting caused by heterogeneous trajectory lengths.
+By eliminating width-wise synchronization barriers, ParaTempo reduces both total computation and critical-path latency.
+The full pseudocode of the overall control procedure is provided in the Technical Supplement.
+ Warmup Calibration.
+ The pruning threshold should adapt to different problems and models. ParaTempo therefore begins with a warmup phase of N warm N_{\mathrm{warm}} probes, during which all branches generate normally and no branch-level intervention is performed.
+The collected temporal-confidence values are used to calibrate an instance-specific pruning threshold:
+ 𝒮 warm = { C i , t : i ∈ { 1 , … , K } , W ≤ t ≤ N warm } . \mathcal{S}_{\mathrm{warm}}=\{C_{i,t}:i\in\{1,\ldots,K\},\;W\leq t\leq N_{\mathrm{warm}}\}. 
+ (11) 
+ The pruning threshold is set by a quantile:
+ θ prune = Quantile 1 − q prune ⁡ ( 𝒮 warm ) . \theta_{\mathrm{prune}}=\operatorname{Quantile}_{1-q_{\mathrm{prune}}}(\mathcal{S}_{\mathrm{warm}}). 
+ (12) 
+ The quantile-based calibration adapts the pruning criterion to the confidence distribution of the current problem, avoiding a manually specified global threshold.
+ Branch Pruning.
+ After warmup, branches with insufficient temporal confidence, i.e., C i , t < θ prune C_{i,t}<\theta_{\mathrm{prune}} , are removed.
+Such branches exhibit diffuse answer distributions, indicating that additional decoding is unlikely to provide reliable convergence.
+Pruning terminates these low-value trajectories and releases computation for new exploration.
+To avoid premature pruning, we require each branch to accumulate sufficient post-fork probe history before applying this criterion.
+ Early Retirement.
+ A branch may achieve local convergence before the entire ensemble reaches consensus.
+ParaTempo therefore retires a branch when its dominant answer remains sufficiently concentrated over X X consecutive probes:
+ min τ ∈ { t − X + 1 , … , t } ⁡ c i , τ ≥ θ retire . \min_{\tau\in\{t-X+1,\ldots,t\}}c_{i,\tau}\geq\theta_{\mathrm{retire}}. 
+ (13) 
+ A retired branch stops consuming generation tokens while preserving its answer y ^ i , t \hat{y}_{i,t} and confidence weight c i , t c_{i,t} for final aggregation.
+This mechanism converts early convergence into computation savings without discarding useful evidence.
+ Adaptive Forking.
+ When pruning releases a computation slot, ParaTempo reallocates the budget by forking from a promising branch to maintain exploration capacity.
+Let 𝒟 t \mathcal{D}_{t} denote eligible donor branches with sufficient temporal confidence and probe history.
+The donor is selected as:
+ d = arg ⁡ max j ∈ 𝒟 t ⁡ C j , t . d=\arg\max_{j\in\mathcal{D}_{t}}C_{j,t}. 
+ (14) 
+ The forked branch inherits the donor’s reasoning prefix and continues with an independent sampling seed.
+This strategy exploits promising partial solutions while preserving trajectory diversity.
+If no eligible donor exists, the released slot remains inactive.
+ 4.4 Global Consensus and Answer Aggregation
+ While branch-level control determines how computation is allocated, ParaTempo uses a global consensus mechanism to decide when sufficient evidence has been accumulated and to produce the final prediction.
+Let ℬ t \mathcal{B}_{t} denote the set of eligible voting branches at time t t , including active and retired branches with valid temporal-confidence estimates.
+For an answer bucket a a , we define the confidence-weighted vote mass as:
+ V t ( a ) = ∑ i ∈ ℬ t c i , t 𝟏 { y ^ i , t = a } . V_{t}(a)=\sum_{i\in\mathcal{B}_{t}}c_{i,t}\mathbf{1}\{\hat{y}_{i,t}=a\}. 
+ (15) 
+ The generation process terminates early when the dominant answer receives sufficient aggregate confidence:
+ max a ⁡ V t ​ ( a ) ≥ γ ES ​ | ℬ t | . \max_{a}V_{t}(a)\geq\gamma_{\mathrm{ES}}|\mathcal{B}_{t}|. 
+ (16) 
+ Otherwise, ParaTempo continues until no active branch remains or the computation budget is exhausted, and returns the final prediction:
+ y ^ = arg ⁡ max a ​ V t ​ ( a ) . \hat{y}=\arg\max_{a}V_{t}(a). 
+ (17) 
+ 5 Experiments
+ 5.1 Experimental Setup
+ Method 
+ AIME26 
+ HMMT25 
+ HMMT26 
+ GPQA 
+ Acc. ↑ \uparrow 
+ Lat. ↓ \downarrow 
+ Tok. ↓ \downarrow 
+ Seq. ↓ \downarrow 
+ Acc. ↑ \uparrow 
+ Lat. ↓ \downarrow 
+ Tok. ↓ \downarrow 
+ Seq. ↓ \downarrow 
+ Acc. ↑ \uparrow 
+ Lat. ↓ \downarrow 
+ Tok. ↓ \downarrow 
+ Seq. ↓ \downarrow 
+ Acc. ↑ \uparrow 
+ Lat. ↓ \downarrow 
+ Tok. ↓ \downarrow 
+ Seq. ↓ \downarrow 
+ Base model: Qwen3.5-35B-A3B 
+ Zero-shot 
+ 72.3 
+ 92.2 
+ 12.6k 
+ 12.6k 
+ 64.2 
+ 90.6 
+ 12.4k 
+ 12.4k 
+ 42.4 
+ 94.7 
+ 13.0k 
+ 13.0k 
+ 82.2 
+ 69.0 
+ 9.4k 
+ 9.4k 
+ SC@16 
+ 87.5 
+ 250.6 
+ 229.7k 
+ 15.6k 
+ 69.2 
+ 257.8 
+ 236.8k 
+ 16.0k 
+ 45.5 
+ 254.8 
+ 237.4k 
+ 15.8k 
+ 86.4 
+ 225.0 
+ 196.7k 
+ 14.7k 
+ ESC@16 
+ 83.3 
+ 279.7 
+ 105.4k 
+ 27.2k 
+ 70.0 
+ 333.1 
+ 125.9k 
+ 32.3k 
+ 42.4 
+ 369.8 
+ 140.0k 
+ 35.9k 
+ 87.0 
+ 218.6 
+ 79.6k 
+ 21.6k 
+ SAC@16 
+ 73.3 
+ 216.9 
+ 144.8k 
+ 12.8k 
+ 68.3 
+ 217.2 
+ 141.9k 
+ 13.4k 
+ 34.8 
+ 216.9 
+ 141.6k 
+ 13.4k 
+ 81.8 
+ 144.8 
+ 102.8k 
+ 9.1k 
+ DeepConf-high@16 
+ 68.3 
+ 451.4 
+ 101.3k 
+ 101.3k 
+ 60.0 
+ 433.1 
+ 99.6k 
+ 99.6k 
+ 34.8 
+ 460.6 
+ 102.5k 
+ 102.5k 
+ 82.3 
+ 271.8 
+ 79.2k 
+ 79.2k 
+ DeepConf-low@16 
+ 65.0 
+ 190.0 
+ 102.9k 
+ 102.9k 
+ 53.3 
+ 190.9 
+ 103.7k 
+ 103.7k 
+ 31.8 
+ 200.1 
+ 104.2k 
+ 104.2k 
+ 82.8 
+ 154.2 
+ 94.1k 
+ 94.1k 
+ Parallel-Probe@16 
+ 76.7 
+ 223.1 
+ 164.0k 
+ 12.5k 
+ 65.0 
+ 218.1 
+ 161.2k 
+ 12.3k 
+ 42.4 
+ 220.3 
+ 161.9k 
+ 12.3k 
+ 84.6 
+ 203.5 
+ 153.7k 
+ 11.4k 
+ ParaTempo@16 
+ 83.3 
+ 198.4 
+ 161.9k 
+ 10.2k 
+ 73.3 
+ 205.7 
+ 166.6k 
+ 10.6k 
+ 42.4 
+ 208.0 
+ 168.9k 
+ 10.8k 
+ 85.4 
+ 161.1 
+ 130.4k 
+ 8.7k 
+ Base model: GPT-OSS-20B 
+ Zero-shot 
+ 70.0 
+ 40.0 
+ 6.8k 
+ 6.8k 
+ 56.7 
+ 51.5 
+ 8.7k 
+ 8.7k 
+ 45.5 
+ 56.9 
+ 9.7k 
+ 9.7k 
+ 67.2 
+ 24.9 
+ 4.5k 
+ 4.5k 
+ SC@16 
+ 90.0 
+ 110.6 
+ 119.3k 
+ 11.2k 
+ 68.3 
+ 136.8 
+ 148.1k 
+ 13.3k 
+ 56.8 
+ 144.7 
+ 158.0k 
+ 13.6k 
+ 72.2 
+ 126.7 
+ 74.4k 
+ 7.9k 
+ ESC@16 
+ 86.5 
+ 143.4 
+ 102.3k 
+ 16.8k 
+ 63.3 
+ 191.5 
+ 136.5k 
+ 22.5k 
+ 53.0 
+ 223.0 
+ 155.5k 
+ 25.7k 
+ 68.7 
+ 157.7 
+ 66.8k 
+ 12.7k 
+ SAC@16 
+ 76.7 
+ 93.7 
+ 92.4k 
+ 10.0k 
+ 46.7 
+ 122.6 
+ 121.1k 
+ 12.5k 
+ 39.4 
+ 120.1 
+ 116.5k 
+ 12.4k 
+ 69.7 
+ 60.9 
+ 56.6k 
+ 6.8k 
+ DeepConf-high@16 
+ 83.3 
+ 479.6 
+ 154.5k 
+ 154.5k 
+ 62.5 
+ 1005.6 
+ 179.2k 
+ 179.2k 
+ 48.5 
+ 767.9 
+ 197.6k 
+ 197.6k 
+ 70.2 
+ 427.3 
+ 119.0k 
+ 119.0k 
+ DeepConf-low@16 
+ 76.7 
+ 246.2 
+ 171.2k 
+ 171.2k 
+ 50.0 
+ 255.0 
+ 174.3k 
+ 174.3k 
+ 42.4 
+ 518.7 
+ 179.9k 
+ 179.9k 
+ 69.2 
+ 163.2 
+ 117.0k 
+ 117.0k 
+ Parallel-Probe@16 
+ 81.7 
+ 76.9 
+ 85.4k 
+ 8.5k 
+ 60.0 
+ 95.6 
+ 98.8k 
+ 10.6k 
+ 47.7 
+ 93.9 
+ 106.0k 
+ 9.7k 
+ 67.3 
+ 57.4 
+ 61.4k 
+ 6.5k 
+ ParaTempo@16 
+ 86.7 
+ 79.3 
+ 96.4k 
+ 8.0k 
+ 63.3 
+ 108.8 
+ 124.0k 
+ 10.8k 
+ 51.5 
+ 106.9 
+ 126.1k 
+ 10.3k 
+ 70.4 
+ 56.8 
+ 62.8k 
+ 6.5k 
+ Table 2: Main results across four benchmarks. Acc., Lat., Tok., and Seq. denote accuracy (%), wall-clock latency (s), total generated tokens, and sequential generated tokens, respectively. 
+ Benchmarks. 
+We evaluate ParaTempo on two categories of challenging reasoning benchmarks.
+For competition mathematics, which demands long-horizon symbolic derivation, we employ AIME 2026 ( Zhang and Math-AI 2026 ) , HMMT November 2025, and HMMT February 2026 ( Dekoninck et al. 2026 ) .
+For general scientific reasoning, which demands knowledge-intensive multi-step inference over multiple-choice options, we use GPQA Diamond ( Rein et al. 2024 ) .
+ Models.
+ We use Qwen3.5-35B-A3B ( Qwen Team 2026 ) and GPT-OSS-20B ( OpenAI 2025 ) , two long-chain-of-thought reasoning models with different parameter scales and post-training configurations.
+ Baselines.
+ We compare ParaTempo with representative methods for parallel reasoning and adaptive self-consistency.
+Baselines include Zero-shot with a single reasoning trajectory, Self-consistency (SC) with fixed-budget parallel sampling and majority voting ( Wang et al. 2022 ) , ESC with online answer aggregation and early stopping ( Li et al. 2024 ) , SAC with answer-convergence-based termination ( Liu and Wang 2025 ) , DeepConf with confidence-guided trajectory filtering ( Fu et al. 2025 ) , and Parallel-Probe with intermediate-answer probing for consensus control and branch pruning ( Zheng et al. 2026 ) .
+ Metrics.
+ Following prior work ( Zheng et al. 2026 ; Fu et al. 2025 ) , we report accuracy (Acc.), wall-clock latency (Lat.), total generated tokens (Tok.), and sequential generated tokens (Seq.). Wall-clock latency captures end-to-end inference time, while sequential generated tokens measures critical-path computation.
+ Implementation Details.
+ All experiments are conducted using vLLM ( Kwon et al. 2023 ) on a single NVIDIA A100 80GB GPU.
+Unless otherwise specified, we use a maximum generation budget of 16,384 tokens per trajectory, nucleus sampling with temperature 0.6 and p = 0.95 p=0.95 , and K = 16 K=16 parallel branches for all methods.
+For ParaTempo, probes are issued every τ = 500 \tau=500 generated tokens and retain the top- L = 20 L=20 answer candidates.
+The default configuration sets W = 7 W=7 , X = 9 X=9 , N warm = 15 N_{\mathrm{warm}}=15 , q prune = 0.50 q_{\mathrm{prune}}=0.50 , θ retire = 0.90 \theta_{\mathrm{retire}}=0.90 , and γ ES = 0.50 \gamma_{\mathrm{ES}}=0.50 .
+All reported results are averaged over four independent runs.
+ 5.2 Main Results
+ Table 2 summarizes the performance of ParaTempo and baselines across four reasoning benchmarks.
+ParaTempo consistently achieves an effective accuracy–efficiency trade-off, reducing inference cost while preserving the benefits of parallel reasoning.
+Compared with self-consistency (SC), ParaTempo maintains competitive accuracy with substantially lower latency and token consumption.
+For Qwen3.5-35B-A3B, ParaTempo achieves 71.1% average accuracy, within 1.1 percentage points of SC (72.2%), while reducing latency and total generated tokens by 21.8% and 30.3%, respectively.
+ Among fully parallel controllers, ParaTempo significantly improves the accuracy–efficiency balance.
+SAC reduces computation by terminating when sampled answers agree, but its stopping criterion does not explicitly account for branch-level progress.
+In contrast, ParaTempo reallocates computation according to branch convergence.
+Compared with Parallel-Probe, which relies on synchronized cross-branch consensus, ParaTempo improves accuracy by 3.9 points while reducing latency by 10.6% on Qwen3.5-35B-A3B; on GPT-OSS-20B, it achieves a 3.8-point accuracy improvement with comparable sequential cost.
+ We further compare ParaTempo with controllers involving sequential or partially sequential execution.
+DeepConf and ESC reduce unnecessary sampling through confidence-based decisions, but their control flow introduces sequential dependencies that increase critical-path cost.
+By performing branch-level decisions asynchronously during generation, ParaTempo achieves comparable or higher accuracy with substantially lower latency.
+ Figure 3: Latency–accuracy scaling curves of ParaTempo and Parallel-Probe with Qwen3.5-35B-A3B. The star marks self-consistency (SC@16 in Table 2 ). ParaTempo achieves a superior Pareto frontier across different operating points. 
+ Figure 3 presents the latency–accuracy trade-off across controller configurations.
+On AIME26 and HMMT25, the ParaTempo frontier consistently matches or exceeds that of Parallel-Probe across the evaluated latency range: under similar latency budgets, ParaTempo achieves higher accuracy, and additional computation continues to improve performance before saturation.
+Moreover, the highest-budget ParaTempo configurations achieve accuracy comparable to or higher than SC@16 while reducing latency by approximately 20%.
+These results demonstrate that ParaTempo provides robust improvements across different operating points.
+ Figure 4: Analysis of temporal confidence under the preliminary study protocol.
+(a) Temporal confidence exhibits lower volatility than token-level signals and instantaneous answer confidence. (b) The future stability rate ( h = 5 h=5 ) increases monotonically with signal quantiles of temporal confidence and top-1 probability. 
+ 5.3 Temporal Confidence Analysis
+ We further examine whether temporal confidence serves as an effective signal for online branch control.
+Following the evaluation protocol in the preliminary study (Section 3 ), we evaluate two key properties of a control signal: temporal stability and future convergence prediction.
+Temporal confidence and top-1 probability are computed with an aggregation window of W = 5 W{=}5 throughout this analysis.
+ Temporal Stability.
+ Figure 4 (a) compares the volatility of temporal confidence with the signals analyzed in the preliminary study.
+Temporal confidence produces substantially smoother trajectories than token-level uncertainty measures and instantaneous answer confidence.
+This indicates that temporal aggregation effectively suppresses transient fluctuations and provides a more reliable basis for branch-level decisions.
+ Future Convergence Prediction.
+ Beyond stability, an effective control signal should provide predictive information about future branch behavior.
+Figure 4 (b) reports empirical future-stability rates over signal quantiles of temporal confidence and top-1 probability.
+Both measures show consistent positive correlations with future stability: branches with higher values are more likely to preserve their dominant answers over subsequent probes.
+These results demonstrate that temporal confidence captures meaningful convergence trends and supports the adaptive control decisions in ParaTempo.
+ 5.4 Ablation Study
+ ParaTempo performs adaptive computation allocation through three temporal-confidence-driven operations: pruning, retirement, and forking. We evaluate their contributions through individual ablations: w/o Prune disables pruning, w/o Retire removes early retirement, and w/o Fork disables budget reallocation via forking.
+ Table 3 reports results on HMMT25, with extended results on AIME26 and HMMT26 provided in the Technical Supplement. Removing pruning increases latency with only a marginal accuracy change, demonstrating that pruning effectively eliminates unpromising branches. Removing retirement increases total tokens and latency, while reducing accuracy by 6.6 6.6 points, showing that early retirement avoids redundant decoding and preserves reliable voting evidence from converged branches. Disabling forking achieves the lowest computation cost but reduces accuracy by 3.3 3.3 points, indicating that reusing released computation for exploration is important for maintaining solution diversity. Overall, the complete ParaTempo configuration achieves the best accuracy while retaining substantial efficiency gains, confirming that pruning, retirement, and forking provide complementary benefits.
+ Variant 
+ Acc ↑ \uparrow 
+ Lat ↓ \downarrow 
+ Tok ↓ \downarrow 
+ Seq ↓ \downarrow 
+ ParaTempo 
+ 73.3 
+ 205.7 
+ 166.6k 
+ 10.6k 
+    w/o Prune 
+ 71.7 
+ 233.0 
+ 179.1k 
+ 11.4k 
+    w/o Retire 
+ 66.7 
+ 224.6 
+ 175.4k 
+ 10.4k 
+    w/o Fork 
+ 70.0 
+ 195.7 
+ 145.5k 
+ 10.4k 
+ Table 3: Ablation results of ParaTempo on HMMT25 with Qwen3.5-35B-A3B. Acc., Lat., Tok., and Seq. denote accuracy (%), latency (s), total tokens, and sequential tokens (K). 
+ 6 Related Work
+ Efficient Test-Time Scaling.
+ Test-time scaling improves reasoning by allocating additional inference computation to longer trajectories or diverse sampled solutions ( Wang et al. 2022 ; Snell et al. 2024 ; Zeng et al. 2026a ; Gao et al. 2026 ; Lin et al. 2026 ) .
+Self-consistency scales inference width by sampling multiple reasoning paths and aggregating final answers, but fixed rollout budgets ignore variation in problem difficulty and branch utility.
+Recent methods improve sample efficiency through adaptive sampling, weighting, and allocation.
+ESC stops sampling when answer agreement is sufficient ( Li et al. 2024 ) , DSC adjusts rollout budgets based on problem difficulty ( Wang et al. 2025a ) , and RASC, CISC, RPC, and DORA further exploit rationale quality, confidence signals, or rollout allocation strategies ( Wan et al. 2025 ; Taubenfeld et al. 2025 ; Zhou et al. 2025 ; Wang et al. 2025b ; Ma et al. 2026 ; Hu et al. 2026 ; Chen et al. 2025 ) .
+However, these approaches primarily operate at the sampling or trajectory level and provide limited control over branches during generation.
+In contrast, ParaTempo treats parallel reasoning as an online branch-level control problem and adapts computation allocation while trajectories are still evolving.
+ Parallel Reasoning.
+ Parallel reasoning improves inference robustness by exploring multiple reasoning trajectories concurrently, ranging from skeleton-based expansion ( Ning et al. 2023 ) to adaptive trajectory scaling and pruning ( Shi et al. 2025 ; Shi et al. 2024 ; Li et al. 2025 ; Zhang et al. 2026 ) .
+Slim-SC removes redundant chains via online inter-trace similarity ( Hong et al. 2025 ) , while DeepPrune clusters partial traces using predicted answer equivalence ( Tu et al. 2026 ) .
+Another line of work introduces intermediate signals for early control: Answer Convergence tracks answer stability ( Liu and Wang 2025 ) , DeepConf uses token-level confidence for trajectory filtering ( Fu et al. 2025 ) , and TRACE aggregates temporal consistency for early exit ( Li et al. 2026 ) .
+Most closely related, Parallel-Probe performs synchronized intermediate probing for cross-branch consensus control ( Zheng et al. 2026 ) , while ATTS reduces synchronization overhead through speculative scaling ( Xiong et al. 2025 ) .
+In contrast, ParaTempo uses temporally aggregated answer distributions as a branch-local signal, enabling asynchronous lifecycle control through pruning, retirement, forking, and confidence-weighted voting.
+ 7 Conclusion
+ In this work, we introduced ParaTempo, a training-free asynchronous framework for efficient parallel test-time reasoning.
+Central to ParaTempo is temporal confidence , a branch-local convergence signal that captures answer evolution through temporally aggregated intermediate answer distributions.
+By leveraging this signal, ParaTempo enables adaptive branch-level computation allocation through pruning, retirement, exploration, and confidence-weighted termination.
+Experiments on challenging reasoning benchmarks demonstrate that ParaTempo significantly reduces inference cost while preserving the accuracy and robustness of parallel reasoning.
+ References
+ Chen et al. (2025) 
+ S. Chen, S. Lin, Y. Shi, H. Lian, X. Gu, L. Yun, D. Chen, L. Cao, J. Liu, N. Xia, et al. 
+ Swe-exp: experience-driven software issue resolution .
+ arXiv preprint arXiv:2507.23361 .
+ Cited by: §6 .
+ Dekoninck et al. (2026) 
+ J. Dekoninck, N. Jovanović, T. Gehrunger, K. Rögnvaldsson, I. Petrov, C. Sun, and M. Vechev 
+ Beyond benchmarks: matharena as an evaluation platform for mathematics with llms .
+ arXiv preprint arXiv:2605.00674 .
+ Cited by: §3.1 ,
+ §5.1 .
+ Fu et al. (2025) 
+ Y. Fu, X. Wang, Y. Tian, and J. Zhao 
+ Deep think with confidence .
+ arXiv preprint arXiv:2508.15260 .
+ Cited by: §1 ,
+ §5.1 ,
+ §5.1 ,
+ §6 .
+ Gao et al. (2026) 
+ S. Gao, W. Zeng, Z. Yu, J. Wangni, C. Wang, K. Cai, S. He, and M. R. Lyu 
+ SWE-mem: learning adaptive memory management for long-horizon coding agents .
+ arXiv preprint arXiv:2606.28434 .
+ Cited by: §6 .
+ Hong et al. (2025) 
+ C. Hong, X. Guo, A. C. Singh, E. Choukse, and D. Ustiugov 
+ Slim-sc: thought pruning for efficient scaling with self-consistency .
+ In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing ,
+ pp. 34500–34517 .
+ Cited by: §6 .
+ Hu et al. (2026) 
+ C. Hu, W. Zeng, Y. Shi, B. Shen, and X. Gu 
+ In line with context: repository-level code generation via context inlining .
+ arXiv preprint arXiv:2601.00376 .
+ Cited by: §6 .
+ Kwon et al. (2023) 
+ W. Kwon, Z. Li, S. Zhuang, Y. Sheng, L. Zheng, C. H. Yu, J. E. Gonzalez, H. Zhang, and I. Stoica 
+ Efficient memory management for large language model serving with pagedattention .
+ In Proceedings of the ACM SIGOPS 29th Symposium on Operating Systems Principles ,
+ Cited by: §5.1 .
+ Li et al. (2025) 
+ H. Li, Y. Shi, S. Lin, X. Gu, H. Lian, X. Wang, Y. Jia, T. Huang, and Q. Wang 
+ Swe-debate: competitive multi-agent debate for software issue resolution .
+ arXiv preprint arXiv:2507.23348 .
+ Cited by: §6 .
+ Li et al. (2026) 
+ J. Li, X. He, K. Li, H. Chai, H. Yu, and Y. Yuan 
+ Efficient test-time scaling via temporal reasoning aggregation .
+ In Findings of the Association for Computational Linguistics: ACL 2026 ,
+ pp. 13304–13318 .
+ Cited by: §6 .
+ Li et al. (2024) 
+ Y. Li, P. Yuan, S. Feng, B. Pan, X. Wang, B. Sun, H. Wang, and K. Li 
+ Escape sky-high cost: early-stopping self-consistency for multi-step reasoning .
+ arXiv preprint arXiv:2401.10480 .
+ Cited by: §1 ,
+ §5.1 ,
+ §6 .
+ Lin et al. (2026) 
+ H. Lin, S. Chen, X. Gu, Y. Shi, C. Pan, J. Ge, M. Li, J. Huang, M. Chuang, B. Shen, and H. Guan 
+ Know before fix: qa-driven repository knowledge acquisition for software issue resolution .
+ External Links: 2607.11111 ,
+ Link 
+ Cited by: §6 .
+ Liu and Wang (2025) 
+ X. Liu and L. Wang 
+ Answer convergence as a signal for early stopping in reasoning .
+ In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing ,
+ pp. 17896–17907 .
+ Cited by: §1 ,
+ §5.1 ,
+ §6 .
+ Ma et al. (2026) 
+ D. Ma, S. Chen, Y. Yang, Y. Shi, Y. Yan, and X. Gu 
+ LLM agents can see code repositories .
+ External Links: 2606.14061 ,
+ Link 
+ Cited by: §6 .
+ Ning et al. (2023) 
+ X. Ning, Z. Lin, Z. Zhou, Z. Wang, H. Yang, and Y. Wang 
+ Skeleton-of-thought: large language models can do parallel decoding .
+ In Proceedings ENLSP-III ,
+ Cited by: §6 .
+ OpenAI (2025) 
+ OpenAI 
+ Gpt-oss-120b & gpt-oss-20b model card .
+ External Links: 2508.10925 ,
+ Link 
+ Cited by: §1 ,
+ §3.1 ,
+ §5.1 .
+ Qwen Team (2026) 
+ Qwen Team 
+ Qwen3.5: towards native multimodal agents .
+ External Links: Link 
+ Cited by: §1 ,
+ §3.1 ,
+ §5.1 .
+ Rein et al. (2024) 
+ D. Rein, B. L. Hou, A. C. Stickland, J. Petty, R. Y. Pang, J. Dirani, J. Michael, and S. R. Bowman 
+ GPQA: a graduate-level google-proof q&a benchmark .
+ In First Conference on Language Modeling ,
+ External Links: Link 
+ Cited by: §5.1 .
+ Shi et al. (2025) 
+ Y. Shi, Y. Qian, H. Zhang, B. Shen, and X. Gu 
+ Longcodezip: compress long context for code language models .
+ arXiv preprint arXiv:2510.00446 .
+ Cited by: §6 .
+ Shi et al. (2024) 
+ Y. Shi, S. Wang, C. Wan, M. Wang, and X. Gu 
+ From code to correctness: closing the last mile of code generation with hierarchical debugging .
+ arXiv preprint arXiv:2410.01215 .
+ Cited by: §6 .
+ Snell et al. (2024) 
+ C. Snell, J. Lee, K. Xu, and A. Kumar 
+ Scaling llm test-time compute optimally can be more effective than scaling model parameters .
+ arXiv preprint arXiv:2408.03314 .
+ Cited by: §6 .
+ Taubenfeld et al. (2025) 
+ A. Taubenfeld, T. Sheffer, E. Ofek, A. Feder, A. Goldstein, Z. Gekhman, and G. Yona 
+ Confidence improves self-consistency in llms .
+ In Findings of the Association for Computational Linguistics: ACL 2025 ,
+ pp. 20090–20111 .
+ Cited by: §6 .
+ Tu et al. (2026) 
+ S. Tu, Y. Li, Y. Bai, L. Hou, and J. Li 
+ DeepPrune: parallel scaling without inter-trace redundancy .
+ In Findings of the Association for Computational Linguistics: ACL 2026 ,
+ pp. 13389–13403 .
+ Cited by: §6 .
+ Wan et al. (2025) 
+ G. Wan, Y. Wu, J. Chen, and S. Li 
+ Reasoning aware self-consistency: leveraging reasoning paths for efficient llm sampling .
+ In Proceedings of the 2025 Conference of the Nations of the Americas Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers) ,
+ pp. 3613–3635 .
+ Cited by: §1 ,
+ §6 .
+ Wang et al. (2025a) 
+ X. Wang, S. Feng, Y. Li, P. Yuan, Y. Zhang, C. Tan, B. Pan, Y. Hu, and K. Li 
+ Make every penny count: difficulty-adaptive self-consistency for cost-efficient reasoning .
+ In Findings of the Association for Computational Linguistics: NAACL 2025 ,
+ pp. 6919–6932 .
+ Cited by: §6 .
+ Wang et al. (2025b) 
+ X. Wang, Y. Li, S. Feng, P. Yuan, Y. Zhang, J. Shi, C. Tan, B. Pan, Y. Hu, and K. Li 
+ Every rollout counts: optimal resource allocation for efficient test-time scaling .
+ arXiv preprint arXiv:2506.15707 .
+ Cited by: §6 .
+ Wang et al. (2022) 
+ X. Wang, J. Wei, D. Schuurmans, Q. Le, E. Chi, S. Narang, A. Chowdhery, and D. Zhou 
+ Self-consistency improves chain of thought reasoning in language models .
+ arXiv preprint arXiv:2203.11171 .
+ Cited by: §1 ,
+ §5.1 ,
+ §6 .
+ Wei et al. (2022) 
+ J. Wei, X. Wang, D. Schuurmans, M. Bosma, F. Xia, E. Chi, Q. V. Le, and D. Zhou 
+ Chain-of-thought prompting elicits reasoning in large language models .
+ In Advances in Neural Information Processing Systems ,
+ Vol. 35 , pp. 24824–24837 .
+ Cited by: §1 .
+ Xiong et al. (2025) 
+ J. Xiong, Q. Chen, F. Ye, Z. Wan, C. Zheng, C. Zhao, H. Shen, A. H. Li, C. Tao, H. Tan, H. Bai, L. Shang, L. Kong, and N. Wong 
+ ATTS: asynchronous test-time scaling via conformal prediction .
+ arXiv preprint arXiv:2509.15148 .
+ Cited by: §6 .
+ Zeng et al. (2026a) 
+ W. Zeng, Y. Shi, X. Gu, C. Hu, C. Wang, Y. Cui, H. Zhou, M. Qi, J. Wangni, Z. Yu, et al. 
+ Dockerless: environment-free program verifier for coding agents .
+ arXiv preprint arXiv:2606.28436 .
+ Cited by: §6 .
+ Zeng et al. (2025) 
+ W. Zeng, Y. Wang, C. Hu, Y. Shi, C. Wan, H. Zhang, and X. Gu 
+ Pruning the unsurprising: efficient code reasoning via first-token surprisal .
+ arXiv preprint arXiv:2508.05988 .
+ Cited by: §1 .
+ Zeng et al. (2026b) 
+ W. Zeng, X. Zhang, Y. Shi, C. Hu, Y. Chen, B. Shen, and X. Gu 
+ Glimprouter: efficient collaborative inference by glimpsing one token of thoughts .
+ arXiv preprint arXiv:2601.05110 .
+ Cited by: §1 .
+ Zhang et al. (2026) 
+ S. Zhang, Y. Wang, J. Liang, Y. Shi, W. Zeng, M. Wang, S. He, N. Xu, S. Ye, K. Cai, et al. 
+ SWE-explore: benchmarking how coding agents explore repositories .
+ arXiv preprint arXiv:2606.07297 .
+ Cited by: §6 .
+ Zhang and Math-AI (2026) 
+ Y. Zhang and T. Math-AI 
+ American invitational mathematics examination (aime) 2026 .
+ Cited by: §3.1 ,
+ §5.1 .
+ Zheng et al. (2026) 
+ T. Zheng, C. Huang, R. Dai, Y. He, R. Liu, X. Ni, H. Bao, K. Wang, H. Zhu, J. Huang, F. Huang, and H. Huang 
+ Parallel-probe: towards efficient parallel thinking via 2d probing .
+ arXiv preprint arXiv:2602.03845 .
+ Cited by: §1 ,
+ §5.1 ,
+ §5.1 ,
+ §6 .
+ Zhou et al. (2025) 
+ Z. Zhou, Y. Tan, Z. Li, Y. Yao, L. Guo, X. Ma, and Y. Li 
+ Bridging internal probability and self-consistency for effective and efficient llm reasoning .
+ arXiv preprint arXiv:2502.00511 .
+ Cited by: §1 ,
+ §6 .
+ Experimental support, please
+ view the build logs 
+ for errors. Generated by
+ L
+ A 
+ T
+ E 
+ xml 
+ .
+ Instructions for reporting errors
+ We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility and mobile
+ support. To report errors in the HTML that will help us improve conversion and rendering, choose any of the
+ methods listed below:
+ Click the "Report Issue" ( 
+ ) button, located in the page header.
+ Tip: You can select the relevant text first, to include it in your report.
+ Our team has already identified the following issues . We appreciate your time reviewing and reporting rendering errors we
+ may not have found yet. Your efforts will help us improve the HTML versions for all readers, because disability
+ should not be a barrier to accessing research. Thank you for your continued support in championing open access for
+ all.
+ Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML maintain a list of packages that need conversion , and welcome developer contributions .
+ We gratefully acknowledge support from
+ our major funders ,
+ member institutions , ,
+ and all contributors.
+ About 
+ · 
+ Help 
+ · 
+ Contact 
+ · 
+ Subscribe 
+ · 
+ Copyright 
+ · 
+ Privacy 
+ · 
+ Accessibility 
+ · 
+ Operational Status (opens in new tab) 
+ Major funding support from

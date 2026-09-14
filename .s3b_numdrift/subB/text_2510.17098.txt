@@ -1,0 +1,839 @@
+ 
+ Can Transformer Memory Be Corrupted? Investigating Cache-Side Vulnerabilities in Large Language Models 
+@@@Report GitHub Issue 
+ × 
+ Title: 
+ Content selection saved. Describe the issue below: 
+ Description: 
+ Submit without GitHub 
+ Submit in GitHub 
+ arXiv is now an independent nonprofit! 
+ Learn more 
+ × 
+ Back to arXiv 
+ Why HTML? 
+ Report Issue 
+ Back to Abstract 
+ Download PDF 
+ Abstract 
+ 1 Introduction 
+ 2 Related Work 
+ 2.1 Multi-Head Latent Attention (MLA) Architectures 
+ 2.2 KV-cache in Decoder-Only LLM Serving 
+ 2.3 Weight-Space Attacks and Backdoors in LMs 
+ 2.4 Attacks and Defenses Centered on the KV-cache 
+ 2.5 Positioning 
+ 3 Preliminaries 
+ 3.1 Transformer Attention and KV Cache. 
+ 3.2 Threat Model. 
+ 4 MTI  V.1 Framework 
+ 5 Theoretical Analysis of Cache Perturbations 
+ Perturbation-to-Logit Bound. 
+ Softmax Stability. 
+ Theorem. 
+ Empirical Verification. 
+ 6 Setup 
+ 6.1 Dataset Details 
+ 6.2 Evaluation Methods 
+ 6.3 Model Selection 
+ 6.4 Hardware and Training Configuration 
+ 6.5 Perturbation Configuration 
+ 7 Experimental Results 
+ 7.1 Token Distribution Shifts 
+ 7.2 Downstream NLP Benchmarks 
+ 7.3 Retrieval-Augmented Generation (RAG) Robustness 
+ 7.4 Analyzing Agentic Pipeline Vulnerability 
+ 7.5 Analyzing Defense Effectiveness 
+ 7.6 Runtime and Scaling Analysis 
+ 8 Ablation Studies 
+ 8.1 Layer Sensitivity 
+ 8.2 Perturbation Magnitude 
+ 8.3 Injection Frequency 
+ 8.4 Combined Effects 
+ 9 Discussion 
+ 10 Conclusion 
+ References 
+ A Proofs and Extended Derivations 
+ A.1 Restatement of Theorem 
+ A.2 Single-Head Case: Perturbation to Logit Deviation 
+ A.3 Softmax Lipschitz Bound 
+ A.4 Extension to Multi-Head Attention 
+ A.5 Impact of Layer Normalization 
+ License: CC BY 4.0
+arXiv:2510.17098v1 [cs.CR] 20 Oct 2025 
+@@@Can Transformer Memory Be Corrupted? Investigating Cache-Side Vulnerabilities in Large Language Models 
+ Elias Hossain, 1,* Swayamjit Saha, 2 Somshubhra Roy, 3 and Ravi Prasad 4 
+ 1 College of Engineering and Computer Science, University of Central Florida, Orlando, FL 32816, United States 
+ 2,4 Department of Computer Science and Engineering, Mississippi State University, Mississippi State, MS 39762, United States 
+ 3 Department of Electrical and Computer Engineering, North Carolina State University, Raleigh, NC 27695-7911, United States 
+ * Corresponding author: mdelias.hossain@ucf.edu 
+ All authors contributed equally to this work. 
+@@@Abstract 
+ Even when prompts and parameters are secured, transformer language models remain vulnerable because their key–value (KV) cache during inference constitutes an overlooked attack surface. To address this, we present MTI  V.1, a modular framework that formalizes and implements the Malicious Token Injection (MTI) attack. Within this framework, cached key vectors are perturbed at selected layers and timesteps through controllable magnitude and frequency, using mechanisms such as additive Gaussian noise, zeroing, and orthogonal rotations. A theoretical analysis characterizes how these perturbations propagate through the attention mechanism, deriving bounds that link (i) logit deviations to the Frobenius norm of the corruption and query scaling, and (ii) shifts in attention and output distributions to these logit changes via softmax Lipschitz properties. Empirical evaluations demonstrate that MTI  V.1 reliably alters next-token distributions, semantics, and downstream task performance on GPT-2 and LLaMA-2/7B across both synthetic prompts and standard NLP benchmarks. Extending to retrieval-augmented and agentic pipelines, cache corruption in post-retrieval layers is shown to destabilize grounding, reasoning, and action selection. Collectively, these findings identify cache integrity as a critical yet under-examined vulnerability in current LLM deployments and establish controlled KV corruption as a reproducible threat model for future robustness research. 
+ Keywords : Large Language Models, KV Cache, Transformer Security, Cache-Side Attacks, Model Robustness, Adversarial Perturbation, Cache Integrity, Attention Mechanism, RAG Systems, Agentic Reasoning. 
+@@@ 1 Introduction 
+ Large language models (LLMs) have rapidly become the foundation of modern artificial intelligence, powering applications such as translation, summarization, retrieval-augmented generation (RAG), and autonomous agents [ 1 , 2 , 3 ] . Their effectiveness depends not only on model scale but also on computational mechanisms that make inference efficient in real-world deployment. Among these mechanisms, the key–value (KV) cache plays a crucial role by storing intermediate attention states to accelerate decoding over long contexts. Despite its ubiquity, the KV cache has received limited scrutiny as a potential attack surface compared with prompt injection, adversarial perturbations, or data poisoning attacks [ 4 , 5 ] . 
+ This oversight carries serious implications. Manipulations within cached representations can silently propagate through the inference pipeline, altering token predictions without modifying either the input or the model parameters. While previous research has concentrated on adversarial inputs [ 6 , 7 ] and model-level robustness [ 8 ] , vulnerabilities that arise during cache usage remain largely unexamined. Addressing these hidden weaknesses is increasingly critical for safety-sensitive applications, where reliability and verifiability are indispensable. 
+ In this paper, we introduce the MTI  V.1, a cache-side attack framework that perturbs stored key–value representations during inference. We formally characterize how even small perturbations can bias attention distributions, distort next-token probabilities, and degrade model calibration. Through extensive experiments on GPT-2, LLaMA-2, and Gemma models, we demonstrate that MTI  V.1 consistently reduces performance by 15–30% across classification, question answering, and summarization benchmarks. Beyond single-turn tasks, we show that cache corruption propagates through complex pipelines: in RAG settings, it amplifies hallucination rates, and in multi-step agentic reasoning, it disrupts task planning and decision consistency. 
+ To explore possible defenses, we assess lightweight strategies such as cache resetting, dropout-mask randomization, and attention smoothing. These countermeasures preserve clean-task accuracy and add minimal runtime cost, yet none entirely neutralize the effects of MTI  V.1. Together, these findings reveal that the KV cache constitutes a critical but overlooked dimension of model robustness and security. The contributions of this study are summarized as follows: 
+ • 
+ We present MTI  V.1, a cache-level attack framework that perturbs stored attention states and derive theoretical bounds on the resulting distributional shifts. 
+ • 
+ We empirically demonstrate the impact of cache corruption across multiple architectures and downstream pipelines, identifying significant vulnerabilities in RAG and agentic systems. 
+ • 
+ We evaluate practical defense mechanisms that achieve partial mitigation with minimal performance loss, while underscoring the need for verifiable cache integrity. 
+ By reframing the KV cache as an active component of model security rather than a passive optimization, this study situates cache corruption within broader discussions of calibration [ 8 ] , Bayesian uncertainty estimation [ 9 ] , and certified robustness [ 10 ] . We argue that maintaining cache integrity is essential for building reliable, transparent, and trustworthy language model systems. 
+@@@ 2 Related Work 
+ The literature on transformer robustness can be broadly categorized into three domains, as illustrated in Figure  1 . The first involves architectural innovations that improve efficiency while preserving performance, typified by Multi-Head Latent Attention (MLA) and decoder-only caching. The second encompasses attacks targeting model integrity, such as weight-space backdoors or bit-flip corruption. The third and emerging domain examines the security of transient cache states during inference, including leakage and active manipulation. Our work advances this final axis by systematically analyzing the vulnerability of the KV-cache as an adversarial surface. 
+ Transformer Robustness & Security Landscape Architectural Efficiency Multi-Head Latent Attention (MLA) Decoder-only KV Caching Model & Weight Integrity Backdoors & Weight Poisoning Bit-Flip & Hardware Faults Cache-State Security Cache Leakage & Side Channels Cache Perturbation (This Work) 
+ Fig. 1 : Taxonomy of prior research on transformer robustness and security.
+Existing studies cluster into (i) architectural efficiency (e.g., MLA and KV caching),
+(ii) model and weight integrity (e.g., backdoors and bit-flip faults), and
+(iii) cache-state security (e.g., leakage and perturbation).
+Our work advances the third category by analyzing cache corruption as an active adversarial threat. 
+@@@ 2.1 Multi-Head Latent Attention (MLA) Architectures 
+ Recent model families replace or augment standard self-attention with Multi-Head Latent Attention (MLA), which introduces a compact latent bottleneck to reduce memory bandwidth and improve throughput while maintaining long-context performance.
+DeepSeek-V2 first systematized MLA in large-scale pretraining and instruction tuning, reporting improved efficiency and quality trade-offs over traditional attention mechanisms [ 11 ] .
+Subsequent iterations such as DeepSeek-V3 refined routing and optimization, demonstrating further scaling and inference gains [ 12 ] .
+DeepSeek-R1 extended this paradigm to reasoning-focused objectives while retaining the MLA backbone for efficient multi-step inference [ 13 ] .
+Beyond production systems, TransMLA formalized the architecture for research reproducibility and interpretability [ 14 ] .
+Together, these works establish MLA as a viable alternative to dense attention, motivating deeper investigation into robustness and security within latent-space computations. 
+@@@ 2.2 KV-cache in Decoder-Only LLM Serving 
+ Decoder-only Transformers universally employ key–value (KV) caching to accelerate autoregressive decoding by avoiding redundant attention computation.
+Representative examples include GPT-3, which popularized few-shot inference with cached states for latency reduction [ 1 ] ;
+LLaMA-2, whose open weights standardized KV-cached serving across research and industry [ 2 ] ;
+Mistral-7B, which incorporates cache-efficient decoding by default [ 15 ] ;
+and Mixtral 8×7B, a sparse MoE model caching active expert states for reuse [ 16 ] .
+Similarly, the Qwen series integrates group-query attention and cache optimizations to improve throughput in production [ 17 ] .
+While these advances emphasize efficiency, they treat the cache as an implementation detail rather than a security boundary, leaving open the question of cache integrity under adversarial conditions. 
+@@@ 2.3 Weight-Space Attacks and Backdoors in LMs 
+ Another body of work explores attacks on model weights themselves.
+Early demonstrations on pretrained encoders such as BERT revealed that layer-wise weight poisoning can implant functional backdoors that trigger targeted misclassifications when specific patterns appear while preserving normal accuracy [ 18 ] .
+More recent work directly edits MLP layers in open LLMs (e.g., GPT-J, LLaMA-2/3, Meditron) to induce domain-specific harms such as unsafe medical advice without degrading general fluency, highlighting the fragility of alignment to localized parameter changes [ 19 ] .
+At the hardware level, bit-flip attacks corrupt stored parameters in quantized or low-precision formats, disrupting generation or inducing catastrophic divergence under realistic memory fault models [ 20 ] .
+For code models, trojan insertion during training produces trigger-activated malicious completions [ 21 ] , and similar effects appear in clinical LMs, where poisoned EHR data induce targeted diagnostic errors [ 22 ] .
+A comprehensive 2024 survey consolidates these attack modalities, mapping the design space of data and weight poisoning as well as countermeasures [ 23 ] .
+While impactful, these studies emphasize parameter integrity and do not address transient state corruption within inference-time caches. 
+@@@ 2.4 Attacks and Defenses Centered on the KV-cache 
+ Only recently has the KV-cache itself been examined as an attack or leakage vector.
+PROMPTPEEK demonstrates that multi-tenant cache sharing can expose sensitive prompts, revealing cross-session leakage risks (NDSS 2025) [ 24 ] .
+Timing-based side-channel work (“Early Bird”) infers private content by exploiting cache hit and miss latency [ 25 ] , and “Shadow in the Cache” reconstructs prompts from stored keys while proposing cache obfuscation defenses [ 26 ] .
+Selective KV-Cache Sharing further restricts reuse policies to mitigate leakage while retaining efficiency [ 27 ] .
+Collectively, these studies focus on information leakage rather than active corruption.
+Our work departs from these efforts by formalizing and empirically evaluating cache perturbation attacks that intentionally modify stored keys to induce behavioral drift during generation. 
+@@@ 2.5 Positioning 
+ The literature thus organizes into four major fronts: (i) architectural efficiency through MLA, (ii) decoder-serving optimization via KV caching, (iii) weight-space manipulations and backdoors, and (iv) cache-centered leakage and perturbation.
+What remains underexplored is the active manipulation of cache states during inference, examining how small, structured perturbations to keys or values alter attention dynamics, disrupt calibration, and cascade through multi-step systems such as retrieval-augmented generation or autonomous agents.
+The present study addresses this gap by treating the KV-cache as a first-class security object, developing a mathematical framework for cache perturbations, and empirically validating lightweight defenses that preserve clean-task performance while improving robustness. 
+@@@ 3 Preliminaries 
+ Transformers maintain an internal key–value (KV) cache during autoregressive decoding, which stores the projected representations of all previously generated tokens. This cache is essential for efficient inference, as recomputing attention over the entire history at each step would be computationally prohibitive. While often treated as a mere implementation detail, we argue that the KV cache represents a distinct and underexplored attack surface . To ground our threat model, we first formalize the cache mechanism and the adversary’s capabilities. 
+@@@ 3.1 Transformer Attention and KV Cache. 
+ Given an input sequence of token embeddings { x 1 , … , x t } \{x_{1},\dots,x_{t}\} , each transformer layer projects these embeddings into queries, keys, and values: 
+ q i = W Q ​ x i , k i = W K ​ x i , v i = W V ​ x i , q_{i}=W_{Q}x_{i},\quad k_{i}=W_{K}x_{i},\quad v_{i}=W_{V}x_{i}, 
+ where W Q W_{Q} , W K W_{K} , and W V W_{V} are learned projection matrices.
+At decoding step t t , a single-head attention mechanism computes: 
+ h t = ∑ j = 1 t α t ​ j ​ v j , with α t ​ j = exp ⁡ ( q t ⊤ ​ k j / d ) ∑ ℓ = 1 t exp ⁡ ( q t ⊤ ​ k ℓ / d ) . h_{t}=\sum_{j=1}^{t}\alpha_{tj}v_{j},\quad\text{with}\quad\alpha_{tj}=\frac{\exp(q_{t}^{\top}k_{j}/\sqrt{d})}{\sum_{\ell=1}^{t}\exp(q_{t}^{\top}k_{\ell}/\sqrt{d})}. 
+ To avoid recomputation, implementations store all past keys and values { k j , v j } j = 1 t − 1 \{k_{j},v_{j}\}_{j=1}^{t-1} in a cache. At step t t , only ( q t , k t , v t ) (q_{t},k_{t},v_{t}) for the new token are computed and appended. The cache thus forms a persistent state that mediates all subsequent attention computations. 
+@@@ 3.2 Threat Model. 
+ We consider an adversary with inference-time access to the KV cache. The adversary cannot modify model weights or prompts but can perturb cached keys at selected layers and timesteps. Formally, at layer ℓ \ell and timestep j j , the adversary replaces: 
+ k j ( ℓ ) ↦ k ~ j ( ℓ ) = k j ( ℓ ) + δ j ( ℓ ) , k^{(\ell)}_{j}\;\mapsto\;\tilde{k}^{(\ell)}_{j}=k^{(\ell)}_{j}+\delta^{(\ell)}_{j}, 
+ where δ j ( ℓ ) \delta^{(\ell)}_{j} is an injected corruption vector. Perturbations may take various forms, such as additive Gaussian noise, zeroing, or structured rotations, and can be controlled in magnitude and frequency. The goal is to subtly shift attention weights and alter next-token probabilities while evading conventional defenses that only monitor model parameters or prompts. 
+@@@ 4 MTI  V.1 Framework 
+ We introduce the MTI  V.1 framework as a concrete realization of cache-side attacks that operate by perturbing stored keys within the transformer’s key–value memory. The central idea is that the attention distribution at a given timestep depends on the inner products between the query and key vectors, and even small modifications to cached keys can systematically bias the attention map and alter downstream token predictions. MTI defines a family of corruption mechanisms that allow precise control along three primary dimensions such as magnitude, frequency, and layer placement, enabling both controlled theoretical analysis and realistic adversarial experimentation. Table  1 provides an overview of the representative MTI  V.1 variants evaluated in this work. These include three canonical corruption types that span distinct cache integrity violations: (1) MTI-Gaussian , which injects additive noise sampled from 𝒩 ⁡ ( 0 , σ 2 ​ I ) \mathcal{N}(0,\sigma^{2}I) to model stochastic corruption; (2) MTI-Zeroing , which removes cached keys entirely to simulate catastrophic cache erasure; and (3) MTI-Rotation , which applies orthogonal transformations to cached keys to introduce structured but norm-preserving corruption. These variants capture random noise, deletion, and structured perturbation, representing three primary manifestations of cache corruption during transformer inference. Each can be tuned along the axes of corruption magnitude (e.g., variance or rotation angle), injection frequency (how often perturbations are applied), and layer placement (which transformer layers are targeted). This parameterization provides a unified and reproducible foundation for studying cache-side vulnerabilities. 
+ Table 1 : Representative MTI attack variants and configurations. Each variant differs in corruption type, tunable dimensions, and qualitative effect on cache integrity. 
+ Attack Type 
+ Method 
+ Magnitude 
+ Frequency 
+ Layer 
+ Notes 
+ MTI-Gaussian 
+ Additive Gaussian 
+ σ = 0.1 \sigma=0.1 
+ Every step 
+ Layer 6 
+ Mild corruption 
+ MTI-Zeroing 
+ Zero KV entries 
+ – 
+ Recurrent 
+ Layer 12 
+ Extreme corruption 
+ MTI-Rotation 
+ Orthogonal rotation 
+ 45 ∘ 45^{\circ} 
+ Every 5 steps 
+ Layer 3 
+ Structured corruption 
+ While the above configurations define the static corruption families, the MTI  V.1 framework also supports adaptive perturbations that optimize the injected noise to maximize impact. Algorithm  1 illustrates this inner optimization process, denoted as OptimizePerturbation . The routine constructs an adversarial perturbation δ \delta through a gradient-based loop that iteratively updates the corruption vector to maximize an adversarial objective ℒ adv \mathcal{L}_{\text{adv}} , such as the likelihood of a chosen target token or divergence from the clean attention distribution. The update is constrained by a norm bound ϵ \epsilon to ensure the perturbation remains imperceptibly small while still causing measurable behavioral drift. This component enables MTI  V.1 to simulate targeted cache manipulations in addition to stochastic corruption. 
+ Algorithm 1 OptimizePerturbation: Inner-loop adversarial perturbation 
+ 1: 
+ model ℳ \mathcal{M} , current caches 𝒞 \mathcal{C} , query q t ( ℓ , h ) q_{t}^{(\ell,h)} , target position j j , optimizer config 𝒪 \mathcal{O} (steps K K , step size η \eta , loss ℒ adv \mathcal{L}_{\text{adv}} ), norm constraint ϵ \epsilon 
+ 2: 
+ initialize perturbation δ ← 𝟎 \delta\leftarrow\mathbf{0} (or small random noise)
+ 3: 
+ for k ← 1 k\leftarrow 1 to K K do 
+ 4: 
+   compute tentative key k ~ ← k j + δ \tilde{k}\leftarrow k_{j}+\delta 
+ 5: 
+   update cache copy 𝒞 ′ \mathcal{C}^{\prime} with 𝒞 ′ ​ [ j ] ← k ~ \mathcal{C}^{\prime}[j]\leftarrow\tilde{k} 
+ 6: 
+   evaluate adversarial loss ℓ ← ℒ adv ​ ( ℳ , 𝒞 ′ , q t ) \ell\leftarrow\mathcal{L}_{\text{adv}}(\mathcal{M},\mathcal{C}^{\prime},q_{t}) 
+ 7: 
+   compute gradient g ← ∇ δ ℓ g\leftarrow\nabla_{\delta}\ell 
+ 8: 
+   update δ ← δ + η ⋅ proj ∥ ⋅ ∥ ≤ ϵ ( g ) \delta\leftarrow\delta+\eta\cdot\text{proj}_{\|\cdot\|\leq\epsilon}(g) 
+ 9: 
+ end for 
+ 10: 
+ return optimized perturbation δ \delta 
+ Algorithm  2 then integrates this optimization subroutine into the broader MTI  V.1 attack loop. The full procedure formalizes how cache perturbations are injected during autoregressive decoding. At each timestep, the algorithm computes query–key–value projections, checks whether a perturbation should be applied based on the frequency schedule f ⁡ ( t ) f(t) , and selects target cache entries using a position-selection policy π \pi (for example, the most recent tokens or those with the highest attention weights). Perturbations are then injected according to the chosen MTI  V.1 type, and if the attack is adaptive, Algorithm  1 is invoked to compute δ \delta . The cache is updated in place, the model continues decoding, and metrics such as KL divergence, perplexity inflation, and token probability shift are logged. This expanded procedural description clarifies how each corruption mechanism interacts with the model’s inference dynamics and provides a reproducible template for cache-side attack analysis. However, Section  5 develops a theoretical analysis of cache perturbations to quantify how injected noise propagates through the attention mechanism and alters the model’s output distribution. 
+ Algorithm 2 Stepwise malicious key–value cache injection procedure used by MTI  V.1 
+ 1: 
+ Transformer model ℳ \mathcal{M} with L L layers and H H heads; input tokens (or batch) { x 1 , … , x T } \{x_{1},\dots,x_{T}\} ; perturbation config: type τ ∈ { Gaussian, Zeroing, Rotation, Optimized } \tau\in\{\text{Gaussian, Zeroing, Rotation, Optimized}\} ; magnitude params ( σ , θ , r ) (\sigma,\theta,r) ; injection frequency schedule f ⁡ ( t ) f(t) ; layer set ℒ \mathcal{L} ; position selection policy π \pi ; per-head flag p head p_{\text{head}} ; random seed s s ; logging callback log ​ ( ) \textsc{log}() ; optional optimizer config 𝒪 \mathcal{O} for optimized perturbations
+ 2: 
+ set random seed s s for reproducibility
+ 3: 
+ initialize empty KV caches 𝒞 ( ℓ , h ) ← { } \mathcal{C}^{(\ell,h)}\leftarrow\{\} for all ℓ ∈ [ 1 . . L ] , h ∈ [ 1 . . H ] \ell\in[1..L],h\in[1..H] 
+ 4: 
+ for t ← 1 t\leftarrow 1 to T T do 
+ 5: 
+   compute model projections ( q t ( ℓ , h ) , k t ( ℓ , h ) , v t ( ℓ , h ) ) (q_{t}^{(\ell,h)},k_{t}^{(\ell,h)},v_{t}^{(\ell,h)}) for all layers ℓ \ell and heads h h 
+ 6: 
+   determine injection flag 𝗂𝗇𝗃𝖾𝖼𝗍 ← 𝟏 ​ [ f ​ ( t ) ​ says inject ] \mathsf{inject}\leftarrow\mathbf{1}[f(t)\ \text{says inject}] 
+ 7: 
+    if 𝗂𝗇𝗃𝖾𝖼𝗍 = 1 \mathsf{inject}=1 then 
+ 8: 
+    select target positions S t ← π ⁡ ( 𝒞 , t ) S_{t}\leftarrow\pi(\mathcal{C},t) ⊳ \triangleright e.g., last- m m , random, high-attention
+ 9: 
+     for each layer ℓ ∈ ℒ \ell\in\mathcal{L} do 
+ 10: 
+       for each head h h if p head p_{\text{head}} else once per layer do 
+ 11: 
+        for each position j ∈ S t j\in S_{t} do 
+ 12: 
+          if τ = Optimized \tau=\text{Optimized} then 
+ 13: 
+           δ j ( ℓ , h ) ← OptimizePerturbation ​ ( ℳ , 𝒞 , q t ( ℓ , h ) , j , 𝒪 ) \delta^{(\ell,h)}_{j}\leftarrow\textsc{OptimizePerturbation}(\mathcal{M},\mathcal{C},q_{t}^{(\ell,h)},j,\mathcal{O}) ⊳ \triangleright calls Algorithm  1 
+ 14: 
+          else if τ = Gaussian \tau=\text{Gaussian} then 
+ 15: 
+          sample δ j ( ℓ , h ) ∼ 𝒩 ⁡ ( 0 , σ 2 ​ I ) \delta^{(\ell,h)}_{j}\sim\mathcal{N}(0,\sigma^{2}I) 
+ 16: 
+          else if τ = Zeroing \tau=\text{Zeroing} then 
+ 17: 
+          with probability r r , set δ j ( ℓ , h ) ← − k j ( ℓ , h ) \delta^{(\ell,h)}_{j}\leftarrow-k^{(\ell,h)}_{j} 
+ 18: 
+          else if τ = Rotation \tau=\text{Rotation} then 
+ 19: 
+          compute orthogonal matrix R ⁡ ( θ ) R(\theta) and set δ j ( ℓ , h ) ← R ⁡ ( θ ) ​ k j ( ℓ , h ) − k j ( ℓ , h ) \delta^{(\ell,h)}_{j}\leftarrow R(\theta)k^{(\ell,h)}_{j}-k^{(\ell,h)}_{j} 
+ 20: 
+          end if 
+ 21: 
+         apply perturbation: k ~ j ( ℓ , h ) ← k j ( ℓ , h ) + δ j ( ℓ , h ) \tilde{k}^{(\ell,h)}_{j}\leftarrow k^{(\ell,h)}_{j}+\delta^{(\ell,h)}_{j} 
+ 22: 
+         replace cached key: 𝒞 ( ℓ , h ) ​ [ j ] ← k ~ j ( ℓ , h ) \mathcal{C}^{(\ell,h)}[j]\leftarrow\tilde{k}^{(\ell,h)}_{j} 
+ 23: 
+         optional: log ​ ( step = t , layer = ℓ , head = h , pos = j , ‖ δ ‖ ) \textsc{log}(\text{step}=t,\text{layer}=\ell,\text{head}=h,\text{pos}=j,\|\delta\|) 
+ 24: 
+        end for 
+ 25: 
+       end for 
+ 26: 
+     end for 
+ 27: 
+    end if 
+ 28: 
+    for each layer ℓ \ell and head h h do 
+ 29: 
+    append ( k t ( ℓ , h ) , v t ( ℓ , h ) ) (k_{t}^{(\ell,h)},v_{t}^{(\ell,h)}) to cache 𝒞 ( ℓ , h ) \mathcal{C}^{(\ell,h)} 
+ 30: 
+    end for 
+ 31: 
+   generate token y t = ℳ ⁡ ( x t , 𝒞 ) y_{t}=\mathcal{M}(x_{t},\mathcal{C}) and log evaluation metrics
+ 32: 
+ end for 
+ 33: 
+ return generated sequence { y t } t = 1 T \{y_{t}\}_{t=1}^{T} and logged traces
+@@@ 5 Theoretical Analysis of Cache Perturbations 
+ We now analyze how injected perturbations propagate through attention and alter the logits used for next-token prediction. Since each attention head computes scores via q t ⊤ ​ k j q_{t}^{\top}k_{j} , perturbing cached keys directly modifies these scores and thus the weighted value aggregation. We derive formal bounds linking the magnitude of cache corruption to the resulting deviation in logits and attention distributions . 
+@@@Perturbation-to-Logit Bound. 
+ Let δ j \delta_{j} denote a perturbation applied to key k j k_{j} at timestep j j , with ‖ δ j ‖ F = ϵ \|\delta_{j}\|_{F}=\epsilon . The deviation in the attention score q t ⊤ ​ ( k j + δ j ) q_{t}^{\top}(k_{j}+\delta_{j}) relative to the clean score scales linearly with both ϵ \epsilon and ‖ q t ‖ 2 \|q_{t}\|_{2} . Aggregating across all positions yields a worst-case upper bound on the logit deviation: 
+ ‖ Δ ​ z t ‖ 2 ≤ ‖ q t ‖ 2 ⋅ ϵ , \|\Delta z_{t}\|_{2}\leq\|q_{t}\|_{2}\cdot\epsilon, 
+ where Δ ​ z t \Delta z_{t} is the deviation in unnormalized logits. This establishes that cache corruption propagates proportionally with the query magnitude and perturbation size. 
+@@@Softmax Stability. 
+ To relate logit deviation to downstream behavior, we use the Lipschitz continuity of the softmax function: 
+ ‖ softmax ⁡ ( z + Δ ​ z ) − softmax ⁡ ( z ) ‖ 1 ≤ L ⋅ ‖ Δ ​ z ‖ 2 , \|\mathrm{softmax}(z+\Delta z)-\mathrm{softmax}(z)\|_{1}\leq L\cdot\|\Delta z\|_{2}, 
+ where L L is a constant determined by the maximum logit. Hence, bounded cache perturbations induce proportionally bounded shifts in attention, which in turn produce bounded deviations in the model output. 
+@@@Theorem. 
+ For any transformer layer ℓ \ell , if the adversary injects perturbations { δ j } \{\delta_{j}\} into cached keys with total norm ϵ \epsilon , then the resulting deviation in the next-token logits is bounded by O ⁡ ( ϵ ⋅ ‖ q t ‖ 2 ) O(\epsilon\cdot\|q_{t}\|_{2}) . Consequently, the induced change in the attention distribution is Lipschitz-bounded by the same order. 
+Full derivations and multi-head extensions are presented in Appendix  A . 
+@@@Empirical Verification. 
+ We validate the theoretical predictions by comparing derived bounds with observed logit deviations under MTI perturbations. As shown in Table  2 , empirical deviations consistently fall below the theoretical limits, confirming that our analysis provides a sound and conservative characterization of cache corruption effects. 
+ Table 2 : Theoretical versus empirical logit deviation under MTI  V.1 perturbations. For each model and layer, we report the perturbation norm, the corresponding theoretical upper bound, the observed deviation, and the ratio of observed to bound. Values well below unity confirm the conservativeness of the theoretical analysis. 
+ Model 
+ Layer 
+ Perturb. Norm ( ‖ Δ ​ K ‖ \|\Delta K\| ) 
+ Theor. Bound 
+ Obs. Logit Deviation 
+ Ratio 
+ GPT-2 
+ 6 
+ 6.16 
+ ≤ 7.4 \leq 7.4 
+ 0.14 
+ 0.02 
+ LLaMA-2/7B 
+ 12 
+ 0.00 
+ ≤ 0.0 \leq 0.0 
+ 0.14 
+ 0.00 
+ GPT-2 
+ 3 
+ 0.00 
+ ≤ 0.0 \leq 0.0 
+ 0.13 
+ 0.00 
+@@@ 6 Setup 
+@@@ 6.1 Dataset Details 
+ We evaluate our proposed attack across a diverse spectrum of benchmarks encompassing classification, question answering, summarization, and multi-hop reasoning. The SST-2 dataset [ 28 ] from the GLUE benchmark contains approximately 67k training and 872 validation examples, with an average sequence length of around 20 tokens, representing short-sequence sentiment classification. For span-based question answering, we use SQuAD v1.1 [ 29 ] , which includes about 100k question–answer pairs with average contexts of roughly 150 tokens. To assess long-sequence summarization, we employ the CNN/DailyMail corpus [ 30 ] , consisting of 312k news articles paired with abstractive summaries averaging 650 tokens per article. For evaluating multi-hop reasoning, we use HotpotQA [ 31 ] , which provides 113k examples requiring reasoning over multiple documents. Finally, for retrieval-augmented tasks, we use the RAG corpora comprising Wikipedia passages from the 2021 dump, where we specifically report hallucination rates in factual question answering. All datasets follow their standard train, validation, and test splits, and HuggingFace tokenizers are applied uniformly. Sequences are truncated to match each model’s maximum context length, set to 512 tokens for GPT-2 and 4k for LLaMA-2 and Gemma. These datasets collectively span short-sequence classification, span-based QA, long-sequence summarization, and retrieval-based reasoning tasks, enabling us to study how cache perturbations manifest under different input regimes. 
+@@@ 6.2 Evaluation Methods 
+ Performance is evaluated using both token-level and task-level metrics to capture the full impact of cache perturbations. Distributional metrics such as Kullback–Leibler (KL) divergence [ 32 ] and perplexity inflation quantify shifts in next-token probability distributions, reflecting the degree of degradation in model confidence and calibration. Task-level performance is assessed through conventional measures, including classification accuracy on SST-2, F1 score and Exact Match on SQuAD and HotpotQA, and ROUGE-L for summarization tasks on CNN/DailyMail. For retrieval-augmented generation tasks, we compute systemic metrics such as grounding score and hallucination rate, defined as the percentage of model outputs unsupported by retrieved evidence. Perturbation strength is systematically varied, with Gaussian noise levels σ ∈ { 0.01 , 0.05 , 0.1 , 0.2 } \sigma\in\{0.01,0.05,0.1,0.2\} , rotation angles θ ∈ { 15 ∘ , 30 ∘ , 45 ∘ } \theta\in\{15^{\circ},30^{\circ},45^{\circ}\} , and zeroing ratios of { 0.5 % , 1 % , 5 % } \{0.5\%,1\%,5\%\} . Each configuration is evaluated over three random seeds, and results are averaged across runs. For classification tasks, we additionally report the standard error of accuracy, and statistical significance is confirmed using paired t t -tests at a confidence level of p < 0.05 p<0.05 . 
+@@@ 6.3 Model Selection 
+ We evaluate three representative open-source language models that span different architectural scales and design philosophies. The first model, GPT-2 Medium (345M parameters) [ 33 ] , serves as a canonical autoregressive baseline with 24 transformer layers. The second, LLaMA-2 7B [ 2 ] , represents a more modern decoder-only transformer with improved scaling behavior and extended context length. The third model, Gemma-7B [ 3 ] , is a recent open-weight release designed for computational efficiency while maintaining strong performance across reasoning and generation benchmarks. All model checkpoints are loaded through the HuggingFace transformers library (version 4.39) using their official identifiers. These models were selected to ensure accessibility, reproducibility, and coverage across legacy, intermediate, and state-of-the-art open model families. 
+@@@ 6.4 Hardware and Training Configuration 
+ Experiments were conducted on a single NVIDIA T4 (16 GB VRAM) or A100 (40 GB VRAM) depending on model size. Each run used a batch size of 16 with mixed-precision ( torch.float16 ) for efficiency. Context length was fixed to 512 tokens for classification tasks and extended to 1024–2048 for QA and summarization. We used PyTorch 2.2.0, CUDA 12.1, and HuggingFace Transformers 4.39. Training was not required; all models were evaluated in inference-only mode. 
+@@@ 6.5 Perturbation Configuration 
+ Perturbations were injected directly into cached key vectors at specified layers. Unless otherwise noted, the 12th layer (midpoint) was selected for LLaMA-2/Gemma and the 6th layer for GPT-2 Medium. We varied both perturbation type (Gaussian, rotation, zeroing) and injection frequency (continuous, intermittent every 5 or 10 steps). Mapping between theoretical parameters and practical values is as follows: ϵ \epsilon (perturbation magnitude) corresponds to σ \sigma for Gaussian noise, θ \theta for rotations, and ratio p p for zeroing. All random operations were seeded for reproducibility. 
+@@@ 7 Experimental Results 
+@@@ 7.1 Token Distribution Shifts 
+ We analyze how MTI  V.1 perturbs next-token distributions in standard language modeling settings.
+Table  3 reports three complementary metrics: (i) KL divergence relative to clean runs, which captures the statistical gap between perturbed and unperturbed distributions;
+(ii) Top-1 accuracy drop, which quantifies task-level performance degradation; and
+(iii) perplexity change, where arrows ( ↑ \uparrow , ↓ \downarrow ) indicate whether model uncertainty increased or decreased. These measures provide a concise yet comprehensive characterization of how cache perturbations alter the probabilistic structure of language model outputs. 
+ Looking at the Table  3 , the results indicate that MTI  V.1 perturbations consistently induce measurable distributional divergence relative to clean runs, with an average KL of approximately 0.26 0.26 . This shift is substantially greater than natural variation observed under random seed differences, where KL values remain below 0.05 0.05 , thereby confirming that the observed effects are not attributable to stochastic training noise. The degradation in Top-1 accuracy exhibits a clear correspondence with the magnitude of distributional distortion. For example, GPT-2 medium under rotation corruption shows the largest KL divergence (0.57) together with the most severe accuracy decline (16.7%), demonstrating that structural corruption in the cache directly translates into task-level errors. Perplexity responses reveal a more heterogeneous pattern: Gaussian perturbations result in higher perplexity ( ↑ \uparrow ), reflecting inflated predictive uncertainty, whereas zeroing reduces perplexity ( ↓ \downarrow ). The latter outcome does not indicate improved modeling ability but instead points to a collapse into degenerate distributions with artificially low entropy. Importantly, the qualitative behavior is consistent across different architectures and datasets, spanning autoregressive GPT-2 models and instruction-tuned LLaMA-2/7B, as well as corpora from diverse domains. In comparison with benign baselines such as dropout-induced randomness, which yields negligible accuracy changes and KL shifts between 0.01 0.01 and 0.03 0.03 , the effects of MTI  V.1 are an order of magnitude larger. These findings establish that cache perturbations produce robust, reproducible, and practically significant distributional shifts that compromise both uncertainty calibration and prediction accuracy. 
+ Table 3 : Token-level distributional effects under MTI  V.1 attacks.
+We report KL divergence, Top-1 accuracy drop, and perplexity change across different models and datasets.
+Arrows in the headers indicate the expected direction of shift.
+All values are averaged over three random seeds, with variance consistently below < 0.02 <0.02 for KL and < 1.5 % <1.5\% for accuracy. 
+ Model 
+ Dataset 
+ Attack 
+ KL Div. ( ↑ \uparrow ) 
+ Acc Drop (%, ↓ \downarrow ) 
+ Perplexity (%, ↑ \uparrow / ↓ \downarrow ) 
+ GPT-2 small 
+ WikiText-103 
+ Gaussian 
+ 0.01 
+ 6.7 
+ +5.8 
+ GPT-2 medium 
+ IMDB 
+ Rotation 
+ 0.57 
+ 16.7 
+ +130.6 
+ LLaMA-2/7B 
+ PTB 
+ Zeroing 
+ 0.20 
+ 0.0 
+ -43.1 
+@@@ 7.2 Downstream NLP Benchmarks 
+ To assess the impact of MTI  V.1 on practical NLP tasks, we evaluated two representative benchmarks: SST-2 (sentiment classification, accuracy metric) and SQuAD v1.1 (question answering, F1 metric). Multiple perturbation families were applied at layer 3 with varying intensities, including Gaussian noise, zeroing ratios, structured rotations, adversarial offsets, and random permutations. Table  4 summarizes clean versus attacked performance and relative degradation. 
+ The results demonstrate that MTI  V.1 causes measurable and task-dependent degradation. For SST-2 , mild Gaussian corruption ( σ = 1.0 \sigma{=}1.0 ) reduces accuracy by only 3.3%, but higher noise levels ( σ = 5.0 \sigma{=}5.0 ) degrade performance by more than 23%. Other perturbations (zeroing, rotations, permutations) yield smaller but consistent reductions, indicating that classification tasks with short contexts exhibit moderate resilience to structured corruption. In contrast, SQuAD exhibits extreme sensitivity to Gaussian perturbations: performance drops from 77.4 F1 to as low as 7.2 F1 under σ = 5.0 \sigma{=}5.0 , a catastrophic 90.7% degradation. Even moderate perturbations (zeroing 50%) cause an 18.6% drop. This disparity highlights that tasks requiring multi-span reasoning and grounding are disproportionately vulnerable, as MTI  V.1 disrupts context integration and attention alignment. Overall, these findings establish that downstream NLP workloads are variably robust to cache corruption: single-label classification can partially buffer noise, whereas extractive QA pipelines collapse under stronger perturbations. This underscores the need for task-aware defenses, as a uniform mitigation strategy is unlikely to suffice across benchmarks. 
+ Table 4 : Downstream benchmark degradation under MTI  V.1. Results show clean and perturbed performance on SST-2 (accuracy) and SQuAD (F1). Relative degradation is expressed as percentage drop. 
+ Task 
+ Metric 
+ Clean 
+ Attack 
+ Degradation 
+ Config 
+ SST-2 
+ Accuracy 
+ 91.0% 
+ 88.0% 
+ –3.3% 
+ Gaussian σ = 1.0 \sigma{=}1.0 , L3 
+ SST-2 
+ Accuracy 
+ 91.0% 
+ 75.5% 
+ –17.0% 
+ Gaussian σ = 3.0 \sigma{=}3.0 , L3 
+ SST-2 
+ Accuracy 
+ 91.0% 
+ 69.5% 
+ –23.6% 
+ Gaussian σ = 5.0 \sigma{=}5.0 , L3 
+ SST-2 
+ Accuracy 
+ 91.0% 
+ 90.0% 
+ –1.1% 
+ Zero 50%, L3 
+ SST-2 
+ Accuracy 
+ 91.0% 
+ 89.5% 
+ –1.6% 
+ Zero 80%, L3 
+ SST-2 
+ Accuracy 
+ 91.0% 
+ 88.5% 
+ –2.7% 
+ Rotation 90 ∘ 90^{\circ} , L3 
+ SST-2 
+ Accuracy 
+ 91.0% 
+ 90.5% 
+ –0.5% 
+ Rotation 180 ∘ 180^{\circ} , L3 
+ SST-2 
+ Accuracy 
+ 91.0% 
+ 90.5% 
+ –0.5% 
+ Adversarial ϵ = 2.0 \epsilon{=}2.0 , L3 
+ SST-2 
+ Accuracy 
+ 91.0% 
+ 90.0% 
+ –1.1% 
+ Random Permutation, L3 
+ SQuAD 
+ F1 
+ 77.4 
+ 65.4 
+ –15.5% 
+ Gaussian σ = 1.0 \sigma{=}1.0 , L3 
+ SQuAD 
+ F1 
+ 77.4 
+ 13.3 
+ –82.9% 
+ Gaussian σ = 3.0 \sigma{=}3.0 , L3 
+ SQuAD 
+ F1 
+ 77.4 
+ 7.2 
+ –90.7% 
+ Gaussian σ = 5.0 \sigma{=}5.0 , L3 
+ SQuAD 
+ F1 
+ 77.4 
+ 63.0 
+ –18.6% 
+ Zero 50%, L3 
+ SQuAD 
+ F1 
+ 77.4 
+ 67.1 
+ –13.3% 
+ Zero 80%, L3 
+@@@ 7.3 Retrieval-Augmented Generation (RAG) Robustness 
+ We next evaluate whether MTI  V.1 undermines retrieval-augmented pipelines, which are often assumed to provide robustness against low-level perturbations. Experiments were conducted on HotpotQA using a flan-t5-base generator paired with bart-large-mnli as an entailment-based grounding verifier. Two complementary metrics are reported: (i) grounding fidelity , the mean entailment probability between retrieved passages and generated answers, and (ii) hallucination rate , the fraction of outputs whose entailment probability falls below 0.5 0.5 . We examined three insertion points: pre-retrieval (query corruption), post-retrieval (context corruption), and decoder-only (generation corruption). 
+ The results reveal a clear hierarchy of vulnerability. Pre-retrieval corruption yields only a small reduction in grounding fidelity, consistent with retrieval models being relatively tolerant to noisy queries. Post-retrieval corruption, however, has a much stronger effect: grounding fidelity drops by nearly 12% relative to clean runs and hallucination rate rises by 5%. While the absolute shift in hallucination may appear modest, this is measured against a low baseline rate, meaning that even small increases represent a significant relative risk to factual reliability. Decoder-only corruption produces negligible change, which indicates that when retrieved evidence remains intact, the generator is effectively constrained by context and adversarial instructions alone cannot override grounding. Importantly, these effects are systematic rather than random fluctuations: perturbations at the evidence stage consistently destabilize alignment across runs. However, the findings show that RAG systems inherit a cache-integrity dependency, where corruption at the evidence stage propagates downstream and compromises factuality, even when both retrieval and generation modules are otherwise functioning correctly. 
+ Table 5 : RAG robustness under MTI  V.1 perturbations on HotpotQA.
+Grounding fidelity and hallucination rate both degrade most severely when perturbations target retrieved context. 
+ Attack Location 
+ Ground. (Clean) 
+ Ground. (MTI) 
+ Halluc. Rate ( ↑ \uparrow ) 
+ Notes 
+ Pre-retrieval 
+ 0.3245 
+ 0.3216 
+ –1.0% 
+ Query-level disruption 
+ Post-retrieval 
+ 0.3245 
+ 0.2874 
+ +5.0% 
+ Context corruption dominates grounding 
+ Decoder-only 
+ 0.3245 
+ 0.3196 
+ +0.0% 
+ Adversarial generation, weak effect 
+@@@ 7.4 Analyzing Agentic Pipeline Vulnerability 
+ We further evaluated the impact of MTI  V.1 in multi-step reasoning and tool-use settings, where language models interact with external environments rather than producing single-turn completions. Three representative frameworks were tested: ReAct (reasoning and acting with intermediate natural language steps), AutoGPT -style planning (multi-goal task decomposition), and Toolformer (explicit API/tool invocation). Performance was measured as the success rate on benchmark tasks for each framework. Attacks included Gaussian perturbations ( σ = 0.5 % \sigma=0.5\% ), uniform zeroing ( 1 % 1\% ), and sign-flip corruption ( 0.5 % 0.5\% ) applied to cached key vectors. Table  6 reports clean versus attacked success rates. 
+ Across all agentic settings, MTI  V.1 produced negligible degradation. For ReAct, success rates under attack matched clean baselines at 33.3%, while both AutoGPT and Toolformer maintained perfect stability (0.0% degradation). These results suggest that agentic pipelines are inherently more resilient to cache corruption, likely because external reasoning loops and environment feedback provide corrective structure that absorbs token-level noise. Several caveats are important. First, the relatively low clean baseline for ReAct (33.3%) may mask additional degradation; stronger or larger-scale tasks could expose subtler vulnerabilities. Second, the attacks tested here were deliberately mild to match comparable setups; more aggressive perturbations or targeted corruption of planning-critical layers may yet compromise agent stability. Third, results are currently reported for Phi-3 Mini; evaluating larger models is necessary to confirm whether resilience scales with capacity or reflects a floor effect at smaller model sizes. In contrast to RAG pipelines, where perturbations directly destabilize factual grounding, agent frameworks benefit from task redundancy and iterative feedback, which constrain the propagation of corrupted KV states. While the observed vulnerability is low under tested conditions, these findings should be interpreted as evidence of partial buffering, not immunity, reinforcing the broader conclusion that cache integrity remains a central requirement for reliable LLM deployment. 
+ Table 6 : Agentic pipeline vulnerability under MTI  V.1 perturbations. Across ReAct and AutoGPT frameworks, success rates remain unchanged, suggesting that higher-level control loops buffer against token-level corruption. 
+ Model 
+ Attack 
+ ReAct 
+ AutoGPT 
+ Clean 
+ MTI 
+ Deg. 
+ Clean 
+ MTI 
+ Deg. 
+ Phi-3 Mini 
+ Gaussian σ = 0.5 % \sigma=0.5\% 
+ 33.3% 
+ 33.3% 
+ 0.0pp 
+ 0.0% 
+ 0.0% 
+ 0.0pp 
+ Phi-3 Mini 
+ Uniform Zero 1% 
+ 33.3% 
+ 33.3% 
+ 0.0pp 
+ 0.0% 
+ 0.0% 
+ 0.0pp 
+ Phi-3 Mini 
+ Sign Flip 0.5% 
+ 33.3% 
+ 33.3% 
+ 0.0pp 
+ 0.0% 
+ 0.0% 
+ 0.0pp 
+@@@ 7.5 Analyzing Defense Effectiveness 
+ Finally, we evaluate whether lightweight cache-level defenses can mitigate MTI  V.1 without prohibitive computational cost. Three strategies were considered: Cache Reset , which periodically clears cached entries at a target layer; Dropout Mask Randomization , which stochastically masks subsets of key–value vectors; and Attention Smoothing , which applies temporal averaging to dampen abrupt perturbations. Evaluation was conducted on the MRPC task (GLUE) with accuracy as the primary metric and runtime overhead computed relative to the clean baseline. 
+ Across LLaMA-2 and GPT-2 Medium, all three defenses preserved baseline accuracy under MTI  V.1 while incurring minimal runtime cost ( × 0.69\!\times – × 1.08\!\times ). Interestingly, Gemma-7B showed 0.0 % 0.0\% accuracy even in the clean baseline, which we attribute to tokenizer–label misalignment in this classification setting rather than an inherent model failure. This highlights a limitation of using MRPC as the sole evaluation task: binary classification with short sequences may obscure subtler forms of degradation and occasionally interact poorly with non-English tokenizer vocabularies. Another consideration is that the evaluated perturbations were mild (e.g., σ = 0.15 \sigma=0.15 Gaussian noise, 0.5 % 0.5\% sign flip), chosen to reflect realistic cache corruption without catastrophic divergence. Stronger perturbations or targeted attacks on planning-critical layers may expose weaknesses that these defenses cannot mask. Likewise, our implementation applied defenses at a single mid-layer (layer 12); extending the study to layer-wise sensitivity analysis remains an open direction. Overall, these results suggest that cache-level defenses are promising: they can be implemented at negligible cost, preserve baseline performance, and offer partial robustness against MTI  V.1. However, they should be regarded as a preliminary safeguard. Extending evaluation to generative, long-context, and retrieval-augmented tasks is essential to fully characterize their reliability and to determine whether different defenses exhibit complementary strengths in practice. 
+ Table 7 : Defense effectiveness against MTI  V.1 attacks. Accuracy is reported under attack with the specified defense, degradation is relative to the clean baseline, and runtime overhead is given as a multiplicative factor. 
+ Model 
+ Defense Method 
+ Attack Type 
+ Accuracy (%) 
+ Degradation 
+ Overhead 
+ LLaMA-2 7B 
+ None (Baseline) 
+ Zeroing 
+ 60.0 
+ 0.0% 
+ 1.00 × \times 
+ LLaMA-2 7B 
+ Cache Reset 
+ Zeroing 
+ 60.0 
+ 0.0% 
+ 0.69 × \times 
+ LLaMA-2 7B 
+ Dropout Mask Rand. 
+ Gaussian 
+ 60.0 
+ 0.0% 
+ 0.70 × \times 
+ LLaMA-2 7B 
+ Attention Smoothing 
+ Rotation 
+ 60.0 
+ 0.0% 
+ 0.75 × \times 
+ Gemma-7B 
+ None (Baseline) 
+ Zeroing 
+ 0.0 
+ 0.0% 
+ 1.00 × \times 
+ Gemma-7B 
+ Cache Reset 
+ Zeroing 
+ 0.0 
+ 0.0% 
+ 1.00 × \times 
+ Gemma-7B 
+ Dropout Mask Rand. 
+ Gaussian 
+ 0.0 
+ 0.0% 
+ 1.00 × \times 
+ Gemma-7B 
+ Attention Smoothing 
+ Rotation 
+ 0.0 
+ 0.0% 
+ 1.00 × \times 
+ GPT-2 Medium 
+ None (Baseline) 
+ Zeroing 
+ 60.0 
+ 0.0% 
+ 1.00 × \times 
+ GPT-2 Medium 
+ Cache Reset 
+ Zeroing 
+ 60.0 
+ 0.0% 
+ 1.00 × \times 
+ GPT-2 Medium 
+ Dropout Mask Rand. 
+ Gaussian 
+ 60.0 
+ 0.0% 
+ 1.01 × \times 
+ GPT-2 Medium 
+ Attention Smoothing 
+ Rotation 
+ 60.0 
+ 0.0% 
+ 1.08 × \times 
+@@@ 7.6 Runtime and Scaling Analysis 
+ We further analyze the runtime implications of MTI  V.1. While perturbations introduce additional cache manipulations, a key question is whether these operations impose prohibitive latency overheads in realistic pipelines. We measured average per-sample latency (ms/sample) across multiple models under clean and MTI  V.1 conditions, using both classification (SST-2) and language modeling (WikiText-103) [ 34 ] tasks. Overhead is reported as the relative change in runtime compared to the clean baseline. 
+ The results show that MTI  V.1 introduces negligible to modest runtime changes, with overhead ranging between − 5 % -5\% and + 3 % +3\% . Interestingly, overhead is not uniformly positive: in some cases (e.g., LLaMA-2/7B under zeroing), MTI  V.1 slightly reduces latency due to sparsity introduced by corrupted cache entries. This suggests that perturbations can occasionally reduce computation by simplifying attention updates, though at the cost of output reliability. From a scaling perspective, the key observation is that MTI  V.1 remains feasible even for multi-billion parameter models without introducing prohibitive delays. Latencies remain within the same order of magnitude as clean runs, confirming that adversaries could mount cache-based attacks in real-time systems. However, it is important to note that these measurements were conducted on relatively short sequences and batch sizes; longer context windows or large-batch inference may amplify the observed overheads. A full scaling sweep across sequence lengths and deployment settings is left to future work, but these results establish that MTI  V.1 is practically deployable without being bottlenecked by runtime cost. 
+ Table 8 : Runtime cost of MTI  V.1 perturbations. Latency is averaged over 100 samples. 
+ Model 
+ Attack 
+ Dataset 
+ Clean Latency 
+ (ms/sample) 
+ MTI Latency 
+ (ms/sample) 
+ Overhead 
+ GPT-2 Medium 
+ Gaussian ( σ = 0.5 \sigma{=}0.5 ) 
+ WikiText-103 
+ 19.0 
+ 19.3 
+ +2% 
+ LLaMA-2 7B 
+ Zeroing (Layer 12) 
+ WikiText-103 
+ 39.5 
+ 37.7 
+ –5% 
+ Gemma-7B 
+ Rotation ( 45 ∘ 45^{\circ} ) 
+ WikiText-103 
+ 36.1 
+ 35.7 
+ –1% 
+ RoBERTa-Base 
+ Gaussian ( σ = 0.5 \sigma{=}0.5 ) 
+ SST-2 
+ 8.4 
+ 8.7 
+ +3% 
+@@@ 8 Ablation Studies 
+@@@ 8.1 Layer Sensitivity 
+ To probe whether the impact of MTI  V.1 depends on the location of the corruption, we conducted a preliminary layer-wise ablation on DistilBERT. Perturbations were applied at early (Layer 1), mid (Layer 3), and deeper (Layer 6) positions, with performance degradation measured in terms of next-token distributional divergence. Results show a modest but consistent increase in vulnerability at intermediate layers: the KL divergence under MTI  V.1 rose from 0.0367 0.0367 at Layer 1 to 0.0447 0.0447 at Layer 3. In contrast, Layer 6 showed negligible additional effect under the same perturbation budget. These observations suggest two key insights. First, early layers appear to partially absorb perturbations, consistent with their role in constructing lower-level representations. Second, mid-level layers are more fragile, likely because they directly mediate semantic integration across tokens; corruption here propagates more strongly to downstream logits. While these findings are preliminary and limited to a single model, they underscore the importance of layer placement in characterizing attack potency. Therefore, a comprehensive multi-model sweep is left to future work but will be essential for developing layer-targeted defense strategies. 
+@@@ 8.2 Perturbation Magnitude 
+ We further ablated the effect of perturbation magnitude by systematically scaling corruption strength at a fixed layer (layer 3). Four levels were tested: low ( σ = 0.01 \sigma{=}0.01 ), medium ( 0.05 0.05 ), high ( 0.1 0.1 ), and extreme ( 0.2 0.2 ). For each setting, noise was injected into both attention and feedforward weights using three attack families: Gaussian, rotation, and zeroing. The ablation reports the degradation relative to a clean baseline. 
+ Two insights emerge from this ablation. First, Gaussian perturbations exhibit a highly non-linear profile: moderate noise levels ( σ = 0.05 \sigma{=}0.05 ) yield the largest divergence ( + 0.0195 +0.0195 ), whereas higher magnitudes reduce the measured deviation.This counterintuitive trend arises because extreme Gaussian noise collapses weight structure, effectively reducing variance and limiting relative degradation, an effect consistent with over-smoothing observed in noisy weight matrices. Second, zeroing attacks produce small but stable perturbations across scales, with the strongest effect again at intermediate levels ( + 0.0057 +0.0057 ). In contrast, rotation perturbations remain almost perfectly scale-invariant, reflecting the fact that orthogonal transformations preserve vector norms and induce minimal drift in isolation. These results highlight that attack potency cannot be predicted by magnitude alone. Instead, the interaction between attack family and scale produces distinct vulnerability regimes: Gaussian noise is most disruptive at intermediate strengths, zeroing induces mild but persistent drift, and rotations remain benign under isolated scaling. Importantly, the evaluation was conducted on DistilBERT [ 35 ] with SST-2 samples; extending this ablation to deeper architectures may reveal sharper sensitivity patterns when more expressive layers are perturbed. 
+ Table 9 : Ablation over perturbation magnitude. Values denote accuracy degradation under different attack families as the corruption scale increases. 
+ Attack Type 
+ Low 
+ Medium 
+ High 
+ Extreme 
+ Gaussian 
+ -0.0092 
+ 0.0195 
+ -0.0264 
+ -0.0103 
+ Rotation 
+ -0.0023 
+ 0.0000 
+ 0.0000 
+ 0.0000 
+ Zeroing 
+ -0.0023 
+ 0.0057 
+ 0.0023 
+ 0.0011 
+@@@ 8.3 Injection Frequency 
+ We next examine the role of injection frequency in mediating MTI  V.1 effectiveness. Gaussian perturbations were applied to a fixed layer under three regimes: (i) continuous , where corruption occurs at every step; (ii) intermittent (1/5) , where corruption is applied once every five steps; and (iii) intermittent (1/10) , applied once every ten steps. Evaluation was performed on the SST-2 validation split with DistilBERT and GPT-2 Medium. The results highlight a strong frequency dependence for DistilBERT. Under continuous injection, performance degraded by 0.385 0.385 , while intermittent schedules reduced degradation to 0.06 0.06 (1/5) and 0.035 0.035 (1/10). This pattern suggests that sustained corruption is required for significant disruption, whereas sporadic perturbations are largely absorbed by residual contextual information. By contrast, GPT-2 Medium showed negligible degradation across all regimes, underscoring that architectural differences in cache utilization mediate sensitivity to temporal corruption. Taken together, these findings indicate that attack persistence is as critical as magnitude in determining MTI  V.1 effectiveness. Continuous corruption compounds over time, gradually destabilizing representations, whereas intermittent corruption allows the model to “recover” between injections. This observation emphasizes the need for future evaluations to consider temporal structure when characterizing both attack potency and defense robustness. 
+@@@ 8.4 Combined Effects 
+ This experiment examined whether layer position and perturbation magnitude interact in shaping vulnerability. Unlike the previous analyses that varied each factor independently, here we applied Gaussian perturbations of increasing strength (low, medium, high) to layers { 1 , 3 , 6 } \{1,3,6\} and measured the resulting degradation on SST-2 for DistilBERT and GPT-2 Medium. 
+ The results reveal distinct patterns across models. For DistilBERT, sensitivity was strongly magnitude-dependent: perturbations at layer 1 caused losses of 0.33 (low) and 0.385 (medium/high), while layer 3 showed even larger drops, from 0.225 at low to 0.40 at medium and 0.395 at high. This indicates that mid-layer corruption is particularly destabilizing once perturbation intensity increases. GPT-2 Medium, by contrast, displayed negligible variation across layers or magnitudes, with deviations remaining near zero ( ≤ 0.05 \leq 0.05 ), suggesting that its deeper architecture provides stronger resilience against compounded perturbations. These findings highlight an architectural divide: compact models like DistilBERT exhibit compounding fragility when perturbations strike sensitive layers at higher magnitudes, whereas larger models maintain stability under the same conditions. Evaluating perturbations along both axes simultaneously therefore exposes vulnerabilities that are not visible in one-dimensional ablations. 
+ Table 10 : Joint ablation across layer choice and perturbation magnitude. Reported values indicate relative degradation in accuracy. 
+ Model 
+ Layer 
+ Magnitude (Low) 
+ Magnitude (Med) 
+ Magnitude (High) 
+ DistilBERT-SST2 
+ 1 
+ 0.330 
+ 0.385 
+ 0.385 
+ DistilBERT-SST2 
+ 3 
+ 0.225 
+ 0.400 
+ 0.395 
+ GPT-2 Medium 
+ 1 
+ 0.000 
+ 0.000 
+ 0.000 
+ GPT-2 Medium 
+ 3 
+ 0.000 
+ 0.000 
+ 0.000 
+ GPT-2 Medium 
+ 6 
+ 0.000 
+ 0.000 
+ -0.055 
+@@@ 9 Discussion 
+ Our findings demonstrate that the MTI  V.1 framework introduces a tangible and measurable risk to the reliability of large language models across a wide range of tasks, from token-level prediction to complex system-level reasoning pipelines. Even lightweight and seemingly benign perturbations, when applied in a structured manner, were sufficient to destabilize token distributions and degrade downstream task performance. This result raises a significant concern for the deployment of large language models in security- and safety-critical applications, where cache manipulation could compromise reliability or induce subtle behavioral drift. In practical contexts, our experiments reveal that MTI  V.1 can undermine both predictive accuracy and trustworthiness in multi-step reasoning and retrieval-augmented generation. The low computational overhead observed in attack execution indicates that such cache-side threats are not merely theoretical but plausible in real adversarial settings. Although preliminary cache-level defenses show partial effectiveness, they are not yet sufficient to ensure full robustness. Our study is limited by the assumption of partial white-box access, where an adversary can inject or modify cache states. While this models realistic scenarios such as compromised inference servers, it does not encompass all deployment conditions. Moreover, our evaluations were conducted under controlled perturbation magnitudes and selected datasets; broader experimental settings may reveal additional vulnerabilities. Future work should focus on both architectural and procedural countermeasures, including cache hardening mechanisms, probabilistic regularization to reduce sensitivity to key–value corruption, and verifiable inference protocols capable of detecting anomalous cache dynamics in real time. Extending these defenses to long-context and multimodal architectures represents a critical next step toward securing modern large language models against inference-time manipulation. 
+@@@ 10 Conclusion 
+ This study introduced MTI  V.1, a cache-level adversarial perturbation that targets the internal key–value states of transformer models. Through systematic evaluation across classification, question answering, retrieval-augmented generation, and agentic pipelines, we demonstrated that MTI  V.1 exposes a previously underexplored axis of vulnerability. While the magnitude of degradation varies by task and model, the results consistently show that cache corruption can compromise reliability, with tasks such as extractive QA exhibiting severe performance collapse. The analysis further revealed architectural dependencies. Agentic frameworks such as ReAct, AutoGPT, and Toolformer displayed inherent resilience, largely due to multi-step reasoning loops and environmental feedback, whereas retrieval-augmented pipelines and single-turn generation were substantially more sensitive to perturbations. These contrasts underscore that robustness cannot be assumed to transfer across pipeline types and highlight cache integrity as a critical determinant of stability. Lightweight defenses, including Cache Reset, Dropout Mask Randomization, and Attention Smoothing, were shown to maintain baseline accuracy with minimal runtime overhead, providing a promising direction for practical mitigation. However, their effectiveness was measured under moderate perturbations and classification-scale datasets; extending such defenses to long-context reasoning and open-ended generation remains an important avenue for further validation. Finally, ablation studies established that the impact of MTI  V.1 is shaped by layer choice, perturbation magnitude, and injection frequency, with mid-layer corruption and higher intensities exerting the most destabilizing effects. These findings position MTI  V.1 as a credible and general threat model for modern transformers and call for future research on principled defenses that integrate cache integrity checks into the broader landscape of adversarial robustness. 
+@@@References 
+ [1] 
+T. Brown, B. Mann, N. Ryder, M. Subbiah, J. D. Kaplan, P. Dhariwal, A. Neelakantan, P. Shyam, G. Sastry, A. Askell, et al. , “Language models are few-shot learners,” Advances in neural information processing systems , vol. 33, pp. 1877–1901, 2020.
+ [2] 
+H. Touvron, T. Lavril, G. Izacard, X. Martinet, M.-A. Lachaux, T. Lacroix, B. Rozière, N. Goyal, E. Hambro, F. Azhar, et al. , “Llama: Open and efficient foundation language models,” arXiv preprint arXiv:2302.13971 , 2023.
+ [3] 
+G. Team, T. Mesnard, C. Hardin, R. Dadashi, S. Bhupatiraju, S. Pathak, L. Sifre, M. Rivière, M. S. Kale, J. Love, et al. , “Gemma: Open models based on gemini research and technology,” arXiv preprint arXiv:2403.08295 , 2024.
+ [4] 
+N. Carlini, M. Jagielski, C. A. Choquette-Choo, D. Paleka, W. Pearce, H. Anderson, A. Terzis, K. Thomas, and F. Tramèr, “Poisoning web-scale training datasets is practical,” in 2024 IEEE Symposium on Security and Privacy (SP) , pp. 407–425, IEEE, 2024.
+ [5] 
+Y. Liu, G. Deng, Y. Li, K. Wang, Z. Wang, X. Wang, T. Zhang, Y. Liu, H. Wang, Y. Zheng, et al. , “Prompt injection attack against llm-integrated applications,” arXiv preprint arXiv:2306.05499 , 2023.
+ [6] 
+R. Jia and P. Liang, “Adversarial examples for evaluating reading comprehension systems,” arXiv preprint arXiv:1707.07328 , 2017.
+ [7] 
+E. Wallace, S. Feng, N. Kandpal, M. Gardner, and S. Singh, “Universal adversarial triggers for attacking and analyzing nlp,” arXiv preprint arXiv:1908.07125 , 2019.
+ [8] 
+C. Guo, G. Pleiss, Y. Sun, and K. Q. Weinberger, “On calibration of modern neural networks,” in International conference on machine learning , pp. 1321–1330, PMLR, 2017.
+ [9] 
+C. Blundell, J. Cornebise, K. Kavukcuoglu, and D. Wierstra, “Weight uncertainty in neural network,” in International conference on machine learning , pp. 1613–1622, PMLR, 2015.
+ [10] 
+R. Jia, A. Raghunathan, K. Göksel, and P. Liang, “Certified robustness to adversarial word substitutions,” arXiv preprint arXiv:1909.00986 , 2019.
+ [11] 
+A. Liu, B. Feng, B. Wang, B. Wang, B. Liu, C. Zhao, C. Dengr, C. Ruan, D. Dai, D. Guo, et al. , “Deepseek-v2: A strong, economical, and efficient mixture-of-experts language model,” arXiv preprint arXiv:2405.04434 , 2024.
+ [12] 
+A. Liu, B. Feng, B. Xue, B. Wang, B. Wu, C. Lu, C. Zhao, C. Deng, C. Zhang, C. Ruan, et al. , “Deepseek-v3 technical report,” arXiv preprint arXiv:2412.19437 , 2024.
+ [13] 
+D. Guo, D. Yang, H. Zhang, J. Song, R. Zhang, R. Xu, Q. Zhu, S. Ma, P. Wang, X. Bi, et al. , “Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning,” arXiv preprint arXiv:2501.12948 , 2025.
+ [14] 
+F. Meng, P. Tang, X. Tang, Z. Yao, X. Sun, and M. Zhang, “Transmla: Multi-head latent attention is all you need,” arXiv preprint arXiv:2502.07864 , 2025.
+ [15] 
+A. Q. Jiang, A. Sablayrolles, A. Mensch, C. Bamford, D. S. Chaplot, D. de las Casas, F. Bressand, G. Lengyel, G. Lample, L. Saulnier, L. R. Lavaud, M.-A. Lachaux, P. Stock, T. L. Scao, T. Lavril, T. Wang, T. Lacroix, and W. E. Sayed, “Mistral 7b,” 2023.
+ [16] 
+A. Q. Jiang, A. Sablayrolles, A. Roux, A. Mensch, B. Savary, C. Bamford, D. S. Chaplot, D. d. l. Casas, E. B. Hanna, F. Bressand, et al. , “Mixtral of experts,” arXiv preprint arXiv:2401.04088 , 2024.
+ [17] 
+J. Bai, S. Bai, Y. Chu, Z. Cui, K. Dang, X. Deng, Y. Fan, W. Ge, Y. Han, F. Huang, et al. , “Qwen technical report,” arXiv preprint arXiv:2309.16609 , 2023.
+ [18] 
+L. Li, D. Song, X. Li, J. Zeng, R. Ma, and X. Qiu, “Backdoor attacks on pre-trained models by layerwise weight poisoning,” arXiv preprint arXiv:2108.13888 , 2021.
+ [19] 
+T. Han, S. Nebelung, F. Khader, T. Wang, G. Müller-Franzes, C. Kuhl, S. Försch, J. Kleesiek, C. Haarburger, K. K. Bressem, et al. , “Medical large language models are susceptible to targeted misinformation attacks,” NPJ digital medicine , vol. 7, no. 1, p. 288, 2024.
+ [20] 
+A. M. A. Almalky, R. Zhou, S. Angizi, and A. S. Rakin, “How vulnerable are large language models (llms) against adversarial bit-flip attacks?,” in Proceedings of the Great Lakes Symposium on VLSI 2025 , pp. 534–539, 2025.
+ [21] 
+A. Hussain, M. R. I. Rabin, T. Ahmed, B. Xu, P. Devanbu, and M. A. Alipour, “Trojans in large language models of code: A critical review through a trigger-based taxonomy,” arXiv preprint arXiv:2405.02828 , 2024.
+ [22] 
+W. Lyu, Z. Bi, F. Wang, and C. Chen, “Badclm: Backdoor attack in clinical language models for electronic health records,” in AMIA Annual Symposium Proceedings , vol. 2024, p. 768, 2025.
+ [23] 
+S. Zhao, M. Jia, Z. Guo, L. Gan, X. Xu, X. Wu, J. Fu, Y. Feng, F. Pan, and L. A. Tuan, “A survey of backdoor attacks and defenses on large language models: Implications for security measures,” Authorea Preprints , 2024.
+ [24] 
+G. Wu, Z. Zhang, Y. Zhang, W. Wang, J. Niu, Y. Wu, and Y. Zhang, “I know what you asked: Prompt leakage via kv-cache sharing in multi-tenant llm serving,” in Proceedings of the 2025 Network and Distributed System Security (NDSS) Symposium. San Diego, CA, USA , 2025.
+ [25] 
+L. Song, Z. Pang, W. Wang, Z. Wang, X. Wang, H. Chen, W. Song, Y. Jin, D. Meng, and R. Hou, “The early bird catches the leak: Unveiling timing side channels in llm serving systems,” arXiv preprint arXiv:2409.20002 , 2024.
+ [26] 
+Z. Luo, S. Shao, S. Zhang, L. Zhou, Y. Hu, C. Zhao, Z. Liu, and Z. Qin, “Shadow in the cache: Unveiling and mitigating privacy risks of kv-cache in llm inference,” arXiv preprint arXiv:2508.09442 , 2025.
+ [27] 
+K. Chu, Z. Lin, D. Xiang, Z. Shen, J. Su, C. Chu, Y. Yang, W. Zhang, W. Wu, and W. Zhang, “Selective kv-cache sharing to mitigate timing side-channels in llm inference,” arXiv preprint arXiv:2508.08438 , 2025.
+ [28] 
+R. Socher, A. Perelygin, J. Wu, J. Chuang, C. D. Manning, A. Ng, and C. Potts, “Recursive deep models for semantic compositionality over a sentiment treebank,” in Proceedings of the 2013 Conference on Empirical Methods in Natural Language Processing , (Seattle, Washington, USA), pp. 1631–1642, Association for Computational Linguistics, Oct. 2013.
+ [29] 
+P. Rajpurkar, J. Zhang, K. Lopyrev, and P. Liang, “SQuAD: 100,000+ questions for machine comprehension of text,” in Proceedings of the 2016 Conference on Empirical Methods in Natural Language Processing (J. Su, K. Duh, and X. Carreras, eds.), (Austin, Texas), pp. 2383–2392, Association for Computational Linguistics, Nov. 2016.
+ [30] 
+A. See, P. J. Liu, and C. D. Manning, “Get to the point: Summarization with pointer-generator networks,” in Proceedings of the 55th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , (Vancouver, Canada), pp. 1073–1083, Association for Computational Linguistics, July 2017.
+ [31] 
+Z. Yang, P. Qi, S. Zhang, Y. Bengio, W. W. Cohen, R. Salakhutdinov, and C. D. Manning, “Hotpotqa: A dataset for diverse, explainable multi-hop question answering,” 2018.
+ [32] 
+S. Kullback and R. A. Leibler, “On information and sufficiency,” The annals of mathematical statistics , vol. 22, no. 1, pp. 79–86, 1951.
+ [33] 
+A. Radford, J. Wu, R. Child, D. Luan, D. Amodei, I. Sutskever, et al. , “Language models are unsupervised multitask learners,” OpenAI blog , vol. 1, no. 8, p. 9, 2019.
+ [34] 
+S. Merity, C. Xiong, J. Bradbury, and R. Socher, “Pointer sentinel mixture models,” 2016.
+ [35] 
+V. Sanh, L. Debut, J. Chaumond, and T. Wolf, “Distilbert, a distilled version of bert: smaller, faster, cheaper and lighter,” 2020.
+@@@Appendix 
+@@@ Appendix A Proofs and Extended Derivations 
+ In this appendix, we provide full derivations underlying the theoretical bounds in Section  5 . We first restate the theorem formally, then prove the result for the single-head case, and finally extend it to multi-head attention with normalization layers. 
+@@@ A.1 Restatement of Theorem 
+@@@ Theorem 1 . 
+ For any transformer layer ℓ \ell , let { k j ( ℓ ) } j = 1 t \{k_{j}^{(\ell)}\}_{j=1}^{t} denote the clean cached keys and { k ~ j ( ℓ ) } j = 1 t \{\tilde{k}_{j}^{(\ell)}\}_{j=1}^{t} the perturbed keys, where 
+ k ~ j ( ℓ ) = k j ( ℓ ) + δ j ( ℓ ) , ‖ δ j ( ℓ ) ‖ 2 ≤ ϵ . \tilde{k}_{j}^{(\ell)}=k_{j}^{(\ell)}+\delta_{j}^{(\ell)},\quad\|\delta_{j}^{(\ell)}\|_{2}\leq\epsilon. 
+ Then, for query q t ( ℓ ) q_{t}^{(\ell)} , the deviation in the next-token logit vector Δ ​ z t \Delta z_{t} satisfies 
+ ‖ Δ ​ z t ‖ 2 ≤ ϵ ⋅ ‖ q t ( ℓ ) ‖ 2 . \|\Delta z_{t}\|_{2}\;\leq\;\epsilon\cdot\|q_{t}^{(\ell)}\|_{2}. 
+ Moreover, the induced change in the attention distribution is bounded by 
+ ‖ α t − α ~ t ‖ 1 ≤ L ⋅ ϵ ⋅ ‖ q t ( ℓ ) ‖ 2 , \|\alpha_{t}-\tilde{\alpha}_{t}\|_{1}\;\leq\;L\cdot\epsilon\cdot\|q_{t}^{(\ell)}\|_{2}, 
+ where L L is the Lipschitz constant of the softmax function. 
+@@@ A.2 Single-Head Case: Perturbation to Logit Deviation 
+ Consider the clean attention score for token j j at timestep t t : 
+ s t ​ j = q t ⊤ ​ k j d . s_{tj}=\frac{q_{t}^{\top}k_{j}}{\sqrt{d}}. 
+ After perturbation, the score becomes 
+ s ~ t ​ j = q t ⊤ ​ ( k j + δ j ) d = s t ​ j + q t ⊤ ​ δ j d . \tilde{s}_{tj}=\frac{q_{t}^{\top}(k_{j}+\delta_{j})}{\sqrt{d}}=s_{tj}+\frac{q_{t}^{\top}\delta_{j}}{\sqrt{d}}. 
+ The deviation in the score is therefore 
+ | s ~ t ​ j − s t ​ j | ≤ ‖ q t ‖ 2 ⋅ ‖ δ j ‖ 2 d ≤ ‖ q t ‖ 2 ⋅ ϵ d . |\tilde{s}_{tj}-s_{tj}|\;\leq\;\frac{\|q_{t}\|_{2}\cdot\|\delta_{j}\|_{2}}{\sqrt{d}}\;\leq\;\frac{\|q_{t}\|_{2}\cdot\epsilon}{\sqrt{d}}. 
+ Aggregating over all positions j ≤ t j\leq t , and scaling back to logits z t z_{t} , we obtain 
+ ‖ Δ ​ z t ‖ 2 ≤ ϵ ⋅ ‖ q t ‖ 2 , \|\Delta z_{t}\|_{2}\;\leq\;\epsilon\cdot\|q_{t}\|_{2}, 
+ up to normalization constants absorbed into ϵ \epsilon . 
+@@@ A.3 Softmax Lipschitz Bound 
+ The attention distribution is given by 
+ α t = softmax ⁡ ( s t ) , α ~ t = softmax ⁡ ( s ~ t ) . \alpha_{t}=\mathrm{softmax}(s_{t}),\quad\tilde{\alpha}_{t}=\mathrm{softmax}(\tilde{s}_{t}). 
+ By Lipschitz continuity of the softmax function, we have 
+ ‖ α t − α ~ t ‖ 1 ≤ L ⋅ ‖ s ~ t − s t ‖ 2 ≤ L ⋅ ϵ ⋅ ‖ q t ‖ 2 . \|\alpha_{t}-\tilde{\alpha}_{t}\|_{1}\;\leq\;L\cdot\|\tilde{s}_{t}-s_{t}\|_{2}\;\leq\;L\cdot\epsilon\cdot\|q_{t}\|_{2}. 
+ Thus deviations in the cache produce proportionally bounded shifts in attention. 
+@@@ A.4 Extension to Multi-Head Attention 
+ For multi-head attention with H H heads, queries and keys are projected as 
+ q t ( h ) = W Q ( h ) ​ x t , k j ( h ) = W K ( h ) ​ x j , q_{t}^{(h)}=W_{Q}^{(h)}x_{t},\quad k_{j}^{(h)}=W_{K}^{(h)}x_{j}, 
+ with perturbations δ j ( h ) \delta_{j}^{(h)} applied per head. Each head obeys the single-head bound derived above: 
+ ‖ Δ ​ z t ( h ) ‖ 2 ≤ ϵ ⋅ ‖ q t ( h ) ‖ 2 . \|\Delta z_{t}^{(h)}\|_{2}\;\leq\;\epsilon\cdot\|q_{t}^{(h)}\|_{2}. 
+ The concatenation of head outputs followed by a linear projection W O W_{O} yields 
+ ‖ Δ ​ z t multi ‖ 2 ≤ ‖ W O ‖ 2 ⋅ ∑ h = 1 H ‖ Δ ​ z t ( h ) ‖ 2 ≤ ‖ W O ‖ 2 ⋅ H ⋅ ϵ ⋅ max h ⁡ ‖ q t ( h ) ‖ 2 . \|\Delta z_{t}^{\text{multi}}\|_{2}\;\leq\;\|W_{O}\|_{2}\cdot\sum_{h=1}^{H}\|\Delta z_{t}^{(h)}\|_{2}\;\leq\;\|W_{O}\|_{2}\cdot H\cdot\epsilon\cdot\max_{h}\|q_{t}^{(h)}\|_{2}. 
+ Thus the bound scales linearly with the number of heads, modulated by ‖ W O ‖ 2 \|W_{O}\|_{2} . 
+@@@ A.5 Impact of Layer Normalization 
+ Layer normalization re-centers and re-scales the perturbed representation: 
+ h ~ t = LN ⁡ ( h t + Δ ​ h t ) . \tilde{h}_{t}=\mathrm{LN}(h_{t}+\Delta h_{t}). 
+ Since LN is 1-Lipschitz under the ℓ 2 \ell_{2} norm, we obtain 
+ ‖ LN ⁡ ( h t + Δ ​ h t ) − LN ⁡ ( h t ) ‖ 2 ≤ ‖ Δ ​ h t ‖ 2 , \|\mathrm{LN}(h_{t}+\Delta h_{t})-\mathrm{LN}(h_{t})\|_{2}\;\leq\;\|\Delta h_{t}\|_{2}, 
+ which preserves our derived upper bounds. The full derivation confirms that cache perturbations induce deviations in a manner that is both predictable and bounded. Importantly, the derived inequalities are conservative: empirical results (Table  2 ) show actual deviations are typically smaller than the worst-case limits. This indicates that MTI  V.1 exploits a real but mathematically well-characterized vulnerability in the KV cache. 
+ Experimental support, please
+ view the build logs 
+ for errors. Generated by
+ L
+ A 
+ T
+ E 
+ xml 
+ .
+@@@Instructions for reporting errors 
+ We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility and mobile
+ support. To report errors in the HTML that will help us improve conversion and rendering, choose any of the
+ methods listed below: 
+ Click the "Report Issue" ( 
+ ) button, located in the page header. 
+ Tip: You can select the relevant text first, to include it in your report. 
+ Our team has already identified the following issues . We appreciate your time reviewing and reporting rendering errors we
+ may not have found yet. Your efforts will help us improve the HTML versions for all readers, because disability
+ should not be a barrier to accessing research. Thank you for your continued support in championing open access for
+ all. 
+ Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML maintain a list of packages that need conversion , and welcome developer contributions . 
+ We gratefully acknowledge support from
+ our major funders ,
+ member institutions , ,
+ and all contributors.
+ About 
+ · 
+ Help 
+ · 
+ Contact 
+ · 
+ Subscribe 
+ · 
+ Copyright 
+ · 
+ Privacy 
+ · 
+ Accessibility 
+ · 
+ Operational Status (opens in new tab) 
+ Major funding support from 

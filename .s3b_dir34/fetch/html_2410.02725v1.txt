@@ -1,0 +1,594 @@
+ 
+ Adaptive Inference-Time Compute: LLMs Can Predict if They Can Do Better, Even Mid-Generation 
+ Report GitHub Issue 
+ × 
+ Title: 
+ Content selection saved. Describe the issue below:
+ Description: 
+ Submit without GitHub 
+ Submit in GitHub 
+ arXiv is now an independent nonprofit! 
+ Learn more 
+ × 
+ Back to arXiv 
+ Why HTML? 
+ Report Issue 
+ Back to Abstract 
+ Download PDF 
+ Abstract 
+ 1 Introduction 
+ 2 Preliminaries and Notation 
+ 3 Adaptive Inference-Time Compute via Capability-Aware and Mid-Generation Self-Evaluations 
+ 3.1 Capability-Aware and Mid-Generation Self-Evaluations 
+ 3.2 Making Best-of-N Efficient and Scalable 
+ 3.2.1 Adaptive Sampling and Annealing 
+ 3.2.2 Early Pruning of Unpromising Samples 
+ 4 Experiments 
+ 4.1 Training Data and Evaluations 
+ 4.2 Performance and Sample Efficiency 
+ 4.3 Efficiency and Scaling of Adaptive Sampling and Annealing 
+ 4.4 Efficiency Gains of Pruning Unpromising Samples 
+ 5 Related Work 
+ 6 Discussion, Conclusion, and Limitations 
+ References 
+ A Appendix 
+ A.1 Reproducability 
+ A.2 Comparing likelihoods 
+ A.3 Adaptive Sampling Results 
+ A.4 Early Pruning Results 
+ License: CC BY 4.0
+arXiv:2410.02725v1 [cs.CL] 03 Oct 2024
+ \reportnumber 
+ Adaptive Inference-Time Compute: 
+ LLMs Can Predict if They Can Do Better, 
+ Even Mid-Generation
+ Rohin Manvi*
+ Affiliation: Stanford University
+ Anikait Singh
+ Affiliation: Stanford University
+ Stefano Ermon
+ Affiliation: Stanford University
+ Corresponding author: rohinm@cs.stanford.edu
+ Abstract 
+ Inference-time computation is a powerful paradigm to enhance the performance of large language models (LLMs), with Best-of-N sampling being a widely used technique. However, this method is computationally expensive, requiring both (1) an external reward model and (2) the generation of multiple samples. In this work, we introduce a new generative self-evaluation scheme designed to adaptively reduce the number of generated samples while maintaining or even improving performance. We use a generative reward model formulation, allowing the LLM to predict mid-generation the probability that restarting the generation will yield a better response. These predictions are obtained without an external reward model and can be used to decide whether or not to generate more samples, prune unpromising samples early on, or to pick the best sample. This capability is very inexpensive as it involves generating a single predefined token. Trained using a dataset constructed with real unfiltered LMSYS user prompts, Llama 3.1 8B’s win rate against GPT-4 on AlpacaEval increases from 21% to 34% with 16 samples and math performance on GSM8K improves from 84% to 91%. By sampling only when the LLM determines that it is beneficial to do so and adaptively adjusting temperature annealing, we demonstrate that 74% of the improvement from using 16 samples can be achieved with only 1.2 samples on average. We further demonstrate that 50–75% of samples can be pruned early in generation with minimal degradation in performance. Overall, our methods enable more efficient and scalable compute utilization during inference for LLMs.
+ 1 Introduction
+ Figure 1 : Adaptive Inference-Time Compute : Strategies such as adaptive sampling (left) and early pruning (right) make compute utilization during inference far more efficient and scalable. 
+ Figure 2 : Capability-Aware and Mid-Generation Self-Evaluations enable adaptive inference-time compute strategies. They are obtained without an external reward model and can determine whether or not to generate more samples, prune unpromising samples early on, and pick the best sample. 
+ As large language models (LLMs) continue to advance, delivering high-quality responses across diverse applications becomes increasingly important. One promising direction to enhance response quality is the strategic use of inference-time computation, particularly through methods like Best-of-N sampling Snell et al. (2024) ; Charniak and Johnson (2005) ; Cobbe et al. (2021) , which selects the best response from multiple candidates. However, this method incurs substantial inference cost from querying an external reward model and producing a large, fixed number of samples.
+ In this work, we introduce a new reward modeling paradigm, which we denote as capability-aware self-evaluations . This paradigm allows for adaptive allocation of inference-time compute, aiming to reduce the computational overhead while maintaining or improving LLM performance across various domains. We demonstrate that LLMs can directly model the probability that restarting generation yields in a better response, enabling informed decisions about whether to continue generating a response, initiate new ones, as well as rank responses. These predictions are obtained by simply appending a predefined self-evaluation prompt to the partially or fully generated response and generating a single predefined token whose likelihood is used as the prediction. This is in contrast to preference-based reward models which can primarily only be used to rank responses.
+ Our self-evaluation method is highly cost-effective, requiring no external reward models and incurring only the minimal cost of generating a single token. In contrast, an external reward model inherently requires more memory and storage. Additionally, it is unable to reuse the KV cache obtained when generating the response and would have to process the input and response from scratch.
+ To demonstrate adaptive inference-time compute allocation, we introduce two techniques: (1) adaptive sampling and (2) early pruning of unpromising samples. Adaptive sampling involves resampling a response for a given prompt until it is predicted that further samples will not yield additional improvements, thus conserving computation for complex tasks that will benefit from it. Furthermore, early pruning discards samples midway through generation if they are likely to result in suboptimal completions. These are not possible with standard reward models.
+ To give an LLM the ability to self-evaluate, one must construct an on-policy pairwise preference dataset with ties. In our experimental evaluation, we construct a dataset of approximately 30,000 preferences constructed using real unfiltered LMSYS ( Chiang et al., 2024 ) user prompts and an existing reward model, ArmoRM ( Wang et al., 2024 ) trained on roughly 1 million preferences or ratings. With this dataset, we fine-tune a Llama 3.1 8B Instruct ( Dubey et al., 2024 ) model to self-evaluate and demonstrate significant performance improvements across both in-distribution and out-of-distribution tasks. Notably, as shown in Figure 1 , the win rate against GPT-4 on AlpacaEval increases from 21% to 34% with 16 samples, and performance on held-out GSM8K math problems improves from 84% to 91%. We find that with adaptive sampling, using just 1.2 samples on average captures 74% of the improvement observed with 16 samples and 1.9 samples captures 84%. Additionally, early pruning can prevent 75% of unpromising samples from being fully generated, saving 56% of tokens generated with very minimal degradation in performance.
+ Our approach allows for more efficient and scalable use of compute resources during inference. By enabling models to dynamically allocate compute during inference based on task complexity and the model’s capability, we optimize resource usage, ensuring efficiency in processing all types of prompts and tasks. This adaptability makes using inference-time compute far more practical and ready for the real world where LLMs are used for a wide variety of applications. 1 1 
+ 1 
+ Code for reproducibility can be found at in our public github implementation . 
+ 2 Preliminaries and Notation
+ An autoregressive language model generates a sequence 𝐲 = ( y 1 , y 2 , … , y T ) \mathbf{y}=(y_{1},y_{2},\dots,y_{T}) given an input context 𝐱 \mathbf{x} by predicting tokens sequentially. Assuming the model is parameterized by θ \theta , the conditional probability distribution of generating a sequence 𝐲 \mathbf{y} given context 𝐱 \mathbf{x} is
+ p θ ​ ( 𝐲 | 𝐱 ) = ∏ t = 1 T p θ ​ ( y t | 𝐱 , y < t ) , p_{\theta}(\mathbf{y}|\mathbf{x})=\prod_{t=1}^{T}p_{\theta}(y_{t}|\mathbf{x},y_{<t}), 
+ (2.1) 
+ with the convention y < t = ( y 1 , y 2 , … , y t − 1 ) y_{<t}=(y_{1},y_{2},\dots,y_{t-1}) . For ease of notation, we define p θ ​ ( y t | 𝐱 ) := p θ ​ ( y t | y < t , 𝐱 ) p_{\theta}(y_{t}|\mathbf{x}):=p_{\theta}(y_{t}|y_{<t},\mathbf{x}) . For a vocabulary size M M , the probability of predicting the t t -th token y t y_{t} is determined using a softmax with temperature γ \gamma on logit scores z z of all the tokens:
+ p θ ​ ( y t | 𝐱 ) = exp ⁡ ( z t / γ ) ∑ i = 1 M exp ⁡ ( z i / γ ) , p_{\theta}(y_{t}|\mathbf{x})=\frac{\exp(z_{t}/\gamma)}{\sum_{i=1}^{M}\exp(z_{i}/\gamma)}, 
+ (2.2) 
+ where z t = logit θ ​ ( y t | 𝐱 , y < t ) z_{t}=\text{logit}_{\theta}(y_{t}|\mathbf{x},y_{<t}) . Higher values of γ \gamma introduce more randomness; as the temperature γ \gamma approaches zero, the distribution becomes concentrated on the token with the highest logit.
+ Next-token prediction is a typical approach used for pre-training and fine-tuning of LLMs. In particular, supervised fine-tuning (SFT) minimizes the cross-entropy loss between the model’s predicted next token and the target token in a given sequence. Given a dataset 𝒟 = { ( 𝐱 , 𝐲 ) } \mathcal{D}=\{(\mathbf{x},\mathbf{y})\} of input context 𝐱 \mathbf{x} and target response 𝐲 \mathbf{y} , the SFT loss is given by:
+ ℒ SFT ​ ( θ , 𝒟 ) = − 𝔼 ( 𝐱 , 𝐲 ) ∼ 𝒟 ​ [ ∑ t = 1 | 𝐲 | log ⁡ p θ ​ ( y t | 𝐱 , y < t ) ] . \mathcal{L}_{\text{SFT}}(\theta,\mathcal{D})=-\mathbb{E}_{(\mathbf{x},\mathbf{y})\sim\mathcal{D}}\left[\sum_{t=1}^{|\mathbf{y}|}\log p_{\theta}(y_{t}|\mathbf{x},y_{<t})\right].\addcontentsline{lla}{section}{\numberline q:SFT} 
+ (2.3) 
+ On-policy pairwise preference dataset is a preference dataset that consists of responses generated by a single model:
+ 𝒟 preference = { ( 𝐱 , 𝐲 1 , 𝐲 2 , l ) i } i = 1 N , \mathcal{D}_{\text{preference}}=\left\{\left(\mathbf{x},\mathbf{y}_{1},\mathbf{y}_{2},l\right)_{i}\right\}_{i=1}^{N}, 
+ (2.4) 
+ where 𝐱 \mathbf{x} is the input, 𝐲 1 \mathbf{y}_{1} and 𝐲 2 \mathbf{y}_{2} are two responses generated by the model, and l l is the preference label that indicates the outcome of the comparison between 𝐲 1 \mathbf{y}_{1} and 𝐲 2 \mathbf{y}_{2} :
+ l = { 1 if ​ 𝐲 1 ​ resulted in a Win and ​ 𝐲 2 ​ resulted in a Loss ​ ( 𝐲 1 ≻ 𝐲 2 ) , 0 if ​ 𝐲 1 ​ and ​ 𝐲 2 ​ resulted in a Tie ​ ( 𝐲 1 ≈ 𝐲 2 ) , − 1 if ​ 𝐲 1 ​ resulted in a Loss and ​ 𝐲 2 ​ resulted in a Win ​ ( 𝐲 1 ≺ 𝐲 2 ) . l=\begin{cases}1&\text{if }\mathbf{y}_{1}\text{ resulted in a }\textit{Win}\text{ and }\mathbf{y}_{2}\text{ resulted in a }\textit{Loss}\penalty\ (\mathbf{y}_{1}\succ\mathbf{y}_{2}),\\
+0&\text{if }\mathbf{y}_{1}\text{ and }\mathbf{y}_{2}\text{ resulted in a }\textit{Tie}\penalty\ (\mathbf{y}_{1}\approx\mathbf{y}_{2}),\\
+-1&\text{if }\mathbf{y}_{1}\text{ resulted in a }\textit{Loss}\text{ and }\mathbf{y}_{2}\text{ resulted in a }\textit{Win}\penalty\ (\mathbf{y}_{1}\prec\mathbf{y}_{2}).\end{cases} 
+ (2.5) 
+ To simplify our analysis, we assume that the preference labels l l are based on an underlying reward function r ⁡ ( 𝐱 , 𝐲 ) r(\mathbf{x},\mathbf{y}) and a threshold ϵ \epsilon that defines if one completion is more preferred:
+ l = { 1 if ​ r ​ ( 𝐱 , 𝐲 1 ) − r ⁡ ( 𝐱 , 𝐲 2 ) > ϵ , 0 if ​ | r ⁡ ( 𝐱 , 𝐲 1 ) − r ⁡ ( 𝐱 , 𝐲 2 ) | ≤ ϵ , − 1 if ​ r ​ ( 𝐱 , 𝐲 1 ) − r ⁡ ( 𝐱 , 𝐲 2 ) < − ϵ . l=\begin{cases}1&\text{if }r(\mathbf{x},\mathbf{y}_{1})-r(\mathbf{x},\mathbf{y}_{2})>\epsilon,\\
+0&\text{if }\left|r(\mathbf{x},\mathbf{y}_{1})-r(\mathbf{x},\mathbf{y}_{2})\right|\leq\epsilon,\\
+-1&\text{if }r(\mathbf{x},\mathbf{y}_{1})-r(\mathbf{x},\mathbf{y}_{2})<-\epsilon.\end{cases} 
+ (2.6) 
+ Bradley-Terry (BT) ( Bradley and Terry, 1952 ) reward models consist of a base model θ B \theta_{B} and a shallow MLP reward head θ R \theta_{R} . They predict a scalar reward score R ^ = r θ B , θ R ​ ( 𝐱 , 𝐲 ) \hat{R}=r_{\theta_{B},\theta_{R}}(\mathbf{x},\mathbf{y}) given an input and response. They are initialized from a pretrained base model and a randomly initialized reward head, then trained on a dataset of N N examples, 𝒟 = { ( 𝐱 , 𝐲 win , 𝐲 loss ) i } i = 1 N \mathcal{D}=\{(\mathbf{x},\mathbf{y}_{\text{win}},\mathbf{y}_{\text{loss}})_{i}\}_{i=1}^{N} , where 𝐲 win \mathbf{y}_{\text{win}} is the preferred response and 𝐲 loss \mathbf{y}_{\text{loss}} is the dispreferred response. They are trained to predict a higher reward for 𝐲 win \mathbf{y}_{\text{win}} than for 𝐲 loss \mathbf{y}_{\text{loss}} under the Bradley-Terry model. This is achieved by minimizing:
+ ℒ R ​ M ​ ( θ B , θ R , D ) = − 𝔼 ( 𝐱 , 𝐲 loss , 𝐲 win ) ∼ D ​ [ log ⁡ ( σ ⁡ ( r θ B , θ R ​ ( 𝐱 , 𝐲 win ) − r θ B , θ R ​ ( 𝐱 , 𝐲 loss ) ) ) ] , \mathcal{L}_{RM}(\theta_{B},\theta_{R},D)=-\mathbb{E}_{(\mathbf{x},\mathbf{y}_{\text{loss}},\mathbf{y}_{\text{win}})\sim D}\left[\log\left(\sigma(r_{\theta_{B},\theta_{R}}(\mathbf{x},\mathbf{y}_{\text{win}})-r_{\theta_{B},\theta_{R}}(\mathbf{x},\mathbf{y}_{\text{loss}}))\right)\right], 
+ (2.7) 
+ Best-of-N ( Snell et al., 2024 ) is a widely used test-time compute approach to improve the performance of LLMs. Specifically, given a prompt, N N candidate responses from an LLM are scored using a reward model, and the highest-scoring response is filtered as the final response.
+ 3 Adaptive Inference-Time Compute via Capability-Aware and Mid-Generation Self-Evaluations
+ A simple, yet effective method for allocation of test-time compute is Best-of-N, allowing the model to improve upon its responses over greedy sampling. However, the generation of a large, fixed number of samples is computationally expensive and the efficacy of this approach relies heavily on the quality of an external reward model, which can additionally incur substantial computational cost. In the following section, we address the cost and robustness of the reward model by establishing a general framework for self-evaluation via token prediction. We show how to train capability-aware and mid-generation self-evaluators to reduce the cost of generating a large, fixed number of samples.
+ 3.1 Capability-Aware and Mid-Generation Self-Evaluations
+ In the classic reward modeling paradigm, a pre-trained LM is used as an initialization for reward modeling. However, this approach also relies on a newly added reward head to output the reward, which diverges from the token prediction task for which the LLM was trained, which can hurt performance for reward modeling. Additionally, generally preference-based reward models learn only to rank arbitrary responses. This may be limiting for comparing on-policy samples (such as those from Best-of-N) during inference to determine how good the response is with respect to the model’s own capabilities. Furthermore, reward models are generally only able to evaluate full responses. Responses that are clearly unpromising very early on in generation still have to be generated until the end for evaluation, wasting computational resources. Can we use an alternate paradigm to model rewards to address these limitations? 
+ We propose capability-aware and mid-generation self-evaluations, a paradigm in which we query the reward model to predict the probability that restarting generation will not yield a better response. This probability can be used to elicit adaptive test-time computation, where the model can dynamically allocate compute dependent on the difficulty of a query and its own capability. This is because to decide whether or not to allocate more compute to a given input, we need to know if it is fruitful to do so. For example, for easy queries, the model may have already outputted the best response it can, so resampling is unnecessary. Additionally, for difficult queries, sampling more may lead to a minor improvement in performance, leading to unfruitful resampling. We illustrate this paradigm in Figure 2 . Modeling this probability effectively has three components: (1) reward modeling using token prediction to better leverage the pretrained model’s existing knowledge and capabilities (2) relying on on-policy pairwise preferences and ties to model the probability that the model cannot generate a more preferred response (3) using truncated responses to model the probability that restarting generation will not yield a more preferred response. Traditional reward models can suffer at this task as they are model agnostic. Though these models can rank how different responses perform for a given task, they are unable to quantify how effective resampling would be (not capability aware). Furthermore, a desirable property for a reward model is to early stop the generation of samples that are not promising in order to give the model another chance without wasting compute.
+ Reward Modeling with Token Prediction. To obtain a self-evaluation of a response from an LLM, we simply append a predefined self-evaluation prompt I I to the generated response 𝐲 \mathbf{y} and obtain a score in the form of the likelihood of a predefined token t good t_{\text{good}} corresponding to the likelihood of the response being good. This approach allows us to acquire rewards without any external reward model, making it highly cost-effective as we can reuse the KV cache obtained during the generation of the response. Also, this leverages the existing zero-shot capability of the models to judge its own responses as a prior, which has been shown to be effective in works such as Madaan et al. (2023) .
+ Formally, given a preference dataset 𝒟 pref = { x , 𝐲 good , 𝐲 bad } \mathcal{D}_{\text{pref}}=\{x,\mathbf{y}_{\text{good}},\mathbf{y}_{\text{bad}}\} , which contains input context x x and response pairs y y , we can train a self-evaluation model by maximizing the likelihood of the good token log ⁡ p θ ​ ( t good ∣ ( 𝐱 , 𝐲 good ) ) \log p_{\theta}(t_{\text{good}}\mid(\mathbf{x},\mathbf{y}_{\text{good}})) for good responses 𝐲 good \mathbf{y}_{\text{good}} , and the likelihood of the bad token log ⁡ p θ ​ ( t bad ∣ ( 𝐱 , 𝐲 bad ) ) \log p_{\theta}(t_{\text{bad}}\mid(\mathbf{x},\mathbf{y}_{\text{bad}})) for bad responses 𝐲 bad \mathbf{y}_{\text{bad}} . To achieve this, we minimize the SFT loss in Equation 2.3 on a modified variant of the preference dataset 𝒟 self-evaluation \mathcal{D}_{\text{self-evaluation}} 
+ 𝒟 self-evaluation = { ( ( 𝐱 , 𝐲 good , I ) , t good ) } ∪ { ( ( 𝐱 , 𝐲 bad , I ) , t bad ) } . \displaystyle\mathcal{D}_{\text{self-evaluation}}=\{((\mathbf{x},\mathbf{y}_{\text{good}},I),t_{\text{good}})\}\cup\{((\mathbf{x},\mathbf{y}_{\text{bad}},I),t_{\text{bad}})\}. 
+ (3.1) 
+ During inference, we normalize the likelihood of t good t_{\text{good}} as the score to rank responses:
+ Score = p θ ​ ( t good ∣ 𝐱 , 𝐲 , I ) ∑ t ∈ { t good , t bad } p θ ​ ( t ∣ 𝐱 , 𝐲 , I ) . \displaystyle\text{Score}=\frac{p_{\theta}(t_{\text{good}}\mid\mathbf{x},\mathbf{y},I)}{\sum_{t\in\{t_{\text{good}},t_{\text{bad}}\}}p_{\theta}(t\mid\mathbf{x},\mathbf{y},I)}. 
+ (3.2) 
+ Given that the language model has a fixed vocab size | V | |V| , probability mass can be spuriously assigned to tokens t ∉ { t good , t bad } t\notin\{t_{\text{good}},t_{\text{bad}}\} , resulting in this normalization to be desirable.
+ Note: it is beneficial to establish within the self-evaluation prompt that the LLM has to perform a classification task and that the target tokens are natural responses to effectively leverage the zero-shot capability of the model. We find that with a poorly designed self-evaluation prompt I I , the model will overgeneralize during training and respond with t good t_{\text{good}} or t bad t_{\text{bad}} for all queries, regardless of relevance. We need to keep the underlying policy or model unchanged when learning to self-evaluate. To do so, we need the model’s prior distribution over tokens to be similar to what we expect after training where p θ ​ ( t good ∪ t bad ∣ 𝐱 , 𝐲 , I ) ≈ 1 p_{\theta}(t_{\text{good}}\cup t_{\text{bad}}\mid\mathbf{x},\mathbf{y},I)\approx 1 . Fortunately, this can easily be done by explicitly stating that the LLM should respond with only t good t_{\text{good}} or t bad t_{\text{bad}} in the self-evaluation prompt I I .
+ The probability that the model cannot generate a more preferred response can be easily derived from on-policy pairwise preferences and ties. It is the probability that the current sample 𝐲 \mathbf{y} results in a Win or a Tie against another sample 𝐲 ′ \mathbf{y}^{\prime} . More formally:
+ P 𝐲 ′ ∼ p θ ​ ( 𝐲 ∣ 𝐱 ) ​ ( r ⁡ ( 𝐱 , 𝐲 ) − r ⁡ ( 𝐱 , 𝐲 ′ ) ≥ − ϵ ) = P ⁡ ( Win ∪ Tie ∣ 𝐱 , 𝐲 ) . \displaystyle P_{\mathbf{y}^{\prime}\sim p_{\theta}(\mathbf{y}\mid\mathbf{x})}\left(r(\mathbf{x},\mathbf{y})-r(\mathbf{x},\mathbf{y}^{\prime})\geq-\epsilon\right)=P(\textit{Win}\cup\textit{Tie}\mid\mathbf{x},\mathbf{y}). 
+ (3.3) 
+ Accounting for ties in reward modeling is especially important for on-policy pairwise data where responses coming from the same model are very likely to be similar. Ties commonly occur when generating responses from the same model (e.g. 40% of the time) and are even more common with simple tasks. Since ties indicate that the model cannot do better, they are crucial when learning to do capability-aware self-evaluations. If ties are not specified, it is also harder to model the reward as the model has to distinguish between extremely similar responses. Furthermore, since ( 100 − 40 ) / 2 = (100-40)/2=\penalty\ 30% of samples result in a Loss , we see that the model can do significantly better on a query only roughly 30% of the time.
+ Notice that P ⁡ ( Win ∪ Tie ∣ 𝐱 , 𝐲 ) P(\textit{Win}\cup\textit{Tie}\mid\mathbf{x},\mathbf{y}) monotonically increases with the sample’s underlying reward r ⁡ ( 𝐱 , 𝐲 ) r(\mathbf{x},\mathbf{y}) . This means that it can also be used to determine if one sample has a higher reward than another. Since inference-time compute strategies only care about being able to rank responses, it turns out that modeling P ⁡ ( Win ∪ Tie ∣ 𝐱 , 𝐲 ) P(\textit{Win}\cup\textit{Tie}\mid\mathbf{x},\mathbf{y}) is more useful than r ⁡ ( 𝐱 , 𝐲 ) r(\mathbf{x},\mathbf{y}) since it can also be used inform decisions on whether or not to allocate more compute.
+ The probability that restarting generation will not yield a more preferred response can be used to evaluate the quality of a partial response 𝐲 1 : t \mathbf{y}_{1:t} . In the context of adaptive inference-time compute, if we find that this probability is low, we can stop spending additional inference resources on generating the remainder of the partial response, pruning this poor partial response. Again, in the context of on-policy pairwise preferences or ties, this probability is simply P ⁡ ( Win ∪ Tie ) P(\textit{Win}\cup\textit{Tie}) conditioned on a partial response 𝐲 1 : t \mathbf{y}_{1:t} :
+ P 𝐲 ′ ∼ p θ ​ ( 𝐲 ∣ 𝐱 ) 𝐲 t + 1 : T ∼ p θ ( 𝐲 t + 1 : T ∣ 𝐱 , 𝐲 1 : t ) ( r ( 𝐱 , 𝐲 1 : T ) − r ( 𝐱 , 𝐲 ′ ) ≥ − ϵ ) = P ( Win ∪ Tie ∣ 𝐱 , 𝐲 1 : t ) . P_{\begin{subarray}{c}\mathbf{y}^{\prime}\sim p_{\theta}(\mathbf{y}\mid\mathbf{x})\\
+\mathbf{y}_{t+1:T}\sim p_{\theta}(\mathbf{y}_{t+1:T}\mid\mathbf{x},\mathbf{y}_{1:t})\end{subarray}}\left(r(\mathbf{x},\mathbf{y}_{1:T})-r(\mathbf{x},\mathbf{y}^{\prime})\geq-\epsilon\right)=P(\textit{Win}\cup\textit{Tie}\mid\mathbf{x},\mathbf{y}_{1:t}). 
+ (3.4) 
+ Modeling these probabilities with an on-policy pairwise preference dataset with ties. To train LLMs to make capability-aware self-evaluations, we construct a dataset derived from an on-policy pairwise preference dataset with ties, where good responses are those that resulted in a Win or Tie ( 𝐲 win \mathbf{y}_{\text{win}} , 𝐲 tie \mathbf{y}_{\text{tie}} ), and bad responses are those that resulted in a Loss ( 𝐲 loss \mathbf{y}_{\text{loss}} ). To train LLMs to make capability-aware self-evaluations mid-generation, we simply include the same examples but with responses randomly truncated ( 𝐲 win,trunc , 𝐲 tie,trunc , 𝐲 loss,trunc \mathbf{y}_{\text{win,trunc}},\mathbf{y}_{\text{tie,trunc}},\mathbf{y}_{\text{loss,trunc}} ).
+ We use the following self-evaluation prompt and target tokens:
+ I = ‘Would you do better if you started over? (“Yes." or “No.")’ I=\text{`Would you do better if you started over? (``Yes." or ``No.")'} 
+ t good = ‘No’ , t bad = ‘Yes’ t_{\text{good}}=\text{`No'},\quad t_{\text{bad}}=\text{`Yes'} 
+ Our final dataset 𝒟 capability-aware \mathcal{D}_{\text{capability-aware}} , used to minimize the SFT loss ( Equation 2.3 ), is constructed as:
+ 𝒟 capability-aware = { ( ( 𝐱 , 𝐲 win , I ) , t good ) } ∪ { ( ( 𝐱 , 𝐲 tie , I ) , t good ) } ∪ { ( ( 𝐱 , 𝐲 loss , I ) , t bad ) } \mathcal{D}_{\text{capability-aware}}=\{((\mathbf{x},\mathbf{y}_{\text{win}},I),t_{\text{good}})\}\cup\{((\mathbf{x},\mathbf{y}_{\text{tie}},I),t_{\text{good}})\}\cup\{((\mathbf{x},\mathbf{y}_{\text{loss}},I),t_{\text{bad}})\} 
+ (3.5) 
+ ∪ { ( ( 𝐱 , 𝐲 win,trunc , I ) , t good ) } ∪ { ( ( 𝐱 , 𝐲 tie,trunc , I ) , t good ) } ∪ { ( ( 𝐱 , 𝐲 loss,trunc , I ) , t bad ) } . \cup\penalty\ \{((\mathbf{x},\mathbf{y}_{\text{win,trunc}},I),t_{\text{good}})\}\cup\{((\mathbf{x},\mathbf{y}_{\text{tie,trunc}},I),t_{\text{good}})\}\cup\{((\mathbf{x},\mathbf{y}_{\text{loss,trunc}},I),t_{\text{bad}})\}. 
+ During inference, we compute the normalized likelihood of the t good t_{\text{good}} (‘No’) token to score full or partial responses:
+ p θ ( Win ∪ Tie ∣ 𝐱 , 𝐲 1 : t ) = p θ ( t good ∣ 𝐱 , 𝐲 1 : t , I ) ∑ t ∈ { t good , t bad } p θ ( t ∣ 𝐱 , 𝐲 1 : t , I ) p_{\theta}(\textit{Win}\cup\textit{Tie}\mid\mathbf{x},\mathbf{y}_{1:t})=\frac{p_{\theta}(t_{\text{good}}\mid\mathbf{x},\mathbf{y}_{1:t},I)}{\sum_{t\in\{t_{\text{good}},t_{\text{bad}}\}}p_{\theta}(t\mid\mathbf{x},\mathbf{y}_{1:t},I)}\addcontentsline{lla}{section}{\numberline q:score} 
+ (3.6) 
+ Takeaways for Capability-Aware and Mid-Generation Self-Evaluations 
+ Though traditional reward models can rank samples from a model effectively, they cannot quantify how much better a model can do if it resamples. We introduce capability-aware self-evaluation which allows a model to model the probability that it cannot generate a more preferred response. This consists of three components: (1) reward modeling using token prediction to better leverage the pretrained model’s existing knowledge and capabilities (2) relying on on-policy pairwise preferences and ties to model the probability that the model cannot generate a more preferred response, (3) using truncated responses to model the probability that restarting generation will not yield a more preferred response to consider the efficacy of partial completions. We will now explore how these techniques can be used to make Best-of-N more efficient and scalable. 
+ 3.2 Making Best-of-N Efficient and Scalable
+ Best-of-N is very computationally expensive, as it requires the generation of a large, fixed number of samples. This leads to wasted computation on queries that do not require more compute, and underutilization of compute on queries that could benefit from it. To remedy this and make Best-of-N more practical, we introduce two new primitives that leverage the capability-aware and mid-generation self-evaluations that we introduced in the last section. The first is adaptive sampling, where additional samples are allocated to a query only if they are predicted to be beneficial. The second is early pruning, where unpromising samples are stopped from being generated further to save inference computation.
+ 3.2.1 Adaptive Sampling and Annealing
+ We introduce adaptive sampling as a technique to allocate inference-time compute only when it is beneficial to do so. We further introduce exponentially increasing parallel sampling to mitigate the main disadvantage of adaptive sampling, latency. Finally, we introduce a temperature annealing strategy to balance exploration and exploitation while adaptively sampling and boost efficiency.
+ Resampling until meeting a threshold. We adaptively sample by resampling only when the model predicts it can produce a better response. We do so by computing the likelihood that the model cannot generate a better response p θ ​ ( Win ∪ Tie ∣ 𝐱 , 𝐲 ) p_{\theta}(\textit{Win}\cup\textit{Tie}\mid\mathbf{x},\mathbf{y}) for every sample. If this probability exceeds a predefined threshold τ \tau for any sample, we stop resampling and select the sample with the highest p θ ​ ( Win ∪ Tie ∣ 𝐱 , 𝐲 ) p_{\theta}(\textit{Win}\cup\textit{Tie}\mid\mathbf{x},\mathbf{y}) as the final response. Otherwise, we resample, repeating this process until the threshold is met or a maximum number of samples N max N_{\text{max}} is reached. This approach concentrates computational resources on prompts where improvement is likely, avoiding unnecessary sampling when further gains are improbable.
+ Increasing number of parallel samples exponentially. To reduce latency, we sample in exponentially increasing batch sizes. Specifically, for the k k -th sampling iteration, the batch size N k N_{k} is defined as:
+ N 1 = 1 , N k = 2 k − 2 for ​ k > 1 . N_{1}=1,\quad N_{k}=2^{k-2}\quad\text{for}\ k>1. 
+ (3.7) 
+ This ensures that the cumulative number of samples by the k k -th iteration is 2 k − 1 2^{k-1} . This exponential increase minimizes latency, reducing the number of iterations needed to meet N max N_{\text{max}} , while allowing for enough self-evaluations to determine if larger batches of samples are necessary.
+ Temperature annealing schedule based on number of samples generated so far. To balance exploitation and exploration, we vary the temperature γ \gamma . The temperature for the k k -th iteration is given by:
+ γ k = 1 − 2 − ( k − 1 ) . \gamma_{k}=1-2^{-(k-1)}. 
+ (3.8) 
+ Initially, the temperature starts low (e.g., γ 1 = 0 \gamma_{1}=0 ) to prioritize high-probability responses. As k k increases, γ k \gamma_{k} quickly approaches 1, encouraging more diverse and creative sampling. This annealing schedule allows the model to first focus on exploiting the most likely responses, then explore alternative options as more samples are generated.
+ Algorithm 1 Adaptive Sampling and Annealing 
+ 1: 
+ Input prompt 𝐱 \mathbf{x} , maximum samples N max N_{\text{max}} , threshold τ \tau 
+ 2: 
+ Initialize k ← 1 k\leftarrow 1 , N cum ← 0 N_{\text{cum}}\leftarrow 0 , 𝒮 ← ∅ \mathcal{S}\leftarrow\emptyset 
+ 3: 
+ while N cum < N max N_{\text{cum}}<N_{\text{max}} do 
+ 4: 
+    N k ← 1 N_{k}\leftarrow 1 if k = 1 k=1 else 2 k − 2 2^{k-2} 
+ 5: 
+    N cum ← N cum + N k N_{\text{cum}}\leftarrow N_{\text{cum}}+N_{k} 
+ 6: 
+    γ k ← 1 − 2 − ( k − 1 ) \gamma_{k}\leftarrow 1-2^{-(k-1)} 
+ 7: 
+   Sample N k N_{k} responses { 𝐲 i } i = 1 N k \{\mathbf{y}_{i}\}_{i=1}^{N_{k}} using temperature γ k \gamma_{k} 
+ 8: 
+    for each 𝐲 i \mathbf{y}_{i} in { 𝐲 i } i = 1 N k \{\mathbf{y}_{i}\}_{i=1}^{N_{k}} do 
+ 9: 
+    Compute p i ← p θ ​ ( Win ∪ Tie ∣ 𝐱 , 𝐲 i ) p_{i}\leftarrow p_{\theta}(\textit{Win}\cup\textit{Tie}\mid\mathbf{x},\mathbf{y}_{i}) ; add ( 𝐲 i , p i ) (\mathbf{y}_{i},p_{i}) to 𝒮 \mathcal{S} 
+ 10: 
+    end for 
+ 11: 
+    if Any p i > τ p_{i}>\tau then break 
+ 12: 
+    end if 
+ 13: 
+    k ← k + 1 k\leftarrow k+1 
+ 14: 
+ end while 
+ 15: 
+ Select 𝐲 ∗ \mathbf{y}^{*} from 𝒮 \mathcal{S} with highest p i p_{i} 
+ 16: 
+ Return 𝐲 ∗ \mathbf{y}^{*} 
+ 3.2.2 Early Pruning of Unpromising Samples
+ One downside to adaptive sampling requires the generation of samples in series, which introduces latency. However, can we still leverage parallel sampling to avoid increasing the latency of response generation but still enable adaptive test-time compute allocation? One approach to reducing computational costs in parallel generation is to early prune unpromising samples based on mid-generation self-evaluations.
+ When to prune. Pruning too early risks discarding samples that could improve, while pruning too late offers minimal savings. Thus, we balance this trade-off when selecting the fixed number of initial tokens (e.g., 64 or 128) before making any pruning decisions.
+ Which samples to prune. After generating an initial number of tokens, we compute the intermediate self-evaluations for each partially generated sample. After ranking samples by the resulting scores, we stop the generation of the bottom x % x\% (e.g., 50% or 75%) to conserve computation. This ensures that only the most promising partial samples continue to be generated.
+ Takeaways for Scaling Best-of-N 
+ We discuss two strategies to efficiently scale Best-of-N leveraging Capability-Aware and Mid-Generation Self-Evaluation: (1) Adaptive Sampling and Annealing and (2) Early Pruning of Unpromising Samples. For adaptive sampling, we allocate inference-time compute dynamically by exponentially increasing the number of samples for Best-of-N. This allows us to increase the number of samples for more difficult queries, while saving samples on easier or intractable queries. Early Pruning takes an alternative approach, where a larger sample budget is initially used to sample a fixed number of tokens (e.g 128 or 256), at which point (mid-generation), a self-evaluation is done, where the least promising samples are pruned to conserve computation. 
+ 4 Experiments
+ We evaluate our methods by first examining the sample efficiency of self-evaluation. We then evaluate its impact on optimizing inference-time compute with adaptive sampling and early pruning of unpromising samples.
+ 4.1 Training Data and Evaluations
+ Construction of On-Policy Pairwise Preference Dataset with Ties. Training reward models typically requires human-labeled preferences, which are costly to obtain, especially for on-policy data generated by the model being trained. To mitigate this, we utilize an existing reward model, ArmoRM ( Wang et al., 2024 ) trained on approximately 1,000,000 preferences. This reward model serves as our underlying reward r ⁡ ( 𝐱 , 𝐲 ) r(\mathbf{x},\mathbf{y}) .
+ We conduct our experiments using the Llama 3.1 8B Instruct model, which is fine-tuned on a preference dataset of 50,000 real user prompts from LMSYS ( Chiang et al., 2024 ) and pairs of on-policy responses (sampled from the same Llama 3.1 8B Instruct model). These responses are scored using ArmoRM, the underlying reward. Preferences or ties between responses are determined using a threshold ϵ \epsilon of 0.01 on the reward difference, resulting in an on-policy pairwise preference dataset with approximately 40% ties.
+ Evaluation Protocol 
+We evaluate the performance of our self-evaluation model and adaptive test-time compute approaches in two domains: (1) the AlpacaEval ( Dubois et al., 2024 ) benchmark and (2) the GSM8K dataset ( Cobbe et al., 2021 ) . AlpacaEval 2.0 is an automatic benchmark that compares model responses to those generated by GPT-4 across approximately 800 representative prompts. The final metric is the win rate against GPT-4, adjusted to increase correlation with human preferences (Spearman correlation of 0.98). While highly correlated with human judgments, this metric is relative—it measures success based on outperforming another model rather than achieving absolute human satisfaction. GSM8K is a collection of 8.5K grade school math word problems involving multi-step reasoning and basic arithmetic operations. We use GSM8K as it is a popular benchmark for reasoning as well as absolute measure of performance that is not relative to another LLM. This is particularly useful in evaluating adaptive sampling where it allocates compute resources to queries that benefit from it.
+ 4.2 Performance and Sample Efficiency
+ Benchmark 
+ Random 
+ Zero-Shot 
+ Bradley-Terry 
+ Capability-Aware 
+ Underlying 
+ (1 sample) 
+ (LLM-as-a-Judge) 
+ Reward Model 
+ p θ ​ ( Win ∪ Tie ) p_{\theta}(\textit{Win}\cup\textit{Tie}) 
+ r ⁡ ( 𝐱 , 𝐲 ) r(\mathbf{x},\mathbf{y}) 
+ AlpacaEval 
+ 21.2 
+ 24.4 
+ 33.2 
+ 33.8 
+ 36.3 
+ GSM8K 
+ 84.2 
+ 86.7 
+ 87.7 
+ 91.0 
+ 92.6 
+ Table 1: Best-of-16 Performance on AlpacaEval (Win Rate vs GPT-4, %) and GSM8K (%) using capability-aware self-evaluations using token prediction, LLM-as-a-Judge which also uses token prediction but without finetuning, the commonly used Bradley-Terry external reward model, and the underlying reward model used to create our experimental preference data. 
+ Baselines. To evaluate performance with Best-of-N, we use two baselines. The Zero-Shot (LLM-as-a-Judge) baseline uses Llama 3.1 8B Instruct without additional training. We prompt and get scores for zero-shot predictions in the exact same manner that we do for capability-aware self-evaluations. The Bradley-Terry Reward Model also uses Llama 3.1 8B Instruct as the base model and is trained using the same on-policy pairwise preference dataset with ties.
+ As shown in Table 1 , the zero-shot approach performs modestly on both benchmarks, confirming that LLMs have a non-trivial ability to self-evaluate. The Bradley-Terry reward model unsurprisingly does much better. Our token prediction method outperforms both. On AlpacaEval, it achieves a 33.8% win rate against GPT-4 using Best-of-16 sampling, slightly surpassing the Bradley-Terry model’s 33.2% and nearing the underlying reward model’s 36.3% (trained on 1 million preferences). On GSM8K, token prediction attains 91.0% accuracy, significantly outperforming the Bradley-Terry model’s 87.7%. This suggests that our method is more sample-efficient and generalizes better, especially on queries that might be uncommon among real user prompts like those in GSM8K.
+ These results demonstrate that token prediction effectively leverages the pre-trained model’s priors for self-evaluation, approaching the performance of the larger Llama 3.1 70B, which achieves 38.1% on AlpacaEval and 95.1% on GSM8K. With additional data and hyperparameter tuning, we anticipate that we can easily further close the gap with the underlying reward.
+ We also examined other probabilities to model with token prediction, specifically p θ ​ ( Win ) p_{\theta}(\textit{Win}) or p θ ​ ( Win ∣ ¬ Tie ) p_{\theta}(\textit{Win}\mid\neg\textit{Tie}) . Our findings, as shown in Table 3 , indicate that including or removing ties does not significantly impact performance, but modeling p θ ​ ( Win ) p_{\theta}(\textit{Win}) is significantly more difficult as it forces the model to distinguish between samples that result in wins or ties, which are both cases in which the model performs relatively well for its capability.
+ Notably, using Best-of-N sampling with our methods allows the Llama 3.1 8B model to approach the performance of Llama 3.1 70B, a model roughly 10 × 10\times larger that gets 38.1% and 95.1% respectively. This highlights the efficacy of Best-of-N sampling in enhancing model performance. In the following section, we address the expensive nature of this method with adaptive compute strategies.
+ Win-or-Tie Probability Threshold 
+ 0.92 
+ 0.96 
+ 0.98 
+ 0.99 
+ 1.00 
+ Average Samples Used 
+ 1.2 
+ 1.9 
+ 3.7 
+ 6.8 
+ 16.0 
+ Average Batches Used (Latency) 
+ 1.1 
+ 1.4 
+ 2.0 
+ 2.9 
+ 5.0 
+ GSM8K Pass@1 (%) 
+ 89.2 
+ 89.9 
+ 90.8 
+ 90.8 
+ 91.0 
+ Percent of Maximum Improvement 
+ 73.5 
+ 83.8 
+ 97.1 
+ 97.1 
+ 100.0 
+ Table 2: Adaptive Sampling and Annealing performance gains and efficiency on GSM8K. 
+ 4.3 Efficiency and Scaling of Adaptive Sampling and Annealing
+ We evaluate the efficiency gains and performance trade-offs of our adaptive sampling and annealing strategy on the GSM8K dataset. Our objective is to retain the performance benefits of Best-of-16 sampling while significantly reducing the average number of samples used and minimizing latency. We want to evaluate the methods’ ability to allocate samples when necessary. For our experiments, the capability-aware self-evaluations are always used to select the best sample. This is so that the final selection method is not a confounding factor.
+ As a baseline, we first assess the performance Best-of-N. The best sample is selected using self-evaluation with token prediction. Figure 1 shows that increasing the number of samples from 1 to 16 incrementally improves the GSM8K Pass@1 accuracy from 84.2% to 91.0%. This represents the maximum achievable performance with our method, which we define as 100% of the maximum improvement. However, generating a fixed large number of samples per query is expensive.
+ To mitigate this, we introduce adaptive sampling controlled by a threshold τ \tau and a maximum number of samples N max N_{\text{max}} . Initially, we test adaptive sampling using the underlying reward model to decide whether to generate additional samples. As shown in Figure 1 , this approach does not significantly outperform random selection. While the underlying reward model effectively ranks responses, it does not consider the model’s capability to improve upon its own outputs, substantially limiting its effectiveness in informing resampling decisions.
+ In contrast, our adaptive sampling method utilizing capability-aware self-evaluations via token prediction yields substantial efficiency gains. Table 4 demonstrates that by adjusting the threshold τ \tau for the win-or-tie probability p θ ​ ( Win ∪ Tie ∣ 𝐱 , 𝐲 ) p_{\theta}(\textit{Win}\cup\textit{Tie}\mid\mathbf{x},\mathbf{y}) , we can control the average number of samples. For instance, setting τ = 0.98 \tau=0.98 results in 97.1% of the maximum performance while using only an average of 4.1 samples, compared to the 16 samples required for maximum performance.
+ Moreover, incorporating the annealing schedule further enhances performance, particularly at lower thresholds. As illustrated in Table 2 , with annealing, we achieve 73.5% of the maximum improvement using an average of just 1.2 samples when τ = 0.92 \tau=0.92 . This indicates that our annealing strategy effectively balances exploitation and exploration during sampling.
+ Our adaptive sampling approach offers significant compute savings compared to Best-of-N. By adjusting τ \tau and N max N_{\text{max}} , we can fine-tune the trade-off between performance and efficiency. The latency introduced by adaptive sampling is minimal due to the exponentially increasing batch sizes.
+ 4.4 Efficiency Gains of Pruning Unpromising Samples
+ Figure 3 : Early Pruning performance gains and efficiency on AlpacaEval. 
+ We evaluate the efficiency gains from early pruning of unpromising samples on the AlpacaEval benchmark. We begin with 16 samples and prune from them. Our primary metrics are the percent of maximum improvement achieved and the number of tokens generated per prompt. The latter is a more accurate measure of computational cost than the number of full samples generated, as partial responses also consume computational resources.
+ Our experiments control two variables: the number of tokens generated before making pruning decisions (64 or 128 tokens), and the percentage of samples pruned (e.g., pruning 75%). Again, the capability-aware self-evaluations are used the final sample selection method.
+ Impact of Evaluation Timing on Performance. As shown in Figure 1 , pruning at 64 tokens improves performance over random pruning at 0 tokens. For instance, pruning 50% of samples at 64 tokens achieves a win rate of 33.4%, closely approaching the maximum of 33.8% without pruning. The timing of when we perform self-evaluations significantly affects performance. Pruning at 128 tokens yields even better results. Pruning 75% of samples at 128 tokens attains a win rate of 33.2%, nearly matching the maximum performance without pruning. This improvement is expected, as longer partial responses provide more context for accurate self-evaluation.
+ Overall, there are substantial savings if one prunes at the right time and the right number of samples. In terms of computational cost measured by number of tokens, pruning 75% of 16 samples at 128 tokens reduces the average number of tokens generated per prompt from 7,259 to 3,220 as shown in Figure 3 , resulting in significant efficiency gains.
+ 5 Related Work
+ Reward Modeling in RLHF. Traditionally, reward models (RMs) within Reinforcement Learning with Human Feedback (RLHF) have been trained using discriminative techniques, often drawing on ranking models like the Bradley-Terry (BT) framework ( Bradley and Terry, 1952 ) . These RMs are generally treated as binary classifiers, distinguishing between preferred and dispreferred completions for a given prompt ( Stiennon et al., 2020 ; Ouyang et al., 2022 ) . The preference signal is predicted by generating a continuous score, typically derived from a linear head appended to an autoregressive language model. An alternative line of work departs from this discriminative paradigm by directly modeling preferences through joint probability estimations, as seen in methods that predict the likelihood of one response being preferred over another ( An et al., 2023 ) .
+ Recent advancements in RLHF have introduced implicit reward models that circumvent the necessity for a distinct reward classifier by learning the distribution of preferred and dispreferred completions via objectives like Direct Preference Optimization (DPO) ( Rafailov et al., 2023 ) and Implicit Preference Optimization (IPO) ( Gheshlaghi Azar et al., 2023 ) . These methods embed preference learning directly into the policy optimization process, unlike explicit preference modeling.
+ Another approach to reward modeling is the application of prompting techniques, such as the “LLM as a Judge” framework ( Zheng et al., 2023 ) , where large language models (LLMs) are prompted to act as evaluators without additional finetuning. Despite the potential of these methods, even advanced models like GPT-4o underperform when compared to dedicated RMs in more complex evaluations, such as those found in the RewardBench benchmark ( Lambert et al., 2024 ) .
+ Techniques for Inference-time Compute. During inference, the integration of a reward model with a proposal distribution (LLM) can be employed to refine the output responses to a given prompt. One notable paradigm in this context is Self-Consistency ( Wang et al., 2023 ) , which is designed for factual queries with extractable answers. In this approach, the language model selects the response it generates with the highest frequency across multiple samples. Optimizations such as Early Stopping Self-Consistency have been proposed, which terminate the sampling process early if a subset of responses shows strong consistency. However, these approaches face limitations due to their dependence on identifying the most “consistent" response from a large pool of discrete answers, restricting their applicability to tasks like multiple-choice or mathematical problem-solving.
+ In addition, search algorithms such as Best-of-N and Beam Search have been explored in works such as Snell et al. (2024) , which leverage reward models to select the most promising candidate samples in reasoning tasks. In this work, we examine how to enhance the efficiency of token generation relative to the accuracy of the outputs, with the complexity of the query dictating the amount of inference compute allocation. Furthermore, for multi-step reasoning tasks, this work presupposes that the problem can be decomposed into discrete semantic steps—a potentially strong assumption in domains outside of well-structured fields like mathematics.
+ Generative Verifiers. Recent concurrent work, such as GenRM ( Zhang et al., 2024 ) and Cloud ( Ankner et al., 2024 ) , demonstrate that token-prediction-based reward modeling outperforms traditional reward modeling techniques. In this work, we further introduce capability-aware self-evaluation, which allows a model to understand its own generation capability to enable dynamic allocation of computational resources during test-time inference. We also introduce mid-generation self-evaluations that can allow for the pruning of unpromising samples.
+ 6 Discussion, Conclusion, and Limitations
+ As large language models (LLMs) evolve, enhancing response quality through inference-time computation becomes critical. Best-of-N sampling, a traditional approach, generates multiple response candidates and selects the best, but it incurs high computational costs due to its reliance on external reward models and fixed sample sizes. This work introduces a cost-effective alternative: capability-aware self-evaluations performed mid-generation. By appending a self-evaluation prompt to responses, LLMs predict the likelihood of generating a better response without requiring external reward models. Two adaptive inference-time techniques—adaptive sampling and early pruning—are also proposed, allowing LLMs to resample or discard suboptimal responses during generation dynamically. These methods significantly improve efficiency, with fewer samples yielding performance gains similar to a larger set, and early pruning reducing unnecessary computation. Experimental results demonstrate notable improvements in performance across tasks, achieving a 34% win rate against GPT-4 on AlpacaEval with 16 samples and increasing accuracy on GSM8K math problems from 84% to 91%. Overall, this approach optimizes inference-time compute allocation, making it more scalable and practical for diverse real-world applications.
+ The main limitation of our method is that adaptive sampling introduces latency, which otherwise would not be a problem with only parallel sampling. We minimized this with exponentially increasing batch sizes. We also introduced early pruning to save computation even in parallel sampling. For future work, it may be possible to predetermine the number of samples one needs to allocate to a given query based on the probabiliy that samples result in a Tie . While this would be significantly less efficient than adaptive sampling, it would eliminate latency for adaptive sampling. It may be possible to do different types of search with active capability-aware self-evaluations. Beam search or other similar types of search may be possible on general prompts with this new capability.
+ References
+ An et al. (2023) 
+Gaon An, Junhyeok Lee, Xingdong Zuo, Norio Kosaka, Kyung-Min Kim, and Hyun Oh Song.
+ Direct preference-based policy optimization without reward modeling, 2023.
+ URL https://arxiv.org/abs/2301.12842 .
+ Ankner et al. (2024) 
+Zachary Ankner, Mansheej Paul, Brandon Cui, Jonathan D. Chang, and Prithviraj Ammanabrolu.
+ Critique-out-loud reward models, 2024.
+ URL https://arxiv.org/abs/2408.11791 .
+ Bradley and Terry (1952) 
+Ralph Allan Bradley and Milton E. Terry.
+ Rank analysis of incomplete block designs: I. the method of paired comparisons.
+ Biometrika , 39(3/4):324–345, 1952.
+ ISSN 00063444.
+ URL http://www.jstor.org/stable/2334029 .
+ Charniak and Johnson (2005) 
+Eugene Charniak and Mark Johnson.
+ Coarse-to-fine n-best parsing and maxent discriminative reranking.
+ In Proceedings of the 43rd Annual Meeting on Association for Computational Linguistics , ACL ’05, page 173–180, USA, 2005. Association for Computational Linguistics.
+ 10.3115/1219840.1219862 .
+ URL https://doi.org/10.3115/1219840.1219862 .
+ Chiang et al. (2024) 
+Wei-Lin Chiang, Lianmin Zheng, Ying Sheng, Anastasios Nikolas Angelopoulos, Tianle Li, Dacheng Li, Hao Zhang, Banghua Zhu, Michael Jordan, Joseph E. Gonzalez, and Ion Stoica.
+ Chatbot arena: An open platform for evaluating llms by human preference, 2024.
+ URL https://arxiv.org/abs/2403.04132 .
+ Cobbe et al. (2021) 
+Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, Christopher Hesse, and John Schulman.
+ Training verifiers to solve math word problems, 2021.
+ URL https://arxiv.org/abs/2110.14168 .
+ Dubey et al. (2024) 
+Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, and et al.
+ The llama 3 herd of models, 2024.
+ Dubois et al. (2024) 
+Yann Dubois, Xuechen Li, Rohan Taori, Tianyi Zhang, Ishaan Gulrajani, Jimmy Ba, Carlos Guestrin, Percy Liang, and Tatsunori B. Hashimoto.
+ Alpacafarm: A simulation framework for methods that learn from human feedback, 2024.
+ Gheshlaghi Azar et al. (2023) 
+Mohammad Gheshlaghi Azar, Mark Rowland, Bilal Piot, Daniel Guo, Daniele Calandriello, Michal Valko, and Rémi Munos.
+ A General Theoretical Paradigm to Understand Learning from Human Preferences.
+ arXiv e-prints , art. arXiv:2310.12036, October 2023.
+ 10.48550/arXiv.2310.12036 .
+ Lambert et al. (2024) 
+Nathan Lambert, Valentina Pyatkin, Jacob Morrison, LJ Miranda, Bill Yuchen Lin, Khyathi Chandu, Nouha Dziri, Sachin Kumar, Tom Zick, Yejin Choi, Noah A. Smith, and Hannaneh Hajishirzi.
+ Rewardbench: Evaluating reward models for language modeling, 2024.
+ URL https://arxiv.org/abs/2403.13787 .
+ Madaan et al. (2023) 
+Aman Madaan, Niket Tandon, Prakhar Gupta, Skyler Hallinan, Luyu Gao, Sarah Wiegreffe, Uri Alon, Nouha Dziri, Shrimai Prabhumoye, Yiming Yang, Shashank Gupta, Bodhisattwa Prasad Majumder, Katherine Hermann, Sean Welleck, Amir Yazdanbakhsh, and Peter Clark.
+ Self-refine: Iterative refinement with self-feedback, 2023.
+ URL https://arxiv.org/abs/2303.17651 .
+ Ouyang et al. (2022) 
+Long Ouyang, Jeff Wu, Xu Jiang, Diogo Almeida, Carroll L. Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, John Schulman, Jacob Hilton, Fraser Kelton, Luke Miller, Maddie Simens, Amanda Askell, Peter Welinder, Paul Christiano, Jan Leike, and Ryan Lowe.
+ Training language models to follow instructions with human feedback, 2022.
+ Rafailov et al. (2023) 
+Rafael Rafailov, Archit Sharma, Eric Mitchell, Stefano Ermon, Christopher D Manning, and Chelsea Finn.
+ Direct preference optimization: Your language model is secretly a reward model.
+ arXiv preprint arXiv:2305.18290 , 2023.
+ Snell et al. (2024) 
+Charlie Snell, Jaehoon Lee, Kelvin Xu, and Aviral Kumar.
+ Scaling llm test-time compute optimally can be more effective than scaling model parameters, 2024.
+ URL https://arxiv.org/abs/2408.03314 .
+ Stiennon et al. (2020) 
+Nisan Stiennon, Long Ouyang, Jeff Wu, Daniel M. Ziegler, Ryan Lowe, Chelsea Voss, Alec Radford, Dario Amodei, and Paul F. Christiano.
+ Learning to summarize from human feedback.
+ CoRR , abs/2009.01325, 2020.
+ URL https://arxiv.org/abs/2009.01325 .
+ Wang et al. (2024) 
+Haoxiang Wang, Wei Xiong, Tengyang Xie, Han Zhao, and Tong Zhang.
+ Interpretable preferences via multi-objective reward modeling and mixture-of-experts, 2024.
+ URL https://arxiv.org/abs/2406.12845 .
+ Wang et al. (2023) 
+Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc Le, Ed Chi, Sharan Narang, Aakanksha Chowdhery, and Denny Zhou.
+ Self-consistency improves chain of thought reasoning in language models, 2023.
+ URL https://arxiv.org/abs/2203.11171 .
+ Zhang et al. (2024) 
+Lunjun Zhang, Arian Hosseini, Hritik Bansal, Mehran Kazemi, Aviral Kumar, and Rishabh Agarwal.
+ Generative verifiers: Reward modeling as next-token prediction, 2024.
+ URL https://arxiv.org/abs/2408.15240 .
+ Zheng et al. (2023) 
+Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuohan Li, Dacheng Li, Eric P. Xing, Hao Zhang, Joseph E. Gonzalez, and Ion Stoica.
+ Judging llm-as-a-judge with mt-bench and chatbot arena, 2023.
+ URL https://arxiv.org/abs/2306.05685 .
+ Appendix A Appendix
+ A.1 Reproducability
+ For reproducability, we provide the following details so that readers can replicate our results. Firstly, we provide details on how the dataset is constructed in Sections 3 and 4 to enable Capability-Aware and Mid-Generation Self-Evaluations for any model. Additionally, we provide algorithm pseudocode as seen in Algorithm 1 , giving the reader transparency in how to replicate the adaptive sampling and annealing algorithm. Additionally, we provide details on how the dataset is constructed in Sections 3 and 4 to enable Capability-Aware and Mid-Generation Self-Evaluations for any model. Finally, we provide evaluation details in Section 4 . We release a public github implementation for reproducability.
+ A.2 Comparing likelihoods
+ We briefly compare alternative probabilities one might consider to model using an on-policy pairwise preference dataset with ties.
+ Benchmark (Best-of-16) 
+ p θ ​ ( Win ) p_{\theta}(\textit{Win}) 
+ p θ ​ ( Win ∣ ¬ Tie ) p_{\theta}(\textit{Win}\mid\neg\textit{Tie}) 
+ p θ ​ ( Win ∪ Tie ) p_{\theta}(\textit{Win}\cup\textit{Tie}) 
+ Win Rate vs GPT-4 on AlpacaEval (%) 
+ 27.7 
+ 30.1 
+ 29.6 
+ GSM8K Pass @ 1 (%) 
+ 86.9 
+ 88.5 
+ 88.6 
+ Table 3: Performance of different likelihoods with token prediction trained on a much smaller dataset of roughly 600 preferences. 
+ A.3 Adaptive Sampling Results
+ We show adaptive sampling performance with various aspects of the algorithm removed.
+ Win-or-Tie Probability Threshold 
+ 0.92 
+ 0.96 
+ 0.98 
+ 0.99 
+ 1.00 
+ Average Samples Used 
+ 1.4 
+ 2.2 
+ 4.1 
+ 6.9 
+ 16.0 
+ Average Batches Used (Latency) 
+ 1.3 
+ 1.6 
+ 2.0 
+ 2.9 
+ 5.0 
+ GSM8K Pass@1 (%) 
+ 88.0 
+ 89.9 
+ 90.8 
+ 91.0 
+ 91.0 
+ Percent of Maximum Improvement 
+ 55.9 
+ 83.8 
+ 97.1 
+ 100.0 
+ 100.0 
+ Table 4: Performance on GSM8K with adaptive sampling using capability-aware self-evaluations. This is without the annealing schedule. 
+ Reward Threshold 
+ 0.119 
+ 0.133 
+ 0.150 
+ 0.163 
+ Inf 
+ Average Samples Used 
+ 1.4 
+ 2.2 
+ 4.1 
+ 6.9 
+ 16.0 
+ Average Batches Used (Latency) 
+ 1.2 
+ 1.4 
+ 2.0 
+ 2.8 
+ 5.0 
+ GSM8K Pass@1 (%) 
+ 86.9 
+ 87.9 
+ 89.0 
+ 89.9 
+ 91.0 
+ Percent of Maximum Improvement 
+ 39.7 
+ 54.4 
+ 70.6 
+ 83.8 
+ 100.0 
+ Table 5: Performance on GSM8K with adaptive sampling using the underlying reward model. 
+ Samples Used 
+ 1 
+ 2 
+ 4 
+ 8 
+ 16 
+ GSM8K Pass@1 (%) 
+ 84.2 
+ 87.7 
+ 88.9 
+ 89.9 
+ 91.0 
+ Percent of Maximum Improvement 
+ 0.0 
+ 51.5 
+ 69.1 
+ 83.8 
+ 100.0 
+ Table 6: Performance on GSM8K with Best-of-N at varying number of samples. 
+ A.4 Early Pruning Results
+ We show the results associated with early pruning shown in Figure 1 as well as tokens generated.
+ Win Rate vs GPT-4 
+ Samples Used (Pruned Samples) 
+ on AlpacaEval (%) 
+ 1 (Prune 15) 
+ 2 (Prune 14) 
+ 4 (Prune 12) 
+ 8 (Prune 8) 
+ 16 (Prune 0) 
+ Prune @ 0 tokens (Random) 
+ 21.2 
+ 25.1 
+ 29.1 
+ 31.4 
+ 33.8 
+ Prune @ 64 tokens 
+ 25.3 
+ 28.3 
+ 31.2 
+ 33.4 
+ 33.8 
+ Prune @ 128 tokens 
+ 28.3 
+ 30.4 
+ 33.2 
+ 33.8 
+ 33.8 
+ No Pruning 
+ 33.8 
+ 33.8 
+ 33.8 
+ 33.8 
+ 33.8 
+ Table 7: Win Rate vs GPT-4 on AlpacaEval with varying pruning strategies. 
+ Percent of Maximum 
+ Samples Used (Pruned Samples) 
+ Improvement (%) 
+ 1 (Prune 15) 
+ 2 (Prune 14) 
+ 4 (Prune 12) 
+ 8 (Prune 8) 
+ 16 (Prune 0) 
+ Prune @ 0 tokens (Random) 
+ 0.0 
+ 31.0 
+ 62.7 
+ 81.0 
+ 100.0 
+ Prune @ 64 tokens 
+ 32.5 
+ 56.3 
+ 79.4 
+ 96.8 
+ 100.0 
+ Prune @ 128 tokens 
+ 56.3 
+ 73.0 
+ 95.2 
+ 100.0 
+ 100.0 
+ No Pruning 
+ 100.0 
+ 100.0 
+ 100.0 
+ 100.0 
+ 100.0 
+ Table 8: Percent of Maximum Improvement achieved on AlpacaEval with different pruning strategies. 
+ Tokens Generated 
+ Samples Used (Pruned Samples) 
+ per Prompt 
+ 1 (Prune 15) 
+ 2 (Prune 14) 
+ 4 (Prune 12) 
+ 8 (Prune 8) 
+ 16 (Prune 0) 
+ Prune @ 0 tokens (Random) 
+ 454 
+ 907 
+ 1,815 
+ 3,629 
+ 7,259 
+ Prune @ 64 tokens 
+ 1,370 
+ 1,763 
+ 2,544 
+ 4,113 
+ 7,259 
+ Prune @ 128 tokens 
+ 2,214 
+ 2,551 
+ 3,220 
+ 4,566 
+ 7,259 
+ No Pruning 
+ 7,259 
+ 7,259 
+ 7,259 
+ 7,259 
+ 7,259 
+ Table 9: Average tokens generated per prompt on AlpacaEval with different pruning strategies. 
+ Experimental support, please
+ view the build logs 
+ for errors. Generated by
+ L
+ A 
+ T
+ E 
+ xml 
+ .
+ Instructions for reporting errors
+ We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility and mobile
+ support. To report errors in the HTML that will help us improve conversion and rendering, choose any of the
+ methods listed below:
+ Click the "Report Issue" ( 
+ ) button, located in the page header.
+ Tip: You can select the relevant text first, to include it in your report.
+ Our team has already identified the following issues . We appreciate your time reviewing and reporting rendering errors we
+ may not have found yet. Your efforts will help us improve the HTML versions for all readers, because disability
+ should not be a barrier to accessing research. Thank you for your continued support in championing open access for
+ all.
+ Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML maintain a list of packages that need conversion , and welcome developer contributions .
+ We gratefully acknowledge support from
+ our major funders ,
+ member institutions , ,
+ and all contributors.
+ About 
+ · 
+ Help 
+ · 
+ Contact 
+ · 
+ Subscribe 
+ · 
+ Copyright 
+ · 
+ Privacy 
+ · 
+ Accessibility 
+ · 
+ Operational Status (opens in new tab) 
+ Major funding support from

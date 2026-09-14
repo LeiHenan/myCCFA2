@@ -1,0 +1,1390 @@
+ 
+ Adaptive Test-Time Compute Allocation for Reasoning LLMs via Constrained Policy Optimization 
+ Report GitHub Issue 
+ × 
+ Title: 
+ Content selection saved. Describe the issue below:
+ Description: 
+ Submit without GitHub 
+ Submit in GitHub 
+ arXiv is now an independent nonprofit! 
+ Learn more 
+ × 
+ Back to arXiv 
+ Why HTML? 
+ Report Issue 
+ Back to Abstract 
+ Download PDF 
+ Abstract 
+ 1 Introduction 
+ Contributions. 
+ 2 Problem Formulation: Budget-Constrained Compute Allocation 
+ 3 The Lagrangian Oracle 
+ 3.1 Dual Relaxation 
+ 3.2 Budget Targeting via Cost Monotonicity 
+ Practical implication. 
+ 3.3 Dual Bound and Optimality 
+ 4 Amortized Policy Learning 
+ 4.1 Feature Extraction 
+ 4.2 Policy as Classification 
+ 4.3 Deployment 
+ 4.4 Theoretical Guarantees 
+ 5 Experiments 
+ 5.1 Experimental Setup 
+ 5.2 Main Results 
+ 5.3 Compute–Accuracy Pareto Frontier 
+ 5.4 Oracle Gap and Allocation Analysis 
+ 5.5 Ablation: Classifier Architecture 
+ 5.6 Allocation Pattern Analysis 
+ 6 Discussion and Conclusion 
+ Impact. 
+ Limitations and future work. 
+ Conclusion. 
+ References 
+ A Related Work 
+ Test-time scaling for LLMs. 
+ Adaptive computation. 
+ Input-adaptive LLM scaling. 
+ Budgeted and selective prediction. 
+ B Proofs 
+ B.1 Proof of Theorem 
+ B.2 Proof of Theorem 
+ B.3 Utility–Cost Decomposition 
+ B.4 Proof of Theorem 
+ C Stochastic Policy Extension and Proof of Strong Duality 
+ C.1 LP Relaxation via Stochastic Policies 
+ C.2 Weak Duality 
+ C.3 Subgradient and Budget Targeting 
+ C.4 Strong Duality – Proof of Proposition 
+ D Practical Notes on Utility Estimation 
+ E Extended Experimental Setup 
+ E.1 Feature Vector Details 
+ E.2 GBM Hyperparameters 
+ E.3 Binary Search Details 
+ E.4 Data Collection Cost 
+ F Extended Experimental Results 
+ F.1 Per-Difficulty-Level Accuracy 
+ F.2 Oracle Label Distribution 
+ F.3 Oracle Gap Details 
+ F.4 Oracle Allocation: Scatter and Quintile Composition 
+ F.5 Allocation Heatmap by Difficulty 
+ F.6 Empirical Verification of the Four Archetypes from Figure 
+ G Theoretical Property Validation 
+ G.1 Empirical Cost Monotonicity — Extended Analysis 
+ G.2 Binary Search Convergence 
+ G.3 Lagrangian Illustration: Single Question and Population View 
+ H Ablation Studies 
+ H.1 Classifier Architecture 
+ H.2 Data Efficiency 
+ H.3 Budget Set Granularity 
+ H.4 Feature Importance and Per-Class Signatures 
+ License: arXiv.org perpetual non-exclusive license
+arXiv:2604.14853v1 [cs.LG] 16 Apr 2026
+ Adaptive Test-Time Compute Allocation for Reasoning LLMs via Constrained Policy Optimization
+ Zhiyuan Zhai
+ † † thanks: Correspondence to: 22110720067@m.fudan.edu.cn 
+ Affiliation: Fudan University
+ Email: 22110720067@m.fudan.edu.cn 
+ Bingcong Li
+ Affiliation: ETH Zurich
+ Email: bingtsongli@gmail.com 
+ Bingnan Xiao
+ Affiliation: Fudan University
+ Email: xbn20000224@gmail.com 
+ Ming Li
+ Affiliation: Guangming Lab
+ Email: ming.li@u.nus.edu 
+ Xin Wang
+ Affiliation: Fudan University
+ Email: xwang11@fudan.edu.cn 
+ Abstract 
+ Test-time compute scaling, the practice of spending extra computation during inference via repeated sampling, search, or extended reasoning, has become a powerful lever for improving large language model performance.
+Yet deploying these techniques under finite inference budgets requires a decision that current systems largely ignore: which inputs deserve more compute, and which can be answered cheaply? 
+We formalize this as a constrained optimization problem (maximize expected accuracy subject to an average compute budget) and solve it with a two-stage Solve-then-Learn pipeline.
+In the solve stage, Lagrangian relaxation decomposes the global constraint into per-instance sub-problems, each admitting a closed-form oracle action that optimally prices accuracy against cost.
+We prove that the induced cost is monotone in the dual variable, enabling exact budget targeting via binary search.
+In the learn stage, a lightweight classifier is trained to predict oracle actions from cheap input features, amortizing the allocation rule for real-time deployment.
+We establish that the task-level regret of the learned policy is bounded by its imitation error times the worst-case per-instance gap, yielding a clean reduction from constrained inference to supervised classification.
+Experiments on MATH and GSM8K with three LLMs (DeepSeek-V3, GPT-4o-mini, Qwen2.5-7B) show that our method consistently outperforms uniform and heuristic allocation baselines, achieving up to 12.8% relative accuracy improvement on MATH under matched budget constraints, while closely tracking the Lagrangian oracle upper bound with over 91% imitation accuracy.
+ Code is available at https://github.com/zhiyuanZhai20/AdaCompute-LLM .
+ 1 Introduction
+ The dominant recipe for improving large language model (LLM) performance has long been to increase pre-training compute: more parameters, more data, more FLOPs [ 1 , 2 ] .
+A striking recent development is that comparable, and sometimes larger, gains can be achieved at inference time , by spending extra computation on each query through techniques such as chain-of-thought reasoning [ 3 ] , self-consistency voting [ 4 ] , tree search [ 5 ] , or process-reward verification [ 6 ] .
+This has been termed test-time scaling , and it underpins the capabilities of frontier reasoning systems [ 7 , 8 ] .
+ These inference-time techniques, however, are expensive: generating N N chain-of-thought responses for best-of- N N or majority voting multiplies cost linearly, yet many questions are answerable correctly in a single attempt.
+In practice, inference budgets are finite.
+API costs, GPU availability, latency targets, and throughput requirements impose hard or soft limits on total inference compute, and as agentic AI systems adopt ever-longer multi-step reasoning pipelines [ 7 ] , the gap between per-query cost and per-query necessity will only widen.
+The standard approach allocates a uniform budget to every input, applying the same number of samples regardless of difficulty [ 4 , 13 ] .
+This is wasteful: easy inputs that a single forward pass can solve still consume the full budget, while hard inputs that would benefit from more compute are starved at the same level.
+ The heterogeneity of real workloads creates an opportunity: by redistributing compute from easy inputs to hard ones, the same total budget can yield significantly higher aggregate accuracy.
+But which inputs should receive more compute?
+Figure 1 illustrates the challenge concretely.
+We define the budget b b as the number of independent responses sampled from the LLM, with the final answer determined by majority vote (self-consistency); the cost function C ⁡ ( b ) \mathrm{C}(b) maps each budget level to its resource consumption (e.g., C ⁡ ( b ) = b \mathrm{C}(b)=b when cost is proportional to the number of samples).
+Some questions are trivially correct at b = 1 b=1 (a single response), making additional samples purely wasteful; others exhibit steep accuracy gains as b b increases (“responsive”); still others show diminishing returns or remain intractable regardless of budget.
+In hindsight, the optimal strategy is clear: assign b = 1 b=1 to easy questions, concentrate high budgets on responsive ones, and avoid wasting resources on intractable ones.
+The challenge is to approximate this oracle strategy before observing the outcomes.
+Realizing this opportunity requires answering a precise question:
+ Given a finite average compute budget shared across a batch of inputs, how should one allocate inference compute to individual inputs to maximize aggregate performance? 
+ We observe that this question has the structure of a constrained optimization problem :
+ max π ⁡ 𝔼 x ∼ 𝒟 ​ [ Acc ⁡ ( x , π ⁡ ( x ) ) ] s.t. 𝔼 x ∼ 𝒟 ​ [ C ⁡ ( π ⁡ ( x ) ) ] ≤ B , \max_{\pi}\;\mathbb{E}_{x\sim\mathcal{D}}\!\big[\mathrm{Acc}(x,\pi(x))\big]\qquad\text{s.t.}\quad\mathbb{E}_{x\sim\mathcal{D}}\!\big[\mathrm{C}(\pi(x))\big]\leq B, 
+ (1) 
+ Figure 1 : Self-consistency accuracy vs. budget b b (number of sampled responses used for majority voting) for four representative MATH questions (DeepSeek-V3). Different questions exhibit dramatically different scaling behaviour, motivating input-adaptive allocation. 
+ where π \pi is a policy mapping inputs to compute budgets, Acc ⁡ ( x , b ) \mathrm{Acc}(x,b) is the accuracy achievable on input x x with budget b b , C ⁡ ( ⋅ ) \mathrm{C}(\cdot) is a cost function mapping budgets to resource consumption (formally defined in § 2 ), and B B is the target average cost.
+The constraint couples all inputs through a shared resource, so the globally optimal solution cannot be found by solving each input independently.
+ We propose a two-stage Solve-then-Learn framework.
+In the solve stage (§ 3 ), we attach a Lagrange multiplier λ \lambda to the budget constraint.
+The resulting relaxation decomposes across inputs: each input’s sub-problem has a closed-form oracle solution b ⋆ ​ ( x , λ ) = arg ​ max b ⁡ [ Acc ⁡ ( x , b ) − λ ​ C ​ ( b ) ] b^{\star}(x;\lambda)=\argmax_{b}[\mathrm{Acc}(x,b)-\lambda\,\mathrm{C}(b)] , which optimally balances the marginal accuracy gain against a “shadow price” λ \lambda for compute.
+We prove that the aggregate cost under the oracle is monotone in λ \lambda , enabling binary search to match any target budget B B .
+In the learn stage (§ 4 ), we train a lightweight policy network to predict oracle labels from cheap input features, amortizing the allocation rule for real-time deployment.
+ This decomposition yields a theoretically clean framework with formal guarantees.
+We summarize the contributions of this paper as follows.
+ Contributions.
+ • 
+ We are the first to formalize input-adaptive test-time compute allocation as a constrained optimization problem (§ 2 ), providing a principled alternative to heuristic rules and enabling systematic study of the accuracy–cost tradeoff under finite inference budgets.
+ • 
+ We propose a Solve-then-Learn framework (§ 3 –§ 4 ) that decomposes the global constrained problem into per-instance sub-problems via Lagrangian relaxation, then amortizes the oracle allocation into a lightweight classifier for real-time deployment.
+ • 
+ We establish formal guarantees (§ 4.4 ): cost monotonicity enabling binary search for budget targeting, an imitation regret bound reducing constrained inference to supervised classification, and a primal recovery result ensuring near-feasibility and near-optimality.
+ 2 Problem Formulation: Budget-Constrained Compute Allocation
+ Setup.  
+Let 𝒳 \mathcal{X} denote the input space and 𝒟 \mathcal{D} the deployment distribution over 𝒳 \mathcal{X} .
+We have a discrete set of compute budgets ℬ = { b 1 , … , b K } \mathcal{B}=\{b_{1},\ldots,b_{K}\} , ordered by cost: C ⁡ ( b 1 ) ≤ ⋯ ≤ C ⁡ ( b K ) \mathrm{C}(b_{1})\leq\cdots\leq\mathrm{C}(b_{K}) .
+Each budget b k b_{k} represents a specific operating mode of the inference engine—e.g., generating k k candidate responses and taking the best (best-of- K K ), running self-consistency with k k samples, or allowing a chain-of-thought of length proportional to k k .
+For each input x ∈ 𝒳 x\in\mathcal{X} and budget b ∈ ℬ b\in\mathcal{B} , we write Acc ⁡ ( x , b ) ∈ [ 0 , 1 ] \mathrm{Acc}(x,b)\in[0,1] for the expected task utility (e.g., probability of producing a correct answer).
+A budget allocation policy is a measurable function π : 𝒳 → ℬ \pi:\mathcal{X}\to\mathcal{B} that assigns a compute budget to each input, inducing two aggregate quantities: the expected accuracy 𝔼 ⁡ [ Acc ⁡ ( x , π ⁡ ( x ) ) ] \mathbb{E}[\mathrm{Acc}(x,\pi(x))] and the expected cost 𝔼 ⁡ [ C ⁡ ( π ⁡ ( x ) ) ] \mathbb{E}[\mathrm{C}(\pi(x))] .
+ Given a target average budget B > 0 B>0 , the design problem is the constrained program
+ V ⁡ ( B ) := max π ∈ Π ⁡ 𝔼 x ∼ 𝒟 ​ [ Acc ⁡ ( x , π ⁡ ( x ) ) ] s.t. 𝔼 x ∼ 𝒟 ​ [ C ⁡ ( π ⁡ ( x ) ) ] ≤ B , V(B)\;:=\;\max_{\pi\in\Pi}\;\mathbb{E}_{x\sim\mathcal{D}}\!\big[\mathrm{Acc}(x,\pi(x))\big]\qquad\text{s.t.}\quad\mathbb{E}_{x\sim\mathcal{D}}\!\big[\mathrm{C}(\pi(x))\big]\leq B, 
+ (2) 
+ where Π \Pi is the class of all measurable maps from 𝒳 \mathcal{X} to ℬ \mathcal{B} and V ⁡ ( B ) V(B) denotes the optimal value.
+On a finite dataset { x i } i = 1 N \{x_{i}\}_{i=1}^{N} , we work with the empirical version
+ V ^ ​ ( B ) := max π ⁡ 1 N ​ ∑ i = 1 N Acc ⁡ ( x i , π ⁡ ( x i ) ) s.t. 1 N ​ ∑ i = 1 N C ⁡ ( π ⁡ ( x i ) ) ≤ B . \hat{V}(B)\;:=\;\max_{\pi}\;\frac{1}{N}\sum_{i=1}^{N}\mathrm{Acc}\!\big(x_{i},\pi(x_{i})\big)\qquad\text{s.t.}\quad\frac{1}{N}\sum_{i=1}^{N}\mathrm{C}\!\big(\pi(x_{i})\big)\leq B. 
+ (3) 
+ Why is this hard?  
+Three features distinguish ( 2 ) from textbook optimization.
+ (i) Black-box reward : Acc ⁡ ( x , b ) \mathrm{Acc}(x,b) has no analytic form and can only be estimated by running the model.
+ (ii) Functional decision variable : the optimizer is a policy function, not a scalar or vector.
+ (iii) Global coupling : the budget constraint links all inputs through a shared resource, so independently maximizing per-input accuracy is infeasible whenever B < C ⁡ ( b K ) B<\mathrm{C}(b_{K}) .
+ 3 The Lagrangian Oracle
+ We now show how Lagrangian duality converts the globally coupled problem ( 2 ) into a collection of independent per-instance sub-problems.
+ 3.1 Dual Relaxation
+ Introducing a Lagrange multiplier λ ≥ 0 \lambda\geq 0 for the budget constraint, the Lagrangian of ( 3 ) is
+ ℒ ⁡ ( π , λ ) = 1 N ​ ∑ i = 1 N [ Acc ⁡ ( x i , π ⁡ ( x i ) ) − λ ​ C ​ ( π ⁡ ( x i ) ) ] ⏟ f λ ​ ( x i , π ⁡ ( x i ) ) + λ ​ B . \mathcal{L}(\pi,\lambda)\;=\;\frac{1}{N}\sum_{i=1}^{N}\underbrace{\Big[\mathrm{Acc}\!\big(x_{i},\pi(x_{i})\big)-\lambda\,\mathrm{C}\!\big(\pi(x_{i})\big)\Big]}_{f_{\lambda}(x_{i},\,\pi(x_{i}))}\;+\;\lambda\,B. 
+ (4) 
+ The crucial observation is that the additive structure of ( 4 ) decouples across inputs: for fixed λ \lambda , maximizing ℒ ⁡ ( π , λ ) \mathcal{L}(\pi,\lambda) over π \pi reduces to independently maximizing f λ ​ ( x i , b ) f_{\lambda}(x_{i},b) over b b for each input x i x_{i} .
+ Definition 1 (Oracle allocation) . 
+ For dual variable λ ≥ 0 \lambda\geq 0 , the oracle allocation for input x x is 
+ b ⋆ ​ ( x , λ ) := arg ​ max b ∈ ℬ ⁡ [ Acc ⁡ ( x , b ) − λ ​ C ​ ( b ) ] . b^{\star}(x;\lambda)\;:=\;\argmax_{b\in\mathcal{B}}\;\big[\mathrm{Acc}(x,b)-\lambda\,\mathrm{C}(b)\big]. 
+ (5) 
+ The oracle allocation has a transparent economic interpretation.
+The quantity f λ ​ ( x , b ) = Acc ⁡ ( x , b ) − λ ​ C ​ ( b ) f_{\lambda}(x,b)=\mathrm{Acc}(x,b)-\lambda\,\mathrm{C}(b) is the net value of assigning budget b b to input x x , where the dual variable λ \lambda acts as a unit price of compute .
+The oracle selects the budget that maximizes net value: it spends more on inputs where the marginal accuracy gain justifies the cost, and economizes on inputs where it does not.
+When λ = 0 \lambda=0 , compute is free and the oracle assigns the maximum budget to every input.
+As λ \lambda increases, the price of compute rises and the oracle progressively shifts to cheaper budgets, starting with the easiest inputs where additional compute yields the smallest accuracy gain.
+ 3.2 Budget Targeting via Cost Monotonicity
+ The oracle allocation induces an average cost that depends on λ \lambda :
+ C ¯ ​ ( λ ) := 1 N ​ ∑ i = 1 N C ⁡ ( b ⋆ ​ ( x i , λ ) ) . \bar{C}(\lambda)\;:=\;\frac{1}{N}\sum_{i=1}^{N}\mathrm{C}\!\big(b^{\star}(x_{i};\lambda)\big). 
+ (6) 
+ The following result shows that C ¯ ​ ( λ ) \bar{C}(\lambda) is well-behaved as a function of λ \lambda .
+ Theorem 1 (Cost monotonicity) . 
+ For finite ℬ \mathcal{B} , there exists a deterministic tie-breaking rule under which C ¯ ​ ( λ ) \bar{C}(\lambda) is non-increasing in λ \lambda . 
+ The proof (in Appendix B ) follows from observing that each pairwise net-value difference f λ ​ ( x , b ) − f λ ​ ( x , b ′ ) f_{\lambda}(x,b)-f_{\lambda}(x,b^{\prime}) is affine and decreasing in λ \lambda whenever C ⁡ ( b ) > C ⁡ ( b ′ ) \mathrm{C}(b)>\mathrm{C}(b^{\prime}) , so each input’s oracle budget can only shift cheaper as λ \lambda grows.
+ Practical implication.
+ Figure 2 : Empirical validation of Theorem 1 : C ¯ ​ ( λ ) \bar{C}(\lambda) , the average cost under the oracle allocation (Eq. 6 ), is monotonically non-increasing for all four model–dataset combinations. 
+ Theorem 1 implies that for any target budget B ∈ [ C ⁡ ( b 1 ) , C ⁡ ( b K ) ] B\in[\mathrm{C}(b_{1}),\mathrm{C}(b_{K})] , one can find a dual variable λ B \lambda_{B} satisfying C ¯ ​ ( λ B ) ≈ B \bar{C}(\lambda_{B})\approx B via binary search.
+Since evaluating C ¯ ​ ( λ ) \bar{C}(\lambda) requires only an arg ​ max \argmax over K K options per input, each iteration costs O ⁡ ( N ​ K ) O(NK) and the search converges in O ⁡ ( log ⁡ ( 1 / ε ) ) O(\log(1/\varepsilon)) iterations.
+We denote the resulting oracle labels as y i ⋆ := b ⋆ ​ ( x i , λ B ) y_{i}^{\star}:=b^{\star}(x_{i};\lambda_{B}) .
+Figure 2 confirms this property empirically across all four model–dataset combinations: C ¯ ​ ( λ ) \bar{C}(\lambda) traces a monotonically non-increasing staircase, with the discrete steps reflecting the finite budget set ℬ = { 1 , 2 , 4 , 8 , 16 } \mathcal{B}=\{1,2,4,8,16\} .
+ 3.3 Dual Bound and Optimality
+ The dual function is G ⁡ ( λ ) := max π ⁡ ℒ ⁡ ( π , λ ) G(\lambda):=\max_{\pi}\mathcal{L}(\pi,\lambda) .
+Weak duality gives V ^ ​ ( B ) ≤ G ​ ( λ ) \hat{V}(B)\leq G(\lambda) for all λ ≥ 0 \lambda\geq 0 .
+The tightest upper bound is G ⁡ ( λ B ) G(\lambda_{B}) , and the gap G ​ ( λ B ) − V ^ ​ ( B ) G(\lambda_{B})-\hat{V}(B) is the duality gap .
+For the empirical problem (3), which is a finite program over N N independent discrete variables with a single coupling constraint, strong duality holds [ 44 , 45 ] :
+ Proposition 1 (Strong duality) . 
+ The empirical problem (3) has zero duality gap: V ^ ​ ( B ) = min λ ≥ 0 ⁡ G ⁡ ( λ ) \hat{V}(B)=\min_{\lambda\geq 0}G(\lambda) . 
+ Since the duality gap is zero, the oracle allocation { b ⋆ ​ ( x i , λ B ) } \{b^{\star}(x_{i};\lambda_{B})\} obtained via binary search is an exact solution to the original constrained problem (3).
+A complete proof—including the LP relaxation construction, weak duality, the subgradient characterisation connecting budget targeting to dual minimisation, and the vertex argument establishing strong duality—is given in Appendix C .
+ 4 Amortized Policy Learning
+ Figure 3 : Overview of the Solve-then-Learn pipeline. Solve stage (offline): compute the Acc ⁡ ( x , b ) \mathrm{Acc}(x,b) matrix via API calls, then derive oracle labels via Lagrangian optimisation with binary search over λ \lambda . Learn stage (offline): train a lightweight GBM classifier on oracle labels using cheap text features. Deploy stage (online): predict budget for new questions at inference time. The entire training overhead is < < 1s; only the one-time API data collection is expensive. 
+ The oracle labels { y i ⋆ } \{y_{i}^{\star}\} define an optimal budget assignment on the training set, but computing them for a new input x x requires access to Acc ⁡ ( x , b ) \mathrm{Acc}(x,b) for all b ∈ ℬ b\in\mathcal{B} —which is precisely the expensive inference we aim to avoid.
+The second stage of our pipeline (Figure 3 ) learns to predict oracle labels from cheap input features, amortizing the allocation rule for deployment.
+ 4.1 Feature Extraction
+ Let ϕ ⁡ ( x ) ∈ ℝ d \phi(x)\in\mathbb{R}^{d} denote a feature vector computed before the expensive inference call.
+The framework is agnostic to the choice of features; the only requirement is that ϕ ⁡ ( x ) \phi(x) be inexpensive relative to full inference and informative about the difficulty of x x .
+Candidates include lexical statistics (input length, vocabulary diversity, number of sub-questions), embedding-based features (prompt embeddings from a frozen encoder), and cheap inference signals (confidence or entropy from a single draft generation).
+ 4.2 Policy as Classification
+ Since ℬ \mathcal{B} is discrete with | ℬ | = K |\mathcal{B}|=K , the policy is a K K -way classifier.
+Specifically, π θ \pi_{\theta} parameterizes a function g θ : ℝ d → ℝ K g_{\theta}:\mathbb{R}^{d}\to\mathbb{R}^{K} and predicts
+ π θ ​ ( x ) = b arg ​ max k ⁡ g θ ​ ( ϕ ⁡ ( x ) ) k . \pi_{\theta}(x)=b_{\argmax_{k}\,g_{\theta}(\phi(x))_{k}}. 
+ (7) 
+ Training minimizes the cross-entropy loss against oracle labels:
+ min θ ⁡ 1 N ​ ∑ i = 1 N ℓ CE ​ ( g θ ​ ( ϕ ⁡ ( x i ) ) , y i ⋆ ) . \min_{\theta}\;\frac{1}{N}\sum_{i=1}^{N}\ell_{\mathrm{CE}}\!\big(g_{\theta}(\phi(x_{i})),\;y_{i}^{\star}\big). 
+ (8) 
+ The classifier can be any standard architecture—logistic regression, gradient-boosted trees, or a small MLP—and trains in seconds to minutes on the pre-computed features.
+ 4.3 Deployment
+ At inference time, a new input x x is processed in two steps: (1) Route : extract features ϕ ⁡ ( x ) \phi(x) and run π θ \pi_{\theta} to select budget b ^ = π θ ​ ( x ) \hat{b}=\pi_{\theta}(x) ; (2) Execute : run the inference engine once at budget b ^ \hat{b} .
+Since π θ \pi_{\theta} is a lightweight classifier, routing adds negligible overhead ( < < 1% of the inference cost), making adaptive allocation practical even under strict latency constraints.
+ Algorithm 1 Solve-then-Learn : Oracle-Supervised Adaptive Budget Allocation 
+ 1: 
+ Training inputs { x i } i = 1 N \{x_{i}\}_{i=1}^{N} , budget set ℬ = { b 1 , … , b K } \mathcal{B}=\{b_{1},\ldots,b_{K}\} , target budget B B , feature map ϕ \phi 
+ 2: 
+ 3: 
+ Stage 1: Solve (offline, parallelizable) 
+ 4: 
+ for each input x i x_{i} and budget b k ∈ ℬ b_{k}\in\mathcal{B} do 
+ 5: 
+   Run inference engine; record utility Acc ⁡ ( x i , b k ) \mathrm{Acc}(x_{i},b_{k}) 
+ 6: 
+ end for 
+ 7: 
+ Binary-search for λ B \lambda_{B} such that C ¯ ​ ( λ B ) ≈ B \bar{C}(\lambda_{B})\approx B ⊳ \triangleright Theorem 1 
+ 8: 
+ Assign oracle labels: y i ⋆ ← arg ​ max b ∈ ℬ ⁡ [ Acc ⁡ ( x i , b ) − λ B ​ C ​ ( b ) ] y_{i}^{\star}\leftarrow\argmax_{b\in\mathcal{B}}\big[\mathrm{Acc}(x_{i},b)-\lambda_{B}\,\mathrm{C}(b)\big] for all i i 
+ 9: 
+ 10: 
+ Stage 2: Learn (fast supervised training) 
+ 11: 
+ Extract cheap features { ϕ ⁡ ( x i ) } i = 1 N \{\phi(x_{i})\}_{i=1}^{N} 
+ 12: 
+ Train classifier π θ \pi_{\theta} on { ( ϕ ⁡ ( x i ) , y i ⋆ ) } i = 1 N \{(\phi(x_{i}),y_{i}^{\star})\}_{i=1}^{N} via cross-entropy ⊳ \triangleright Eq. ( 8 )
+ 13: 
+ 14: 
+ Deployment (per input) 
+ 15: 
+ return π θ ​ ( x ) = b arg ​ max k ⁡ g θ ​ ( ϕ ⁡ ( x ) ) k \pi_{\theta}(x)=b_{\argmax_{k}\,g_{\theta}(\phi(x))_{k}} ; execute inference at selected budget
+ Computational cost.  
+Stage 1 requires N × K N\times K model evaluations—the dominant cost—but is embarrassingly parallel and performed entirely offline.
+The binary search over λ \lambda operates on the pre-computed utility table and costs O ⁡ ( N ​ K ​ log ⁡ ( 1 / ε ) ) O(NK\log(1/\varepsilon)) .
+Stage 2 trains a small classifier and finishes in seconds.
+At deployment, only one lightweight classification plus one model call per input is needed.
+ 4.4 Theoretical Guarantees
+ We establish formal guarantees connecting oracle imitation to task-level performance.
+All proofs are deferred to Appendix B .
+Define the penalized value J λ ​ ( π ) := 𝔼 ⁡ [ Acc ⁡ ( x , π ⁡ ( x ) ) − λ ​ C ​ ( π ⁡ ( x ) ) ] J_{\lambda}(\pi):=\mathbb{E}[\mathrm{Acc}(x,\pi(x))-\lambda\,\mathrm{C}(\pi(x))] and the relaxed regret Reg λ ​ ( π ^ ) := J λ ​ ( π λ ⋆ ) − J λ ​ ( π ^ ) \mathrm{Reg}_{\lambda}(\hat{\pi}):=J_{\lambda}(\pi^{\star}_{\lambda})-J_{\lambda}(\hat{\pi}) .
+ Theorem 2 (Imitation regret bound) . 
+ Let π ^ \hat{\pi} be any policy, π λ ⋆ \pi^{\star}_{\lambda} the oracle at dual variable λ \lambda , and M λ ​ ( x ) := max b ∈ ℬ ⁡ f λ ​ ( x , π λ ⋆ ​ ( x ) ) − f λ ​ ( x , b ) M_{\lambda}(x):=\max_{b\in\mathcal{B}}\,f_{\lambda}(x,\pi^{\star}_{\lambda}(x))-f_{\lambda}(x,b) the worst-case per-instance gap. Then 
+ Reg λ ( π ^ ) ≤ 𝔼 [ M λ ( x ) ⋅ { π ^ ( x ) ≠ π λ ⋆ ( x ) } ] ≤ M ¯ ⋅ ℙ ( π ^ ( x ) ≠ π λ ⋆ ( x ) ) , \mathrm{Reg}_{\lambda}(\hat{\pi})\;\leq\;\mathbb{E}\!\Big[M_{\lambda}(x)\cdot\mathbf{1}\!\big\{\hat{\pi}(x)\neq\pi^{\star}_{\lambda}(x)\big\}\Big]\;\leq\;\bar{M}\cdot\mathbb{P}\!\big(\hat{\pi}(x)\neq\pi^{\star}_{\lambda}(x)\big), 
+ (9) 
+ where M ¯ := sup x M λ ​ ( x ) \bar{M}:=\sup_{x}M_{\lambda}(x) . 
+ Theorem 2 provides a clean reduction: every percentage point of imitation accuracy translates into a proportional decrease in task-level regret .
+The relaxed regret further decomposes into an accuracy gap and a cost deviation (Corollary 1 in Appendix B ), confirming that when the learned policy’s average cost is close to the oracle’s, the accuracy gap is controlled entirely by the imitation error.
+ The analysis above concerns the relaxed problem.
+The following result connects back to the original constrained problem ( 2 ).
+ Theorem 3 (Primal recovery) . 
+ Let λ B \lambda_{B} be chosen so that 𝔼 ⁡ [ C ⁡ ( π λ B ⋆ ​ ( x ) ) ] ≤ B \mathbb{E}[\mathrm{C}(\pi^{\star}_{\lambda_{B}}(x))]\leq B , and let ε := ℙ ⁡ ( π ^ ​ ( x ) ≠ π λ B ⋆ ​ ( x ) ) \varepsilon:=\mathbb{P}(\hat{\pi}(x)\neq\pi^{\star}_{\lambda_{B}}(x)) . Then: (1) Near-feasibility : 𝔼 ⁡ [ C ⁡ ( π ^ ​ ( x ) ) ] ≤ B + ε ⋅ ( C ⁡ ( b K ) − C ⁡ ( b 1 ) ) \mathbb{E}[\mathrm{C}(\hat{\pi}(x))]\leq B+\varepsilon\cdot(\mathrm{C}(b_{K})-\mathrm{C}(b_{1})) ; (2) Near-optimality : V ⁡ ( B ′ ) − 𝔼 ⁡ [ Acc ⁡ ( x , π ^ ​ ( x ) ) ] ≤ M ¯ ⋅ ε V(B^{\prime})-\mathbb{E}[\mathrm{Acc}(x,\hat{\pi}(x))]\leq\bar{M}\cdot\varepsilon , where B ′ = B + ε ⋅ ( C ⁡ ( b K ) − C ⁡ ( b 1 ) ) B^{\prime}=B+\varepsilon\cdot(\mathrm{C}(b_{K})-\mathrm{C}(b_{1})) . 
+ As the classifier improves ( ε → 0 \varepsilon\to 0 ), both the feasibility violation and the optimality gap vanish.
+ 5 Experiments
+ We evaluate the Solve-then-Learn framework on mathematical reasoning benchmarks, demonstrating consistent gains over baselines across multiple LLMs and budget levels.
+ 5.1 Experimental Setup
+ Benchmarks.  
+We use two datasets: MATH [ 46 ] , a competition-level mathematics benchmark (200 questions stratified across difficulty levels 2–4), and GSM8K [ 47 ] , a grade-school word problem set (200 questions) serving as an “easy benchmark” control where the base model already achieves > > 94% accuracy.
+ Backbones.  
+We test three LLMs to demonstrate generality: DeepSeek-V3 [ 48 ] ( deepseek-chat ), a strong open-weight reasoning model; GPT-4o-mini [ 49 ] , OpenAI’s compact model; and Qwen2.5-7B [ 50 ] , Alibaba’s 7B-parameter model. All models are queried with temperature T = 0.7 T=0.7 ; we collect 48 responses per question to evaluate all budget levels with non-overlapping windows.
+The budget set is ℬ = { 1 , 2 , 4 , 8 , 16 } \mathcal{B}=\{1,2,4,8,16\} . For each question x i x_{i} and budget b b , we estimate self-consistency accuracy Acc ⁡ ( x i , b ) \mathrm{Acc}(x_{i},b) by partitioning 48 responses into ⌊ 48 / b ⌋ \lfloor 48/b\rfloor non-overlapping windows of size b b , taking majority votes within each window, and averaging.
+ Policy and baselines.  
+The classifier is a gradient-boosted machine (GBM, XGBoost [ 51 ] ) trained on 16 lightweight text features: lexical statistics (length, word count, sentence count), structural indicators (question marks, numbers, fractions, multi-step keywords), and a normalised entropy estimate from a single-pass LLM call. Training uses an 80/20 split with 3 random seeds; all results report mean ± \pm std. Full feature and hyperparameter details are in Appendix E .
+We compare against: (1) Oracle (Lagrangian-optimal allocation; upper bound requiring knowledge of Acc ⁡ ( x , b ) \mathrm{Acc}(x,b) ), (2) Fixed- b b (uniform budget: largest b ∈ ℬ b\in\mathcal{B} with b ≤ B b\leq B ), (3) Random (random budget matching 𝔼 ⁡ [ b ] = B \mathbb{E}[b]=B ), and (4) Heuristic (rank by prompt length as difficulty proxy, assign high budgets to longest prompts).
+ 5.2 Main Results
+ Table 1 presents task accuracy and realized cost for all methods across four model–dataset pairs and three budget constraints B ∈ { 1.5 , 2.0 , 3.0 } B\in\{1.5,2.0,3.0\} .
+ Table 1: Main results: task accuracy and realized cost under budget constraints B ∈ { 1.5 , 2.0 , 3.0 } B\in\{1.5,2.0,3.0\} , mean ± \pm std over 3 seeds. Bold : best non-oracle result per column. 
+ DeepSeek-V3 × \times MATH 
+ GPT-4o-mini × \times MATH 
+ Method 
+ B = 1.5 B\!=\!1.5 
+ Cost 
+ B = 2.0 B\!=\!2.0 
+ Cost 
+ B = 3.0 B\!=\!3.0 
+ Cost 
+ B = 1.5 B\!=\!1.5 
+ Cost 
+ B = 2.0 B\!=\!2.0 
+ Cost 
+ B = 3.0 B\!=\!3.0 
+ Cost 
+ Fixed- b b 
+ 0.518 
+ 1.00 
+ 0.517 
+ 2.00 
+ 0.517 
+ 2.00 
+ 0.474 
+ 1.00 
+ 0.474 
+ 2.00 
+ 0.474 
+ 2.00 
+ Random 
+ 0.519 
+ 1.49 
+ 0.517 
+ 2.00 
+ 0.534 
+ 2.98 
+ 0.475 
+ 1.49 
+ 0.474 
+ 2.00 
+ 0.487 
+ 2.98 
+ Heuristic 
+ 0.521 
+ 1.52 
+ 0.525 
+ 2.05 
+ 0.529 
+ 3.02 
+ 0.479 
+ 1.52 
+ 0.480 
+ 2.05 
+ 0.485 
+ 3.02 
+ Ours 
+ 0.550 ± \pm .001 
+ 1.45 
+ 0.562 ± \pm .000 
+ 1.87 
+ 0.575 ± \pm .001 
+ 2.73 
+ 0.501 ± \pm .001 
+ 1.47 
+ 0.512 ± \pm .001 
+ 1.87 
+ 0.526 ± \pm .001 
+ 2.85 
+ Oracle 
+ 0.555 
+ 1.51 
+ 0.571 
+ 1.95 
+ 0.586 
+ 3.02 
+ 0.507 
+ 1.54 
+ 0.520 
+ 1.98 
+ 0.538 
+ 3.02 
+ Qwen2.5-7B × \times MATH 
+ DeepSeek-V3 × \times GSM8K 
+ Method 
+ B = 1.5 B\!=\!1.5 
+ Cost 
+ B = 2.0 B\!=\!2.0 
+ Cost 
+ B = 3.0 B\!=\!3.0 
+ Cost 
+ B = 1.5 B\!=\!1.5 
+ Cost 
+ B = 2.0 B\!=\!2.0 
+ Cost 
+ B = 3.0 B\!=\!3.0 
+ Cost 
+ Fixed- b b 
+ 0.495 
+ 1.00 
+ 0.491 
+ 2.00 
+ 0.491 
+ 2.00 
+ 0.946 
+ 1.00 
+ 0.946 
+ 2.00 
+ 0.946 
+ 2.00 
+ Random 
+ 0.493 
+ 1.49 
+ 0.491 
+ 2.00 
+ 0.515 
+ 2.98 
+ 0.946 
+ 1.49 
+ 0.946 
+ 2.00 
+ 0.952 
+ 2.98 
+ Heuristic 
+ 0.500 
+ 1.52 
+ 0.500 
+ 2.05 
+ 0.503 
+ 3.02 
+ 0.955 
+ 1.52 
+ 0.958 
+ 2.05 
+ 0.962 
+ 3.02 
+ Ours 
+ 0.525 ± \pm .001 
+ 1.42 
+ 0.541 ± \pm .001 
+ 1.89 
+ 0.554 ± \pm .001 
+ 2.58 
+ 0.962 ± \pm .002 
+ 1.47 
+ 0.965 ± \pm .001 
+ 1.68 
+ 0.965 ± \pm .001 
+ 1.68 
+ Oracle 
+ 0.531 
+ 1.50 
+ 0.551 
+ 2.02 
+ 0.568 
+ 2.83 
+ 0.966 
+ 1.53 
+ 0.969 
+ 1.76 
+ 0.969 
+ 1.76 
+ Our method ( AdaCompute-GBM ) consistently outperforms all non-oracle baselines across every model, dataset, and budget level.
+On MATH, improvements over Fixed- b b reach +5.8pp (DeepSeek-V3), +5.2pp (GPT-4o-mini), and +6.4pp (Qwen2.5-7B) at B = 3.0 B=3.0 .
+Even on GSM8K with 94.6% base accuracy, adaptive allocation yields +1.9pp.
+The learned policy often uses less than the full budget (e.g., cost 2.73 at B = 3.0 B=3.0 for DeepSeek × \times MATH), confirming efficient identification of questions that benefit from additional samples.
+The Heuristic baseline provides only modest gains (+0.3–1.2pp), confirming that allocation requires a learned non-linear mapping.
+ 5.3 Compute–Accuracy Pareto Frontier
+ (a) DeepSeek-V3 × \times MATH 
+ (b) GPT-4o-mini × \times MATH 
+ (c) Qwen2.5-7B × \times MATH 
+ (d) DeepSeek-V3 × \times GSM8K 
+ Figure 4 : Compute–accuracy Pareto frontiers across four model–dataset pairs. Our method (blue) closely tracks the Oracle upper bound (green dashed) and consistently dominates Fixed- b b (grey), Random (red), and Heuristic (orange) at every budget level. The largest relative gains occur at intermediate budgets ( B = 2 B=2 – 6 6 ) where routing flexibility matters most. 
+ Figure 4 shows the full Pareto frontier across a dense grid of budget constraints B ∈ [ 1 , 16 ] B\in[1,16] .
+Several patterns emerge: (i) our method dominates all baselines at every budget level, (ii) the largest relative gains occur at intermediate budgets ( B = 2 B=2 – 6 6 ) where the flexibility to differentially route questions matters most, (iii) beyond B ≈ 3 B\approx 3 , all methods plateau because additional budget cannot help easy or intractable questions, and (iv) Fixed- b b forms a staircase because it can only operate at budget levels in ℬ \mathcal{B} .
+ 5.4 Oracle Gap and Allocation Analysis
+ Across all model–dataset–budget combinations, the learned GBM policy achieves 91–99% imitation accuracy with task-accuracy gaps of only 0.4–1.4pp (full breakdowns in Appendix F , Table 5 ).
+The gap is small even when imitation is imperfect because misclassifications often assign a “nearby” budget with similar accuracy, consistent with the M λ M_{\lambda} -weighted bound of Theorem 2 .
+ 5.5 Ablation: Classifier Architecture
+ Table 2: Classifier architecture ablation (pooled data, 10 random 80/20 splits). 
+ Classifier 
+ Task Acc 
+ Oracle Gap 
+ Imit. Acc 
+ Avg. Cost 
+ Logistic Reg. 
+ 0.478 ± \pm .021 
+ 0.069 ± \pm .021 
+ 0.749 ± \pm .006 
+ 1.03 ± \pm .03 
+ SVM (RBF) 
+ 0.478 ± \pm .021 
+ 0.070 ± \pm .021 
+ 0.753 ± \pm .000 
+ 1.00 ± \pm .00 
+ Rand. Forest 
+ 0.529 ± \pm .021 
+ 0.018 ± \pm .021 
+ 0.821 ± \pm .013 
+ 2.16 ± \pm .15 
+ MLP (64) 
+ 0.480 ± \pm .021 
+ 0.067 ± \pm .021 
+ 0.746 ± \pm .007 
+ 1.11 ± \pm .11 
+ GBM 
+ 0.529 ± \pm .021 
+ 0.019 ± \pm .021 
+ 0.822 ± \pm .013 
+ 2.17 ± \pm .11 
+ Table 2 compares five classifier architectures on pooled data (3 models × \times MATH × \times B ∈ { 1.5 , 2.0 , 3.0 } B\in\{1.5,2.0,3.0\} , 1800 instances, 10 random splits).
+Tree-based classifiers (GBM, Random Forest) achieve ∼ \sim 5pp higher task accuracy and ∼ \sim 4 × \times smaller oracle gap than linear models and MLP.
+A revealing diagnostic is the average realised cost: linear models default to b = 1 b=1 for nearly every question (cost ≈ \approx 1.0), failing to learn non-linear allocation boundaries, whereas tree-based models match the oracle’s cost distribution (cost ≈ \approx 2.17).
+We adopt GBM as the default.
+Additional ablations on data efficiency, budget set granularity, and feature importance are provided in Appendix H .
+ 5.6 Allocation Pattern Analysis
+ Figure 5 : Budget allocation heatmap: fraction of questions at each (difficulty, budget) cell for oracle labels (top) and learned GBM labels (bottom) at B ∈ { 1.2 , 1.5 , 3.0 } B\in\{1.2,1.5,3.0\} (DeepSeek-V3 × \times MATH). The learned policy faithfully replicates the oracle’s difficulty-routing structure. 
+ Figure 5 visualises oracle and learned allocations across MATH difficulty levels.
+The oracle exhibits an inverted-U pattern : b = 1 b=1 for both easy and intractable questions, with high budgets concentrated on medium-difficulty questions where additional samples help most.
+The learned GBM policy faithfully replicates this structure.
+ 6 Discussion and Conclusion
+ Existing approaches to adaptive inference allocation rely on hand-designed difficulty metrics or threshold-based rules.
+Our framework replaces these with a principled constrained optimization: the oracle labels arise from a Lagrangian relaxation of a well-defined primal problem, and the dual variable λ \lambda is the single knob that controls the accuracy–cost tradeoff.
+Our experiments confirm that this principled approach consistently outperforms heuristic baselines (Table 1 ).
+The framework is agnostic to the feature representation ϕ ⁡ ( x ) \phi(x) and applies to any setting where performance improves with test-time compute and inputs vary in difficulty.
+Our ablation (Appendix H ) confirms that tree-based classifiers significantly outperform linear models, suggesting that allocation boundaries are inherently non-linear.
+ Impact.
+ As LLM inference becomes a dominant cost in production systems, principled compute allocation offers a practical lever for reducing waste without sacrificing quality.
+Our framework can be integrated into any API-served or self-hosted LLM pipeline, enabling providers to serve more queries under fixed GPU budgets and reducing the carbon footprint of large-scale inference.
+ Limitations and future work.
+ The current framework treats budgets as discrete and requires pre-computing the utility table offline.
+Extending to continuous budget spaces, online oracle adaptation, and multi-objective settings (e.g., jointly constraining latency and throughput) are promising directions.
+The gap between the learned policy and the oracle (Table 5 ) highlights the need for richer, yet still cheap, difficulty signals.
+ Conclusion.
+ We presented a principled framework for adaptive test-time compute allocation that reduces the globally coupled budget-constrained program to supervised classification via Lagrangian duality.
+The framework enjoys formal guarantees and experiments across three LLMs demonstrate consistent 3–6pp improvements over uniform allocation, tracking the oracle upper bound with over 91% imitation accuracy.
+ References
+ [1] 
+J. Kaplan, S. McCandlish, T. Henighan, T. B. Brown, B. Chess, R. Child, S. Gray, A. Radford, J. Wu, and D. Amodei.
+Scaling laws for neural language models.
+ arXiv preprint arXiv:2001.08361 , 2020.
+ [2] 
+J. Hoffmann, S. Borgeaud, A. Mensch, E. Buchatskaya, T. Cai, E. Rutherford, D. de Las Casas, L. A. Hendricks, J. Welbl, A. Clark, et al.
+Training compute-optimal large language models.
+In Advances in Neural Information Processing Systems (NeurIPS) , 2022.
+ [3] 
+J. Wei, X. Wang, D. Schuurmans, M. Bosma, F. Xia, E. H. Chi, Q. V. Le, D. Zhou, et al.
+Chain-of-thought prompting elicits reasoning in large language models.
+In Advances in Neural Information Processing Systems (NeurIPS) , 2022.
+ [4] 
+X. Wang, J. Wei, D. Schuurmans, Q. V. Le, E. H. Chi, S. Narang, A. Chowdhery, and D. Zhou.
+Self-consistency improves chain of thought reasoning in language models.
+In International Conference on Learning Representations (ICLR) , 2023.
+ [5] 
+S. Yao, D. Yu, J. Zhao, I. Shafran, T. L. Griffiths, Y. Cao, and K. Narasimhan.
+Tree of thoughts: Deliberate problem solving with large language models.
+In Advances in Neural Information Processing Systems (NeurIPS) , 2024.
+ [6] 
+H. Lightman, V. Kosaraju, Y. Burda, H. Edwards, B. Baker, T. Lee, J. Leike, J. Schulman, I. Sutskever, and K. Cobbe.
+Let’s verify step by step.
+In International Conference on Learning Representations (ICLR) , 2024.
+ [7] 
+OpenAI.
+Learning to reason with LLMs, September 2024.
+ https://openai.com/index/learning-to-reason-with-llms/ .
+ [8] 
+DeepSeek-AI.
+DeepSeek-R1: Incentivizing reasoning capability in LLMs via reinforcement learning.
+ arXiv preprint arXiv:2501.12948 , 2025.
+ [9] 
+T. Kojima, S. S. Gu, M. Reid, Y. Matsuo, and Y. Iwasawa.
+Large language models are zero-shot reasoners.
+In Advances in Neural Information Processing Systems (NeurIPS) , 2022.
+ [10] 
+S. Hao, Y. Gu, H. Ma, J. J. Hong, Z. Wang, D. Z. Wang, and Z. Hu.
+Reasoning with language model is planning with world model.
+In Conference on Empirical Methods in Natural Language Processing (EMNLP) , 2023.
+ [11] 
+D. Zhang, S. Zhoubian, Y. Yue, Y. Dong, and J. Tang.
+Accessing GPT-4 level mathematical olympiad solutions via Monte Carlo tree self-refine with LLaMA-3 8B.
+ arXiv preprint arXiv:2406.07394 , 2024.
+ [12] 
+J. Uesato, N. Kushman, R. Kumar, H. F. Song, N. Siegel, L. Wang, A. Creswell, G. Irving, and I. Higgins.
+Solving math word problems with process- and outcome-based feedback.
+ arXiv preprint arXiv:2211.14275 , 2022.
+ [13] 
+B. Brown, J. Juravsky, R. Ehrlich, R. Clark, Q. V. Le, C. Ré, and A. Roelofs.
+Large language monkeys: Scaling inference compute with repeated sampling.
+ arXiv preprint arXiv:2407.21787 , 2024.
+ [14] 
+Y. Li, Z. Lin, S. Zhang, Q. Fu, B. Chen, J.-G. Lou, and W. Chen.
+Making large language models better reasoners with step-aware verifier.
+In Annual Meeting of the Association for Computational Linguistics (ACL) , 2023.
+ [15] 
+C. Snell, J. Lee, K. Xu, and A. Kumar.
+Scaling LLM test-time compute optimally can be more effective than scaling model parameters.
+In International Conference on Learning Representations (ICLR) , 2025.
+ [16] 
+Y. Wu, Z. Sun, S. Li, S. Welleck, and Y. Yang.
+Inference scaling laws: An empirical analysis of compute-optimal inference for LLM problem-solving.
+In International Conference on Learning Representations (ICLR) , 2025.
+ [17] 
+R. Liu, J. Gao, J. Zhao, K. Zhang, X. Li, B. Qi, W. Ouyang, and B. Zhou.
+Can 1B LLM surpass 405B LLM? Rethinking compute-optimal test-time scaling.
+ arXiv preprint arXiv:2502.06703 , 2025.
+ [18] 
+A. Agarwal, A. Sengupta, and T. Chakraborty.
+The art of scaling test-time compute for large language models.
+ arXiv preprint arXiv:2512.02008 , 2025.
+ [19] 
+Q. Zhang, F. Lyu, Z. Sun, L. Wang, W. Zhang, Z. Guo, Y. Wang, N. Muennighoff, I. King, X. Liu, and C. Ma.
+What, how, where, and how well? A survey on test-time scaling in large language models.
+ arXiv preprint arXiv:2503.24235 , 2025.
+ [20] 
+A. Jones.
+Scaling scaling laws with board games.
+ arXiv preprint arXiv:2104.03113 , 2021.
+ [21] 
+A. Graves.
+Adaptive computation time for recurrent neural networks.
+ arXiv preprint arXiv:1603.08983 , 2016.
+ [22] 
+S. Teerapittayanon, B. McDanel, and H.-T. Kung.
+BranchyNet: Fast inference via early exiting from deep neural networks.
+In International Conference on Pattern Recognition (ICPR) , 2016.
+ [23] 
+G. Huang, D. Chen, T. Li, F. Wu, L. van der Maaten, and K. Q. Weinberger.
+Multi-scale dense networks for resource efficient image classification.
+In International Conference on Learning Representations (ICLR) , 2018.
+ [24] 
+Y. Han, G. Huang, S. Song, L. Yang, H. Wang, and Y. Wang.
+Dynamic neural networks: A survey.
+ IEEE Transactions on Pattern Analysis and Machine Intelligence , 44(11):7436–7456, 2021.
+ [25] 
+N. Shazeer, A. Mirhoseini, K. Maziarz, A. Davis, Q. Le, G. Hinton, and J. Dean.
+Outrageously large neural networks: The sparsely-gated mixture-of-experts layer.
+In International Conference on Learning Representations (ICLR) , 2017.
+ [26] 
+W. Fedus, B. Zoph, and N. Shazeer.
+Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity.
+ Journal of Machine Learning Research , 23(120):1–39, 2022.
+ [27] 
+R. A. Jacobs, M. I. Jordan, S. J. Nowlan, and G. E. Hinton.
+Adaptive mixtures of local experts.
+ Neural Computation , 3(1):79–87, 1991.
+ [28] 
+E. Bengio, P.-L. Bacon, J. Pineau, and D. Precup.
+Conditional computation in neural networks for faster models.
+ arXiv preprint arXiv:1511.06297 , 2016.
+ [29] 
+Y. Leviathan, M. Kalman, and Y. Matias.
+Fast inference from transformers via speculative decoding.
+In International Conference on Machine Learning (ICML) , 2023.
+ [30] 
+I. Ong, A. Almahairi, V. Wu, W.-L. Chiang, T. Wu, J. E. Gonzalez, M. W. Kadous, and I. Stoica.
+RouteLLM: Learning to route LLMs with preference data.
+ arXiv preprint arXiv:2406.18665 , 2024.
+ [31] 
+P. Panda, R. Magazine, C. Devaguptapu, S. Takemori, and V. Sharma.
+Adaptive LLM routing under budget constraints.
+ arXiv preprint arXiv:2508.21141 , 2025.
+ [32] 
+D. Ding, A. Mallick, C. Wang, R. Sim, S. Mukherjee, V. Ruhle, L. V. S. Lakshmanan, and A. H. Awadallah.
+HybridLLM: Cost-efficient and quality-aware query routing.
+ arXiv preprint arXiv:2404.14618 , 2024.
+ [33] 
+Q. J. Hu, J. Bieker, X. Li, N. Jiang, B. Keigwin, G. Ranganath, K. Keutzer, and S. K. Upadhyay.
+RouterBench: A benchmark for multi-LLM routing system.
+ arXiv preprint arXiv:2403.12031 , 2024.
+ [34] 
+P. Aggarwal and S. Welleck.
+SelfBudgeter: Adaptive token allocation for efficient LLM reasoning.
+ arXiv preprint arXiv:2505.11274 , 2025.
+ [35] 
+Z. Pan, K. Zhang, Y. Zhao, and Y. Han.
+Route to reason: Adaptive routing for LLM and reasoning strategy selection.
+ arXiv preprint arXiv:2505.19435 , 2025.
+ [36] 
+M. Damani, I. Shenfeld, H. Peng, A. Agrawal, and J. Andreas.
+Learning how hard to think: Input-adaptive allocation of LM computation.
+In International Conference on Learning Representations (ICLR) , 2025.
+ [37] 
+M. Hassid, T. Remez, J. Gehring, R. Schwartz, and Y. Adi.
+The larger the better? Improved LLM code-generation via budget reallocation.
+ arXiv preprint arXiv:2404.00725 , 2024.
+ [38] 
+L. Chen, M. Zaharia, and J. Zou.
+FrugalGPT: How to use large language models while reducing cost and improving performance.
+ arXiv preprint arXiv:2305.05176 , 2023.
+ [39] 
+A. Madaan, N. Tandon, P. Gupta, S. Hallinan, L. Gao, S. Wiegreffe, U. Alon, N. Dziri, S. Prabhumoye, Y. Yang, S. Gupta, B. P. Majumder, K. Hermann, S. Welleck, A. Yazdanbakhsh, and P. Clark.
+Self-refine: Iterative refinement with self-feedback.
+In Advances in Neural Information Processing Systems (NeurIPS) , 2024.
+ [40] 
+K. Trapeznikov and V. Saligrama.
+Supervised sequential classification under budget constraints.
+In International Conference on Artificial Intelligence and Statistics (AISTATS) , 2013.
+ [41] 
+Y. Geifman and R. El-Yaniv.
+Selective classification for deep neural networks.
+In Advances in Neural Information Processing Systems (NeurIPS) , 2017.
+ [42] 
+A. Badanidiyuru, R. Kleinberg, and A. Slivkins.
+Bandits with knapsacks.
+ Journal of the ACM , 65(3):1–55, 2018.
+ [43] 
+S. Agrawal and N. R. Devanur.
+Linear contextual bandits with knapsacks.
+In Advances in Neural Information Processing Systems (NeurIPS) , 2016.
+ [44] 
+S. Boyd and L. Vandenberghe.
+ Convex Optimization .
+Cambridge University Press, 2004.
+ [45] 
+D. P. Bertsekas.
+ Convex Optimization Algorithms .
+Athena Scientific, 2015.
+ [46] 
+D. Hendrycks, C. Burns, S. Kadavath, A. Arora, S. Basart, E. Tang, D. Song, and J. Steinhardt.
+Measuring mathematical problem solving with the MATH dataset.
+In Advances in Neural Information Processing Systems (NeurIPS) , 2021.
+ [47] 
+K. Cobbe, V. Kosaraju, M. Bavarian, M. Chen, H. Jun, L. Kaiser, M. Prafulla, J. Tworek, J. Hilton, R. Nakano, C. Hesse, and J. Schulman.
+Training verifiers to solve math word problems.
+ arXiv preprint arXiv:2110.14168 , 2021.
+ [48] 
+A. Liu, B. Feng, B. Xue, B. Wang, B. Wu, C. Lu, C. Zhao, C. Deng, C. Zhang, C. Ruan, et al.
+DeepSeek-V3 technical report.
+ arXiv preprint arXiv:2412.19437 , 2024.
+ [49] 
+J. Achiam, S. Adler, S. Agarwal, L. Ahmad, I. Akkaya, F. L. Aleman, D. Almeida, J. Altenschmidt, S. Altman, S. Anadkat, et al.
+GPT-4 technical report.
+ arXiv preprint arXiv:2303.08774 , 2023.
+ [50] 
+A. Yang, B. Zhang, B. Hui, B. Gao, B. Yu, C. Li, D. Liu, J. Tu, J. Zhou, J. Lin, et al.
+Qwen2.5-Math technical report: Toward mathematical expert model via self-improvement.
+ arXiv preprint arXiv:2409.12122 , 2024.
+ [51] 
+T. Chen and C. Guestrin.
+XGBoost: A scalable tree boosting system.
+In ACM SIGKDD International Conference on Knowledge Discovery and Data Mining , 2016.
+ [52] 
+S. Zhou, Y. Ao, Y. Xuan, X. Wang, T. Fan, and H. Wang.
+Inference scaling law for retrieval augmented generation.
+In Proceedings of the AAAI Conference on Artificial Intelligence , volume 40, pages 16522–16530, 2026.
+ Appendix A Related Work
+ Test-time scaling for LLMs.
+ A growing body of work demonstrates that inference-time computation can significantly improve LLM performance.
+Chain-of-thought prompting [ 3 , 9 ] encourages step-by-step reasoning; self-consistency [ 4 ] aggregates multiple reasoning paths; tree search [ 5 , 10 , 11 ] explores candidate trajectories; and process reward models [ 6 , 12 ] provide step-level verification.
+Repeated sampling alone can substantially boost solve rates [ 13 ] , and step-aware verifiers further improve multi-step reasoning [ 14 ] .
+Snell et al. [ 15 ] show that optimally allocated test-time compute can outperform parameter scaling; Wu et al. [ 16 ] study inference scaling laws across strategies; and Liu et al. [ 17 ] demonstrate that small models with scaled test-time compute can match much larger ones.
+Agarwal et al. [ 18 ] study how strategy varies with difficulty, and Zhang et al. [ 19 ] provide a comprehensive survey.
+Jones [ 20 ] earlier studied train-time vs. test-time tradeoffs in board games.
+These works address which test-time strategies to use; we address the orthogonal question of how much compute to allocate to each input.
+ Adaptive computation.
+ The idea of adapting computation to input difficulty predates LLMs.
+Graves [ 21 ] introduced adaptive computation time for RNNs; early-exit networks [ 22 , 23 ] and dynamic neural networks [ 24 ] adapt depth or width at inference; mixture-of-experts [ 25 , 26 ] activate subsets of parameters per input, building on the foundational idea of adaptive expert mixtures [ 27 ] ; conditional computation [ 28 ] and speculative decoding [ 29 ] further reduce unnecessary computation.
+In the LLM setting, router-based systems dispatch to models of varying capability [ 30 , 31 , 32 ] , with benchmarks emerging to evaluate them [ 33 ] .
+Recent work predicts per-query token budgets [ 34 ] or jointly routes models and reasoning strategies [ 35 ] .
+Our framework provides a principled optimization substrate for these heuristic allocation rules.
+ Input-adaptive LLM scaling.
+ Most closely related, Damani et al. [ 36 ] train a marginal reward predictor to allocate best-of- K K samples in a batch-online setting; Hassid et al. [ 37 ] reallocate generation budgets for code tasks.
+Chen et al. [ 38 ] propose FrugalGPT, which cascades LLMs to reduce cost, but focuses on model selection rather than per-input compute allocation within a single model.
+Madaan et al. [ 39 ] enable iterative self-refinement but do not budget the number of refinement rounds.
+Our approach differs structurally: we solve a constrained program via Lagrangian decomposition, produce explicit oracle supervision, and provide formal regret bounds linking classification error to task performance.
+ Budgeted and selective prediction.
+ Our constrained formulation connects to budgeted classification [ 40 ] , selective prediction [ 41 ] , and bandits with knapsacks [ 42 , 43 ] .
+The key distinction is that our “reward” is a complex black-box outcome of deep generative inference, motivating offline oracle construction from pre-recorded evaluations rather than online exploration.
+ Appendix B Proofs
+ B.1 Proof of Theorem 1 
+ Proof. 
+ Fix an input x x and consider two budgets b , b ′ ∈ ℬ b,b^{\prime}\in\mathcal{B} with c := C ⁡ ( b ) > c ′ := C ⁡ ( b ′ ) c:=\mathrm{C}(b)>c^{\prime}:=\mathrm{C}(b^{\prime}) .
+The difference in penalized utility is 
+ f λ ​ ( x , b ) − f λ ​ ( x , b ′ ) = [ Acc ⁡ ( x , b ) − Acc ⁡ ( x , b ′ ) ] − λ ⁡ ( c − c ′ ) . f_{\lambda}(x,b)-f_{\lambda}(x,b^{\prime})=\big[\mathrm{Acc}(x,b)-\mathrm{Acc}(x,b^{\prime})\big]-\lambda(c-c^{\prime}). 
+ This is a linear function of λ \lambda with negative slope − ( c − c ′ ) < 0 -(c-c^{\prime})<0 .
+Define the crossover point 
+ λ ⋆ ​ ( x , b , b ′ ) := Acc ⁡ ( x , b ) − Acc ⁡ ( x , b ′ ) c − c ′ . \lambda^{\star}(x,b,b^{\prime}):=\frac{\mathrm{Acc}(x,b)-\mathrm{Acc}(x,b^{\prime})}{c-c^{\prime}}. 
+ For λ < λ ⋆ \lambda<\lambda^{\star} , the expensive option b b is preferred; for λ > λ ⋆ \lambda>\lambda^{\star} , the cheap option b ′ b^{\prime} dominates. 
+ Now consider the oracle b ⋆ ​ ( x , λ ) = arg ​ max b ∈ ℬ ⁡ f λ ​ ( x , b ) b^{\star}(x;\lambda)=\argmax_{b\in\mathcal{B}}f_{\lambda}(x,b) .
+Since each pairwise comparison has a unique crossover, the set of λ \lambda values at which the oracle output changes is finite (at most ( K 2 ) \binom{K}{2} crossover points per input).
+Between consecutive crossover points, the oracle is constant.
+At each crossover, the oracle can only switch from a more expensive to a less expensive budget (since the expensive option’s advantage is eroded). 
+ To handle ties deterministically, we adopt the convention that ties are broken in favor of the cheaper budget.
+Under this rule, C ​ ( b ⋆ ​ ( x , λ ) ) \mathrm{C}(b^{\star}(x;\lambda)) is a non-increasing step function of λ \lambda for each x x .
+Since C ¯ ​ ( λ ) = 1 N ​ ∑ i C ⁡ ( b ⋆ ​ ( x i , λ ) ) \bar{C}(\lambda)=\frac{1}{N}\sum_{i}\mathrm{C}(b^{\star}(x_{i};\lambda)) is an average of non-increasing step functions, it is itself non-increasing.
+∎ 
+ B.2 Proof of Theorem 2 
+ Proof. 
+ The relaxed regret is 
+ Reg λ ​ ( π ^ ) = J λ ​ ( π λ ⋆ ) − J λ ​ ( π ^ ) = 𝔼 ⁡ [ f λ ​ ( x , π λ ⋆ ​ ( x ) ) − f λ ​ ( x , π ^ ​ ( x ) ) ] . \mathrm{Reg}_{\lambda}(\hat{\pi})=J_{\lambda}(\pi^{\star}_{\lambda})-J_{\lambda}(\hat{\pi})=\mathbb{E}\!\big[f_{\lambda}(x,\pi^{\star}_{\lambda}(x))-f_{\lambda}(x,\hat{\pi}(x))\big]. 
+ Define the pointwise gap Δ ⁡ ( x ) := f λ ​ ( x , π λ ⋆ ​ ( x ) ) − f λ ​ ( x , π ^ ​ ( x ) ) \Delta(x):=f_{\lambda}(x,\pi^{\star}_{\lambda}(x))-f_{\lambda}(x,\hat{\pi}(x)) . 
+ Case 1 : π ^ ​ ( x ) = π λ ⋆ ​ ( x ) \hat{\pi}(x)=\pi^{\star}_{\lambda}(x) .
+Then Δ ⁡ ( x ) = 0 \Delta(x)=0 . 
+ Case 2 : π ^ ​ ( x ) ≠ π λ ⋆ ​ ( x ) \hat{\pi}(x)\neq\pi^{\star}_{\lambda}(x) .
+Since π λ ⋆ ​ ( x ) \pi^{\star}_{\lambda}(x) maximizes f λ ​ ( x , ⋅ ) f_{\lambda}(x,\cdot) and π ^ ​ ( x ) \hat{\pi}(x) is some other action, 
+ Δ ⁡ ( x ) = f λ ​ ( x , π λ ⋆ ​ ( x ) ) − f λ ​ ( x , π ^ ​ ( x ) ) ≤ f λ ​ ( x , π λ ⋆ ​ ( x ) ) − min b ∈ ℬ ⁡ f λ ​ ( x , b ) = M λ ​ ( x ) . \Delta(x)=f_{\lambda}(x,\pi^{\star}_{\lambda}(x))-f_{\lambda}(x,\hat{\pi}(x))\leq f_{\lambda}(x,\pi^{\star}_{\lambda}(x))-\min_{b\in\mathcal{B}}f_{\lambda}(x,b)=M_{\lambda}(x). 
+ Combining both cases: Δ ( x ) ≤ M λ ( x ) ⋅ 𝟏 { π ^ ( x ) ≠ π λ ⋆ ( x ) } \Delta(x)\leq M_{\lambda}(x)\cdot\mathbf{1}\{\hat{\pi}(x)\neq\pi^{\star}_{\lambda}(x)\} .
+Taking expectations yields ( 9 ).
+The uniform bound follows from M λ ​ ( x ) ≤ M ¯ M_{\lambda}(x)\leq\bar{M} .
+∎ 
+ B.3 Utility–Cost Decomposition
+ Corollary 1 (Utility–cost decomposition) . 
+ The relaxed regret decomposes as 
+ Reg λ ​ ( π ^ ) = 𝔼 ⁡ [ Acc ⁡ ( x , π λ ⋆ ​ ( x ) ) − Acc ⁡ ( x , π ^ ​ ( x ) ) ] ⏟ accuracy gap ​ Δ acc − λ ​ 𝔼 ⁡ [ C ⁡ ( π λ ⋆ ​ ( x ) ) − C ⁡ ( π ^ ​ ( x ) ) ] ⏟ cost deviation ​ Δ cost . \mathrm{Reg}_{\lambda}(\hat{\pi})\;=\;\underbrace{\mathbb{E}\!\big[\mathrm{Acc}(x,\pi^{\star}_{\lambda}(x))-\mathrm{Acc}(x,\hat{\pi}(x))\big]}_{\text{accuracy gap}\;\Delta_{\mathrm{acc}}}\;-\;\lambda\,\underbrace{\mathbb{E}\!\big[\mathrm{C}(\pi^{\star}_{\lambda}(x))-\mathrm{C}(\hat{\pi}(x))\big]}_{\text{cost deviation}\;\Delta_{\mathrm{cost}}}. 
+ Rearranging, the accuracy gap satisfies Δ acc = Reg λ ​ ( π ^ ) + λ ​ Δ cost \Delta_{\mathrm{acc}}=\mathrm{Reg}_{\lambda}(\hat{\pi})+\lambda\,\Delta_{\mathrm{cost}} . 
+ This reveals that when Δ cost ≈ 0 \Delta_{\mathrm{cost}}\approx 0 , the accuracy gap is controlled entirely by the imitation error via Theorem 2 .
+ B.4 Proof of Theorem 3 
+ Proof. 
+ Near-feasibility. 
+Let ε = ℙ ⁡ ( π ^ ​ ( x ) ≠ π λ B ⋆ ​ ( x ) ) \varepsilon=\mathbb{P}(\hat{\pi}(x)\neq\pi^{\star}_{\lambda_{B}}(x)) .
+On the event { π ^ ( x ) = π λ B ⋆ ( x ) } \{\hat{\pi}(x)=\pi^{\star}_{\lambda_{B}}(x)\} , the costs are identical.
+On the complementary event, the cost difference is at most C ⁡ ( b K ) − C ⁡ ( b 1 ) \mathrm{C}(b_{K})-\mathrm{C}(b_{1}) .
+Therefore: 
+ 𝔼 ⁡ [ C ⁡ ( π ^ ​ ( x ) ) ] ≤ 𝔼 ⁡ [ C ⁡ ( π λ B ⋆ ​ ( x ) ) ] + ε ⋅ ( C ⁡ ( b K ) − C ⁡ ( b 1 ) ) ≤ B + ε ⋅ ( C ⁡ ( b K ) − C ⁡ ( b 1 ) ) = : B ′ . \mathbb{E}[\mathrm{C}(\hat{\pi}(x))]\leq\mathbb{E}[\mathrm{C}(\pi^{\star}_{\lambda_{B}}(x))]+\varepsilon\cdot(\mathrm{C}(b_{K})-\mathrm{C}(b_{1}))\leq B+\varepsilon\cdot(\mathrm{C}(b_{K})-\mathrm{C}(b_{1}))=:B^{\prime}. 
+ Near-optimality. 
+By weak duality, V ⁡ ( B ′ ) ≤ G ⁡ ( λ B ) V(B^{\prime})\leq G(\lambda_{B}) (the dual bound holds for any budget level).
+By Theorem 2 , 
+ J λ B ​ ( π λ B ⋆ ) − J λ B ​ ( π ^ ) ≤ M ¯ ⋅ ε . J_{\lambda_{B}}(\pi^{\star}_{\lambda_{B}})-J_{\lambda_{B}}(\hat{\pi})\leq\bar{M}\cdot\varepsilon. 
+ Since J λ B ​ ( π λ B ⋆ ) + λ B ​ B = G ⁡ ( λ B ) J_{\lambda_{B}}(\pi^{\star}_{\lambda_{B}})+\lambda_{B}B=G(\lambda_{B}) , we have 
+ 𝔼 ⁡ [ Acc ⁡ ( x , π ^ ​ ( x ) ) ] = J λ B ​ ( π ^ ) + λ B ​ 𝔼 ​ [ C ⁡ ( π ^ ​ ( x ) ) ] ≥ G ⁡ ( λ B ) − λ B ​ B − M ¯ ​ ε + λ B ​ 𝔼 ​ [ C ⁡ ( π ^ ​ ( x ) ) ] . \mathbb{E}[\mathrm{Acc}(x,\hat{\pi}(x))]=J_{\lambda_{B}}(\hat{\pi})+\lambda_{B}\mathbb{E}[\mathrm{C}(\hat{\pi}(x))]\geq G(\lambda_{B})-\lambda_{B}B-\bar{M}\varepsilon+\lambda_{B}\mathbb{E}[\mathrm{C}(\hat{\pi}(x))]. 
+ Using 𝔼 ⁡ [ C ⁡ ( π ^ ​ ( x ) ) ] ≤ B ′ \mathbb{E}[\mathrm{C}(\hat{\pi}(x))]\leq B^{\prime} and V ⁡ ( B ′ ) ≤ G ⁡ ( λ B ) V(B^{\prime})\leq G(\lambda_{B}) : 
+ V ⁡ ( B ′ ) − 𝔼 ⁡ [ Acc ⁡ ( x , π ^ ​ ( x ) ) ] ≤ G ⁡ ( λ B ) − 𝔼 ⁡ [ Acc ⁡ ( x , π ^ ​ ( x ) ) ] ≤ M ¯ ​ ε + λ B ​ ( B − 𝔼 ⁡ [ C ⁡ ( π ^ ​ ( x ) ) ] ) ≤ M ¯ ​ ε . ∎ V(B^{\prime})-\mathbb{E}[\mathrm{Acc}(x,\hat{\pi}(x))]\leq G(\lambda_{B})-\mathbb{E}[\mathrm{Acc}(x,\hat{\pi}(x))]\leq\bar{M}\varepsilon+\lambda_{B}(B-\mathbb{E}[\mathrm{C}(\hat{\pi}(x))])\leq\bar{M}\varepsilon.\qed 
+ Appendix C Stochastic Policy Extension and Proof of Strong Duality
+ C.1 LP Relaxation via Stochastic Policies
+ Replacing each deterministic choice π ⁡ ( x i ) ∈ ℬ \pi(x_{i})\in\mathcal{B} by a distribution 𝐩 i = ( p i ​ 1 , … , p i ​ K ) ∈ Δ K − 1 \mathbf{p}_{i}=(p_{i1},\dots,p_{iK})\in\Delta^{K-1} yields the LP relaxation
+ V ^ LP ​ ( B ) := max { p i ​ k } ⁡ 1 N ​ ∑ i = 1 N ∑ k = 1 K p i ​ k ​ Acc ​ ( x i , b k ) s.t. 1 N ​ ∑ i , k p i ​ k ​ C ​ ( b k ) ≤ B , ∑ k p i ​ k = 1 , p i ​ k ≥ 0 . \hat{V}_{\mathrm{LP}}(B)\;:=\;\max_{\{p_{ik}\}}\;\frac{1}{N}\sum_{i=1}^{N}\sum_{k=1}^{K}p_{ik}\,\mathrm{Acc}(x_{i},b_{k})\quad\text{s.t.}\quad\frac{1}{N}\sum_{i,k}p_{ik}\,\mathrm{C}(b_{k})\leq B,\;\;\sum_{k}p_{ik}=1,\;\;p_{ik}\geq 0. 
+ (10) 
+ C.2 Weak Duality
+ Attaching λ ≥ 0 \lambda\geq 0 to the budget constraint, the Lagrangian is
+ ℒ ⁡ ( { p i ​ k } , λ ) = 1 N ​ ∑ i , k p i ​ k ​ [ Acc ⁡ ( x i , b k ) − λ ​ C ​ ( b k ) ] + λ ​ B . \mathcal{L}(\{p_{ik}\},\lambda)\;=\;\frac{1}{N}\sum_{i,k}p_{ik}\bigl[\mathrm{Acc}(x_{i},b_{k})-\lambda\,\mathrm{C}(b_{k})\bigr]\;+\;\lambda\,B. 
+ (11) 
+ For fixed λ \lambda , the Lagrangian is linear in each 𝐩 i \mathbf{p}_{i} , so its maximum over Δ K − 1 \Delta^{K-1} is attained at a vertex 𝐞 k ⋆ \mathbf{e}_{k^{\star}} with k ⋆ = arg ⁡ max k ⁡ [ Acc ⁡ ( x i , b k ) − λ ​ C ​ ( b k ) ] k^{\star}=\arg\max_{k}[\mathrm{Acc}(x_{i},b_{k})-\lambda\,\mathrm{C}(b_{k})] .
+Hence the dual function coincides with the deterministic-policy dual:
+ G ⁡ ( λ ) = 1 N ​ ∑ i = 1 N max b ∈ ℬ ⁡ [ Acc ⁡ ( x i , b ) − λ ​ C ​ ( b ) ] + λ ​ B . G(\lambda)\;=\;\frac{1}{N}\sum_{i=1}^{N}\max_{b\in\mathcal{B}}\bigl[\mathrm{Acc}(x_{i},b)-\lambda\,\mathrm{C}(b)\bigr]\;+\;\lambda\,B. 
+ (12) 
+ For any feasible π ∗ \pi^{*} (i.e., 1 N ​ ∑ i C ⁡ ( π ∗ ​ ( x i ) ) ≤ B \frac{1}{N}\sum_{i}\mathrm{C}(\pi^{*}(x_{i}))\leq B ) and any λ ≥ 0 \lambda\geq 0 :
+ G ⁡ ( λ ) ≥ 1 N ​ ∑ i Acc ⁡ ( x i , π ∗ ​ ( x i ) ) − λ ​ ( 1 N ​ ∑ i C ⁡ ( π ∗ ​ ( x i ) ) − B ) ⏟ ≤  0 ≥ 1 N ​ ∑ i Acc ⁡ ( x i , π ∗ ​ ( x i ) ) , G(\lambda)\;\geq\;\frac{1}{N}\sum_{i}\mathrm{Acc}(x_{i},\pi^{*}(x_{i}))\;-\;\lambda\underbrace{\Bigl(\frac{1}{N}\sum_{i}\mathrm{C}(\pi^{*}(x_{i}))-B\Bigr)}_{\leq\,0}\;\geq\;\frac{1}{N}\sum_{i}\mathrm{Acc}(x_{i},\pi^{*}(x_{i})), 
+ so G ​ ( λ ) ≥ V ^ ​ ( B ) G(\lambda)\geq\hat{V}(B) for all λ ≥ 0 \lambda\geq 0 .
+ C.3 Subgradient and Budget Targeting
+ Each summand in ( 12 ) is the pointwise maximum of K K affine functions of λ \lambda with slopes { − C ⁡ ( b k ) } \{-\mathrm{C}(b_{k})\} .
+By Danskin’s theorem, a subgradient of G G is
+ ∂ G ∂ λ = B − C ¯ ​ ( λ ) , C ¯ ​ ( λ ) := 1 N ​ ∑ i C ⁡ ( b ⋆ ​ ( x i , λ ) ) . \frac{\partial G}{\partial\lambda}\;=\;B-\bar{\mathrm{C}}(\lambda),\qquad\bar{\mathrm{C}}(\lambda):=\frac{1}{N}\sum_{i}\mathrm{C}\!\bigl(b^{\star}(x_{i};\lambda)\bigr). 
+ (13) 
+ Since G G is convex, the minimiser λ ⋆ \lambda^{\star} satisfies 0 ∈ ∂ G ⁡ ( λ ⋆ ) 0\in\partial G(\lambda^{\star}) , i.e., C ¯ ​ ( λ ⋆ ) = B \bar{\mathrm{C}}(\lambda^{\star})=B .
+Thus binary-searching for λ B \lambda_{B} with C ¯ ​ ( λ B ) ≈ B \bar{\mathrm{C}}(\lambda_{B})\approx B (Section 4.2) is equivalent to solving min λ ≥ 0 ⁡ G ⁡ ( λ ) \min_{\lambda\geq 0}G(\lambda) .
+ C.4 Strong Duality – Proof of Proposition 1 
+ Proof. 
+ Step 1: V ^ LP ​ ( B ) = V ^ ​ ( B ) \hat{V}_{\mathrm{LP}}(B)=\hat{V}(B) .  
+The feasible region of ( 10 ) is 𝒫 = ( ∏ i Δ K − 1 ) ∩ { \mathcal{P}=\bigl(\prod_{i}\Delta^{K-1}\bigr)\cap\{ budget constraint } \} .
+Any { p i ​ k } ∈ 𝒫 \{p_{ik}\}\in\mathcal{P} with some 𝐩 i 0 \mathbf{p}_{i_{0}} not at a vertex of Δ K − 1 \Delta^{K-1} can be written as a midpoint of two perturbations along a direction 𝐞 a − 𝐞 c \mathbf{e}_{a}-\mathbf{e}_{c} within Δ K − 1 \Delta^{K-1} , so it is not a vertex of 𝒫 \mathcal{P} .
+Therefore every vertex of 𝒫 \mathcal{P} has 𝐩 i ∈ { 𝐞 1 , … , 𝐞 K } \mathbf{p}_{i}\in\{\mathbf{e}_{1},\dots,\mathbf{e}_{K}\} for all i i , corresponding to a deterministic policy.
+Since a linear objective over a polytope is maximised at a vertex, V ^ LP ​ ( B ) = V ^ ​ ( B ) \hat{V}_{\mathrm{LP}}(B)=\hat{V}(B) . 
+ Step 2: V ^ LP ​ ( B ) = min λ ≥ 0 ⁡ G ⁡ ( λ ) \hat{V}_{\mathrm{LP}}(B)=\min_{\lambda\geq 0}G(\lambda) .  
+The LP ( 10 ) is feasible (e.g., π ⁡ ( x i ) = b 1 \pi(x_{i})=b_{1} for all i i ) and bounded.
+By LP strong duality, V ^ LP ​ ( B ) = min λ ≥ 0 ⁡ G LP ​ ( λ ) \hat{V}_{\mathrm{LP}}(B)=\min_{\lambda\geq 0}G_{\mathrm{LP}}(\lambda) .
+As shown in Section B.2, G LP ​ ( λ ) = G ​ ( λ ) G_{\mathrm{LP}}(\lambda)=G(\lambda) .
+ Combining: V ^ ​ ( B ) = V ^ LP ​ ( B ) = min λ ≥ 0 ⁡ G ⁡ ( λ ) \hat{V}(B)=\hat{V}_{\mathrm{LP}}(B)=\min_{\lambda\geq 0}G(\lambda) .
+∎
+ Appendix D Practical Notes on Utility Estimation
+ When budget b b corresponds to best-of- K K sampling, Acc ⁡ ( x , b ) \mathrm{Acc}(x,b) is defined as the probability that the best of K K samples is correct.
+This is estimated by running R R independent trials of K K -sample generation and recording the fraction of correct outcomes.
+Averaging over R = 8 R=8 – 16 16 repetitions is typically sufficient for stable oracle labels.
+With limited resources, one may use R = 1 R=1 with binary correctness indicators, relying on the law of large numbers across inputs for reliable aggregate performance estimates.
+ Appendix E Extended Experimental Setup
+ E.1 Feature Vector Details
+ The 16-dimensional feature vector ϕ ⁡ ( x ) \phi(x) is computed from the question text without any model inference (except for a single cheap entropy estimate):
+(1) prompt_length_chars : character count;
+(2) prompt_length_words : word count;
+(3) sentence_count : number of sentences;
+(4) question_marks : question mark count;
+(5) numbers_count : count of numeric values;
+(6) number_magnitude_avg : log ⁡ ( mean numeric value ) \log(\text{mean numeric value}) ;
+(7) number_magnitude_max : log ⁡ ( max numeric value ) \log(\text{max numeric value}) ;
+(8) has_percentage : presence of % or “percent”;
+(9) has_fraction : presence of fraction notation;
+(10) has_time_word : time-related keywords;
+(11) has_money_word : monetary keywords;
+(12) has_rate_word : rate/speed keywords;
+(13) has_multi_step_word : multi-step problem indicators;
+(14) avg_word_length : mean word length;
+(15) unique_word_ratio : unique words / total words;
+(16) entropy_estimate : normalised entropy from a single-pass LLM call.
+ E.2 GBM Hyperparameters
+ We use XGBoost with 100 estimators, max depth 5, learning rate 0.1, and multi-class log-loss objective. Training uses an 80/20 train/validation split with 3 random seeds. GBM training on N = 200 N=200 instances with 16 features completes in < < 1 second on a standard CPU.
+ E.3 Binary Search Details
+ The binary search operates on [ λ min , λ max ] = [ 0.0 , 5.0 ] [\lambda_{\min},\lambda_{\max}]=[0.0,5.0] with 50 iterations. Since C ¯ ​ ( λ ) \bar{C}(\lambda) is a staircase function, we use stochastic mixing to achieve exact budget targets: we find two adjacent λ \lambda values giving C ¯ \bar{C} above and below B B , then randomly mix the corresponding label sets so that the expected cost equals B B .
+ E.4 Data Collection Cost
+ Each model–dataset pair requires 200 × 48 = 9,600 200\times 48=9{,}600 API calls (48 responses per question to evaluate all budget levels). The total across all four settings is 4 × 9,600 = 38,400 4\times 9{,}600=38{,}400 API calls.
+ Appendix F Extended Experimental Results
+ F.1 Per-Difficulty-Level Accuracy
+ Table 3 quantifies accuracy variation across MATH difficulty levels.
+ Table 3 : Per-difficulty-level accuracy at b = 1 b=1 and b = 16 b=16 , and self-consistency (SC) gain. 
+ Model 
+ Level 
+ Acc( b = 1 b=1 ) 
+ Acc( b = 16 b=16 ) 
+ SC Gain 
+ DeepSeek-V3 
+ Level 2 
+ 0.760 
+ 0.812 
+ +0.052 
+ Level 3 
+ 0.498 
+ 0.570 
+ +0.072 
+ Level 4 
+ 0.361 
+ 0.390 
+ +0.029 
+ GPT-4o-mini 
+ Level 2 
+ 0.752 
+ 0.806 
+ +0.055 
+ Level 3 
+ 0.448 
+ 0.531 
+ +0.083 
+ Level 4 
+ 0.276 
+ 0.303 
+ +0.027 
+ Qwen2.5-7B 
+ Level 2 
+ 0.753 
+ 0.818 
+ +0.065 
+ Level 3 
+ 0.461 
+ 0.546 
+ +0.085 
+ Level 4 
+ 0.339 
+ 0.382 
+ +0.043 
+ DeepSeek (GSM8K) 
+ GSM8K 
+ 0.946 
+ 0.967 
+ +0.020 
+ The pattern is consistent across all three models: Level 3 (medium-difficulty) questions exhibit the largest self-consistency gains (+7.2–8.5pp from b = 1 b=1 to b = 16 b=16 ), while Level 2 (easy) and Level 4 (hard) questions benefit much less (+5.2–6.5pp and +2.7–4.3pp, respectively).
+This confirms the “responsive” category identified in Figure 1 is concentrated at medium difficulty—precisely where the model occasionally generates a correct reasoning chain but not reliably so at b = 1 b=1 , and where aggregating multiple samples via majority voting can “rescue” the correct answer.
+ Level 4 questions gain the least from additional samples (+2.7–4.3pp), consistent with the “hard/intractable” archetype: when the model almost never produces a correct chain, voting over more incorrect answers provides minimal benefit.
+Level 2 questions gain moderately (+5.2–6.5pp), but their high base accuracy (0.75–0.76) means they are already “mostly solved” and the marginal value per additional sample is low.
+This heterogeneity is exactly what the Lagrangian oracle exploits: it routes the limited budget toward Level 3 questions where the marginal return is highest.
+ Interestingly, the SC gains are remarkably consistent across models despite substantial differences in absolute accuracy (e.g., GPT-4o-mini has Level 4 accuracy 0.276 vs. DeepSeek-V3’s 0.361).
+This suggests the gain structure is primarily determined by problem difficulty rather than model architecture, supporting the generality of our framework.
+ F.2 Oracle Label Distribution
+ Table 4 reports the fraction of questions assigned each budget level by the Lagrangian oracle.
+ Table 4 : Oracle label distribution: fraction of questions assigned each budget level. 
+ Model 
+ B B 
+ b = 1 b=1 
+ b = 2 b=2 
+ b = 4 b=4 
+ b = 8 b=8 
+ b = 16 b=16 
+ DeepSeek (MATH) 
+ 1.5 1.5 
+ 0.86 
+ 0.03 
+ 0.08 
+ 0.04 
+ 0.00 
+ 2.0 2.0 
+ 0.77 
+ 0.04 
+ 0.12 
+ 0.06 
+ 0.01 
+ 3.0 3.0 
+ 0.69 
+ 0.06 
+ 0.10 
+ 0.07 
+ 0.07 
+ GPT-4o-mini (MATH) 
+ 1.5 1.5 
+ 0.82 
+ 0.07 
+ 0.07 
+ 0.04 
+ 0.00 
+ 2.0 2.0 
+ 0.73 
+ 0.08 
+ 0.12 
+ 0.06 
+ 0.01 
+ 3.0 3.0 
+ 0.63 
+ 0.10 
+ 0.13 
+ 0.08 
+ 0.07 
+ Qwen2.5-7B (MATH) 
+ 1.5 1.5 
+ 0.84 
+ 0.04 
+ 0.08 
+ 0.03 
+ 0.00 
+ 2.0 2.0 
+ 0.76 
+ 0.04 
+ 0.12 
+ 0.07 
+ 0.01 
+ 3.0 3.0 
+ 0.66 
+ 0.04 
+ 0.17 
+ 0.10 
+ 0.04 
+ DeepSeek (GSM8K) 
+ 1.5 1.5 
+ 0.92 
+ 0.01 
+ 0.03 
+ 0.02 
+ 0.02 
+ 2.0 2.0 
+ 0.91 
+ 0.01 
+ 0.03 
+ 0.02 
+ 0.04 
+ 3.0 3.0 
+ 0.91 
+ 0.01 
+ 0.03 
+ 0.02 
+ 0.04 
+ Several insights emerge from the distribution.
+First, the oracle is highly selective : even at the loosest budget B = 3.0 B=3.0 , 63–69% of MATH questions still receive b = 1 b=1 .
+This reflects the fact that most questions either are already correctly answered at b = 1 b=1 (easy) or remain intractable at any budget (hard); in both cases, additional samples provide negligible marginal gain.
+The oracle’s budget savings come entirely from identifying the responsive minority.
+ Second, the distribution shifts smoothly as B B increases.
+At B = 1.5 B=1.5 (tight), nearly all budget is reserved for b = 1 b=1 with only 11–18% of questions receiving b ≥ 2 b\geq 2 .
+At B = 3.0 B=3.0 (loose), the oracle progressively unlocks higher budgets: the b = 16 b=16 allocation grows from 0% to 4–7%, and the b = 4 b=4 and b = 8 b=8 tiers expand as well.
+This gradual expansion mirrors the Lagrangian mechanism: as λ \lambda decreases, the “price of compute” falls and the oracle becomes more willing to invest in borderline-responsive questions.
+ Third, the oracle label distribution is non-monotonic in b b : the b = 2 b=2 tier is consistently underrepresented (3–10%) compared to b = 4 b=4 (7–17%).
+This suggests that the marginal gain from b = 1 → b = 2 b=1\to b=2 is often too small to justify the cost increase, while b = 4 b=4 provides a qualitatively stronger improvement through more effective majority voting.
+ Fourth, for GSM8K, the oracle distribution is nearly invariant to B B : 91–92% of questions receive b = 1 b=1 across all three budgets.
+This flatness occurs because the unconstrained oracle cost is only 1.77 (Table 6 ), meaning the constraint never binds at B ≥ 2.0 B\geq 2.0 and the oracle has already found its global optimum.
+ F.3 Oracle Gap Details
+ Table 5 reports the detailed gap between the learned policy and the oracle across all model–dataset–budget combinations.
+ Table 5 : Oracle gap and imitation accuracy by model and budget. Oracle Gap = Oracle Acc − - GBM Acc. 
+ Model 
+ B B 
+ Task Acc 
+ Imit. Acc 
+ Oracle Gap 
+ Avg. Cost 
+ DeepSeek (MATH) 
+ 1.5 1.5 
+ 0.550 
+ 0.973 
+ 0.005 
+ 1.45 
+ 2.0 2.0 
+ 0.562 
+ 0.945 
+ 0.009 
+ 1.87 
+ 3.0 3.0 
+ 0.575 
+ 0.933 
+ 0.011 
+ 2.73 
+ GPT-4o-mini (MATH) 
+ 1.5 1.5 
+ 0.501 
+ 0.958 
+ 0.006 
+ 1.47 
+ 2.0 2.0 
+ 0.512 
+ 0.938 
+ 0.009 
+ 1.87 
+ 3.0 3.0 
+ 0.526 
+ 0.912 
+ 0.011 
+ 2.85 
+ Qwen2.5-7B (MATH) 
+ 1.5 1.5 
+ 0.525 
+ 0.965 
+ 0.007 
+ 1.42 
+ 2.0 2.0 
+ 0.541 
+ 0.942 
+ 0.010 
+ 1.89 
+ 3.0 3.0 
+ 0.554 
+ 0.928 
+ 0.014 
+ 2.58 
+ DeepSeek (GSM8K) 
+ 1.5 1.5 
+ 0.962 
+ 0.985 
+ 0.004 
+ 1.47 
+ 2.0 2.0 
+ 0.965 
+ 0.977 
+ 0.004 
+ 1.68 
+ 3.0 3.0 
+ 0.965 
+ 0.977 
+ 0.004 
+ 1.68 
+ F.4 Oracle Allocation: Scatter and Quintile Composition
+ Figure 6 gives a fine-grained view of how the Lagrangian oracle assigns budgets as a function of single-pass difficulty.
+The top row scatters every question at ( Acc ⁡ ( x , 1 ) , b ⋆ ​ ( x ) ) (\mathrm{Acc}(x,1),\,b^{\star}(x)) for three target budgets, with marker size proportional to the maximum achievable gain max b ⁡ Acc ⁡ ( x , b ) − Acc ⁡ ( x , 1 ) \max_{b}\mathrm{Acc}(x,b)-\mathrm{Acc}(x,1) ; larger markers therefore highlight the “responsive” questions on which the budget is worth spending.
+The red decile-mean overlay traces the characteristic inverted-U : both the easiest questions (already correct at b = 1 b=1 ) and the hardest (intractable at every budget) receive minimal compute, while medium-difficulty questions absorb the bulk of the budget.
+The bottom row re-expresses the same data as a stacked composition over five equally-sized difficulty quintiles, making the distributional shift across budget classes explicit.
+At B = 1.5 B=1.5 , almost every question still sits at b = 1 b=1 ; by B = 3.0 B=3.0 , the middle quintiles unlock the full b ∈ { 4 , 8 , 16 } b\in\{4,8,16\} tiers while the flanking quintiles remain at b = 1 b=1 .
+ Figure 6 : Oracle allocation on DeepSeek-V3 × \times MATH. Top row: per-question scatter of oracle budget b ⋆ ​ ( x ) b^{\star}(x) against single-pass accuracy Acc ⁡ ( x , 1 ) \mathrm{Acc}(x,1) (marker size ∝ \propto maximum achievable accuracy gain across budgets); the red line shows the decile mean. Bottom row: stacked composition of oracle labels per difficulty quintile. As B B increases, budget is redistributed from b = 1 b=1 toward b ∈ { 4 , 8 , 16 } b\in\{4,8,16\} primarily within the middle quintiles, empirically verifying the “inverted-U” allocation pattern. 
+ F.5 Allocation Heatmap by Difficulty
+ Figure 5 (shown in the main text) provides a fine-grained view of how the oracle and learned allocations vary across MATH difficulty levels and budget constraints.
+ At B = 1.2 B=1.2 (tight budget), the oracle assigns b = 1 b=1 to virtually all questions across all difficulty levels.
+The few exceptions are concentrated in Level 3 (medium difficulty), where a small fraction receives b = 4 b=4 —these are the most “responsive” questions where even a modest budget increase yields outsized accuracy gains.
+ At B = 1.5 B=1.5 , the allocation structure becomes more differentiated: the oracle begins routing 10–15% of Level 3 and Level 4 questions to b = 4 b=4 and b = 8 b=8 , while Level 2 questions remain almost entirely at b = 1 b=1 .
+ At B = 3.0 B=3.0 (loose budget), the full difficulty-routing structure is visible.
+Level 2 questions still predominantly receive b = 1 b=1 (confirming their “easy” status), but Level 3 and Level 4 questions are spread across higher budgets.
+Notably, Level 4 questions receive some b = 16 b=16 allocations—even though their per-sample SC gains are small (Table 3 ), the oracle finds it worthwhile to invest heavily in a few questions where the accumulated voting benefit justifies the cost at this low λ \lambda .
+ The bottom row of Figure 5 shows that the learned GBM policy faithfully replicates this structure across all three budget levels.
+The cell-by-cell differences between oracle and GBM are small, confirming the high imitation accuracy reported in Table 5 .
+The main discrepancies appear at the b = 2 b=2 tier, which is both rare (3–6% of labels) and semantically close to b = 1 b=1 or b = 4 b=4 , making misclassifications at this level relatively benign for task accuracy.
+ F.6 Empirical Verification of the Four Archetypes from Figure 1 
+ The motivating Figure 1 in Section 1 argues by example that test-time scaling curves fall into four qualitative archetypes (easy / responsive / diminishing returns / hard).
+We now verify this empirically by running K K -means ( K = 4 K=4 ) on the raw accuracy curves { Acc ⁡ ( x , b ) } b ∈ ℬ \{\mathrm{Acc}(x,b)\}_{b\in\mathcal{B}} pooled across the three MATH backbones and DeepSeek × \times GSM8K.
+ Figure 7 : Empirical verification of the four archetypes from Figure 1 .
+(a) Mean accuracy curves of four K K -means clusters (thin background = sample of individual questions); cluster counts in the legend.
+(b) Archetype composition per model–dataset: GSM8K is dominated by “Easy” ( > 90 >90 %), while the three MATH settings show comparable mixtures.
+(c) Oracle budget assignment per archetype at B = 2.0 B=2.0 (DeepSeek-V3 × \times MATH): the “Responsive” cluster absorbs the overwhelming majority of the b ∈ { 4 , 8 , 16 } b\in\{4,8,16\} budget, while “Easy” and “Hard” clusters are routed almost entirely to b = 1 b=1 . 
+ Figure 7 (a) shows that the four discovered clusters align almost perfectly with the archetypes of Figure 1 :
+an “Easy” cluster with Acc ⁡ ( x , 1 ) ≥ 0.75 \mathrm{Acc}(x,1)\geq 0.75 and a nearly flat curve;
+a “Responsive” cluster with Acc \mathrm{Acc} rising from ∼ \sim 0.35 at b = 1 b=1 to ∼ \sim 0.9 at b = 16 b=16 ;
+a “Diminishing” cluster that gains moderately but saturates early;
+and a “Hard” cluster that stays below 0.25 throughout.
+Panel (b) reveals that the mixture of archetypes varies dramatically across settings: GSM8K is dominated by “Easy” questions ( > 90 % >90\% ), explaining both its high base accuracy and the tight budget savings our method achieves there, while the three MATH backbones exhibit comparable mixtures, explaining why the per-model improvements in Table 1 are also comparable.
+Panel (c) closes the loop with the oracle: at B = 2.0 B=2.0 , essentially all of the b ∈ { 4 , 8 , 16 } b\in\{4,8,16\} budget is spent on the “Responsive” cluster, while “Easy” and “Hard” clusters are routed to b = 1 b=1 with probability > 0.9 >0.9 .
+This provides direct empirical support for the claim in Section 1 that the oracle’s savings come from identifying the “responsive minority” rather than from a smooth difficulty-to-budget mapping.
+ Appendix G Theoretical Property Validation
+ G.1 Empirical Cost Monotonicity — Extended Analysis
+ The cost monotonicity property (Theorem 1 ) is validated empirically in Figure 2 (main text).
+Here we provide additional observations.
+All four model–dataset combinations exhibit the predicted non-increasing staircase behaviour, but the curves differ in shape.
+For the three MATH settings, C ¯ ​ ( λ ) \bar{C}(\lambda) spans the full range from ∼ \sim 3.5 (at λ ≈ 0 \lambda\approx 0 , where every question receives b = 16 b=16 ) down to 1.0 (at λ ≳ 0.10 \lambda\gtrsim 0.10 , where every question receives b = 1 b=1 ).
+The transition is concentrated in the interval λ ∈ [ 0.01 , 0.10 ] \lambda\in[0.01,0.10] , reflecting the range of marginal accuracy gains across questions.
+ For DeepSeek-V3 × \times GSM8K, the curve is markedly compressed: C ¯ ​ ( λ ) \bar{C}(\lambda) starts at only ∼ \sim 1.8 even at λ = 0 \lambda=0 , indicating that the unconstrained oracle assigns low budgets to most questions.
+This occurs because GSM8K is easy—the base model already achieves 94.6% accuracy—so the marginal value of additional samples is small for most questions, and the oracle finds little reason to allocate high budgets even when compute is free.
+ The staircase width varies across models: Qwen2.5-7B exhibits slightly wider plateaus than DeepSeek-V3 or GPT-4o-mini, suggesting a more discrete distribution of marginal accuracy gains.
+This has practical implications for budget targeting: wider plateaus mean that exact budget matching via a single λ \lambda is harder (larger residual gap), motivating the stochastic mixing procedure described in Appendix E .
+ G.2 Binary Search Convergence
+ Table 6 reports the binary search results across all model–dataset–budget combinations.
+ Table 6 : Binary search results: target budget, found λ ∗ \lambda^{*} , achieved C ¯ \bar{C} , and absolute error. 
+ Model 
+ Target B B 
+ λ ∗ \lambda^{*} 
+ Achieved C ¯ \bar{C} 
+ | C ¯ − B | |\bar{C}-B| 
+ Monotone 
+ DeepSeek (MATH) 
+ 1.5 1.5 
+ 0.057 0.057 
+ 1.510 1.510 
+ 0.010 0.010 
+ ✓ 
+ 2.0 2.0 
+ 0.021 0.021 
+ 1.950 1.950 
+ 0.050 0.050 
+ ✓ 
+ 3.0 3.0 
+ 0.008 0.008 
+ 3.020 3.020 
+ 0.020 0.020 
+ ✓ 
+ GPT-4o-mini (MATH) 
+ 1.5 1.5 
+ 0.039 0.039 
+ 1.540 1.540 
+ 0.040 0.040 
+ ✓ 
+ 2.0 2.0 
+ 0.021 0.021 
+ 1.975 1.975 
+ 0.025 0.025 
+ ✓ 
+ 3.0 3.0 
+ 0.008 0.008 
+ 3.020 3.020 
+ 0.020 0.020 
+ ✓ 
+ Qwen2.5-7B (MATH) 
+ 1.5 1.5 
+ 0.057 0.057 
+ 1.495 1.495 
+ 0.005 0.005 
+ ✓ 
+ 2.0 2.0 
+ 0.030 0.030 
+ 2.020 2.020 
+ 0.020 0.020 
+ ✓ 
+ 3.0 3.0 
+ 0.008 0.008 
+ 2.835 2.835 
+ 0.165 0.165 
+ ✓ 
+ DeepSeek (GSM8K) 
+ 1.5 1.5 
+ 0.021 0.021 
+ 1.530 1.530 
+ 0.030 0.030 
+ ✓ 
+ 2.0 2.0 
+ 0.000 0.000 
+ 1.765 1.765 
+ 0.235 0.235 
+ ✓ 
+ 3.0 3.0 
+ 0.000 0.000 
+ 1.765 1.765 
+ 1.235 1.235 
+ ✓ 
+ Several patterns merit discussion.
+First, the algorithm reliably finds λ B ⋆ \lambda^{\star}_{B} with | C ¯ − B | < 0.05 |\bar{C}-B|<0.05 for all nine MATH settings, confirming that binary search is an effective and practical solver for the dual problem.
+Second, the required λ ⋆ \lambda^{\star} decreases as the budget B B increases—this is expected since a larger budget corresponds to a cheaper “price of compute” in the Lagrangian formulation.
+Third, Qwen2.5-7B at B = 3.0 B=3.0 shows a larger residual gap ( | C ¯ − B | = 0.165 |\bar{C}-B|=0.165 ) because this model’s accuracy function has wider plateaus in the marginal gain landscape, making exact budget matching with a single λ \lambda more difficult.
+Fourth, for DeepSeek × \times GSM8K at B ∈ { 2.0 , 3.0 } B\in\{2.0,3.0\} , the search returns λ ⋆ = 0 \lambda^{\star}=0 with C ¯ = 1.765 ≪ B \bar{C}=1.765\ll B : the unconstrained oracle cost is already below the target, so the budget constraint is never binding.
+This is a natural boundary case—the oracle has no reason to spend more even when the constraint is fully relaxed.
+ Figure 8 dissects the binary-search dynamics along four complementary axes (targets B ∈ { 1.5 , 2.0 , 3.0 } B\in\{1.5,2.0,3.0\} on DeepSeek-V3 × \times MATH).
+Panel (a) plots the λ lo \lambda_{\text{lo}} and λ hi \lambda_{\text{hi}} brackets on a symlog axis: all three targets collapse to their fixed points within ∼ \sim 8 iterations.
+Panel (b) shows the corresponding cost brackets C ¯ ​ ( λ lo ) \bar{C}(\lambda_{\text{lo}}) and C ¯ ​ ( λ hi ) \bar{C}(\lambda_{\text{hi}}) sandwiching the targets (horizontal lines); the shaded region is the remaining slack.
+Panel (c) reports the residual error | C ¯ ​ ( λ mid ) − B | |\bar{C}(\lambda_{\text{mid}})-B| on a log scale: all targets drop below the 0.05 0.05 tolerance within 6–10 iterations, after which further reduction is blocked by the staircase discretisation of C ¯ \bar{C} (not by slow search).
+Panel (d) projects the visited ( λ , C ¯ ) (\lambda,\bar{C}) pairs onto the global monotone C ¯ ​ ( λ ) \bar{C}(\lambda) curve (Theorem 1 ), illustrating that each binary-search step is an interval bisection on a piece-wise constant descending staircase.
+The stochastic mixing procedure of Appendix E bridges any residual staircase gap to achieve exact budget targets in expectation.
+ Figure 8 : Binary search diagnostics on DeepSeek-V3 × \times MATH for three target budgets B ∈ { 1.5 , 2.0 , 3.0 } B\in\{1.5,2.0,3.0\} .
+(a) λ \lambda -bracket trajectories (symlog axis);
+(b) cost bracket converging to each target (shaded region = slack, horizontal lines = target);
+(c) residual cost error | C ¯ ​ ( λ mid ) − B | |\bar{C}(\lambda_{\text{mid}})-B| on log scale, with the 0.05 0.05 tolerance line;
+(d) visited ( λ , C ¯ ) (\lambda,\bar{C}) points overlaid on the monotone staircase C ¯ ​ ( λ ) \bar{C}(\lambda) guaranteed by Theorem 1 .
+Convergence is effectively complete within 10 iterations for every target. 
+ G.3 Lagrangian Illustration: Single Question and Population View
+ Figure 9 illustrates how the dual variable λ \lambda controls oracle allocation at two complementary scales: per-question trajectories and the population distribution.
+Panel (a) plots every MATH question’s oracle budget b ⋆ ​ ( x , λ ) b^{\star}(x;\lambda) as a function of λ \lambda , coloured by single-pass accuracy Acc ⁡ ( x , 1 ) \mathrm{Acc}(x,1) ; each curve is a non-increasing step function (Theorem 1 ), and together they form a “waterfall” of budgets draining from b = 16 b=16 down to b = 1 b=1 as the price of compute rises.
+Panel (b) aggregates this into a stacked area: at each λ \lambda , the height of colour b b gives the fraction of questions the oracle assigns to budget b b .
+The transition is concentrated in λ ∈ [ 0.01 , 0.10 ] \lambda\in[0.01,0.10] , matching the cost-monotonicity curve reported in Figure 2 .
+Panel (c) zooms in on one highlighted “responsive” question and plots its Lagrangian score f λ ​ ( x , b ) = Acc ⁡ ( x , b ) − λ ​ b f_{\lambda}(x,b)=\mathrm{Acc}(x,b)-\lambda b at three λ \lambda values (triangles mark the argmax), recovering the classic single-question view.
+ Figure 9 : Lagrangian mechanism at three scales on DeepSeek-V3 × \times MATH.
+(a) Per-question oracle budget trajectories b ⋆ ​ ( x , λ ) b^{\star}(x;\lambda) for all 200 questions (coloured by single-pass accuracy, red curve = one highlighted responsive question, triangles mark its regime transitions);
+(b) Stacked area of population-level oracle label distribution as λ \lambda increases — the budget mass “drains” from b = 16 b=16 to b = 1 b=1 ;
+(c) Lagrangian scores f λ ​ ( x , b ) f_{\lambda}(x,b) for the highlighted question at three λ \lambda values, with triangles marking the argmax at each price.
+Collectively, the three panels illustrate how a single scalar λ \lambda prices compute globally while producing heterogeneous per-question decisions. 
+ Panels (a) and (b) make the economic mechanism explicit: raising λ \lambda uniformly penalises every additional sample by a fixed amount, but different questions respond at different rates.
+Easy questions (yellow curves in panel (a)) drop to b = 1 b=1 almost immediately, because their marginal accuracy gain is tiny; hard-but-intractable questions (dark purple) also collapse quickly, because extra samples cannot rescue them; only the “responsive” middle band (teal/green) retains high budgets until λ \lambda is large.
+This heterogeneity is precisely what uniform allocation leaves on the table and what our oracle is designed to exploit.
+ Appendix H Ablation Studies
+ H.1 Classifier Architecture
+ We compare five classifier architectures on pooled data (3 models × \times MATH × \times B ∈ { 1.5 , 2.0 , 3.0 } B\in\{1.5,2.0,3.0\} , 1800 instances total, 10 random 80/20 splits).
+Table 7 reports quantitative results and Figure 10 visualises the comparison.
+ Table 7 : Classifier architecture ablation (pooled data, 10 random 80/20 splits). 
+ Classifier 
+ Task Acc 
+ Oracle Gap 
+ Imit. Acc 
+ Avg. Cost 
+ Logistic Reg. 
+ 0.478 ± \pm 0.021 
+ 0.069 ± \pm 0.021 
+ 0.749 ± \pm 0.006 
+ 1.03 ± \pm 0.03 
+ SVM (RBF) 
+ 0.478 ± \pm 0.021 
+ 0.070 ± \pm 0.021 
+ 0.753 ± \pm 0.000 
+ 1.00 ± \pm 0.00 
+ Rand. Forest 
+ 0.529 ± \pm 0.021 
+ 0.018 ± \pm 0.021 
+ 0.821 ± \pm 0.013 
+ 2.16 ± \pm 0.15 
+ MLP (64) 
+ 0.480 ± \pm 0.021 
+ 0.067 ± \pm 0.021 
+ 0.746 ± \pm 0.007 
+ 1.11 ± \pm 0.11 
+ GBM 
+ 0.529 ± \pm 0.021 
+ 0.019 ± \pm 0.021 
+ 0.822 ± \pm 0.013 
+ 2.17 ± \pm 0.11 
+ Figure 10 : Classifier architecture ablation (pooled: 3 MATH models × \times B ∈ { 1.5 , 2.0 , 3.0 } B\in\{1.5,2.0,3.0\} , 10 random 80/20 splits).
+(a) Task accuracy broken out per backbone: GBM and Random Forest dominate every model uniformly.
+(b) Empirical verification of Theorem 2 . Each marker is one split × \times classifier, plotted at (imitation error ε \varepsilon , task regret Acc ⁡ ( π ⋆ ) − Acc ⁡ ( π ^ ) \mathrm{Acc}(\pi^{\star})-\mathrm{Acc}(\hat{\pi}) ); the dashed line is the theoretical upper bound M ¯ emp ⋅ ε \bar{M}_{\mathrm{emp}}\cdot\varepsilon using the average worst-case gap, and the dotted line is the loose sup x M λ ​ ( x ) ⋅ ε \sup_{x}M_{\lambda}(x)\cdot\varepsilon bound. All empirical points lie well below the bound, and the slope of the empirical cloud matches M ¯ emp \bar{M}_{\mathrm{emp}} , confirming the predicted imitation → \to regret reduction is tight up to a constant.
+(c) Row-normalised confusion matrix of the GBM (oracle row vs. predicted column). The mass concentrates on the diagonal and immediately adjacent cells, confirming that most errors are “near-misses” to neighbouring budgets — exactly the regime in which the M λ M_{\lambda} -weighted bound in Theorem 2 predicts minimal task-level impact. 
+ Panel (a) of Figure 10 shows that the tree-based vs. non-tree divide is uniform across all three backbones: GBM and Random Forest each beat linear, SVM, and MLP classifiers by 3–6 pp on every model, ruling out model-specific accidents.
+Panel (b) is the most important diagnostic: it places every (split, classifier) pair on the ( ε , Regret ) (\varepsilon,\,\mathrm{Regret}) plane and overlays the bound M ¯ ⋅ ε \bar{M}\cdot\varepsilon from Theorem 2 .
+All empirical points lie strictly below the bound, and the linear “envelope” of the cloud has a slope very close to M ¯ emp \bar{M}_{\mathrm{emp}} — i.e. the imitation-to-regret reduction is not just valid but tight.
+Panel (c) explains why the gap in panel (a) is so small for tree-based classifiers despite imitation error being non-trivial ( 8–25%): GBM’s misclassifications mostly land on adjacent budget classes whose f λ f_{\lambda} is nearly identical, so M λ ​ ( x ) M_{\lambda}(x) is small on those instances.
+Together, panels (b) and (c) empirically validate the theoretical reduction from constrained inference to supervised classification developed in Section 4.4 .
+ A revealing diagnostic is the average realised cost.
+Linear models (Logistic Regression, SVM) produce average costs of 1.00–1.03, indicating they default to assigning b = 1 b=1 to nearly every question.
+This behaviour suggests that the linear models fail to learn the non-linear allocation boundaries—they lack the capacity to capture the interaction between features and the discrete budget structure.
+The MLP (64 hidden units) improves slightly (cost 1.11) but still primarily predicts b = 1 b=1 .
+In contrast, tree-based models achieve average costs of 2.16–2.17, closely matching the pooled oracle mean, indicating they have learned to distribute budget across the full range ℬ \mathcal{B} .
+ This finding has practical implications: despite the simplicity of the feature set (16 text statistics), the allocation task requires a non-linear classifier.
+The 5pp accuracy gap between GBM and linear models amounts to correctly routing ∼ \sim 10 additional questions per 200-question batch—a meaningful improvement that justifies the modest increase in classifier complexity.
+ H.2 Data Efficiency
+ A key practical question is how many labelled examples are needed for the GBM to outperform uniform allocation.
+Figure 11 reports task accuracy as a function of training data fraction on all four model–dataset pairs, with error bands over four random seeds and all three target budgets B ∈ { 1.5 , 2.0 , 3.0 } B\in\{1.5,2.0,3.0\} .
+ Figure 11 : Data efficiency across all four model–dataset combinations.
+Each panel shows task accuracy vs. training data fraction at three target budgets ( B ∈ { 1.5 , 2.0 , 3.0 } B\in\{1.5,2.0,3.0\} , error bands over 4 random seeds).
+Dashed horizontal lines = oracle upper bound per B B ; dotted horizontal lines = Fixed- b b baseline.
+The GBM crosses the Fixed- b b baseline with only 20–25% of the training data on every setting and climbs monotonically toward the oracle upper bound, with diminishing returns beyond 60%. 
+ The pattern is strikingly consistent across backbones and datasets.
+On all three MATH settings, the GBM already beats the Fixed- b b baseline with 20–25% of the data (roughly 40–50 labelled questions) and continues to improve at a near-logarithmic rate, flattening against the oracle upper bound beyond 60%.
+On GSM8K, where the base accuracy is already > > 94%, the curves are compressed but the same qualitative trend holds.
+Two implications follow.
+First, the oracle labels carry enough signal that a few dozen labelled questions are already valuable — the entire Solve-then-Learn pipeline (including the expensive API data collection) can be bootstrapped from as few as 50–100 questions per model.
+Second, the remaining 1–2 pp gap to the oracle at 100% data usage is model-independent , suggesting that richer features — not more data — are the primary bottleneck for further improvement.
+ H.3 Budget Set Granularity
+ A natural design question is how fine-grained the budget set ℬ \mathcal{B} should be.
+Figure 12 compares three granularities from three viewpoints: the Pareto frontier, the oracle label distribution at a representative budget, and the marginal return on adding tiers.
+ Figure 12 : Effect of budget set granularity (DeepSeek-V3 × \times MATH). We compare Coarse { 1 , 8 , 16 } \{1,8,16\} , Default { 1 , 2 , 4 , 8 , 16 } \{1,2,4,8,16\} , and Fine { 1 , 2 , 3 , 4 , 6 , 8 , 12 , 16 } \{1,2,3,4,6,8,12,16\} .
+(a) Pareto frontiers: solid = learned GBM, dashed = Oracle upper bound;
+(b) Oracle label distribution at B = 2.0 B=2.0 : Coarse is forced into a bimodal b = 1 / b = 8 b=1/b=8 regime while Default and Fine spread mass across b ∈ { 2 , 4 , 8 } b\in\{2,4,8\} where the marginal accuracy gain is concentrated;
+(c) Marginal return: oracle task accuracy at B = 2.0 B=2.0 plotted against the number of budget tiers | ℬ | |\mathcal{B}| , with the pp-gain from each additional granularity annotated on the connecting segments.
+The Coarse → \to Default step yields a large gain, while Default → \to Fine is essentially saturated. 
+ Panel (a) shows that the Fine and Default frontiers are nearly indistinguishable, while the Coarse frontier sits noticeably below, particularly in the B ∈ [ 1.5 , 4 ] B\in[1.5,4] range.
+Panel (b) reveals the mechanism: the Coarse set lacks b = 2 b=2 and b = 4 b=4 , which are the most frequently assigned oracle labels for medium-difficulty questions (cf. Table 4 ), so the oracle is forced into a bimodal regime that either underspends ( b = 1 b=1 ) or overspends ( b = 8 b=8 ).
+Panel (c) quantifies the marginal value of granularity directly: moving from Coarse (3 tiers) to Default (5 tiers) buys a ∼ \sim 1 pp accuracy gain at matched cost, whereas moving from Default to Fine (8 tiers) adds less than 0.1 pp.
+A practical recommendation follows: exponentially spaced budget tiers (powers of 2) provide a near-optimal balance between expressiveness and complexity — adding intermediate levels beyond this brings diminishing returns, while removing key intermediate levels causes meaningful degradation.
+ H.4 Feature Importance and Per-Class Signatures
+ Figure 13 shows (a) the GBM feature importance ranking over all 16 features and (b) the z z -scored mean feature value for each oracle budget class, revealing which features distinguish which decisions.
+ Figure 13 : Feature diagnostics for AdaCompute-GBM ( B = 2.0 B=2.0 , DeepSeek-V3 × \times MATH).
+(a) GBM feature importance over all 16 features, sorted and colour-graded.
+(b) Per-oracle-class mean feature values, z z -scored along each row so that red/blue cells highlight features that push a question toward or away from each budget class.
+Dark-red cells at b = 16 b=16 for has_fractions , has_square_roots , and has_equation show that these structural signals correspond to questions that genuinely benefit from high budgets, while single_pass_acc and avg_word_length split cleanly across the b = 1 b=1 vs. b ∈ { 8 , 16 } b\in\{8,16\} axis. 
+ Panel (a) shows that importance is distributed relatively evenly across features (range 0.06–0.11), with no single dominant predictor — the top features span multiple signal dimensions:
+ has_multi_step_word (problem structure),
+ single_pass_acc (direct difficulty signal),
+ unique_word_ratio (lexical diversity),
+ prompt_length_words (length proxy),
+and entropy_estimate (model uncertainty from a single forward pass).
+Panel (b) complements this by showing how each feature separates the budget classes.
+The row-normalised heatmap makes the mechanism explicit: questions routed to b = 16 b=16 have consistently higher values on structural indicators ( has_fractions , has_square_roots , has_equation ) and lower single_pass_acc , while b = 1 b=1 questions have the opposite profile.
+Crucially, intermediate budgets ( b = 2 , 4 , 8 b=2,4,8 ) are not just interpolations between the two extremes — they exhibit their own feature signatures (e.g. b = 4 b=4 is distinctive on has_multi_subproblems and moderate entropy ), which is why a non-linear classifier is required to recover them (Table 7 ).
+ The even distribution of importances has two implications.
+First, it confirms that budget allocation is inherently a multi-dimensional decision—no single “difficulty score” suffices, which explains why linear classifiers fail (Table 7 ).
+Second, it suggests that the feature set is not bottlenecked by any single weak feature; rather, each feature contributes a complementary signal.
+This motivates future work on richer feature engineering (e.g., embedding-based features from a frozen encoder) to further close the oracle gap.
+ Experimental support, please
+ view the build logs 
+ for errors. Generated by
+ L
+ A 
+ T
+ E 
+ xml 
+ .
+ Instructions for reporting errors
+ We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility and mobile
+ support. To report errors in the HTML that will help us improve conversion and rendering, choose any of the
+ methods listed below:
+ Click the "Report Issue" ( 
+ ) button, located in the page header.
+ Tip: You can select the relevant text first, to include it in your report.
+ Our team has already identified the following issues . We appreciate your time reviewing and reporting rendering errors we
+ may not have found yet. Your efforts will help us improve the HTML versions for all readers, because disability
+ should not be a barrier to accessing research. Thank you for your continued support in championing open access for
+ all.
+ Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML maintain a list of packages that need conversion , and welcome developer contributions .
+ We gratefully acknowledge support from
+ our major funders ,
+ member institutions , ,
+ and all contributors.
+ About 
+ · 
+ Help 
+ · 
+ Contact 
+ · 
+ Subscribe 
+ · 
+ Copyright 
+ · 
+ Privacy 
+ · 
+ Accessibility 
+ · 
+ Operational Status (opens in new tab) 
+ Major funding support from

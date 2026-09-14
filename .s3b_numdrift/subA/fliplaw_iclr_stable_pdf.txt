@@ -1,0 +1,2702 @@
+Published as a conference paper at ICLR 2026
+HOW STABLE IS THE NEXT TOKEN ? A G EOMETRIC
+VIEW OF LLM P REDICTION STABILITY
+Deyuan Liu1 Zecheng Wang1, 2 Zhanyue Qin1 Zhiying Tu1 Dianhui Chu1 Dianbo Sui1∗
+1Harbin Institute of Technology 2Wechat AI
+ABSTRACT
+Large Language Models (LLMs) exhibit impressive capabilities yet suffer from
+sensitivity to slight input context variations, hampering reliability. Conventional
+metrics like accuracy and perplexity fail to assess local prediction robustness,
+as normalized output probabilities can obscure the underlying resilience of an
+LLM’s internal state to perturbations. We introduce the Token Constraint Bound
+(δTCB), a novel metric that quantiﬁes the maximum internal state perturbation
+an LLM can withstand before its dominant next-token prediction signiﬁcantly
+changes. Intrinsically linked to output embedding space geometry, δTCB provides
+insights into the stability of the model’s internal predictive commitment. Our ex-
+periments show δTCB correlates with effective prompt engineering and uncovers
+critical prediction instabilities missed by perplexity during in-context learning and
+text generation. δTCB offers a principled, complementary approach to analyze and
+potentially improve the contextual stability of LLM predictions.
+1 I NTRODUCTION
+Large Language Models (LLMs), such as GPT-4 ( OpenAI et al. , 2023), LLaMA ( Touvron et al. ,
+2023; Dubey et al. , 2024) and Gemini ( Team et al., 2023), demonstrate remarkable capabilities, yet
+paradoxically exhibit striking sensitivity to contextual nuances. This brittleness manifests as substan-
+tial performance variations due to subtle modiﬁcations: accuracy can ﬂuctuate by up to 76% from
+minor formatting changes ( Sclar et al. , 2023) or range from 54% to 93% based on example order
+(Zhao et al. , 2021). Such variations stem from alterations in prompt phrasing ( Razavi et al. , 2025),
+example selection and ordering ( Lu et al. , 2021), or even basic formatting. Despite established scal-
+ing laws (Kaplan et al., 2020; Hoffmann et al., 2022) fueling impressive in-context learning ( Brown
+et al., 2020; Dong et al. , 2022; Wei et al., 2023), evidence indicates that increased model scale does
+not inherently confer enhanced robustness; larger models may even exhibit new sensitivities ( Lu
+et al., 2021; Wei et al., 2023). This underscores the urgent need for robust stability metrics in mod-
+ern AI evaluation, particularly for reliable deployment in mission-critical applications demanding
+consistent performance (Weidinger et al., 2021; Herrera-Poyatos et al., 2025).
+Appraising contextual inﬂuence with precision is imperative, yet existing evaluation frameworks
+prove inadequate. Task accuracy yields only an aggregate performance view, overlooking the stabil-
+ity of individual predictions amid contextual shifts. Perplexity ( Jelinek et al., 1977), though standard
+for sequence likelihood ( Liang et al. , 2022; Holtzman et al. , 2021), conﬂates probabilities, thereby
+obscuring local dynamics essential for robustness. Moreover, it often neglects internal state geome-
+try and fails to ensure internal stability even for high-probability tokens ( Cohen-Inger et al. , 2025).
+Crucially, the softmax normalization applied to derive output probabilities can mask a prediction’s
+underlying stability; high probability can arise from relative normalization, not necessarily from a
+robust internal state. This implies that a high token probability offers no guarantee that the originat-
+ing internal state h is itself resilient to minor variations. Even as emerging metrics ( Zhang et al. ,
+2024; Tian et al. , 2023; Geng et al. , 2023) address conﬁdence and calibrationchieﬂy by aligning
+probabilities with correctness likelihood ( Tian et al., 2023)they do not directly gauge the robustness
+of a speciﬁc next-token prediction’s dominant rank to perturbations in the internal representation
+h. A well-calibrated, high-conﬁdence prediction may therefore belie an unstable equilibrium within
+the internal state ( Liu et al. , 2025). This gap in assessing the immediate predictive mechanism’s
+stability against internal perturbations is the direct impetus for our central research question:
+∗Corresponding author.
+1
+Published as a conference paper at ICLR 2026
+Figure 1: The Token Constraint Bound ( δTCB) mechanism. δTCB quantiﬁes the maximum perturbation a
+model’s internal state can withstand before the next-token prediction changes. (a) Left panel illustrates how a
+hidden state perturbation ∆h impacts the next token prediction. Small perturbations ( ∆h1, implicitly within
+δTCB radius) may preserve the output, while larger ones ( ∆h2 > δ TCB) can ﬂip it (from "No" to "Y es"). δTCB
+bounds the perturbation size for stable output. (b) Right panel shows that the original hidden state h and a
+perturbed state h′ inside a stability region predict "No". Another perturbation h′′ outside the region ﬂips the
+prediction to "Y es", demonstrating the practical consequence of exceeding the stability boundary.
+Q: How can we quantify the stability of an LLM’s immediate prediction state, as
+induced by a speciﬁc prompt or context, against small internal variations?
+Addressing this question necessitates transcending aggregate performance metrics to develop mea-
+sures speciﬁcally targeting the local robustness of prediction mechanisms. We must quantify how
+susceptible the next-token output distribution is to perturbations in the internal representation gener-
+ated from the input contexta challenge at the intersection of representation stability and prediction
+reliability.
+Our approach. We propose the Token Constraint Bound ( δTCB), a measure of this critical lo-
+cal stability. δTCB quantiﬁes a "safety margin" around the internal state h resulting from context
+processing: a larger δTCB means the models next-token prediction (particularly its top choice) with-
+stands greater internal perturbations ∆h without signiﬁcant change. It gauges the model’s commit-
+ment to its current output ranking, given h. As explicated in Section 2 and depicted in Figure 1 ,
+δTCB offers a direct measure of the output layer’s robustness to hidden state variations. Therefore,
+a high δTCB signals a stably conﬁdent prediction state engendered by effective context.
+We hypothesize that effective context, such as well-crafted prompts or informative ICL examples,
+not only guides models to correct answers but also induces a more stable internal state h, as reﬂected
+by higher δTCB values. This stability, signifying robust internal commitment to a predictive path,
+yields more reliable predictions. Consequently, δTCB offers a quantitative measure for context effec-
+tiveness beyond accuracy, serving as a proxy for the robustness of context-derived decision-making
+and complementing uncertainty metrics focused on "knowledge strength" (Ma et al., 2025).
+Our experiments corroborate this. We show δTCB distinguishes prompt quality and exhibits distinct
+behaviors across conﬁdence regimes, correlating with distributional ﬂatness in uncertain cases and
+logit margins in high-conﬁdence scenarios. Results conﬁrm δTCB’s sensitivity to output embed-
+ding geometry, its link to semantic content, and its ability to ﬂag incipient instability during text
+generationdynamics perplexity overlooks.
+Our contributions are threefold:
+(a) We introduce and theoretically ground the Token Constraint Bound ( δTCB), a novel metric that
+measures the local robustness of an LLM’s next-token prediction to internal state perturbations,
+and detail its practical computation ( Section 2 ).
+(b) We derive an expression that intrinsically links δTCB to the geometric dispersion of output em-
+beddings, thus identifying geometric underpinnings of prediction stability ( Section 3 ).
+(c) Through empirical evaluation, we demonstrate δTCB’s capacity to assess prompt effectiveness
+and showcase its application in reﬁning both prompt engineering and ICL ( Section 4 ).
+2
+Published as a conference paper at ICLR 2026
+1 = 3.938
+2 = 1.086
+h1 (High Conf)
+h2 (Lower Conf)
+High Confidence:
+"Arithmetic Result: 9.11 - 9.9 = 0.12. Since
+0.12 > 0, does 9.11 > 9.9 hold? Reply Yes or
+No."
+Veff = 1.06
+Lower Confidence:
+"Evaluation: Would you say 9.11 is
+significantly greater than 9.9? Answer Yes or
+No only."
+Veff = 1.64
+No Yes
+0.0
+0.2
+0.5
+0.8
+1.0Probability
+0.97
+0.03
+Output vo
+Yes No
+0.0
+0.2
+0.5
+0.8
+1.0Probability
+0.73
+0.27
+Output vo
+(a) Effect of prompt conﬁdence on δTCB.
+1 = 4.469
+h1 (Zero-Shot)
+2 = 0.680
+h2 (ICL 1 (Yes))
+3 = 1.898
+h3 (ICL 2 (Yes))
+4 = 1.898
+h4 (ICL 3 (Yes))
+Zero-Shot:
+"Statement: 9.11 is numerically greater
+than 9.9. Is this statement correct?
+Respond Yes or No."
+Veff = 1.03
+No Yes
+0.0
+0.2
+0.5
+0.8
+1.0
+Probability
+0.98
+0.02
+Output Distribution
+ICL 1 (Yes):
+"Examples: Q: Is 5.2 > 5.8? A: No A: Yes
+Following the pattern above: Statement:
+9.11 is numerically greater than 9.9. Is
+this statement correct? Respond Yes or No."
+Veff = 1.83
+Yes No
+0.0
+0.2
+0.5
+0.8
+1.0
+Probability
+0.65
+0.35
+Output Distribution
+ICL 2 (Yes):
+"Examples: Q: Is 5.21 > 5.8? A: Yes
+Following the pattern above: Statement:
+9.11 is numerically greater than 9.9. Is
+this statement correct? Respond Yes or No."
+Veff = 1.33
+Yes No
+0.0
+0.2
+0.5
+0.8
+1.0
+Probability
+0.85
+0.15
+Output Distribution
+ICL 3 (Yes):
+"Examples: Q: Is 5.21 > 5.8? A: Yes
+Following the pattern above: Statement:
+9.11 is numerically greater than 9.9. Is
+this statement correct? Respond Yes or No."
+Veff = 1.33
+Yes No
+0.0
+0.2
+0.5
+0.8
+1.0
+Probability
+0.85
+0.15
+Output Distribution (b) Effect of In-Context Learning on δTCB.
+Figure 2: δTCB reﬂects context-induced prediction stability. (a) Illustrates how prompts inducing higher
+prediction conﬁdence (lower Veﬀ , state h1) lead to a signiﬁcantly larger δTCB compared to prompts yielding
+lower conﬁdence (higher Veﬀ , state h2). (b) Shows how In-Context Learning examples modify the hidden state
+and consequently the prediction and its stability. Adding examples can initially decrease stability while ﬂipping
+the prediction, but consistent examples can increase stability for the target output.
+2 P RELIMINARIES : U NDERSTANDING LLM P REDICTIONS AND STABILITY
+This section establishes the foundational concepts for analyzing local output stability in LLMs. We
+begin by outlining the LLM output mechanism, then explore what it means for a prediction to be
+stable against internal variations. This leads to the introduction of the Jacobian matrix as a tool for
+quantifying sensitivity, and ﬁnally culminates in the formal deﬁnition of our δTCB.
+2.1 L ANGUAGE MODEL OUTPUT AND DISTRIBUTION CONCENTRATION
+Consider an LLM whose ﬁnal layer computes a hidden state h ∈ Rd. This state is linearly trans-
+formed by an output weight matrix W ∈ RV×d to produce logits z = Wh, where V is the vocab-
+ulary size. Each row w⊤
+i of W corresponds to the output embedding for token i. The probability
+distribution over the next token, o ∈ RV , is obtained via the softmax function:
+o = softmax(z), where oi = exp(zi)PV
+j=1 exp(zj)
+. (1)
+This distribution satisﬁesPV
+i=1 oi = 1 and oi ≥ 0. The model’s prediction is typically the token i∗
+maximizing oi. A useful measure of the concentration of this distribution is the effective vocabulary
+size Veﬀ :
+Veﬀ (o) := 1PV
+i=1 o2
+i
+= 1
+∥o∥2
+2
+. (2)
+Veﬀ ranges from 1 to V, inversely relating to the L2 norm squared of the probability vector. Our
+analysis hinges on understanding how the characteristics of this output vector o, including its con-
+centration, relate to its stability when the context-derived hidden state h undergoes small changes.
+2.2 D EFINING STABILITY : W HAT DOES IT MEAN FOR A PREDICTION TO BE STABLE ?
+Our core objective is to understand the robustness of an LLM’s next-token prediction. Speciﬁcally,
+we want to know: if the LLM’s internal summary of the context (represented by the ﬁnal hidden state
+h) changes slightly, how much does its next-token probability distribution o change? Let ∆h ∈ Rd
+represent a small internal "wobble" or perturbation to the hidden state h. Such a perturbation to the
+model’s internal representation of the context could arise from minor input variations, noise in the
+computation, or other subtle disturbances. Let o′ = softmax(W(h + ∆h)) be the perturbed output
+distribution. The resulting change in the prediction is ∆o = o′ − o.
+The central question motivating our work, reiterated from the Introduction Q, is how to quantify a
+"safety margin" for h: how large can the perturbation ∆h be before the change in the output ∆o
+becomes unacceptably large? Answering this requires a way to relate the magnitude of the internal
+3
+Published as a conference paper at ICLR 2026
+perturbation ∆h to the magnitude of the resulting output change ∆o. This safety margin offers
+insights distinct from interpreting output probabilities o as direct measures of absolute conﬁdence;
+instead, δTCB focuses on the local integrity and resilience of the current predictive mechanism itself.
+2.3 Q UANTIFYING THE IMPACT OF PERTURBATIONS : T HE ROLE OF THE JACOBIAN
+To precisely relate changes in h to changes in o, we utilize the concept of the Jacobian matrix. To
+ﬁrst order, for small ∆h, the change in the output distribution ∆o can be approximated linearly:
+∆o ≈ JW(h)∆h, (3)
+where JW(h) ∈ RV×d is the Jacobian matrix of the output probabilities o with respect to the hidden
+state h. It is given by:
+JW(h) = ∂o
+∂h = ∂o
+∂z|{z}
+diag(o)−oo⊤
+∂z
+∂h|{z}
+W
+=
+ 
+diag(o) − oo⊤ 
+W. (4)
+The Jacobian JW(h) essentially captures the sensitivity of each output probability oi to inﬁnitesimal
+changes in each dimension of the hidden state hk. Its entries are ∂oi
+∂hk
+. Note that the Jacobian
+depends on both the current output distribution o and the output weight matrix W. To relate the
+overall magnitude of the state perturbation ∥∆h∥2 to the overall magnitude of the output change
+∥∆o∥2, we use matrix norms. A standard inequality bounds the output change using the Jacobian’s
+Frobenius norm:
+∥∆o∥2 ≤ ∥JW(h)∥F ∥∆h∥2. (5)
+The Frobenius norm ∥JW(h)∥F =
+ PV
+i=1
+Pd
+k=1( ∂oi
+∂hk
+)2
+ 1/2
+provides a comprehensive, aggregate
+measure of the sensitivity of all output probabilities to all hidden state dimensions. A larger Frobe-
+nius norm indicates that, the output probabilities are more sensitive to changes in the hidden state.
+2.4 T HE TOKEN CONSTRAINT BOUND (δTCB): O UR MEASURE OF STABILITY
+We are interested in ﬁnding the maximum allowable perturbation radius ∥∆h∥2 such that the re-
+sulting change in the output distribution, as measured by its L2 norm ∥∆o∥2, remains below a
+predeﬁned small tolerance ϵ > 0. That is, we impose the condition ∥∆o∥2 ≤ ϵ. Using the bound
+from Eq. (5), we require ∥JW(h)∥F ∥∆h∥2 ≤ ϵ. Rearranging for ∥∆h∥2 gives us:
+∥∆h∥2 ≤ ϵ
+∥JW(h)∥F
+. (6)
+This naturally motivates our core metric for local output stability, which we deﬁne as this upper
+bound on the perturbation norm:
+Deﬁnition 1 (Token Constraint Bound δTCB) . Given the output weight matrix W, hidden state
+h, resulting output distribution o = softmax(Wh), and a tolerance ϵ > 0 for the maximum L2
+change allowed in o, the Token Constraint Bound δTCB at state h is deﬁned as:
+δTCB(h) := ϵ
+∥JW(h)∥F
+. (7)
+Here, JW(h) is the Jacobian given by Eq. (4) and ∥ · ∥F denotes the Frobenius norm.
+The parameter ϵ is a dimensionless scale factor chosen by the user, representing the desired tolerance
+for output distribution change. Consequently, δTCB(h) quantiﬁes the L2-norm radius of the largest
+hyper-sphere of perturbations ∆h around the current hidden state h that, to a ﬁrst-order approxima-
+tion, guarantees the change in the output probability vector o remains within ϵ. A larger δTCB(h)
+signiﬁes that the model’s current prediction state o, as induced by the context leading to h, is in-
+trinsically more robust to small internal variations ( "wobbles") in this hidden state. Conversely, a
+smaller δTCB(h) indicates that the prediction mechanism is more sensitive to such internal pertur-
+bations at this speciﬁc point. The crucial term ∥JW(h)∥2
+F in the denominator has a fundamental
+connection to the geometry of the output embeddings, which we explore in detail in Section 3 .
+4
+Published as a conference paper at ICLR 2026
+3 δTCB VIA OUTPUT EMBEDDING GEOMETRY
+Def. 1 introduced the Token Constraint Bound ( δTCB) as a measure of local output stability. To
+unlock its full diagnostic power and understand its nuanced behavior, we now dissect its core compo-
+nent: the Frobenius norm of the output Jacobian, ∥JW(h)∥F . This section reveals that ∥JW(h)∥F ,
+and consequently δTCB, is deeply intertwined with the geometric arrangement of the model’s output
+token embeddings wi relative to the current prediction probabilities o. Intuitively, a prediction is
+expected to be more stable if the leading token’s embedding is well-isolated from competitors, or if
+the model is highly certain (peaked o).
+3.1 T HE GEOMETRY OF OUTPUT : T OKEN EMBEDDINGS AND THEIR MEAN
+Recall that the output weight matrix W ∈ RV×d contains the output embedding vector w⊤
+i for
+each token i as its rows. A key concept in understanding the geometric inﬂuence on stability is the
+probability-weighted mean embedding vector:
+µw(h) :=
+VX
+j=1
+ojwj = W⊤o. (8)
+Here, µw(h) ∈ Rd represents the current probability-weighted locus within the embedding space.
+This mean vector, µw(h), reﬂects the current probability-weighted locus within the embedding
+space, effectively representing the "center of mass" or the resultant directional inﬂuence of the entire
+output distribution on the embedding geometry.
+3.2 D ERIVING THE JACOBIAN NORM : C ONNECTING SENSITIVITY TO EMBEDDING SPREAD
+We now derive an exact analytical expression for the squared Frobenius norm of the output Jacobian,
+∥JW(h)∥2
+F , which is the crucial term determining δTCB. Let {wi}V
+i=1 be the output embedding
+vectors (rows of W) and µw(h) be the probability-weighted mean embedding as deﬁned in Eq. ( 8).
+Proposition 1 (Exact Squared Jacobian Norm Appendix I ) . F or a given output weight matrix
+W and hidden state h, let o = softmax(Wh) be the output probability vector . The squared
+Frobenius norm of the output Jacobian JW(h) = (diag( o) − oo⊤)W is exactly:
+∥JW(h)∥2
+F =
+VX
+i=1
+o2
+i ∥wi − µw(h)∥2
+2 . (9)
+This sum represents the squared Euclidean distances between each embedding wi and the mean
+embedding µw(h), weighted by the corresponding squared probability o2
+i .
+Interpretation of the Formula. Eq. (9) is pivotal. It states that the overall sensitivity of the output
+distribution to hidden state perturbations (as captured by ∥JW(h)∥2
+F ) is determined by how "spread
+out" the token embeddings wi are from their probability-weighted mean µw(h), with each squared
+distance ∥wi − µw(h)∥2
+2 being ampliﬁed or diminished by the square of its token’s probability o2
+i .
+The o2
+i weighting is crucial:
+• Embeddings for tokens with very low probability oi (and thus low current ""evidence” or ""belief”
+from the model) contribute minimally to the sum, even if geometrically distant from µw. The
+model effectively de-weights their geometric inﬂuence on stability at this state.
+• Embeddings for high-probability tokens (carrying signiﬁcant ""evidence”) contribute substantially,
+particularly if they are far from µw. Their geometric inﬂuence on the Jacobian norm is quadrati-
+cally emphasized by o2
+i .
+This o2
+i weighting distinguishes Eq. ( 9) from measures like the trace of the standard probability-
+weighted covariance matrix of embeddings. This distinction arises directly from the deﬁnition of
+the softmax Jacobian and is fundamental for correctly interpreting δTCB (see Appendix G ).
+3.3 T HE FULL FORM OF δTCB AND ITS GEOMETRIC MEANING
+Substituting the exact squared Jacobian norm from Prop. 1 Eq. (9) into the deﬁnition of δTCB Eq. (7)
+yields its complete form:
+δTCB(h) = ϵqPV
+i=1 o2
+i ∥wi − µw(h)∥2
+2
+. (10)
+5
+Published as a conference paper at ICLR 2026
+Table 1: Pearson Correlations validating regime-dependent stability. Shows strong positive
+Corr(δTCB, Veﬀ ) ( r=0.95) in diverse prompts (DPD, N = 309 , broad regime), indicating stability driven by
+ﬂatness. In contrast, strong positive Corr( δTCB, zk − zj∗ ) ( r=0.62) emerges in high-conﬁdence cases (Low-
+Veﬀ Targeted, L VD,N = 360 ), where Corr( δTCB, Veﬀ ) is negligible ( r = 0 .08), conﬁrming stability relies
+on top-token separation when conﬁdence is high. Metrics are the Token Constraint Bound ( δTCB), effective
+vocabulary size (Veﬀ ), and the logit margin between the top two tokens ( zk − zj∗ ).
+Dataset (N Samples) Corr(δTCB, Veﬀ ) Corr( δTCB, zk − zj∗ ) Corr( zk − zj∗ , Veﬀ )
+Diverse Prompts (DPD, N = 309) 0.95 (Strong +) -0.40 (Moderate -) -0.41 (Moderate -)
+Low-Veﬀ Targeted (L VD,N = 360) 0.08 (Near Zero) 0.62 (Strong +) -0.60 (Strong -)
+This equation provides a clear geometric interpretation: δTCB is inversely proportional to the square
+root of the o2
+i -weighted sum of squared Euclidean distances between each token embedding wi and
+the probability-weighted mean embedding µw(h). A larger δTCB indicates higher local robustness
+of the prediction generated from h. This geometric dispersion, weighted by o2
+i , directly dictates the
+"safety radius" around h, within which the output distribution o changes by at most ϵ. Understand-
+ing this relationship is key to interpreting how context shapes δTCB and, by extension, prediction
+stability, as conceptually illustrated in Figure 1 and Figure 3 .
+3.4 I NTERPRETING STABILITY ACROSS PREDICTION REGIMES
+Figure 3: Output Distribution Determines
+Geometric Stability. The Token Constraint
+Bound (δTCB) is a function of the geometric
+arrangement of embeddings. (a) High Con-
+ﬁdence: Peaked distribution concentrates
+µw(h) near the dominant embedding wk,
+minimizing the sum and maximizing δTCB.
+(b) Uncertainty: Flatter distribution spreads
+µw(h) among active embeddings, increas-
+ing the sum and reducing δTCB. µw(h), to-
+ken embeddings wi.
+The exact expression for ∥JW(h)∥2
+F in Eq. ( 9) and the
+visualization in Figure 3 elucidate how δTCB behaves
+under different prediction certainties.
+High-Conﬁdence Regime (Low Veﬀ , Peaked o).
+When o is highly peaked on token k (ok → 1, Veﬀ →
+1), µw(h) → wk, causing ∥JW(h)∥2
+F → 0 and
+δTCB → ∞ ( Figure 3 a). Here, extreme cer-
+tainty implies extreme stability. The sum approxi-
+mates to P
+j̸=k o2
+j ∥wj − wk∥2
+2 ( Appendix J ). Cru-
+cially, competitor probabilities oj (and thus o2
+j ) are super-
+exponentially sensitive to the logit margin between the
+top-two candidates, zk − zj∗ = ztop1 − ztop2. Larger
+zk − zj∗ values drastically reduce ∥JW(h)∥2
+F , boosting
+δTCB. This underpins the empirical positive correlation
+between δTCB and zk − zj∗ when Veﬀ is low ( Table 1 ,
+Low-Veﬀ ). Distances ∥wj − wk∥2
+2 further modulate this:
+more distant competitors require even smaller o2
+j for the
+same stability.
+Uncertain Regime (Higher Veﬀ , Flatter o). When
+probability is spread over multiple tokens (larger Veﬀ , Figure 3 b), many oi are non-negligible.
+If these probable tokens’ embeddings wi are distant from µw(h), their ∥wi − µw(h)∥2
+2 terms in-
+crease ∥JW(h)∥2
+F , reducing δTCB. Crucially, however, a high Veﬀ does not guarantee low δTCB:
+if high-probability embeddings {wi} are geometrically clustered (and thus all near µw(h)), the
+∥wi − µw(h)∥2
+2 terms could be small despite signiﬁcant o2
+i values, potentially resulting in a larger
+δTCB. This highlights geometry’s primacy, validated by experiments where clustering embeddings
+(ﬁxed o) increases δTCB. In this uncertain regime, under simplifying assumptions ( Appendix F ,
+Appendix J ), approximations can suggest ∥JW(h)∥2
+F ∝ 1/Veﬀ . This implies δTCB ∝ √Veﬀ ,
+aligning with empirical correlations over diverse prompts ( Table 1 , Diverse Prompts), where over-
+all distribution shape often dominates individual logit margins.
+4 E XPERIMENTS
+This section empirically substantiates the theoretical framework for δTCB, focusing on its connection
+to output embedding geometry and its utility in LLM analysis. We address:
+• δTCB’s intrinsic properties, including sensitivity to output embedding geometry and correlations
+with standard metrics ( Veﬀ , zk − zj∗ ) across conﬁdence regimes ( Section 4.2 ).
+• The role in diagnosing accuracy-stability conﬂicts and robust prompt engineering ( Section 4.3 ).
+• How δTCB complements Perplexity (PPL) by assessing local prediction robustness ( Section D.3 ).
+6
+Published as a conference paper at ICLR 2026
+4.1 E XPERIMENTAL SETUP
+• Models. Primary experiments utilize the LL AMA-3.1–8B model ( Touvron et al. , 2023). All
+computations were performed on NVIDIA RTX 4090 GPUs.
+• Datasets and Rationale. MMLU (Hendrycks et al. , 2020): Employed for broad validation and
+initial characterization due to its diverse subject matter. We typically sampled Ninit_pool = 100 ques-
+tions from "test" splits of 3-5 reasoning-heavy subjects (e.g., formal_logic, philosophy) to
+assess general trends and robustness under varied content. GSM8K (Cobbe et al. , 2021): Utilized
+for detailed intervention analysis and prompt optimization case studies. Its multi-step reasoning na-
+ture provides a fertile ground for examining how nuanced prompt changes affect both accuracy and
+internal stability. An initial pool of Ninit_pool = 100 questions from the "test" set was used for broader
+studies, with speciﬁc problems selected for deep dives. DPD and LVD Datasets: We synthesized
+two datasets for correlation analysis. The Diverse Prompts Dataset (DPD) contains prompts from
+a range of tasks, designed to elicit varied model conﬁdence levels. The Low-Veﬀ Targeted Dataset
+(LVD) was created by modifying DPD prompts to generate high-conﬁdence predictions.
+• Prompting Strategies. Zero-Shot: Minimalist prompts for baseline correlation studies and initial
+conﬂict identiﬁcation. Few-Shot / Interventions: A range of k-shot prompts ( k = 5), ICL variations
+(e.g., algebraic vs. arithmetic focus, hyper-speciﬁc examples), and instructional preﬁxes were used
+in diagnostic analyses and optimization experiments.
+• Core Metrics. At critical prediction points (e.g., just before generating the answer token for
+MMLU multiple-choice; before the ﬁrst token of the ﬁnal numerical answer in GSM8K): Token
+Constraint Bound ( δTCB(h)): Computed via Eq. ( 10). For all experiments, we set the tolerance
+parameter ϵ = 1 .0, which normalizes the metric. Since our analysis focuses on relative changes in
+stability, the speciﬁc value of ϵ is less critical than its consistency. Higher δTCB indicates greater
+internal state robustness. Effective V ocabulary Size (Veﬀ (o)): From Eq. ( 2). Lower Veﬀ indicates
+a more peaked, conﬁdent distribution. Logit Margin ( zk − zj∗ ): Deﬁned as ztop1 − ztop2. Larger
+positive values suggest stronger discrimination for the top choice. Task-Speciﬁc Accuracy (Acc):
+Binary score based on ground truth. Perplexity (PPL): For local analysis in relation to δTCB, we
+often refer to the negative log probability of the predicted token ( − log opredicted). Further details on
+experimental conﬁgurations are in Appendix C .
+4.2 I NTRINSIC PROPERTIES AND VALIDATION OF δTCB
+Table 2: Simulation conﬁrms δTCB’s geomet-
+ric sensitivity. Percentage of prompts validating
+δcluster > δ orig > δ disperse when manipulating W
+(K = 10 competitors) while ﬁxing o. The effect
+robustly held (90% overall), conﬁrming geomet-
+ric inﬂuence distinct from probability shape.
+Prompt Category Hypothesis Held
+Low Veﬀ (< 20) 95%
+Medium Veﬀ (20-100) 92%
+High Veﬀ (> 100) 80%
+Overall 90%
+Validating Sensitivity to Output Embedding
+Geometry Objective: To empirically conﬁrm
+δTCB’s direct dependence on output embedding ge-
+ometry (W), independent of the probability distribu-
+tion ( o). Method Summary: We synthetically ma-
+nipulated W (clustering/dispersing competitor em-
+beddings) while holding h and o (thus local PPL)
+constant for diverse MMLU prompts. δTCB was re-
+calculated. Results: Table 2 shows the hypothesis
+δTCB(Wcluster) > δ TCB(Worig) > δ TCB(Wdisperse)
+held for 90% of prompts overall, directly substanti-
+ating the geometric term in Eq. ( 10). This highlights
+that δTCB captures a dimension of stability tied to
+the embedding space that probability-only metrics would miss.
+Correlations Across Different Conﬁdence Regimes Objective: To validate predicted shifts in
+δTCB’s correlations with Veﬀ and zk −zj∗ based on prediction conﬁdence. Method Summary: Two
+MMLU zero-shot datasets: Diverse Prompts (DPD, N = 309 ) and Low- Veﬀ Targeted (L VD,N =
+360). Results: Table 1 conﬁrms the theorized regime dependence. In the DPD (broad regime),
+Corr(δTCB, Veﬀ ) is 0.95, indicating stability is largely driven by overall distribution ﬂatness. In
+stark contrast, for the L VD (high-conﬁdence), Corr( δTCB, Veﬀ ) drops to a negligible 0.08, while
+Corr(δTCB, zk − zj∗ ) becomes a strong 0.62. This shift empirically validates that when the model
+is conﬁdent, δTCB reﬂects the separation of the top token from its competitors rather than just the
+general peakedness of the distribution.
+4.3 δTCB AS A DIAGNOSTIC TOOL FOR PROMPT ENGINEERING
+δTCB uniquely identiﬁes stability issues that accuracy or conventional conﬁdence metrics (Veﬀ , zk −
+zj∗ ) may miss. Common accuracy-stability conﬂict scenarios include: (1) Accurate but Unstable:
+7
+Published as a conference paper at ICLR 2026
+Table 3: Combined Impact of δTCB-Enhancement on Mean Metrics for Unperturbed and Perturbed Prompts
+(MMLU & GSM8K). Metrics are Accuracy (Acc), Token Constraint Bound ( δTCB), Effective V ocabulary Size
+(Veﬀ ), and Logit Margin ( zk − zj∗ ). Perturbed metrics include Accuracy V ariance (AccV arpert), Performance
+Drop Rate (PDR), and Worst-Case Accuracy (Acc worst).
+Unperturbed Metrics Perturbed Metrics
+Benchmark Prompt Type Acc Avg. δTCB Avg. Veﬀ Avg. zk − zj∗ AccV arpert PDR (%) Acc worst
+V ery Conﬁdent Questions (VCQ Set)
+MMLU Baseline 0.90 771.5 1.08 4.5 0.05 0.10 0.80
+Enhanced 0.95 1025.2 1.03 6.0 0.02 0.03 0.90
+GSM8K Baseline 0.85 2407.0 1.01 4.2 0.06 0.12 0.75
+Enhanced 0.92 4410.8 1.05 5.8 0.03 0.05 0.85
+Ambiguous Questions (AQ Set)
+MMLU Baseline 0.40 1983.0 1.01 1.5 0.15 30 0.15
+Enhanced 0.70 2734.0 1.00 4.0 0.07 10 0.30
+GSM8K Baseline 0.35 3412.8 1.04 1.2 0.18 35 0.10
+Enhanced 0.65 6625.5 1.02 3.8 0.08 12 0.45
+correct yet brittle predictions; (2) Inaccurate but Stable: robustly wrong predictions; (3) Conﬁdent
+but Unstable: high conﬁdence indicators (e.g., P (top1) or zk − zj∗ ) but low δTCB; (4) Uncertain
+but Stable: ﬂatter distribution but a resilient underlying state. These are elaborated with examples
+in Appendix D.1 .
+Case Study: Systematic Prompt Optimization Guided by δTCB Objective: To demonstrate
+using δTCB for guiding prompt engineering toward more robust solutions. Method Summary:
+We followed an iterative enhancement process on MMLU & GSM8K, detailed in Appendix C.4.2 .
+First, we ran baseline prompts over 3-5 random seeds to identify "V ery Conﬁdent Questions" (VCQ;
+high and stable accuracy) and "Ambiguous Questions" (AQ; low/unstable accuracy or low δTCB).
+Second, for AQ sets, we performed targeted prompt engineering, systematically reﬁning components
+like ICL examples and instructional phrasing to co-optimize for both accuracy and δTCB. Finally, we
+evaluated the enhanced prompts on unperturbed and perturbed data to measure gains in performance
+and robustness.
+Results: Table 3 (illustrative of observed trends) shows that δTCB-guided enhanced prompts
+achieve higher Acc and signiﬁcantly higher mean δTCB (e.g., for the MMLU AQ set, from 1983.0
+to 2734.0). More critically, they exhibit superior robustness to perturbations , exempliﬁed by
+lower Performance Drop Rate (PDR) (e.g., MMLU AQ set PDR: 30% → 10%) and higher worst-
+case accuracy (Acc worst) (e.g., MMLU AQ set Acc worst: 15% → 30%). This underscores that co-
+optimizing for δTCB yields more dependable LLM performance, particularly under minor contextual
+shifts. It is noteworthy that even for the Ambiguous Questions (AQ) set, the average Veﬀ remains
+low (cf. Table 3 ), suggesting that ambiguity in correctness does not necessarily correspond to low
+model conﬁdence; the model can be conﬁdently wrong.
+To benchmark δTCB-guided optimization, we compared it against a baseline strategy of perplexity-
+guided selection, where prompts are chosen to minimize the negative log-probability of the target
+answer. As shown in Table 4 , while perplexity-guidance improves accuracy, co-optimizing for
+δTCB yields more robust solutions with higher stability and better worst-case performance under
+perturbation.
+Table 4: Comparison of Prompt Optimization Strategies. Co-optimizing for δTCB leads to more robust
+prompts compared to solely optimizing for perplexity (PPL), showing higher worst-case accuracy (Acc worst)
+under perturbation.
+Optimization Strategy Avg. Acc Avg. δTCB ↑ Avg. PPL ↓ Accworst
+Baseline Prompt 0.55 15.4 3.2 0.25
+PPL-Guided 0.70 18.2 1.9 0.40
+δTCB-Guided (Ours) 0.72 35.8 2.4 0.65
+4.3.1 D EEP DIVE : I MPACT OF PROMPT COMPONENT INTERACTIONS ON GSM8K
+Objective: To showcaseδTCB’s ﬁne-grained diagnostic capabilities in dissecting prompt component
+effects. Method Summary: On GSM8K problem gsm8k_811, we systematically varied ICLs,
+instructions, and question phrasing from an accurate baseline. Results: Table 5 highlights counter-
+intuitive accuracy-stability trade-offs. For instance, simply adding a clarifying phrase ("7 days",
+8
+Published as a conference paper at ICLR 2026
+Table 5: Impact of Prompt Interventions on Accuracy and Stability Metrics for a GSM8K question.
+Striking trade-offs between Acc and δTCB emerge. For instance, adding "(7 days)" (Row 2) tanks Acc to 0%
+but boosts δTCB signiﬁcantly (8.20 → 46.97), indicating a stable but incorrect state. Row 7 shows an extreme
+case: Zero-Shot with a strong instruction results in 0% Acc but astronomical δTCB ≈ 49k, epitomizing a
+"conﬁdently and extremely stably wrong" prediction. Metrics shown are Accuracy (Acc), Token Constraint
+Bound (δTCB), Effective V ocabulary Size (Veﬀ ), and top-2 logit margin ( zk − zj∗ ).
+Index Intervention Description (gsm8k_811) Acc (%) δTCB ↑ Veﬀ ↓ zk − zj∗ ↑
+1 Baseline (New Algebraic ICLs, Original Question) 100.0 8.20 1.54 3.25
+2 Clariﬁed Q ("7 days") + New Alg. ICLs 0.00 46.97 1.04 5.23
+3 Zero-shot CoT Instr. + Clariﬁed Q + New Alg. ICLs 0.00 10.95 1.44 2.09
+4 Role-Playing Instr. + Clariﬁed Q + New Alg. ICLs 0.00 62.14 1.03 5.98
+5 Algebraic Decomposition Instr. + Clariﬁed Q + New
+Alg. ICLs
+0.00 10.38 1.33 3.62
+6 Hyper-Speciﬁc ICL + Alg. Decomp. Instr. + Clariﬁed
+Q
+0.00 103.87 1.02 5.55
+7 Zero-Shot (No ICLs) + Alg. Decomp. Instr. +
+Clariﬁed Q
+0.00 49450.23 1.00 11.29
+8 Formal Language Instr. + Clariﬁed Q + New Alg. ICLs 0.00 58.28 1.04 5.32
+10 20 30 40 50 60 70 80
+Generation/uni00A0Step
+101
+102
+103
+104
+105
+TCB/uni00A0(S tability)
+,
+containing
+words
+that
+explain
+howthissentence
+describes
+its
+own
+structure
+,
+because
+this
+sentence
+describes
+its
+own
+structure
+,
+containing
+words
+that
+explain
+how
+this
+sentence
+describes
+its
+own
+structure
+,
+because
+this
+sentence
+describes
+its
+own
+structure
+,containing
+wordsthat
+explain
+how
+this
+sentence
+describes
+its
+own
+structure
+,
+because
+this
+sentence
+describes
+its
+own
+structure
+,containing
+words
+that
+explain
+how
+thissentence
+describes
+its
+own
+structure
+,becausethis
+sentence
+describes
+its
+own
+structure
+0
+1
+2
+3
+4
+5
+/uni00ADlog/uni00A0P(Predicted/uni00A0T oken)
+TCB
+ /uni00ADlog/uni00A0P(Predicted)Instability/uni00A0Region
+Figure 4: δTCB dynamics vs. P (2nd best) during potentially repetitive generation. Plot shows δTCB (blue,
+left y-axis) and P (2nd best) (green, right y-axis) versus generation step for LL AMA-3.1–8B. Sharp dips in
+δTCB (e.g., around steps 5-10, 20-25) often correlate with spikes in P (2nd best), indicating transient local
+instability not captured by average sequence PPL. Later, high, stable δTCB (e.g., steps 30+) can characterize a
+degenerate loop, showing robust commitment to the repetitive pattern.
+Row 2) decimated accuracy (100% → 0%) but boosted δTCB substantially (from 8.20 to 46.97) ,
+inducing a stable yet incorrect state. An even more extreme case is Row 7, where a zero-shot setup
+with a strong algebraic instruction yielded 0% accuracy but an astronomical δTCB ≈ 49k and
+perfect conﬁdence ( Veﬀ = 1.00, zk − zj∗ = 11.29). This epitomizes an extremely "conﬁdently and
+stably wrong" prediction. These ﬁndings underscore δTCB’s capacity to uncover complex failure
+modes where models are robustly committed to erroneous reasoning pathsinsights that accuracy or
+standard conﬁdence scores alone cannot provide.
+5 C ONCLUSION AND FUTURE WORK
+To address Large Language Model sensitivity to input context variations, this paper introduces the
+Token Constraint Bound ( δTCB), a novel metric quantifying the local stability of next-token predic-
+tions against internal state perturbations. Intrinsically linked to the o2
+i -weighted geometric disper-
+sion of output embeddings, δTCB offers a principled measure of an LLM’s predictive commitment
+resilience. Our experiments demonstrate δTCB’s utility in assessing prompt effectiveness and its
+ability to uncover critical prediction instabilities missed by perplexity, thus providing a valuable
+complementary tool for analyzing and potentially enhancing LLM contextual robustness. While
+these ﬁndings are promising, our current investigation primarily uses a speciﬁc LLM and a focused
+set of scenarios. Future work should expand this research across a broader spectrum of models, vary-
+ing scales, and diverse application contexts to validate and generalize the utility of δTCB. Exploring
+its application to understanding perturbations at intermediate layers could also yield deeper insights
+into representation robustness. Further investigation into δTCB’s role in model editing, ﬁne-tuning,
+and robustness against more structured attacks remains an important avenue.
+9
+Published as a conference paper at ICLR 2026
+ACKNOWLEDGEMENTS
+This work is supported by the National Natural Science Foundation of China (Grant No. 62306087),
+the Key Research and Development Program of Shandong Provinc (Grant No. 2025CXPT077), the
+Natural Science Foundation of Shandong Province (Grant No. ZR2023QF154), the Research on
+Cognitive Processing Technologies for Multimodal Big Data in Policing Information Project (Grant
+No. 2024DXZD0004), and CCF-Tencent Rhino-Bird Open Research Fund (Grant No. CCF-Tencent
+RAGR20250105).
+10
+Published as a conference paper at ICLR 2026
+REFERENCES
+Aryan Agrawal, Lisa Alazraki, Shahin Honarvar, and Marek Rei. Enhancing llm robustness to
+perturbed instructions: An empirical study. arXiv preprint arXiv:2504.02733, 2025.
+Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal,
+Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Language models are
+few-shot learners. Advances in neural information processing systems , 33:1877–1901, 2020.
+Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser,
+Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, Christopher Hesse, and John
+Schulman. Training veriﬁers to solve math word problems, 2021.
+Nurit Cohen-Inger, Y ehonatan Elisha, Bracha Shapira, Lior Rokach, and Sefﬁ Cohen. Forget what
+you know about llms evaluations-llms are like a chameleon. arXiv preprint arXiv:2502.07445 ,
+2025.
+Qingxiu Dong, Lei Li, Damai Dai, Ce Zheng, Jingyuan Ma, Rui Li, Heming Xia, Jingjing Xu,
+Zhiyong Wu, Tianyu Liu, et al. A survey on in-context learning. arXiv preprint arXiv:2301.00234,
+2022.
+Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha
+Letman, Akhil Mathur, Alan Schelten, Amy Y ang, Angela Fan, Anirudh Goyal, Anthony
+Hartshorn, Aobo Y ang, Archi Mitra, Archie Sravankumar, Artem Korenev, Arthur Hinsvark,
+Arun Rao, Aston Zhang, Aurelien Rodriguez, Austen Gregerson, Ava Spataru, Baptiste Roziere,
+Bethany Biron, Binh Tang, Bobbie Chern, Charlotte Caucheteux, Chaya Nayak, Chloe Bi, Chris
+Marra, Chris McConnell, Christian Keller, Christophe Touret, Chunyang Wu, Corinne Wong,
+Cristian Canton Ferrer, Cyrus Nikolaidis, Damien Allonsius, Daniel Song, Danielle Pintz, Danny
+Livshits, David Esiobu, Dhruv Choudhary, Dhruv Mahajan, Diego Garcia-Olano, Diego Perino,
+Dieuwke Hupkes, Egor Lakomkin, Ehab AlBadawy, Elina Lobanova, Emily Dinan, Eric Michael
+Smith, Filip Radenovic, Frank Zhang, Gabriel Synnaeve, Gabrielle Lee, Georgia Lewis Ander-
+son, Graeme Nail, Gregoire Mialon, Guan Pang, Guillem Cucurell, Hailey Nguyen, Hannah
+Korevaar, Hu Xu, Hugo Touvron, Iliyan Zarov, Imanol Arrieta Ibarra, Isabel Kloumann, Ishan
+Misra, Ivan Evtimov, Jade Copet, Jaewon Lee, Jan Geffert, Jana Vranes, Jason Park, Jay Ma-
+hadeokar, Jeet Shah, Jelmer van der Linde, Jennifer Billock, Jenny Hong, Jenya Lee, Jeremy
+Fu, Jianfeng Chi, Jianyu Huang, Jiawen Liu, Jie Wang, Jiecao Y u, Joanna Bitton, Joe Spisak,
+Jongsoo Park, Joseph Rocca, Joshua Johnstun, Joshua Saxe, Junteng Jia, Kalyan V asuden Al-
+wala, Kartikeya Upasani, Kate Plawiak, Ke Li, Kenneth Heaﬁeld, Kevin Stone, Khalid El-Arini,
+Krithika Iyer, Kshitiz Malik, Kuenley Chiu, Kunal Bhalla, Lauren Rantala-Y eary, Laurens van der
+Maaten, Lawrence Chen, Liang Tan, Liz Jenkins, Louis Martin, Lovish Madaan, Lubo Malo,
+Lukas Blecher, Lukas Landzaat, Luke de Oliveira, Madeline Muzzi, Mahesh Pasupuleti, Man-
+nat Singh, Manohar Paluri, Marcin Kardas, Mathew Oldham, Mathieu Rita, Maya Pavlova,
+Melanie Kambadur, Mike Lewis, Min Si, Mitesh Kumar Singh, Mona Hassan, Naman Goyal,
+Narjes Torabi, Nikolay Bashlykov, Nikolay Bogoychev, Niladri Chatterji, Olivier Duchenne, Onur
+Çelebi, Patrick Alrassy, Pengchuan Zhang, Pengwei Li, Petar V asic, Peter Weng, Prajjwal Bhar-
+gava, Pratik Dubal, Praveen Krishnan, Punit Singh Koura, Puxin Xu, Qing He, Qingxiao Dong,
+Ragavan Srinivasan, Raj Ganapathy, Ramon Calderer, Ricardo Silveira Cabral, Robert Stojnic,
+Roberta Raileanu, Rohit Girdhar, Rohit Patel, Romain Sauvestre, Ronnie Polidoro, Roshan Sum-
+baly, Ross Taylor, Ruan Silva, Rui Hou, Rui Wang, Saghar Hosseini, Sahana Chennabasappa,
+Sanjay Singh, Sean Bell, Seohyun Sonia Kim, Sergey Edunov, Shaoliang Nie, Sharan Narang,
+Sharath Raparthy, Sheng Shen, Shengye Wan, Shruti Bhosale, Shun Zhang, Simon V andenhende,
+Soumya Batra, Spencer Whitman, Sten Sootla, Stephane Collot, Suchin Gururangan, Sydney
+Borodinsky, Tamar Herman, Tara Fowler, Tarek Sheasha, Thomas Georgiou, Thomas Scialom,
+Tobias Speckbacher, Todor Mihaylov, Tong Xiao, Ujjwal Karn, V edanuj Goswami, Vibhor Gupta,
+Vignesh Ramanathan, Viktor Kerkez, Vincent Gonguet, Virginie Do, Vish V ogeti, Vladan Petro-
+vic, Weiwei Chu, Wenhan Xiong, Wenyin Fu, Whitney Meers, Xavier Martinet, Xiaodong Wang,
+Xiaoqing Ellen Tan, Xinfeng Xie, Xuchao Jia, Xuewei Wang, Y aelle Goldschlag, Y ashesh Gaur,
+Y asmine Babaei, Yi Wen, Yiwen Song, Y uchen Zhang, Y ue Li, Y uning Mao, Zacharie Delpierre
+Coudert, Zheng Y an, Zhengxing Chen, Zoe Papakipos, Aaditya Singh, Aaron Grattaﬁori, Abha
+Jain, Adam Kelsey, Adam Shajnfeld, Adithya Gangidi, Adolfo Victoria, Ahuva Goldstand, Ajay
+Menon, Ajay Sharma, Alex Boesenberg, Alex V aughan, Alexei Baevski, Allie Feinstein, Amanda
+11
+Published as a conference paper at ICLR 2026
+Kallet, Amit Sangani, Anam Y unus, Andrei Lupu, Andres Alvarado, Andrew Caples, Andrew
+Gu, Andrew Ho, Andrew Poulton, Andrew Ryan, Ankit Ramchandani, Annie Franco, Aparajita
+Saraf, Arkabandhu Chowdhury, Ashley Gabriel, Ashwin Bharambe, Assaf Eisenman, Azadeh
+Y azdan, Beau James, Ben Maurer, Benjamin Leonhardi, Bernie Huang, Beth Loyd, Beto De
+Paola, Bhargavi Paranjape, Bing Liu, Bo Wu, Boyu Ni, Braden Hancock, Bram Wasti, Bran-
+don Spence, Brani Stojkovic, Brian Gamido, Britt Montalvo, Carl Parker, Carly Burton, Catalina
+Mejia, Changhan Wang, Changkyu Kim, Chao Zhou, Chester Hu, Ching-Hsiang Chu, Chris Cai,
+Chris Tindal, Christoph Feichtenhofer, Damon Civin, Dana Beaty, Daniel Kreymer, Daniel Li,
+Danny Wyatt, David Adkins, David Xu, Davide Testuggine, Delia David, Devi Parikh, Diana
+Liskovich, Didem Foss, Dingkang Wang, Duc Le, Dustin Holland, Edward Dowling, Eissa Jamil,
+Elaine Montgomery, Eleonora Presani, Emily Hahn, Emily Wood, Erik Brinkman, Esteban Ar-
+caute, Evan Dunbar, Evan Smothers, Fei Sun, Felix Kreuk, Feng Tian, Firat Ozgenel, Francesco
+Caggioni, Francisco Guzmán, Frank Kanayet, Frank Seide, Gabriela Medina Florez, Gabriella
+Schwarz, Gada Badeer, Georgia Swee, Gil Halpern, Govind Thattai, Grant Herman, Grigory
+Sizov, Guangyi, Zhang, Guna Lakshminarayanan, Hamid Shojanazeri, Han Zou, Hannah Wang,
+Hanwen Zha, Haroun Habeeb, Harrison Rudolph, Helen Suk, Henry Aspegren, Hunter Gold-
+man, Ibrahim Damlaj, Igor Molybog, Igor Tufanov, Irina-Elena V eliche, Itai Gat, Jake Weissman,
+James Geboski, James Kohli, Japhet Asher, Jean-Baptiste Gaya, Jeff Marcus, Jeff Tang, Jennifer
+Chan, Jenny Zhen, Jeremy Reizenstein, Jeremy Teboul, Jessica Zhong, Jian Jin, Jingyi Y ang, Joe
+Cummings, Jon Carvill, Jon Shepard, Jonathan McPhie, Jonathan Torres, Josh Ginsburg, Junjie
+Wang, Kai Wu, Kam Hou U, Karan Saxena, Karthik Prasad, Kartikay Khandelwal, Katayoun
+Zand, Kathy Matosich, Kaushik V eeraraghavan, Kelly Michelena, Keqian Li, Kun Huang, Kunal
+Chawla, Kushal Lakhotia, Kyle Huang, Lailin Chen, Lakshya Garg, Lavender A, Leandro Silva,
+Lee Bell, Lei Zhang, Liangpeng Guo, Licheng Y u, Liron Moshkovich, Luca Wehrstedt, Madian
+Khabsa, Manav Avalani, Manish Bhatt, Maria Tsimpoukelli, Martynas Mankus, Matan Hasson,
+Matthew Lennie, Matthias Reso, Maxim Groshev, Maxim Naumov, Maya Lathi, Meghan Ke-
+neally, Michael L. Seltzer, Michal V alko, Michelle Restrepo, Mihir Patel, Mik Vyatskov, Mikayel
+Samvelyan, Mike Clark, Mike Macey, Mike Wang, Miquel Jubert Hermoso, Mo Metanat, Moham-
+mad Rastegari, Munish Bansal, Nandhini Santhanam, Natascha Parks, Natasha White, Navyata
+Bawa, Nayan Singhal, Nick Egebo, Nicolas Usunier, Nikolay Pavlovich Laptev, Ning Dong, Ning
+Zhang, Norman Cheng, Oleg Chernoguz, Olivia Hart, Omkar Salpekar, Ozlem Kalinli, Parkin
+Kent, Parth Parekh, Paul Saab, Pavan Balaji, Pedro Rittner, Philip Bontrager, Pierre Roux, Pi-
+otr Dollar, Polina Zvyagina, Prashant Ratanchandani, Pritish Y uvraj, Qian Liang, Rachad Alao,
+Rachel Rodriguez, Raﬁ Ayub, Raghotham Murthy, Raghu Nayani, Rahul Mitra, Raymond Li,
+Rebekkah Hogan, Robin Battey, Rocky Wang, Rohan Maheswari, Russ Howes, Ruty Rinott,
+Sai Jayesh Bondu, Samyak Datta, Sara Chugh, Sara Hunt, Sargun Dhillon, Sasha Sidorov, Sa-
+tadru Pan, Saurabh V erma, Seiji Y amamoto, Sharadh Ramaswamy, Shaun Lindsay, Shaun Lind-
+say, Sheng Feng, Shenghao Lin, Shengxin Cindy Zha, Shiva Shankar, Shuqiang Zhang, Shuqiang
+Zhang, Sinong Wang, Sneha Agarwal, Soji Sajuyigbe, Soumith Chintala, Stephanie Max, Stephen
+Chen, Steve Kehoe, Steve Satterﬁeld, Sudarshan Govindaprasad, Sumit Gupta, Sungmin Cho,
+Sunny Virk, Suraj Subramanian, Sy Choudhury, Sydney Goldman, Tal Remez, Tamar Glaser,
+Tamara Best, Thilo Kohler, Thomas Robinson, Tianhe Li, Tianjun Zhang, Tim Matthews, Tim-
+othy Chou, Tzook Shaked, V arun V ontimitta, Victoria Ajayi, Victoria Montanez, Vijai Mohan,
+Vinay Satish Kumar, Vishal Mangla, Vítor Albiero, Vlad Ionescu, Vlad Poenaru, Vlad Tiberiu
+Mihailescu, Vladimir Ivanov, Wei Li, Wenchen Wang, Wenwen Jiang, Wes Bouaziz, Will Con-
+stable, Xiaocheng Tang, Xiaofang Wang, Xiaojian Wu, Xiaolan Wang, Xide Xia, Xilun Wu,
+Xinbo Gao, Y anjun Chen, Y e Hu, Y e Jia, Y e Qi, Y enda Li, Yilin Zhang, Ying Zhang, Y ossi
+Adi, Y oungjin Nam, Y u, Wang, Y uchen Hao, Y undi Qian, Y uzi He, Zach Rait, Zachary DeVito,
+Zef Rosnbrick, Zhaoduo Wen, Zhenyu Y ang, and Zhiwei Zhao. The llama 3 herd of models, 2024.
+URL https://arxiv.org/abs/2407.21783.
+Jiahui Geng, Zongxiong Chen, Y uandou Wang, Herbert Woisetschlaeger, Sonja Schimmler, Ruben
+Mayer, Zhiming Zhao, and Chunming Rong. A survey on dataset distillation: Approaches, appli-
+cations and future directions. arXiv preprint arXiv:2305.01975, 2023.
+Bahareh Harandizadeh, Abel Salinas, and Fred Morstatter. Risk and response in large language
+models: Evaluating key threat categories. arXiv preprint arXiv:2403.14988, 2024.
+Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn Song, and
+Jacob Steinhardt. Measuring massive multitask language understanding. arXiv preprint
+12
+Published as a conference paper at ICLR 2026
+arXiv:2009.03300, 2020.
+David Herrera-Poyatos, Carlos Peláez-González, Cristina Zuheros, Andrés Herrera-Poyatos, Virilo
+Tejedor, Francisco Herrera, and Rosana Montes. An overview of model uncertainty and variability
+in llm-based sentiment analysis. challenges, mitigation strategies and the role of explainability.
+arXiv preprint arXiv:2504.04462, 2025.
+Judy Hoffman, Daniel A Roberts, and Sho Y aida. Robust learning with jacobian regularization.
+arXiv preprint arXiv:1908.02729, 2019.
+Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya, Trevor Cai, Eliza
+Rutherford, Diego de Las Casas, Lisa Anne Hendricks, Johannes Welbl, Aidan Clark, et al. Train-
+ing compute-optimal large language models. arXiv preprint arXiv:2203.15556, 2022.
+Ari Holtzman, Peter West, V ered Shwartz, Y ejin Choi, and Luke Zettlemoyer. Surface form compe-
+tition: Why the highest probability answer isn’t always right. arXiv preprint arXiv:2104.08315 ,
+2021.
+Fred Jelinek, Robert L Mercer, Lalit R Bahl, and James K Baker. Perplexitya measure of the dif-
+ﬁculty of speech recognition tasks. The Journal of the Acoustical Society of America , 62(S1):
+S63–S63, 1977.
+Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B Brown, Benjamin Chess, Rewon Child,
+Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. Scaling laws for neural language
+models. arXiv preprint arXiv:2001.08361, 2020.
+Percy Liang, Rishi Bommasani, Tony Lee, Dimitris Tsipras, Dilara Soylu, Michihiro Y asunaga, Yian
+Zhang, Deepak Narayanan, Y uhuai Wu, Ananya Kumar, et al. Holistic evaluation of language
+models. arXiv preprint arXiv:2211.09110, 2022.
+Xiaoou Liu, Tiejin Chen, Longchao Da, Chacha Chen, Zhen Lin, and Hua Wei. Uncertainty
+quantiﬁcation and conﬁdence calibration in large language models: A survey. arXiv preprint
+arXiv:2503.15850, 2025.
+Y ao Lu, Max Bartolo, Alastair Moore, Sebastian Riedel, and Pontus Stenetorp. Fantastically ordered
+prompts and where to ﬁnd them: Overcoming few-shot prompt order sensitivity. arXiv preprint
+arXiv:2104.08786, 2021.
+Huan Ma, Jingdong Chen, Guangyu Wang, and Changqing Zhang. Estimating llm uncertainty with
+logits. arXiv preprint arXiv:2502.00290, 2025.
+Gary Marcus. The next decade in ai: four steps towards robust artiﬁcial intelligence. arXiv preprint
+arXiv:2002.06177, 2020.
+Sewon Min, Xinxi Lyu, Ari Holtzman, Mikel Artetxe, Mike Lewis, Hannaneh Hajishirzi, and Luke
+Zettlemoyer. Rethinking the role of demonstrations: What makes in-context learning work? arXiv
+preprint arXiv:2202.12837, 2022.
+Fuseini Mumuni and Alhassan Mumuni. Explainable artiﬁcial intelligence (xai): from inherent
+explainability to large language models. arXiv preprint arXiv:2501.09967, 2025.
+Roman Novak, Y asaman Bahri, Daniel A Abolaﬁa, Jeffrey Pennington, and Jascha Sohl-
+Dickstein. Sensitivity and generalization in neural networks: an empirical study. arXiv preprint
+arXiv:1802.08760, 2018.
+OpenAI, :, Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Floren-
+cia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, Red
+Avila, Igor Babuschkin, Suchir Balaji, V alerie Balcom, Paul Baltescu, Haiming Bao, Mo Bavar-
+ian, Jeff Belgum, Irwan Bello, Jake Berdine, Gabriel Bernadett-Shapiro, Christopher Berner,
+Lenny Bogdonoff, Oleg Boiko, Madelaine Boyd, Anna-Luisa Brakman, Greg Brockman, Tim
+Brooks, Miles Brundage, Kevin Button, Trevor Cai, Rosie Campbell, Andrew Cann, Brittany
+Carey, Chelsea Carlson, Rory Carmichael, Brooke Chan, Che Chang, Fotis Chantzis, Derek
+Chen, Sully Chen, Ruby Chen, Jason Chen, Mark Chen, Ben Chess, Chester Cho, Casey Chu,
+13
+Published as a conference paper at ICLR 2026
+Hyung Won Chung, Dave Cummings, Jeremiah Currier, Y unxing Dai, Cory Decareaux, Thomas
+Degry, Noah Deutsch, Damien Deville, Arka Dhar, David Dohan, Steve Dowling, Sheila Dunning,
+Adrien Ecoffet, Atty Eleti, Tyna Eloundou, David Farhi, Liam Fedus, Niko Felix, Simón Posada
+Fishman, Juston Forte, Isabella Fulford, Leo Gao, Elie Georges, Christian Gibson, Vik Goel,
+Tarun Gogineni, Gabriel Goh, Rapha Gontijo-Lopes, Jonathan Gordon, Morgan Grafstein, Scott
+Gray, Ryan Greene, Joshua Gross, Shixiang Shane Gu, Y ufei Guo, Chris Hallacy, Jesse Han, Jeff
+Harris, Y uchen He, Mike Heaton, Johannes Heidecke, Chris Hesse, Alan Hickey, Wade Hickey,
+Peter Hoeschele, Brandon Houghton, Kenny Hsu, Shengli Hu, Xin Hu, Joost Huizinga, Shantanu
+Jain, Shawn Jain, Joanne Jang, Angela Jiang, Roger Jiang, Haozhun Jin, Denny Jin, Shino Jo-
+moto, Billie Jonn, Heewoo Jun, Tomer Kaftan, ukasz Kaiser, Ali Kamali, Ingmar Kanitscheider,
+Nitish Shirish Keskar, Tabarak Khan, Logan Kilpatrick, Jong Wook Kim, Christina Kim, Y ongjik
+Kim, Hendrik Kirchner, Jamie Kiros, Matt Knight, Daniel Kokotajlo, ukasz Kondraciuk, Andrew
+Kondrich, Aris Konstantinidis, Kyle Kosic, Gretchen Krueger, Vishal Kuo, Michael Lampe, Ikai
+Lan, Teddy Lee, Jan Leike, Jade Leung, Daniel Levy, Chak Ming Li, Rachel Lim, Molly Lin,
+Stephanie Lin, Mateusz Litwin, Theresa Lopez, Ryan Lowe, Patricia Lue, Anna Makanju, Kim
+Malfacini, Sam Manning, Todor Markov, Y aniv Markovski, Bianca Martin, Katie Mayer, An-
+drew Mayne, Bob McGrew, Scott Mayer McKinney, Christine McLeavey, Paul McMillan, Jake
+McNeil, David Medina, Aalok Mehta, Jacob Menick, Luke Metz, Andrey Mishchenko, Pamela
+Mishkin, Vinnie Monaco, Evan Morikawa, Daniel Mossing, Tong Mu, Mira Murati, Oleg Murk,
+David Mély, Ashvin Nair, Reiichiro Nakano, Rajeev Nayak, Arvind Neelakantan, Richard Ngo,
+Hyeonwoo Noh, Long Ouyang, Cullen O’Keefe, Jakub Pachocki, Alex Paino, Joe Palermo, Ash-
+ley Pantuliano, Giambattista Parascandolo, Joel Parish, Emy Parparita, Alex Passos, Mikhail
+Pavlov, Andrew Peng, Adam Perelman, Filipe de Avila Belbute Peres, Michael Petrov, Hen-
+rique Ponde de Oliveira Pinto, Michael, Pokorny, Michelle Pokrass, Vitchyr Pong, Tolly Pow-
+ell, Alethea Power, Boris Power, Elizabeth Proehl, Raul Puri, Alec Radford, Jack Rae, Aditya
+Ramesh, Cameron Raymond, Francis Real, Kendra Rimbach, Carl Ross, Bob Rotsted, Henri
+Roussez, Nick Ryder, Mario Saltarelli, Ted Sanders, Shibani Santurkar, Girish Sastry, Heather
+Schmidt, David Schnurr, John Schulman, Daniel Selsam, Kyla Sheppard, Toki Sherbakov, Jessica
+Shieh, Sarah Shoker, Pranav Shyam, Szymon Sidor, Eric Sigler, Maddie Simens, Jordan Sitkin,
+Katarina Slama, Ian Sohl, Benjamin Sokolowsky, Y ang Song, Natalie Staudacher, Felipe Pet-
+roski Such, Natalie Summers, Ilya Sutskever, Jie Tang, Nikolas Tezak, Madeleine Thompson,
+Phil Tillet, Amin Tootoonchian, Elizabeth Tseng, Preston Tuggle, Nick Turley, Jerry Tworek,
+Juan Felipe Cerón Uribe, Andrea V allone, Arun Vijayvergiya, Chelsea V oss, Carroll Wainwright,
+Justin Jay Wang, Alvin Wang, Ben Wang, Jonathan Ward, Jason Wei, CJ Weinmann, Akila Weli-
+hinda, Peter Welinder, Jiayi Weng, Lilian Weng, Matt Wiethoff, Dave Willner, Clemens Winter,
+Samuel Wolrich, Hannah Wong, Lauren Workman, Sherwin Wu, Jeff Wu, Michael Wu, Kai Xiao,
+Tao Xu, Sarah Y oo, Kevin Y u, Qiming Y uan, Wojciech Zaremba, Rowan Zellers, Chong Zhang,
+Marvin Zhang, Shengjia Zhao, Tianhao Zheng, Juntang Zhuang, William Zhuk, and Barret Zoph.
+Gpt-4 technical report, 2023.
+Y ahao Pang, Xingyuan Wu, Xiaojin Zhang, Wei Chen, and Hai Jin. Fedeat: A robustness optimiza-
+tion framework for federated llms. arXiv preprint arXiv:2502.11863, 2025.
+Amirhossein Razavi, Mina Soltangheis, Negar Arabzadeh, Sara Salamat, Morteza Zihayat, and
+Ebrahim Bagheri. Benchmarking prompt sensitivity in large language models. In European
+Conference on Information Retrieval, pp. 303–313. Springer, 2025.
+Melanie Sclar, Y ejin Choi, Y ulia Tsvetkov, and Alane Suhr. Quantifying language models’ sensi-
+tivity to spurious features in prompt design or: How i learned to start worrying about prompt
+formatting. arXiv preprint arXiv:2310.11324, 2023.
+Ayush Singh, Navpreet Singh, and Shubham V atsal. Robustness of llms to perturbations in text.
+arXiv preprint arXiv:2407.08989, 2024.
+Petr Sychev, Andrey Goncharov, Daniil Vyazhev, Edvard Khalafyan, and Alexey Zaytsev. When
+an llm is apprehensive about its answers–and when its uncertainty is justiﬁed. arXiv preprint
+arXiv:2503.01688, 2025.
+Gemini Team, Rohan Anil, Sebastian Borgeaud, Y onghui Wu, Jean-Baptiste Alayrac, Jiahui Y u,
+Radu Soricut, Johan Schalkwyk, Andrew M. Dai, Anja Hauth, Katie Millican, David Silver, Slav
+Petrov, Melvin Johnson, Ioannis Antonoglou, Julian Schrittwieser, Amelia Glaese, Jilin Chen,
+14
+Published as a conference paper at ICLR 2026
+Emily Pitler, Timothy Lillicrap, Angeliki Lazaridou, Orhan Firat, James Molloy, Michael Isard,
+Paul R. Barham, Tom Hennigan, Benjamin Lee, Fabio Viola, Malcolm Reynolds, Y uanzhong
+Xu, Ryan Doherty, Eli Collins, Clemens Meyer, Eliza Rutherford, Erica Moreira, Kareem Ay-
+oub, Megha Goel, George Tucker, Enrique Piqueras, Maxim Krikun, Iain Barr, Nikolay Savi-
+nov, Ivo Danihelka, Becca Roelofs, Anaïs White, Anders Andreassen, Tamara von Glehn, Lak-
+shman Y agati, Mehran Kazemi, Lucas Gonzalez, Misha Khalman, Jakub Sygnowski, Alexandre
+Frechette, Charlotte Smith, Laura Culp, Lev Proleev, Yi Luan, Xi Chen, James Lottes, Nathan
+Schucher, Federico Lebron, Alban Rrustemi, Natalie Clay, Phil Crone, Tomas Kocisky, Jeffrey
+Zhao, Bartek Perz, Dian Y u, Heidi Howard, Adam Bloniarz, Jack W. Rae, Han Lu, Laurent
+Sifre, Marcello Maggioni, Fred Alcober, Dan Garrette, Megan Barnes, Shantanu Thakoor, Jacob
+Austin, Gabriel Barth-Maron, William Wong, Rishabh Joshi, Rahma Chaabouni, Deeni Fatiha,
+Arun Ahuja, Ruibo Liu, Y unxuan Li, Sarah Cogan, Jeremy Chen, Chao Jia, Chenjie Gu, Qiao
+Zhang, Jordan Grimstad, Ale Jakse Hartman, Martin Chadwick, Gaurav Singh Tomar, Xavier Gar-
+cia, Evan Senter, Emanuel Taropa, Thanumalayan Sankaranarayana Pillai, Jacob Devlin, Michael
+Laskin, Diego de Las Casas, Dasha V alter, Connie Tao, Lorenzo Blanco, Adrià Puigdomènech
+Badia, David Reitter, Mianna Chen, Jenny Brennan, Clara Rivera, Sergey Brin, Shariq Iqbal,
+Gabriela Surita, Jane Labanowski, Abhi Rao, Stephanie Winkler, Emilio Parisotto, Yiming Gu,
+Kate Olszewska, Y ujing Zhang, Ravi Addanki, Antoine Miech, Annie Louis, Laurent El Shafey,
+Denis Teplyashin, Geoff Brown, Elliot Catt, Nithya Attaluri, Jan Balaguer, Jackie Xiang, Pidong
+Wang, Zoe Ashwood, Anton Briukhov, Albert Webson, Sanjay Ganapathy, Smit Sanghavi, Ajay
+Kannan, Ming-Wei Chang, Axel Stjerngren, Josip Djolonga, Y uting Sun, Ankur Bapna, Matthew
+Aitchison, Pedram Pejman, Henryk Michalewski, Tianhe Y u, Cindy Wang, Juliette Love, Jun-
+whan Ahn, Dawn Bloxwich, Kehang Han, Peter Humphreys, Thibault Sellam, James Bradbury,
+V arun Godbole, Sina Samangooei, Bogdan Damoc, Alex Kaskasoli, Sébastien M. R. Arnold,
+Vijay V asudevan, Shubham Agrawal, Jason Riesa, Dmitry Lepikhin, Richard Tanburn, Srivat-
+san Srinivasan, Hyeontaek Lim, Sarah Hodkinson, Pranav Shyam, Johan Ferret, Steven Hand,
+Ankush Garg, Tom Le Paine, Jian Li, Y ujia Li, Minh Giang, Alexander Neitz, Zaheer Abbas,
+Sarah Y ork, Machel Reid, Elizabeth Cole, Aakanksha Chowdhery, Dipanjan Das, Dominika Ro-
+goziska, Vitaly Nikolaev, Pablo Sprechmann, Zachary Nado, Lukas Zilka, Flavien Prost, Luheng
+He, Marianne Monteiro, Gaurav Mishra, Chris Welty, Josh Newlan, Dawei Jia, Miltiadis Allama-
+nis, Clara Huiyi Hu, Raoul de Liedekerke, Justin Gilmer, Carl Sarouﬁm, Shruti Rijhwani, Shaobo
+Hou, Disha Shrivastava, Anirudh Baddepudi, Alex Goldin, Adnan Ozturel, Albin Cassirer, Y un-
+han Xu, Daniel Sohn, Devendra Sachan, Reinald Kim Amplayo, Craig Swanson, Dessie Petrova,
+Shashi Narayan, Arthur Guez, Siddhartha Brahma, Jessica Landon, Miteyan Patel, Ruizhe Zhao,
+Kevin Villela, Luyu Wang, Wenhao Jia, Matthew Rahtz, Mai Giménez, Legg Y eung, Hanzhao
+Lin, James Keeling, Petko Georgiev, Diana Mincu, Boxi Wu, Salem Haykal, Rachel Saputro, Ki-
+ran V odrahalli, James Qin, Zeynep Cankara, Abhanshu Sharma, Nick Fernando, Will Hawkins,
+Behnam Neyshabur, Solomon Kim, Adrian Hutter, Priyanka Agrawal, Alex Castro-Ros, George
+van den Driessche, Tao Wang, Fan Y ang, Shuo yiin Chang, Paul Komarek, Ross McIlroy, Mario
+Lui, Guodong Zhang, Wael Farhan, Michael Sharman, Paul Natsev, Paul Michel, Y ong Cheng,
+Y amini Bansal, Siyuan Qiao, Kris Cao, Siamak Shakeri, Christina Butterﬁeld, Justin Chung,
+Paul Kishan Rubenstein, Shivani Agrawal, Arthur Mensch, Kedar Soparkar, Karel Lenc, Timothy
+Chung, Aedan Pope, Loren Maggiore, Jackie Kay, Priya Jhakra, Shibo Wang, Joshua Maynez,
+Mary Phuong, Taylor Tobin, Andrea Tacchetti, Maja Trebacz, Kevin Robinson, Y ash Katariya,
+Sebastian Riedel, Paige Bailey, Kefan Xiao, Nimesh Ghelani, Lora Aroyo, Ambrose Slone, Neil
+Houlsby, Xuehan Xiong, Zhen Y ang, Elena Gribovskaya, Jonas Adler, Mateo Wirth, Lisa Lee,
+Music Li, Thais Kagohara, Jay Pavagadhi, Sophie Bridgers, Anna Bortsova, Sanjay Ghemawat,
+Zafarali Ahmed, Tianqi Liu, Richard Powell, Vijay Bolina, Mariko Iinuma, Polina Zablotskaia,
+James Besley, Da-Woon Chung, Timothy Dozat, Ramona Comanescu, Xiance Si, Jeremy Greer,
+Guolong Su, Martin Polacek, Raphaël Lopez Kaufman, Simon Tokumine, Hexiang Hu, Elena
+Buchatskaya, Yingjie Miao, Mohamed Elhawaty, Aditya Siddhant, Nenad Tomasev, Jinwei Xing,
+Christina Greer, Helen Miller, Shereen Ashraf, Aurko Roy, Zizhao Zhang, Ada Ma, Angelos Fi-
+los, Milos Besta, Rory Blevins, Ted Klimenko, Chih-Kuan Y eh, Soravit Changpinyo, Jiaqi Mu,
+Oscar Chang, Mantas Pajarskas, Carrie Muir, V ered Cohen, Charline Le Lan, Krishna Haridasan,
+Amit Marathe, Steven Hansen, Sholto Douglas, Rajkumar Samuel, Mingqiu Wang, Sophia Austin,
+Chang Lan, Jiepu Jiang, Justin Chiu, Jaime Alonso Lorenzo, Lars Lowe Sjösund, Sébastien
+Cevey, Zach Gleicher, Thi Avrahami, Anudhyan Boral, Hansa Srinivasan, Vittorio Selo, Rhys
+May, Konstantinos Aisopos, Léonard Hussenot, Livio Baldini Soares, Kate Baumli, Michael B.
+Chang, Adrià Recasens, Ben Caine, Alexander Pritzel, Filip Pavetic, Fabio Pardo, Anita Gergely,
+15
+Published as a conference paper at ICLR 2026
+Justin Frye, Vinay Ramasesh, Dan Horgan, Kartikeya Badola, Nora Kassner, Subhrajit Roy,
+Ethan Dyer, Víctor Campos, Alex Tomala, Y unhao Tang, Dalia El Badawy, Elspeth White, Basil
+Mustafa, Oran Lang, Abhishek Jindal, Sharad Vikram, Zhitao Gong, Sergi Caelles, Ross Hem-
+sley, Gregory Thornton, Fangxiaoyu Feng, Wojciech Stokowiec, Ce Zheng, Phoebe Thacker,
+Çalar Ünlü, Zhishuai Zhang, Mohammad Saleh, James Svensson, Max Bileschi, Piyush Patil,
+Ankesh Anand, Roman Ring, Katerina Tsihlas, Arpi V ezer, Marco Selvi, Toby Shevlane, Mikel
+Rodriguez, Tom Kwiatkowski, Samira Daruki, Keran Rong, Allan Dafoe, Nicholas FitzGerald,
+Keren Gu-Lemberg, Mina Khan, Lisa Anne Hendricks, Marie Pellat, Vladimir Feinberg, James
+Cobon-Kerr, Tara Sainath, Maribeth Rauh, Sayed Hadi Hashemi, Richard Ives, Y ana Hasson,
+Y aGuang Li, Eric Noland, Y uan Cao, Nathan Byrd, Le Hou, Qingze Wang, Thibault Sottiaux,
+Michela Paganini, Jean-Baptiste Lespiau, Alexandre Moufarek, Samer Hassan, Kaushik Shiv-
+akumar, Joost van Amersfoort, Amol Mandhane, Pratik Joshi, Anirudh Goyal, Matthew Tung,
+Andrew Brock, Hannah Sheahan, V edant Misra, Cheng Li, Nemanja Rakievi, Mostafa Dehghani,
+Fangyu Liu, Sid Mittal, Junhyuk Oh, Seb Noury, Eren Sezener, Fantine Huot, Matthew Lamm,
+Nicola De Cao, Charlie Chen, Gamaleldin Elsayed, Ed Chi, Mahdis Mahdieh, Ian Tenney, Nan
+Hua, Ivan Petrychenko, Patrick Kane, Dylan Scandinaro, Rishub Jain, Jonathan Uesato, Romina
+Datta, Adam Sadovsky, Oskar Bunyan, Dominik Rabiej, Shimu Wu, John Zhang, Gautam V a-
+sudevan, Edouard Leurent, Mahmoud Alnahlawi, Ionut Georgescu, Nan Wei, Ivy Zheng, Betty
+Chan, Pam G Rabinovitch, Piotr Stanczyk, Y e Zhang, David Steiner, Subhajit Naskar, Michael
+Azzam, Matthew Johnson, Adam Paszke, Chung-Cheng Chiu, Jaume Sanchez Elias, Afroz Mo-
+hiuddin, Faizan Muhammad, Jin Miao, Andrew Lee, Nino Vieillard, Sahitya Potluri, Jane Park,
+Elnaz Davoodi, Jiageng Zhang, Jeff Stanway, Drew Garmon, Abhijit Karmarkar, Zhe Dong, Jong
+Lee, Aviral Kumar, Luowei Zhou, Jonathan Evens, William Isaac, Zhe Chen, Johnson Jia, Anselm
+Levskaya, Zhenkai Zhu, Chris Gorgolewski, Peter Grabowski, Y u Mao, Alberto Magni, Kaisheng
+Y ao, Javier Snaider, Norman Casagrande, Paul Suganthan, Evan Palmer, Geoffrey Irving, Ed-
+ward Loper, Manaal Faruqui, Isha Arkatkar, Nanxin Chen, Izhak Shafran, Michael Fink, Alfonso
+Castaño, Irene Giannoumis, Wooyeol Kim, Mikoaj Rybiski, Ashwin Sreevatsa, Jennifer Prendki,
+David Soergel, Adrian Goedeckemeyer, Willi Gierke, Mohsen Jafari, Meenu Gaba, Jeremy Wies-
+ner, Diana Gage Wright, Y awen Wei, Harsha V ashisht, Y ana Kulizhskaya, Jay Hoover, Maigo Le,
+Lu Li, Chimezie Iwuanyanwu, Lu Liu, Kevin Ramirez, Andrey Khorlin, Albert Cui, Tian LIN,
+Marin Georgiev, Marcus Wu, Ricardo Aguilar, Keith Pallo, Abhishek Chakladar, Alena Repina,
+Xihui Wu, Tom van der Weide, Priya Ponnapalli, Caroline Kaplan, Jiri Simsa, Shuangfeng Li,
+Olivier Dousse, Fan Y ang, Jeff Piper, Nathan Ie, Minnie Lui, Rama Pasumarthi, Nathan Lintz,
+Anitha Vijayakumar, Lam Nguyen Thiet, Daniel Andor, Pedro V alenzuela, Cosmin Paduraru,
+Daiyi Peng, Katherine Lee, Shuyuan Zhang, Somer Greene, Duc Dung Nguyen, Paula Kury-
+lowicz, Sarmishta V elury, Sebastian Krause, Cassidy Hardin, Lucas Dixon, Lili Janzer, Kiam
+Choo, Ziqiang Feng, Biao Zhang, Achintya Singhal, Tejasi Latkar, Mingyang Zhang, Quoc Le,
+Elena Allica Abellan, Dayou Du, Dan McKinnon, Natasha Antropova, Tolga Bolukbasi, Orgad
+Keller, David Reid, Daniel Finchelstein, Maria Abi Raad, Remi Crocker, Peter Hawkins, Robert
+Dadashi, Colin Gaffney, Sid Lall, Ken Franko, Egor Filonov, Anna Bulanova, Rémi Leblond,
+Vikas Y adav, Shirley Chung, Harry Askham, Luis C. Cobo, Kelvin Xu, Felix Fischer, Jun Xu,
+Christina Sorokin, Chris Alberti, Chu-Cheng Lin, Colin Evans, Hao Zhou, Alek Dimitriev, Han-
+nah Forbes, Dylan Banarse, Zora Tung, Jeremiah Liu, Mark Omernick, Colton Bishop, Chintu
+Kumar, Rachel Sterneck, Ryan Foley, Rohan Jain, Swaroop Mishra, Jiawei Xia, Taylor Bos, Ge-
+offrey Cideron, Ehsan Amid, Francesco Piccinno, Xingyu Wang, Praseem Banzal, Petru Gurita,
+Hila Noga, Premal Shah, Daniel J. Mankowitz, Alex Polozov, Nate Kushman, Victoria Krakovna,
+Sasha Brown, MohammadHossein Bateni, Dennis Duan, Vlad Firoiu, Meghana Thotakuri, Tom
+Natan, Anhad Mohananey, Matthieu Geist, Sidharth Mudgal, Sertan Girgin, Hui Li, Jiayu Y e,
+Oﬁr Roval, Reiko Tojo, Michael Kwong, James Lee-Thorp, Christopher Y ew, Quan Y uan, Sumit
+Bagri, Danila Sinopalnikov, Sabela Ramos, John Mellor, Abhishek Sharma, Aliaksei Severyn,
+Jonathan Lai, Kathy Wu, Heng-Tze Cheng, David Miller, Nicolas Sonnerat, Denis Vnukov, Rory
+Greig, Jennifer Beattie, Emily Caveness, Libin Bai, Julian Eisenschlos, Alex Korchemniy, Tomy
+Tsai, Mimi Jasarevic, Weize Kong, Phuong Dao, Zeyu Zheng, Frederick Liu, Fan Y ang, Rui Zhu,
+Mark Geller, Tian Huey Teh, Jason Sanmiya, Evgeny Gladchenko, Nejc Trdin, Andrei Sozan-
+schi, Daniel Toyama, Evan Rosen, Sasan Tavakkol, Linting Xue, Chen Elkind, Oliver Woodman,
+John Carpenter, George Papamakarios, Rupert Kemp, Sushant Kaﬂe, Tanya Grunina, Rishika
+Sinha, Alice Talbert, Abhimanyu Goyal, Diane Wu, Denese Owusu-Afriyie, Cosmo Du, Chloe
+Thornton, Jordi Pont-Tuset, Pradyumna Narayana, Jing Li, Sabaer Fatehi, John Wieting, Omar
+Ajmeri, Benigno Uria, Tao Zhu, Y eongil Ko, Laura Knight, Amélie Héliou, Ning Niu, Shane
+16
+Published as a conference paper at ICLR 2026
+Gu, Chenxi Pang, Dustin Tran, Y eqing Li, Nir Levine, Ariel Stolovich, Norbert Kalb, Rebeca
+Santamaria-Fernandez, Sonam Goenka, Wenny Y ustalim, Robin Strudel, Ali Elqursh, Balaji Lak-
+shminarayanan, Charlie Deck, Shyam Upadhyay, Hyo Lee, Mike Dusenberry, Zonglin Li, Xuezhi
+Wang, Kyle Levin, Raphael Hoffmann, Dan Holtmann-Rice, Olivier Bachem, Summer Y ue, Sho
+Arora, Eric Malmi, Daniil Mirylenka, Qijun Tan, Christy Koh, Soheil Hassas Y eganeh, Siim
+Põder, Steven Zheng, Francesco Pongetti, Mukarram Tariq, Y anhua Sun, Lucian Ionita, Mojtaba
+Seyedhosseini, Pouya Tafti, Ragha Kotikalapudi, Zhiyu Liu, Anmol Gulati, Jasmine Liu, Xinyu
+Y e, Bart Chrzaszcz, Lily Wang, Nikhil Sethi, Tianrun Li, Ben Brown, Shreya Singh, Wei Fan,
+Aaron Parisi, Joe Stanton, Chenkai Kuang, Vinod Koverkathu, Christopher A. Choquette-Choo,
+Y unjie Li, TJ Lu, Abe Ittycheriah, Prakash Shroff, Pei Sun, Mani V aradarajan, Sanaz Bahargam,
+Rob Willoughby, David Gaddy, Ishita Dasgupta, Guillaume Desjardins, Marco Cornero, Brona
+Robenek, Bhavishya Mittal, Ben Albrecht, Ashish Shenoy, Fedor Moiseev, Henrik Jacobsson,
+Alireza Ghaffarkhah, Morgane Rivière, Alanna Walton, Clément Crepy, Alicia Parrish, Y uan
+Liu, Zongwei Zhou, Clement Farabet, Carey Radebaugh, Praveen Srinivasan, Claudia van der
+Salm, Andreas Fidjeland, Salvatore Scellato, Eri Latorre-Chimoto, Hanna Klimczak-Pluciska,
+David Bridson, Dario de Cesare, Tom Hudson, Piermaria Mendolicchio, Lexi Walker, Alex Mor-
+ris, Ivo Penchev, Matthew Mauger, Alexey Guseynov, Alison Reid, Seth Odoom, Lucia Loher,
+Victor Cotruta, Madhavi Y enugula, Dominik Grewe, Anastasia Petrushkina, Tom Duerig, Anto-
+nio Sanchez, Steve Y adlowsky, Amy Shen, Amir Globerson, Adam Kurzrok, Lynette Webb, Sahil
+Dua, Dong Li, Preethi Lahoti, Surya Bhupatiraju, Dan Hurt, Haroon Qureshi, Ananth Agarwal,
+Tomer Shani, Matan Eyal, Anuj Khare, Shreyas Rammohan Belle, Lei Wang, Chetan Tekur, Mi-
+hir Sanjay Kale, Jinliang Wei, Ruoxin Sang, Brennan Saeta, Tyler Liechty, Yi Sun, Y ao Zhao,
+Stephan Lee, Pandu Nayak, Doug Fritz, Manish Reddy Vuyyuru, John Aslanides, Nidhi Vyas,
+Martin Wicke, Xiao Ma, Taylan Bilal, Evgenii Eltyshev, Daniel Balle, Nina Martin, Hardie
+Cate, James Manyika, Keyvan Amiri, Y elin Kim, Xi Xiong, Kai Kang, Florian Luisier, Nilesh
+Tripuraneni, David Madras, Mandy Guo, Austin Waters, Oliver Wang, Joshua Ainslie, Jason
+Baldridge, Han Zhang, Garima Pruthi, Jakob Bauer, Feng Y ang, Riham Mansour, Jason Gelman,
+Y ang Xu, George Polovets, Ji Liu, Honglong Cai, Warren Chen, XiangHai Sheng, Emily Xue,
+Sherjil Ozair, Adams Y u, Christof Angermueller, Xiaowei Li, Weiren Wang, Julia Wiesinger, Em-
+manouil Koukoumidis, Y uan Tian, Anand Iyer, Madhu Gurumurthy, Mark Goldenson, Parashar
+Shah, MK Blake, Hongkun Y u, Anthony Urbanowicz, Jennimaria Palomaki, Chrisantha Fernando,
+Kevin Brooks, Ken Durden, Harsh Mehta, Nikola Momchev, Elahe Rahimtoroghi, Maria Geor-
+gaki, Amit Raul, Sebastian Ruder, Morgan Redshaw, Jinhyuk Lee, Komal Jalan, Dinghua Li,
+Ginger Perng, Blake Hechtman, Parker Schuh, Milad Nasr, Mia Chen, Kieran Milan, Vladimir
+Mikulik, Trevor Strohman, Juliana Franco, Tim Green, Demis Hassabis, Koray Kavukcuoglu,
+Jeffrey Dean, and Oriol Vinyals. Gemini: A family of highly capable multimodal models, 2023.
+Katherine Tian, Eric Mitchell, Allan Zhou, Archit Sharma, Rafael Rafailov, Huaxiu Y ao, Chelsea
+Finn, and Christopher D Manning. Just ask for calibration: Strategies for eliciting calibrated
+conﬁdence scores from language models ﬁne-tuned with human feedback. arXiv preprint
+arXiv:2305.14975, 2023.
+Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Y asmine Babaei, Niko-
+lay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, et al. Llama 2: Open founda-
+tion and ﬁne-tuned chat models. arXiv preprint arXiv:2307.09288, 2023.
+Y uqing Wang and Y un Zhao. Rupbench: Benchmarking reasoning under perturbations for robust-
+ness evaluation in large language models. arXiv preprint arXiv:2406.11020, 2024.
+Jerry Wei, Jason Wei, Yi Tay, Dustin Tran, Albert Webson, Yifeng Lu, Xinyun Chen, Hanxiao Liu,
+Da Huang, Denny Zhou, et al. Larger language models do in-context learning differently. arXiv
+preprint arXiv:2303.03846, 2023.
+Laura Weidinger, John Mellor, Maribeth Rauh, Conor Grifﬁn, Jonathan Uesato, Po-Sen Huang,
+Myra Cheng, Mia Glaese, Borja Balle, Atoosa Kasirzadeh, et al. Ethical and social risks of harm
+from language models. arXiv preprint arXiv:2112.04359, 2021.
+Mozhi Zhang, Mianqiu Huang, Rundong Shi, Linsen Guo, Chong Peng, Peng Y an, Y aqian Zhou,
+and Xipeng Qiu. Calibrating the conﬁdence of large language models by eliciting ﬁdelity. arXiv
+preprint arXiv:2404.02655, 2024.
+17
+Published as a conference paper at ICLR 2026
+Zihao Zhao, Eric Wallace, Shi Feng, Dan Klein, and Sameer Singh. Calibrate before use: Improving
+few-shot performance of language models. In International conference on machine learning , pp.
+12697–12706. PMLR, 2021.
+18
+Published as a conference paper at ICLR 2026
+CONTENTS
+1 Introduction 1
+2 Preliminaries: Understanding LLM Predictions and Stability 3
+2.1 Language Model Output and Distribution Concentration . . . . . . . . . . . . . . 3
+2.2 Deﬁning Stability: What Does It Mean for a Prediction to Be Stable? . . . . . . . . 3
+2.3 Quantifying the Impact of Perturbations: The Role of the Jacobian . . . . . . . . . 4
+2.4 The Token Constraint Bound ( δTCB): Our Measure of Stability . . . . . . . . . . . 4
+3 δTCB via Output Embedding Geometry 5
+3.1 The Geometry of Output: Token Embeddings and Their Mean . . . . . . . . . . . 5
+3.2 Deriving the Jacobian Norm: Connecting Sensitivity to Embedding Spread . . . . 5
+3.3 The Full Form of δTCB and Its Geometric Meaning . . . . . . . . . . . . . . . . . 5
+3.4 Interpreting Stability Across Prediction Regimes . . . . . . . . . . . . . . . . . . 6
+4 Experiments 6
+4.1 Experimental Setup . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 7
+4.2 Intrinsic Properties and V alidation of δTCB . . . . . . . . . . . . . . . . . . . . . 7
+4.3 δTCB as a Diagnostic Tool for Prompt Engineering . . . . . . . . . . . . . . . . . 7
+4.3.1 Deep Dive: Impact of Prompt Component Interactions on GSM8K . . . . . 8
+5 Conclusion and Future Work 9
+A LLM Usage Statement 20
+B Related Work 20
+C Experimental Details 21
+C.1 Datasets and Task-Speciﬁc Setup . . . . . . . . . . . . . . . . . . . . . . . . . . . 21
+C.2 Prompting Strategies and Examples . . . . . . . . . . . . . . . . . . . . . . . . . 21
+C.2.1 MMLU Prompts . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21
+C.2.2 GSM8K Prompts (Baseline and Interventions) . . . . . . . . . . . . . . . 21
+C.3 δTCB Calculation and Parameters . . . . . . . . . . . . . . . . . . . . . . . . . . . 22
+C.4 Details of Speciﬁc Experiments . . . . . . . . . . . . . . . . . . . . . . . . . . . . 23
+C.4.1 Geometry Sensitivity Simulation . . . . . . . . . . . . . . . . . . . . . . . 23
+C.4.2 Systematic Prompt Optimization Protocol . . . . . . . . . . . . . . . . . . 23
+C.4.3 Perturbation Strategies for Robustness Evaluation . . . . . . . . . . . . . . 23
+C.4.4 Text Generation Dynamics Setup . . . . . . . . . . . . . . . . . . . . . . . 23
+D Further Discussion and Examples 24
+D.1 Elaboration on Accuracy-Stability Conﬂict Scenarios . . . . . . . . . . . . . . . . 24
+D.2 Detailed Interpretation of GSM8K Intervention Analysis . . . . . . . . . . . . . . 24
+D.3 Differentiating δTCB from Perplexity (PPL) . . . . . . . . . . . . . . . . . . . . . 25
+E Quantifying Semantic Context Inﬂuence. 26
+F Statistical Derivation of δTCB Approximation 26
+G Exact, Non-Statistical Expression for ∥JW∥F and Its Relation to Weighted Variance 29
+H Relating the Statistical Approximation and the Exact Expression 31
+I Derivation of the Exact Jacobian Norm Formula 32
+J Derivation of Regime-Dependent TCB Behavior 35
+J.1 Regime 1: High Flatness (Large Veﬀ ≫ 1) . . . . . . . . . . . . . . . . . . . . . . 35
+J.2 Regime 2: Low Flatness (Small Veﬀ ≈ 1) . . . . . . . . . . . . . . . . . . . . . . 36
+19
+Published as a conference paper at ICLR 2026
+A LLM U SAGE STATEMENT
+LLMs were used solely as auxiliary tools for paper polishing. They did not contribute to the genera-
+tion of research ideas, the design of experiments, the development of methodologies, data analysis,
+or any substantive aspects of the research. All scientiﬁc content, conceptual contributions, and ex-
+perimental results are entirely the work of the authors. The authors take full responsibility for the
+contents of this paper.
+B R ELATED WORK
+Our work on the Token Constraint Bound ( δTCB) builds upon and differentiates itself from several
+lines of research in LLM evaluation, robustness, and interpretability.
+LLM Sensitivity and the Need for Robustness Metrics The pronounced sensitivity of LLMs
+to subtle input variations is well-documented. Studies have demonstrated substantial performance
+ﬂuctuations arising from minor alterations in prompt phrasing ( Razavi et al. , 2025), example order-
+ing and selection ( Zhao et al. , 2021; Lu et al. , 2021), or even formatting details ( Sclar et al. , 2023).
+This brittleness (Marcus, 2020) highlights an urgent need for evaluation methods that go beyond ag-
+gregate task performance to assess the inherent stability of LLM predictions. Importantly, increased
+model scale, despite adherence to scaling laws ( Kaplan et al., 2020; Hoffmann et al., 2022), does not
+invariably confer enhanced robustness to these nuanced changes ( Lu et al. , 2021; Wei et al., 2023),
+further motivating metrics like δTCB that focus on local stability. The imperative for reliable deploy-
+ment in critical applications ( Weidinger et al. , 2021; Herrera-Poyatos et al. , 2025; Harandizadeh
+et al., 2024) makes understanding and quantifying such instabilities paramount.
+Limitations of Conventional Evaluation Metrics Conventional metrics offer limited insight into
+local predictive robustness, a gap δTCB aims to address. Task accuracy, while a primary indicator,
+provides an aggregate view that can mask underlying prediction fragility due to contextual shifts
+(Zhao et al. , 2021). Perplexity ( Jelinek et al. , 1977), though standard for assessing sequence like-
+lihood ( Liang et al. , 2022; Holtzman et al. , 2021), aggregates probabilities and can obscure local
+dynamics and the true stability of the internal state underpinning a prediction ( Cohen-Inger et al. ,
+2025). It may not reﬂect genuine model conviction, especially in cases of "surface form competition"
+(Holtzman et al. , 2021) or when the softmax normalizes over poorly supported options. Emerging
+metrics targeting conﬁdence and calibration ( Zhang et al., 2024; Tian et al., 2023; Geng et al., 2023;
+Zhao et al. , 2021) focus on aligning output probabilities with the likelihood of correctness ( Tian
+et al., 2023). While valuable, these do not directly quantify the resilience of a speciﬁc prediction’s
+dominant rank against perturbations in the model’s internal representation h (Liu et al. , 2025). A
+well-calibrated, high-conﬁdence prediction might still stem from an internally fragile state. δTCB
+measures this internal representational stability directly.
+Internal State Dynamics and Representational Stability Our work intersects with research ex-
+ploring LLM internal representations and their stability. Efforts to enhance robustness by, for ex-
+ample, aligning hidden states of perturbed instructions with original ones ( Agrawal et al. , 2025),
+implicitly underscore the importance of stable internal conﬁgurations. δTCB provides a direct, quan-
+titative measure of this local stability speciﬁcally for the next-token prediction mechanism, assessing
+the "safety margin" or integrity of the current predictive commitment arising from h. This connects
+to broader goals in Explainable AI (XAI) that seek to understand internal model workings ( Mumuni
+& Mumuni, 2025), where δTCB can pinpoint internal decision points of high or low resilience.
+Prompt Engineering, In-Context Learning, and Stable State Induction δTCB is particularly
+relevant to analyzing the effectiveness of prompt engineering and In-Context Learning (Brown et al.,
+2020; Dong et al. , 2022). Our central hypothesis posits that effective contextualization, such as
+through well-designed prompts or informative ICL examples, guides LLMs not only to correct an-
+swers but also to more stable internal states h, reﬂected by higher δTCB values. This aligns with
+ﬁndings suggesting ICL’s efﬁcacy often stems from its ability to clarify task structure ( Min et al. ,
+2022). δTCB can thus serve as a quantitative tool to assess how effectively different contextual in-
+puts induce robust internal commitments to a predictive path, complementing metrics focused on
+epistemic "knowledge strength" ( Ma et al., 2025).
+Output Embedding Geometry and Predictive Stability A key theoretical underpinning of δTCB,
+detailed in Section 3 , is its intrinsic link to the geometric dispersion of output token embeddings.
+While the general importance of embedding space properties for model robustness is acknowledged
+20
+Published as a conference paper at ICLR 2026
+(Pang et al. , 2025), δTCB establishes a speciﬁc, analytical relationship between the geometry of the
+output embeddings (weighted by current prediction probabilities o2
+i ) and the local stability of the
+next-token prediction against perturbations in h. This provides a mechanistic, geometric interpreta-
+tion of local prediction stability, moving beyond probability-based analyses alone.
+Complementarity with Uncertainty Quantiﬁcation (UQ) δTCB is positioned as complemen-
+tary to, rather than a replacement for, existing Uncertainty Quantiﬁcation (UQ) methods ( Liu et al. ,
+2025; Sychev et al. , 2025). While UQ approaches typically aim to gauge a model’s conﬁdence or
+"knowledge strength" often based on output probabilities (e.g., entropy, prediction margins), δTCB
+speciﬁcally assesses the robustness of the predictive mechanism itself to internal state ﬂuctuations.
+A prediction can exhibit high output probability (high conﬁdence by UQ standards) yet originate
+from an unstable internal state (low δTCB), indicating a "conﬁdently unstable" scenario. Conversely,
+a moderately conﬁdent prediction might be highly stable. δTCB thus offers a distinct perspective on
+reliability, focusing on the local integrity and resilience of the model’s current predictive commit-
+ment rather than solely its expressed certainty.
+Perturbation-Based Robustness in Neural Networks and LLMs Prior work on NN robustness
+has leveraged Jacobian norms and perturbations to quantify sensitivity and improve generalization.
+(Novak et al. , 2018) empirically study sensitivity via the Frobenius norm of the input Jacobian,
+ﬁnding trained NNs more robust near training data and linking it to generalization gaps. Subsequent
+methods regularize this norm for adversarial robustness, e.g., (Hoffman et al., 2019) for classiﬁcation
+margins. In LLMs, recent studies evaluate robustness to input perturbations like typos or rephrasing
+(Singh et al. , 2024; Mumuni & Mumuni , 2025), with benchmarks like RUPBench ( Wang & Zhao ,
+2024) showing larger models’ resilience. δTCB extends these by deriving an exact closed-form for
+the softmax-linear Jacobian norm, linking it to output embedding geometry, and repurposing it for
+contextual stability in ICL and prompt engineering—focusing on hidden state perturbations rather
+than inputs.
+C E XPERIMENTAL DETAILS
+C.1 D ATASETS AND TASK -S PECIFIC SETUP
+• MMLU ( Hendrycks et al. , 2020): For general validation (e.g., correlations in Table 1 ), ques-
+tions were sampled from the ‘test‘ splits of subjects like ‘formal_logic‘, ‘philosophy‘, ‘ab-
+stract_algebra‘, ‘moral_scenarios‘, and ‘professional_law‘. The standard multiple-choice format
+(A, B, C, D) was used. The critical prediction point for δTCB calculation was immediately before
+the model generated the single token corresponding to its chosen letter (e.g., ’A ’, ’B’, ’C’, or ’D’).
+• GSM8K ( Cobbe et al. , 2021): For detailed intervention and prompt optimization studies, ques-
+tions were sampled from the ‘test‘ set. These are grade-school math word problems requiring
+multi-step reasoning. The critical prediction point for δTCB was typically before the model gener-
+ated the ﬁrst token of the ﬁnal numerical answer, after producing its chain-of-thought (CoT) rea-
+soning. The ﬁnal answer is usually identiﬁed by a pattern like "The ﬁnal answer is \boxed{X}.".
+C.2 P ROMPTING STRATEGIES AND EXAMPLES
+C.2.1 MMLU P ROMPTS
+Zero-Shot Multiple Choice:
+Question: {question_text}
+Options:
+A) {option_A_text}
+B) {option_B_text}
+C) {option_C_text}
+D) {option_D_text}
+Answer:
+The model is expected to complete with ’A ’, ’B’, ’C’, or ’D’.
+C.2.2 GSM8K P ROMPTS (BASELINE AND INTERVENTIONS )
+Zero-Shot Chain-of-Thought (CoT):
+Question: {question_text}
+Let’s think step by step.
+21
+Published as a conference paper at ICLR 2026
+The model generates the reasoning steps and concludes with "The ﬁnal answer is \boxed{X}."
+Few-Shot Chain-of-Thought (CoT) ( k = 5 baseline for GSM8K):
+Question: {exemplar1_question_text}
+Let’s think step by step.
+{exemplar1_CoT_solution}
+The final answer is \boxed{{exemplar1_answer}}.
+###
+Question: {exemplar2_question_text}
+Let’s think step by step.
+{exemplar2_CoT_solution}
+The final answer is \boxed{{exemplar2_answer}}.
+###
+... (3 more exemplars) ...
+###
+Question: {current_question_text}
+Let’s think step by step.
+Exemplars were typically drawn from the GSM8K ‘train‘ set.
+Interventions for GSM8K problem gsm8k_811 (as in Table 5 ): The base question
+gsm8k_811 is: "Felix earns $0.25 for each branch he trims from a tree. He trimmed branches
+from 12 trees. If he earned $60 in total, what is the average number of branches he trimmed per
+tree?" (Correct Answer: 20)
+• Clariﬁed Q ("7 days") : The original question text was appended with: "(Felix works 7 days a
+week)." This clariﬁcation is irrelevant and misleading for this speciﬁc problem.
+• ICL Variations:
+– New Algebraic ICLs (Baseline ICLs for Table 12): Exemplars were selected/written to em-
+phasize setting up and solving algebraic equations (e.g., using variables like x, y).
+– Hyper-Speciﬁc ICL: An ICL example was crafted to be structurally almost identical to
+gsm8k_811 (e.g., "John earns $X per item. He processed Y items from Z batches. If
+he earned $Total, what is the average items per batch?"), but with different numbers and
+context.
+• Instructional Preﬁxes: These were typically inserted directly before "Let’s think step by step."
+in a few-shot setup, or as the main instruction in a zero-shot setup.
+– Zero-shot CoT Instr . (implied for Col 3 of Table 12 in context): Simply "Let’s think step by
+step." as the primary instruction for the new question.
+– Role-Playing Instr .: "Y ou are a brilliant mathematician. Solve the following problem by
+showing your detailed work."
+– Algebraic Decomposition Instr .: "Decompose this problem algebraically. Deﬁne variables,
+set up equations, and solve them step-by-step to ﬁnd the ﬁnal answer."
+– F ormal Language Instr .: "Use precise mathematical language and formal notation in your
+solution. Ensure each step is clearly justiﬁed."
+For Table 5 , "New Alg. ICLs" were used unless "Hyper-Speciﬁc ICL" or "No ICLs" (Zero-Shot) is
+speciﬁed.
+C.3 δTCB CALCULATION AND PARAMETERS
+The Token Constraint Bound δTCB(h) was computed using Eq. ( 10) from the main text:
+δTCB(h) = ϵqPV
+i=1 o2
+i ∥wi − µw(h)∥2
+2
+The tolerance parameter ϵ was set to 1.0 for all experiments. This choice normalizes δTCB such
+that it represents the inverse of the Jacobian’s Frobenius norm (scaled by o2
+i -weighted embedding
+variance). As stated in the main text, relative changes and comparative values of δTCB are generally
+more informative than its absolute magnitude, which depends on ϵ. The hidden state h was taken
+from the output of the ﬁnal transformer layer, just before the unembedding layer.
+22
+Published as a conference paper at ICLR 2026
+C.4 D ETAILS OF SPECIFIC EXPERIMENTS
+C.4.1 G EOMETRY SENSITIVITY SIMULATION
+For each input prompt: 1. The original hidden state horig and output probability distribution oorig
+were obtained. δTCB(horig, Worig) was calculated. 2. The top K = 10 competitor tokens (tokens
+j ̸= top1 with the highest oj) were identiﬁed. 3. To create Wcluster: For each competitor embedding
+wj (j ∈ K competitors), its new position was wcluster
+j = worig
+j + α(worig
+top1 − worig
+j ), where α = 0 .5
+(moving it halfway towards the top-1 token’s embedding). Embeddings of other tokens remained
+unchanged. δTCB(horig, Wcluster) was calculated using the original horig and oorig. 4. To create
+Wdisperse: For each competitor embedding wj, its new position was wdisperse
+j = worig
+j − β(worig
+top1 −
+worig
+j ), where β = 0 .5 (moving it away from the top-1 token’s embedding along the same line, by
+half the original distance). δTCB(horig, Wdisperse) was calculated. The hypothesis δTCB(Wcluster) >
+δTCB(Worig) > δ TCB(Wdisperse) was then checked.
+C.4.2 S YSTEMATIC PROMPT OPTIMIZATION PROTOCOL
+1. Baseline Characterization: A set of questions (e.g., 50-100 from MMLU/GSM8K) was run
+with a baseline prompt (e.g., zero-shot for MMLU, 5-shot CoT for GSM8K) across multiple random
+seeds (e.g., S = 3 or S = 5 ) for ICL selection or minor phrasing variants to get Acc statistics.
+Metrics collected per question: Mean Accuracy, Accuracy V ariance (across seeds), Mean δTCB (at
+critical token, averaged over seeds if multiple correct paths), δTCB V ariance.VCQ (V ery Conﬁdent
+Questions) were deﬁned as those with, e.g., Mean Acc ≥ 0.9, Acc V ar≤ 0.05, Mean δTCB > T H ,
+δTCB V ar< V L. AQ (Ambiguous Questions) were deﬁned as those with, e.g., Mean Acc < 0.6, or
+Acc V ar> 0.15, or Mean δTCB < T L, or δTCB V ar> V H . Thresholds ( TH , TL, VL, VH ) were set
+empirically based on observed distributions.
+2.Targeted Prompt Enhancement: For AQ questions, prompt engineering efforts focused on in-
+creasing both Acc and δTCB. Techniques included: Reﬁning ICL examples (e.g., ensuring CoT
+steps are clearer, more analogous to the target problem structure, varying reasoning styles). Modify-
+ing instructional phrases (e.g., adding "Be very careful with calculations," "Explain your reasoning
+clearly"). Switching prompting strategy (e.g., from 5-shot to 2-shot with very high-quality examples,
+or adding a self-reﬂection step). For MMLU, this could involve adding a directive like "Choose the
+best option and explain why." For VCQ questions, efforts might focus on further increasing δTCB if
+it wasn’t already maximal, or ensuring robustness (see below).
+2.Evaluation (Unperturbed and Perturbed): Enhanced prompts were evaluated on the same
+metrics. Robustness was tested using perturbed inputs (see Appendix C.4.3 ). Metrics like Accuracy
+V ariance on perturbed inputs (AccV arpert), Performance Drop Rate (PDR), and Worst-Case Accuracy
+(Accworst) under perturbation were key.
+C.4.3 P ERTURBATION STRATEGIES FOR ROBUSTNESS EVALUATION
+Perturbations were designed to be plausible minor variations:
+• Syntactic Perturbations (applied to the question text):
+– Paraphrasing: Using a pre-trained paraphrasing model (e.g., T5-based) to generate 2-3 vari-
+ants of the question.
+– Reordering: For questions with multiple clauses/conditions, reordering them if semantically
+permissible.
+– Synonym Replacement: Replacing 1-2 keywords with close synonyms.
+• Semantic Perturbations (primarily for ICL / Few-Shot setups):
+– ICL Example Reordering: Changing the order of the few-shot examples in the prompt.
+– ICL Example Replacement: Replacing one of the k examples with another valid but perhaps
+slightly less similar or slightly lower-quality example from the training set.
+– Adding a minor distractor sentence to the prompt context.
+The goal was not to make the task unsolvable but to test sensitivity to typical input variations.
+C.4.4 T EXT GENERATION DYNAMICS SETUP
+The prompt used to induce potentially repetitive behavior was:
+System: Repeat the following word exactly five times: ’banana’.
+After repeating it five times, say ’Task finished.’.
+23
+Published as a conference paper at ICLR 2026
+User: Okay, I understand. I will now repeat the word ’banana’ five times
+and then say ’Task finished.’
+Assistant:
+The model (LL AMA-3.1–8B) was allowed to generate tokens greedily. δTCB, P (top1),
+P (2nd best), and Veﬀ were calculated at each token generation step. The ﬁgure typically shows
+dynamics if the model continues beyond the explicit instruction, e.g., by getting stuck in a loop of
+"banana" or "Task ﬁnished." or exhibiting other non-ideal behaviors. The "dips" in δTCB often occur
+at points where the model is less certain about continuing a pattern versus breaking out or switching
+to another token.
+D F URTHER DISCUSSION AND EXAMPLES
+D.1 E LABORATION ON ACCURACY -S TABILITY CONFLICT SCENARIOS
+The main text ( Section 4.3 ) mentioned four key conﬂict scenarios. Here are more detailed concep-
+tual examples:
+1.Accurate but Unstable (High Acc, Low δTCB): Scenario: The model correctly answers a com-
+plex reasoning question, but its internal state h is near a decision boundary where a slight internal
+"wobble" could have led to a different (incorrect) reasoning path and answer. Example (MMLU-like):
+Q: "Which of these legal principles is most directly violated by ex post facto laws?" Correct Answer:
+"Nulla poena sine lege". Model predicts "Nulla poena sine lege" (Acc=1). However, its δTCB is low
+(e.g., 2.1). This might be because the embedding for another plausible but incorrect principle like
+"Stare decisis" is geometrically positioned such that a small perturbation to h could shift the logits
+sufﬁciently to make "Stare decisis" the top choice. The correct prediction is thus brittle.
+2.Inaccurate but Stable (Low Acc, High δTCB): Scenario: The model makes a clear error, often
+due to a misinterpretation or ﬂawed reasoning pattern, but it is very robustly committed to this
+error. Example (GSM8K-like, from Table 5 , Row 2): Felix problem with the misleading "7 days"
+clariﬁcation. The model incorrectly calculates the answer (Acc=0) but does so with high δTCB
+(46.97). It has latched onto a stable, but ﬂawed, interpretation/procedure.
+3.Conﬁdent but Unstable (High P (top1)/zk − zj∗ , but Low δTCB): Scenario: The output prob-
+ability for the top token is high, and/or the logit margin to the next token is large, suggesting strong
+conﬁdence. However, the internal state supporting this is not robust. Example: Prompt: "What is
+the primary ingredient in concrete?" Model predicts "Cement" with P (Cement) = 0 .95 and a large
+logit margin zk − zj∗ = 5 .0. Superﬁcially, this looks very conﬁdent. However, δTCB is low (e.g.,
+1.8). This could occur if: The embedding wCement is relatively far from the mean embedding µw(h)
+(making the o2
+Cement∥wCement − µw(h)∥2
+2 term large despite o2
+Cement being large too, if the distance is
+very large). Or, many other low-probability competitor embeddings {wj} are clustered very tightly
+around µw(h), leading to many small o2
+j ∥wj − µw(h)∥2
+2 terms whose sum is signiﬁcant, contribut-
+ing to a large Jacobian norm. The high probability P (Cement) might hide an underlying geometric
+conﬁguration that is sensitive to perturbation.
+4.Uncertain but Stable (Low P (top1)/zk − zj∗ , High Veﬀ , but High δTCB): Scenario: The
+model’s output distribution is relatively ﬂat, indicating uncertainty among several top choices. Y et,
+the internal state representing this uncertainty is stable. Example: Prompt: "Which of these is a
+common pet: A) Dog, B) Tiger, C) Whale, D) Ant". Model output: P (Dog) = 0 .5, P (Ant) = 0 .3
+(perhaps due to "common"), P (Tiger) = 0 .1, P (Whale) = 0 .1. Veﬀ is relatively high. However,
+δTCB could be high if the embeddings wDog and wAnt are very close to each other (and thus to
+µw(h) if they dominate), while wTiger and wWhale are far away. The model is stably "stuck" deciding
+between "Dog" and "Ant", but it’s not about to suddenly jump to "Tiger". The uncertainty itself has
+a stable geometric basis.
+D.2 D ETAILED INTERPRETATION OF GSM8K I NTERVENTION ANALYSIS
+This provides a row-by-row interpretation of the results for GSM8K question gsm8k_811 shown
+in Table 5 of the main paper.
+• Row 1: Baseline (New Algebraic ICLs, Original Question) Metrics: Acc=100%, δTCB =
+8.20, Veﬀ = 1 .54, zk − zj∗ = 3 .25. Interpretation: The baseline prompt with algebraic ICLs
+successfully solves the problem. The stability ( δTCB = 8.20) is moderate, indicating a reasonably
+24
+Published as a conference paper at ICLR 2026
+robust correct prediction but with potential for improvement. Veﬀ and zk − zj∗ reﬂect good
+conﬁdence.
+• Row 2: Clariﬁed Q ("7 days") + New Alg. ICLs Metrics: Acc=0%, δTCB = 46.97, Veﬀ = 1.04,
+zk − zj∗ = 5 .23. Interpretation: Adding the misleading "7 days" clariﬁcation breaks accuracy
+completely. Crucially, δTCB increases dramatically. This indicates the model has latched onto
+an incorrect interpretation or reasoning path due to the "7 days" phrase, and this incorrect path is
+highly stable. The high conﬁdence metrics ( Veﬀ ≈ 1, zk − zj∗ high) support this: it’s "conﬁdently
+and stably wrong."
+• Row 3: Zero-shot CoT Instr . + Clariﬁed Q + New Alg. ICLs Metrics: Acc=0%, δTCB = 10.95,
+Veﬀ = 1 .44, zk − zj∗ = 2 .09. Interpretation: The standard "Let’s think step by step" instruction
+does not ﬁx the error caused by "7 days". The stability ( δTCB = 10.95) is higher than the original
+baseline (Row 1) but much lower than the "stably wrong" state in Row 2. This suggests the
+CoT instruction interacts with the misleading clariﬁcation and ICLs to produce a state that is still
+incorrect but less internally committed/stable than Row 2.
+• Row 4: Role-Playing Instr . + Clariﬁed Q + New Alg. ICLs Metrics: Acc=0%, δTCB = 62 .14,
+Veﬀ = 1.03, zk − zj∗ = 5.98. Interpretation: Accuracy remains 0. The Role-Playing instruction
+("Y ou are a brilliant mathematician...") leads to an even higher δTCB than Row 2, suggesting this
+type of instruction might encourage the model to commit more strongly to a particular reasoning
+path, even if that path is ﬂawed due to other elements like the "7 days" clariﬁcation. Again, very
+high conﬁdence in the wrong answer.
+• Row 5: Algebraic Decomposition Instr . + Clariﬁed Q + New Alg. ICLs Metrics: Acc=0%,
+δTCB = 10 .38, Veﬀ = 1 .33, zk − zj∗ = 3 .62. Interpretation: Similar to Row 3, this more
+speciﬁc algebraic instruction fails to correct the error. The stability is low, suggesting a conﬂict:
+the instruction pushes for algebraic rigor, but the "7 days" phrase may prevent a coherent algebraic
+formulation of the (misinterpreted) problem, leading to an unstable incorrect state.
+• Row 6: Hyper-Speciﬁc ICL + Alg. Decomp. Instr . + Clariﬁed Q Metrics: Acc=0%, δTCB =
+103.87, Veﬀ = 1 .02, zk − zj∗ = 5 .55. Interpretation: Even with a perfectly analogous ICL
+example and an algebraic instruction, the "7 days" clariﬁcation persists in causing an error. The
+δTCB is extremely high. This implies the model rigidly follows the structure of the hyper-speciﬁc
+ICL. If the "7 days" clariﬁcation leads to a consistent misapplication of that structure (e.g., always
+multiplying by 7 at a certain step because it’s done in the (misinterpreted) exemplar logic), the
+result is a very stable, conﬁdent, but incorrect prediction.
+• Row 7: Zero-Shot (No ICLs) + Alg. Decomp. Instr . + Clariﬁed Q Metrics: Acc=0%,
+δTCB ≈ 49450, Veﬀ = 1 .00, zk − zj∗ = 11 .29. Interpretation: This is the most striking re-
+sult. Removing ICLs (which might have conﬂicting signals) and relying solely on the strong
+"Algebraic Decomposition" instruction in the presence of the "7 days" clariﬁcation leads to an
+astronomically high δTCB and perfect conﬁdence metrics, yet 0% accuracy. The model is utterly
+convinced by its (ﬂawed) algebraic decomposition of the misinterpreted problem. This is the
+epitome of a "conﬁdently and extremely stably wrong" state.
+• Row 8: Formal Language Instr . + Clariﬁed Q + New Alg. ICLs Metrics: Acc=0%, δTCB =
+58.28, Veﬀ = 1.04, zk − zj∗ = 5.32. Interpretation: Similar to the Role-Playing instruction (Row
+4), asking for formal language seems to stabilize the incorrect reasoning path derived from the "7
+days" clariﬁcation and algebraic ICLs, leading to high δTCB and conﬁdence in the error.
+This detailed analysis demonstrates δTCB’s power in revealing how different prompt components
+interact to affect not just accuracy, but the internal stability and commitment of the model to its
+predictions, whether correct or incorrect.
+D.3 D IFFERENTIATING δTCB FROM PERPLEXITY (PPL)
+δTCB assesses internal state robustness, a quality distinct from PPL’s measure of sequence likeli-
+hood or token-level prediction conﬁdence. Key differentiators include: Robustness of (Potentially
+Erroneous) Conﬁdent Predictions: PPL (or low token probability) ﬂags incorrect predictions (if
+ground truth is known) but doesn’t indicate if the model is stably committed to an error. δTCB
+quantiﬁes this "stable incorrectness" (e.g., Table 5 , Row 7, where δTCB is exceptionally high for
+an incorrect answer). Sensitivity to Output Embedding Geometry: PPL is solely a function of
+probabilities and thus blind to the geometric arrangement of output embeddings, which critically
+impacts δTCB and the true local stability of the prediction (cf. Section 4.2 and Eq. (10)). Detection
+of Local Instabilities During Text Generation: Sequence-level PPL averages token likelihoods,
+25
+Published as a conference paper at ICLR 2026
+0.7 0.8 0.9 1.0 1.1
+Semantic Distance
+5.0
+5.5
+6.0
+6.5
+7.0
+7.5TCB ( h)
+In the forest early morning
+During a woodland hunt
+Amidst the autumn leavesIn a grassy meadow
+Next to a running streamWhile reading a book indoors
+On a foggy city street
+Under the starry night skyIn deep space exploration
+When debugging software
+At the quantum physics lab
+Studying ancient manuscripts
+Blue bananas taste sweet
+Flying carpets are realGreen ideas sleep furiously
+Mathematics sings softly
+(a) Semantic Distance vs TCB
+Theory: y = 5.012x + 1.249
+Empirical Fit
+0.13 0.14 0.15 0.16 0.17 0.18 0.19 0.20 0.21
+Jacobian Norm JW F
+(b) Jacobian Norm vs TCB
+1 2 3 4 5 6
+Token Probability (×105)
+(c) T oken Probability vs TCB
+0.75
+0.80
+0.85
+0.90
+0.95
+1.00
+1.05
+Semantic Distance
+Figure 5: Relationship between Preﬁx Semantics, TCB, and Model Internals. Visual analysis based on
+16 semantically varied preﬁxes targeting the same continuation. (a) δTCB versus semantic distance shows a
+strong positive linear correlation ( R2 = 0 .91). Point colors map to semantic distance (see colorbar), and
+annotations identify preﬁxes. The empirical ﬁt (gray dashed line) closely matches the data, aligning well with
+the theoretical prediction (black dashed line, Eq. ( 11)). (b) δTCB versus the Frobenius norm of the ﬁnal layer
+Jacobian (∥JW∥F ) exhibits a moderate negative correlation. (c) δTCB versus the probability of the ﬁrst token
+in the continuation shows a less distinct relationship for this set of preﬁxes.
+potentially masking transient points of high internal instability that can precede errors or degener-
+ate loops. Figure 4 illustrates δTCB capturing sharp dips in δTCB (often correlating with spikes
+in P (2nd best token)). These crucial local dynamics, indicative of the model teetering between
+alternatives, are often smoothed over by aggregate PPL but are vital for understanding generation
+failures.
+E Q UANTIFYING SEMANTIC CONTEXT INFLUENCE .
+Effective prompts often rely on precise semantic alignment. We investigated if δTCB quantitatively
+reﬂects this. Using 16 preﬁxes with varying semantic distances (cosine distance of embeddings) to a
+target preﬁx, we measured the δTCB of the ﬁrst generated token. Figure 5 reveals a strong positive
+linear correlation (R2 = 0.91) between semantic distance and δTCB. The empirical ﬁt:
+δTCB = 5.012 · dist + 1.249 (11)
+closely matches the data and theoretical predictions derived from sensitivity analysis. This shows
+δTCB provides a quantitative measure of how semantic (mis)alignment in the prompt impacts the
+stability of the resulting predictive state. Figure 5 also shows the expected negative correlation
+between δTCB and the Jacobian norm ( ∥JW∥F ). This ability to quantify semantic inﬂuence further
+highlights δTCB’s utility for ﬁne-grained prompt analysis and optimization.
+F S TATISTICAL DERIVATION OF δTCB APPROXIMATION
+In this section, we provide a detailed derivation of a statistical approximation for the Token Con-
+straint Bound ( δTCB). This approach models the output weight matrix W as being drawn from a
+statistical ensemble and aims to approximate the TCB based on expected values, speciﬁcally tar-
+geting the root mean square (RMS) norm of the Jacobian. The resulting formula connects δTCB
+to model parameters like dimensionality and weight variance, as well as higher-order moments of
+the output probability distribution o, offering potentially greater accuracy than simpler scaling laws,
+particularly when the output distribution is not diffuse (i.e., when Veﬀ is small). This statistical
+perspective contrasts with the exact, non-statistical expression derived in Section G , which applies
+deterministically to a speciﬁc instance of W and o.
+The quantity we aim to approximate is:
+δTCB = ϵ
+∥JW∥F
+,
+where the key terms involved are:
+• δTCB: The Token Constraint Bound ( Section 2.4 ), representing a distance in the hidden
+state space Rd.
+26
+Published as a conference paper at ICLR 2026
+• ϵ > 0: A ﬁxed perturbation threshold, representing the target L2 change in the output
+probability vector o. This is typically treated as a dimensionless small value (e.g., 0.01).
+• JW ∈ RV×d: Jacobian of the softmax output probabilities o with respect to the hidden
+state h. Its Frobenius norm ∥JW∥F has units of (probability change) / (hidden state unit).
+• ∥ · ∥F : The Frobenius norm of a matrix.
+• o = ( o1, . . . , oV )T ∈ RV : The vector of softmax output probabilities, PV
+i=1 oi = 1 ,
+oi ≥ 0.
+• Sk =PV
+i=1 ok
+i : The k-th moment sum of the output probabilities. Note S1 = 1.
+• Veﬀ = 1 /S2: The effective vocabulary size, a measure of distribution ﬂatness (strictly
+V (2)
+eﬀ ).
+• h ∈ Rd: The hidden state vector (embedding dimension d).
+• W ∈ RV×d: The output weight matrix (embedding matrix).
+• σ2: The assumed variance of the elements of W under the statistical model. This is a
+parameter of the theoretical model. When applied to a real model, it might represent an
+empirical estimate of the variance relevant to the speciﬁc forward pass or training state.
+• V: The size of the vocabulary.
+Step 1: Recap the Jacobian Matrix JW. As established in ( 4), the Jacobian is: Here, the matrix
+M ∈ RV×V is symmetric and depends only on the output probability vector o. It encapsulates how
+changes in the pre-softmax logits z = Wh translate into changes in the post-softmax probabilities
+o.
+Step 2: Introduce Statistical Assumptions on W. The core of the statistical approach is to
+model the output weight matrix W not as a ﬁxed, trained entity, but as a random matrix drawn from
+a simple ensemble. We make the following simplifying assumptions about its elements Wjk :
+E[Wjk ] = 0 and E[W 2
+jk ] = σ2 (i.i.d.). (12)
+These imply E[Wjk Wlm] = σ2δjlδkm. The zero-mean assumption simpliﬁes calculations. The
+constant variance σ2 captures a typical scale.
+Caveat 1 (Model Simpliﬁcation): Realistically trained W matrices possess signiﬁcant structure
+(e.g., semantic clusters, non-zero mean after layer normalization, varying variances per token, cor-
+relations between rows wi, wj). This i.i.d. model ignores such structure. Speciﬁcally, it implies
+E[WW⊤] = dσ2IV , assuming orthogonality between rows on average, which might not hold em-
+pirically. For enhanced accuracy, one might incorporate an empirical covariance term Σemp such that
+WW⊤ ≈ dσ2I + Σemp, though this complicates the derivation.
+Note on σ2: σ2 should be interpreted either as a ﬁxed parameter of the theoretical ensemble, or,
+when connecting to a real model, as an estimate of the empirical variance of weights relevant to the
+context (e.g., measured during the speciﬁc forward pass, possibly after normalization layers).
+Step 3: Approximate the Squared Frobenius Norm via Expectation. We want to estimate
+∥JW∥2
+F = ∥MW∥2
+F . Under the statistical model, ∥JW∥2
+F is a random variable. We approximate it
+by its expectation EW[∥JW∥2
+F ].
+EW[∥JW∥2
+F ] = EW
+ 
+Tr(JWJ⊤
+W)
+ 
+= EW
+ 
+Tr(MW(MW)⊤)
+ 
+= EW
+ 
+Tr(MWW⊤M⊤)
+ 
+(using (AB)⊤ = B⊤A⊤)
+= EW
+ 
+Tr(MWW⊤M)
+ 
+(since M is symmetric) (13)
+= EW
+2
+4
+VX
+i,j,l=1
+dX
+k=1
+MijWjk WlkMli
+3
+5 (Trace expansion) (14)
+Here we introduce the ﬁrst major approximation:
+Approximation 1 (Decorrelation): The matrix elements Mij = δijoi − oioj depend on o =
+softmax(Wh), which itself depends on W. Therefore, M is correlated with W. We make the
+strong approximation that this correlation can be ignored when computing the expectation involving
+quadratic terms of W, effectively treating M as constant with respect to the expectation EW[·].
+EW[∥JW∥2
+F ] ≈ Tr
+ 
+MEW[WW⊤]M
+ 
+(Approximation 1 Applied) (15)
+27
+Published as a conference paper at ICLR 2026
+Caveat 2 (Decorrelation Risk): This approximation E[MAM] ≈ ME[A]M can introduce bias.
+The correlation is likely non-negligible if dimensions d or V are small, or if the distribution o is
+highly peaked (low Veﬀ , where small changes in W affecting the top logits signiﬁcantly alter M).
+The error magnitude requires careful analysis (e.g., via perturbation theory or empirical validation
+in problematic regimes).
+Now, we use the statistical property from ( 12). The (j, l)-th element of EW[WW⊤] is:
+(EW[WW⊤])jl = EW[(WW⊤)jl] = EW
+hPd
+k=1 Wjk Wlk
+i
+= Pd
+k=1 EW[Wjk Wlk] =
+Pd
+k=1 σ2δjl = dσ2δjl. Therefore, EW[WW⊤] = dσ2IV . Substituting this into ( 15):
+EW[∥JW∥2
+F ] ≈ Tr(M(dσ2IV )M)
+= dσ2 Tr(M2) ( Since MT = M)
+= dσ2∥M∥2
+F . (Deﬁnition of ∥M∥2
+F = Tr(MMT )) (16)
+This indicates that the expected squared norm of the Jacobian is approximately proportional to the
+squared norm of the probability-dependent matrix M, scaled by dσ2. This connection relies criti-
+cally on Approximation 1.
+Step 4: Use the Exact Squared Frobenius Norm of M. The calculation of ∥M∥2
+F = Tr(M2) is
+deterministic once o is known. As derived in Section G , the exact value is:
+∥M∥2
+F =
+VX
+i=1
+o2
+i (1 − oi)2 +
+X
+i̸=j
+(oioj)2 (17)
+=
+X
+i
+(o2
+i − 2o3
+i + o4
+i ) +
+X
+i̸=j
+o2
+i o2
+j (18)
+= (S2 − 2S3 + S4) + ((
+X
+i
+o2
+i )(
+X
+j
+o2
+j ) −
+X
+i
+(o2
+i )2) (19)
+= S2 − 2S3 + S4 + S2
+2 − S4 (20)
+= S2 − 2S3 + S2
+2 . (21)
+This expression relates the norm of M directly to the second ( S2) and third ( S3) moments of the
+output probability distribution. Note that this step involves no statistical approximation itself.
+Step 5: Approximate the Jacobian Norm using RMS. We now introduce the second key approx-
+imation:
+Approximation 2 (RMS Substitution): We approximate the actual Jacobian norm ∥JW∥F for a
+speciﬁc W by its root mean square (RMS) value under the statistical ensemble model:
+∥JW∥F ≈
+q
+EW[∥JW∥2
+F ]. (22)
+This relies on the assumption that the random variable ∥JW∥F concentrates around its RMS value
+(related to concentration of measure phenomena, plausible for large d or V). However, it remains an
+approximation. By Jensen’s inequality,
+p
+E[X 2] ≥ E[X], so the RMS value typically overestimates
+the expected norm. The magnitude of this overestimation (and the validity of concentration) depends
+on the variance of ∥JW∥2
+F , which might be large if the distribution of norms is heavy-tailed (e.g.,
+due to speciﬁc weight structures or sparse outputs). More rigorous analysis might require bounding
+Var[∥JW∥F ] or using concentration inequalities (e.g., Hanson-Wright), which is beyond the scope
+of this derivation.
+Substituting the result for the expected squared norm from ( 16) and the exact expression for ∥M∥2
+F
+from (21) into (22):
+∥JW∥F ≈
+q
+dσ2∥M∥2
+F =
+q
+dσ2(S2 − 2S3 + S2
+2 ). (23)
+This equation provides our reﬁned statistical approximation for the Frobenius norm of the Jacobian.
+Step 6: Reﬁned Approximation for δTCB. Using the deﬁnition δTCB = ϵ/∥JW∥F and substitut-
+ing the RMS approximation for the norm from ( 23), we obtain the reﬁned statistical approximation
+for the Token Constraint Bound:
+δTCB ≈ ϵp
+dσ2(S2 − 2S3 + S2
+2 )
+. (24)
+28
+Published as a conference paper at ICLR 2026
+This is the main result of this section. It provides an estimate for δTCB based on the model’s embed-
+ding dimension ( d), the assumed variance of its output weights ( σ2), and the second ( S2) and third
+(S3) moments of its current output probability distribution ( o).
+Step 7: Connection to the Simpler Veﬀ -based Approximation. A commonly cited simpler ap-
+proximation for δTCB relates it directly to the effective vocabulary size Veﬀ = 1/S2, often presented
+as δTCB ≈ ϵ
+p
+Veﬀ /(dσ2). We see how this arises from ( 24) by introducing an additional approxi-
+mation:
+Approximation 3 (Diffuse Distribution): Assume o is sufﬁciently diffuse, meaning pmax =
+maxi oil1, corresponding to large effective vocabulary size, Veﬀ ≫ 1. Under this condition, higher
+moments Sk become small relative to lower moments. As argued in Section J ((51)), if oi are
+roughly uniform over Veﬀ tokens (oi ∼ 1/Veﬀ ), then S3 ≈ S2/Veﬀ and S2
+2 ≈ S2/Veﬀ . Thus, for
+large Veﬀ , | − 2S3 + S2
+2 |lS2.
+This approximation S2 − 2S3 + S2
+2 ≈ S2 might fail if the distribution is not sufﬁciently "uniform-
+like" even if Veﬀ is large (e.g., heavy-tailed distributions where a few moderately high probabilities
+contribute signiﬁcantly to S3). Subject to this approximation:
+S2 − 2S3 + S2
+2 ≈ S2 (Approximation 3: Diffuse distribution, Veﬀ ≫ 1). (25)
+Substituting into (24):
+δTCB ≈ ϵ√dσ2S2
+= ϵp
+dσ2/Veﬀ
+= ϵ
+r
+Veﬀ
+dσ2 .
+This shows the simpler Veﬀ -based formula is a special case relying on both the statistical model and
+the diffuse distribution assumption.
+G E XACT, N ON-S TATISTICAL EXPRESSION FOR ∥JW∥F AND ITS RELATION
+TO WEIGHTED VARIANCE
+This section presents the derivation of the exact mathematical expression for the squared Frobenius
+norm ∥JW∥2
+F for a speciﬁc, given output weight matrix W ∈ RV×d and hidden state h ∈ Rd
+(which together determine a speciﬁc probability vector o = softmax( Wh)). This derivation is
+purely algebraic and deterministic; it does not rely on any statistical assumptions about W being
+drawn from a random ensemble. We establish the correct formula and clarify its relationship to, but
+distinctness from, the trace of the probability-weighted covariance matrix of the embeddings.
+Notation Recap:
+Step 1: Squared Frobenius Norm as Sum of Squared Row Norms. The squared Frobenius
+norm is the sum of the squared Euclidean norms of its rows. Let JW(i, :) ∈ R1×d denote the i-th
+row of the Jacobian JW.
+∥JW∥2
+F =
+VX
+i=1
+∥JW(i, :)∥2
+2. (26)
+29
+Published as a conference paper at ICLR 2026
+Step 2: Derive the Expression for a Jacobian Row. We need the components of the i-th row,
+JW(i, :) = [( JW)i1, . . . ,(JW)id]. Recall JW = A(o)W. The (i, k)-th element is:
+(JW)ik =
+VX
+j=1
+AijWjk
+=
+VX
+j=1
+(δijoi − oioj)Wjk (Deﬁnition of Aij)
+= (oiWik − o2
+i Wik) +
+X
+j̸=i
+(−oioj)Wjk (Splitting sum: j = i and j ̸= i)
+= oiWik − oi
+0
+@oiWik +
+X
+j̸=i
+ojWjk
+1
+A
+= oiWik − oi
+0
+@
+VX
+j=1
+ojWjk
+1
+A (Recombining sum)
+= oi(Wik − (
+VX
+j=1
+ojWjk ))
+= oi((wi)k − (µw)k) = oi(wi − µw)k (27)
+Here, Wjk = ( wj)k is the k-th component of embedding wj, and (PV
+j=1 ojWjk ) is the k-th com-
+ponent of the mean embedding µw. Thus, the entire i-th row vector (transposed to match wi, µw
+as column vectors) is:
+JW(i, :)⊤ = oi(wi − µw). (28)
+This shows that the i-th row of the Jacobian represents the deviation of the i-th embedding from the
+mean embedding, scaled by the probability oi.
+Step 3: Substitute Row Norm back into Frobenius Norm Deﬁnition. Using the row expression
+(28) in the deﬁnition ( 26):
+∥JW∥2
+F =
+VX
+i=1
+∥JW(i, :)∥2
+2
+=
+VX
+i=1
+∥oi(wi − µw)⊤∥2
+2
+=
+VX
+i=1
+o2
+i ∥wi − µw∥2
+2 (Since oi is a scalar). (29)
+This is the exact, non-statistical expression for the squared Frobenius norm of the Jacobian matrix.
+∥JW(h)∥2
+F =
+VX
+i=1
+o2
+i ∥wi − µw∥2
+2 (30)
+Step 4: Introduce the Trace of the Weighted Covariance Matrix. A related quantity often
+considered is the trace of the probability-weighted covariance matrix of the embedding vectors: Its
+trace represents the total variance of the embedding vectors, weighted by the probability distribution
+30
+Published as a conference paper at ICLR 2026
+o:
+Tr[Covo (w)] = Tr
+" VX
+i=1
+oi(wi − µw)(wi − µw)⊤
+#
+=
+VX
+i=1
+oi Tr
+ 
+(wi − µw)(wi − µw)⊤ 
+(Linearity of trace)
+=
+VX
+i=1
+oi(wi − µw)⊤(wi − µw) ( Using Tr(ab⊤) = b⊤a)
+=
+VX
+i=1
+oi∥wi − µw∥2
+2. (31)
+This can also be expressed using the variance identity:
+Tr[Covo (w)] = Eo
+ 
+∥w∥2
+2
+ 
+− ∥µw∥2
+2 =
+ VX
+i=1
+oi∥wi∥2
+2
+!
+−
+
+
+
+
+
+
+VX
+j=1
+ojwj
+
+
+
+
+
+
+2
+2
+. (32)
+Step 5: Comparing the Jacobian Norm and the Covariance Trace. Let us compare the exact
+squared Jacobian norm ( 30) with the trace of the covariance matrix ( 31):
+∥JW∥2
+F =
+VX
+i=1
+o2
+i ∥wi − µw∥2
+2 (33)
+Tr[Covo (w)] =
+VX
+i=1
+oi∥wi − µw∥2
+2 (34)
+Step 6: The Exact Expression for δTCB. Using the correct formula for the squared Jacobian
+norm (30), the exact Token Constraint Bound is:
+δTCB = ϵ
+∥JW∥F
+= ϵqPV
+i=1 o2
+i ∥wi − µw∥2
+2
+. (35)
+This is the ground-truth value for δTCB given a speciﬁc W and h (determining o).
+H R ELATING THE STATISTICAL APPROXIMATION AND THE EXACT
+EXPRESSION
+This section elucidates the precise relationship between the reﬁned statistical approximation for
+∥JW∥F (derived in Section F ) and the exact, non-statistical expression for ∥JW∥F (derived in
+Section G ). Understanding this connection is crucial for interpreting the validity and limitations of
+the statistical approach and for appreciating why it can serve as a useful, interpretable model despite
+its simplifying assumptions.
+Recap: The Two Formulas for ∥JW∥2
+F .
+1. Reﬁned Statistical Approximation ( Section F ): This approach models W as a random matrix.
+The core result approximates the actual squared norm by its expected value under the statistical
+model:
+EW[∥JW∥2
+F ] ≈ dσ2∥M∥2
+F = dσ2(S2 − 2S3 + S2
+2 ), (36)
+where M = diag(o) − oo⊤, σ2 is the assumed variance of Wjk , d is the embedding dimension, and
+Sk = P
+i ok
+i . The ﬁnal TCB approximation ( 24) uses the root mean square (RMS) value derived
+from this expectation: ∥JW∥F ≈
+p
+EW[∥JW∥2
+F ].
+2. Exact Expression ( Section G ): For a speciﬁc, given W and o, the squared norm is calculated
+deterministically using the geometry of the embeddings and the probability distribution:
+∥JW∥2
+F = Tr[Covo (w)] = Eo
+ 
+∥w∥2
+2
+ 
+− ∥Eo [w] ∥2
+2 =
+VX
+i=1
+o2
+i ∥wi − µw∥2
+2, (37)
+31
+Published as a conference paper at ICLR 2026
+where wi is the i-th embedding vector (row of W), µw = Eo [w] = P
+j ojwj, and Tr[Covo (w)]
+is the trace of the probability-weighted covariance matrix of the embeddings. The exact TCB ( 35)
+uses the square root of this value.
+The Fundamental Connection: Expectation Bridge. The theoretical link between these two ex-
+pressions lies in taking the expectation of the exact squared norm ( 37) over the statistical ensemble
+assumed for W. When we apply the statistical assumptions (( 12)) and the key decorrelation ap-
+proximation (Approximation 1 from Section F , see (15)) to the exact formula, we recover the core
+quantity from the statistical approximation:
+EW
+2
+64 ∥JW∥2
+F| {z }
+Exact value from ( 37)
+3
+75 = EW
+ 
+Tr(A(o)WW⊤A(o))
+ 
+≈ dσ2∥M∥2
+F| {z }
+Statistical result (36)
+. (38)
+Let’s brieﬂy trace why this works. The calculation performed in Step 3 of Section F (starting from
+EW[Tr(MWW⊤M)]) effectively computes the expectation of the exact squared norm, represented
+in the trace form old. The crucial step is applying Approximation 1:
+EW[Tr(MWW⊤M)] ≈ Tr(MEW[WW⊤]M).
+This approximation treats M = diag( o) − oo⊤ as ﬁxed when taking the expectation over W,
+even though o itself depends on W via the softmax. Using EW[WW⊤]ij = Tr( E[wiw⊤
+j ]) =P
+k E[WikWjk ] = P
+k σ2δijδkk = dσ2δij, we get EW[WW⊤] = dσ2IV . Substituting this
+yields:
+Tr(M(dσ2IV )M) = dσ2 Tr(M2) = dσ2∥M∥2
+F .
+This conﬁrms that dσ2∥M∥2
+F = dσ2(S2 − 2S3 + S2
+2 ) is indeed the result of calculating the expected
+value of the exact squared norm under the statistical assumptions and the decorrelation approxima-
+tion.
+Role of Approximations Revisited. The difference between the ﬁnal δTCB value predicted by the
+statistical approximation (24) and the exact value ( 35) for a speciﬁc model arises precisely from the
+approximations inherent in the statistical derivation:
+Statistical Ensemble Model for W: The actual trained weight matrix W is treated as a typical re-
+alization from a simple statistical ensemble (i.i.d., zero-mean, variance σ2 elements, see (12)). Real
+trained matrices have complex structure (correlations, non-zero mean, varying variances) not cap-
+tured by this model. The approximation’s accuracy depends on how well the ensemble captures the
+properties relevant to the norm calculation (speciﬁcally, the second moments involved in WW⊤).
+Decorrelation ( M and W): The calculation in ( 38) relies on treating the probability-dependent
+matrix M as approximately uncorrelated with the quadratic terms in W (like WW⊤) when taking
+the expectation EW (Approximation 1, (15)). This approximation ignores the feedback loop where
+W determines o, which in turn determines M. It may be justiﬁed by averaging effects in high
+dimensions (d, V), but it introduces a deviation from the exact expectation.
+RMS Approximation ( ∥JW∥F ≈
+p
+E[∥JW∥2
+F ]): The ﬁnal step in the statistical approxima-
+tion replaces the actual norm ∥JW∥F for the speciﬁc W with the ensemble-averaged RMS value
+(Approximation 2, (22)). This assumes that the norm of the speciﬁc matrix is close to the average
+norm across the ensemble, relying on concentration of measure phenomena. While often plausible
+for high-dimensional random matrices, the actual norm can deviate from the average.
+In summary, the reﬁned statistical TCB approximation (24) estimates the TCB by replacing the exact
+Jacobian norm ∥JW∥F with
+p
+dσ2(S2 − 2S3 + S2
+2 ), which represents the approximate RMS norm
+expected under the simpliﬁed statistical model and decorrelation assumption.
+I D ERIVATION OF THE EXACT JACOBIAN NORM FORMULA
+In this appendix, we provide a detailed step-by-step derivation of the exact mathematical expression
+for the squared Frobenius norm of the output Jacobian matrix, ∥JW(h)∥2
+F . This derivation is per-
+formed for a speciﬁc instance of the output weight matrix W ∈ RV×d and the hidden state h ∈ Rd,
+which together determine the output probability vector o = softmax(Wh). The derivation relies
+solely on the deﬁnitions of the Jacobian and the Frobenius norm, requiring no statistical assumptions
+about W.
+32
+Published as a conference paper at ICLR 2026
+The ﬁnal result relates ∥JW∥2
+F to a weighted sum of squared distances involving the output em-
+bedding vectors. We also clarify its relationship to the trace of the probability-weighted covariance
+matrix of the embeddings, a concept central to related analyses but distinct from the Jacobian norm
+itself.
+Step 1: Deﬁnition of Squared Frobenius Norm via Rows. The squared Frobenius norm of any
+matrix is the sum of the squared Euclidean norms ( L2 norms) of its rows. Let JW(i, :) denote the
+i-th row vector of the Jacobian matrix JW.
+∥JW(h)∥2
+F =
+VX
+i=1
+∥JW(i, :)∥2
+2. (39)
+Step 2: Jacobian Deﬁnition and its Relation to Weights. Recall the Jacobian matrix is given by
+JW = ∂o
+∂h . Using the chain rule, we can write:
+JW = ∂o
+∂z
+∂z
+∂h = (diag(o) − oo⊤)W = A(o)W.
+The element (JW)ik represents ∂oi
+∂hk
+.
+Step 3: Explicit Calculation of the i-th Row of the Jacobian. We aim to ﬁnd the vector JW(i, :
+) = [( JW)i1, (JW)i2, . . . ,(JW)id]. The component (JW)ik is the (i, k)-th element of the matrix
+product A(o)W:
+(JW)ik =
+VX
+j=1
+AijWjk
+=
+VX
+j=1
+(δijoi − oioj)Wjk (Deﬁnition of Aij)
+= (oiWik) +
+X
+j̸=i
+(−oioj)Wjk
+= oiWik − oi
+X
+j̸=i
+ojWjk
+= oiWik − oi
+0
+@
+VX
+j=1
+ojWjk − oiWik
+1
+A (Completing the sum over j)
+= oiWik − oi
+0
+@
+VX
+j=1
+ojWjk
+1
+A + o2
+i Wik
+Let’s restart the derivation for (JW)ik more directly:
+(JW)ik =
+VX
+j=1
+AijWjk
+= AiiWik +
+X
+j̸=i
+AijWjk (Separating diagonal term)
+= oi(1 − oi)Wik +
+X
+j̸=i
+(−oioj)Wjk (Substituting Aij values)
+= oiWik − o2
+i Wik −
+X
+j̸=i
+oiojWjk
+= oiWik − oi
+0
+@oiWik +
+X
+j̸=i
+ojWjk
+1
+A
+= oiWik − oi
+0
+@
+VX
+j=1
+ojWjk
+1
+A (Recombining sum) (40)
+33
+Published as a conference paper at ICLR 2026
+Now, let’s interpret the terms. Wjk is the k-th component of the j-th embedding vector wj. Let wj,k
+denote this component.
+VX
+j=1
+ojWjk =
+VX
+j=1
+ojwj,k =
+0
+@
+VX
+j=1
+ojwj
+1
+A
+k
+= (µw)k
+where (µw)k is the k-th component of the mean embedding vector µw. Substituting this back into
+(40):
+(JW)ik = oiWik − oi(µw)k = oi(Wik − (µw)k) = oi(wi − µw)k (41)
+This expression gives the k-th component of the i-th row of JW. Therefore, the i-th row vector itself
+is:
+JW(i, :) = oi(wi − µw)⊤. (42)
+This shows that each row of the Jacobian is the deviation of the corresponding embedding vector wi
+from the mean embedding µw, scaled by the probability oi.
+Step 4: Substitute Row Norm back into Frobenius Norm Deﬁnition. Now we substitute the
+expression for the i-th row (42) back into the deﬁnition of the squared Frobenius norm ( 39):
+∥JW(h)∥2
+F =
+VX
+i=1
+∥JW(i, :)∥2
+2
+=
+VX
+i=1
+∥oi(wi − µw)⊤∥2
+2
+=
+VX
+i=1
+o2
+i ∥wi − µw∥2
+2 (Since oi is a scalar). (43)
+This equation provides the exact, non-statistical expression for the squared Frobenius norm of the
+Jacobian. It is determined by the squared distances between each embedding vector wi and the
+mean embedding µw, weighted by the square of the corresponding probability o2
+i .
+∥JW(h)∥2
+F =
+VX
+i=1
+o2
+i ∥wi − µw∥2
+2 (44)
+Step 5: Relationship to the Trace of the Covariance Matrix. The trace of the probability-
+weighted covariance matrix of the embedding vectors is a closely related but distinct concept. The
+covariance matrix is deﬁned as: Its trace is:
+Tr[Covo (w)] = Tr
+" VX
+i=1
+oi(wi − µw)(wi − µw)⊤
+#
+=
+VX
+i=1
+oi Tr
+ 
+(wi − µw)(wi − µw)⊤ 
+(Linearity of trace)
+=
+VX
+i=1
+oi(wi − µw)⊤(wi − µw) ( Using Tr(ab⊤) = b⊤a)
+=
+VX
+i=1
+oi∥wi − µw∥2
+2. (45)
+As derived previously, this trace also equals the variance identity:
+Tr[Covo (w)] = Eo
+ 
+∥w∥2
+2
+ 
+− ∥Eo [w] ∥2
+2 =
+ VX
+i=1
+oi∥wi∥2
+2
+!
+−
+
+
+
+
+
+
+VX
+j=1
+ojwj
+
+
+
+
+
+
+2
+2
+. (46)
+This quantity, Tr[Covo (w)], represents the total variance of the embedding vectors, weighted by
+the probabilities oi.
+34
+Published as a conference paper at ICLR 2026
+Step 6: Comparing Jacobian Norm and Covariance Trace. Comparing the derived exact
+squared Jacobian norm ( 43) with the trace of the covariance matrix ( 45):
+∥JW∥2
+F =
+VX
+i=1
+o2
+i ∥wi − µw∥2
+2 (47)
+Tr[Covo (w)] =
+VX
+i=1
+oi∥wi − µw∥2
+2 (48)
+These two quantities are clearly different, differing by a factor of oi in the weighting term inside the
+sum. While both measure aspects of the dispersion of the embedding vectors relative to their mean
+µw, they are not mathematically identical. The Jacobian norm gives more weight (via o2
+i ) to the
+deviation of high-probability embeddings from the mean.
+J D ERIVATION OF REGIME -D EPENDENT TCB B EHAVIOR
+In this appendix, we provide detailed mathematical derivations supporting the regime-dependent
+behavior of the Token Constraint Bound (δTCB), as discussed in Section 3 and observed empirically
+Table 1 . We analyze the behavior of δTCB = ϵ/∥JW(h)∥F in two distinct regimes based on
+the ﬂatness of the output probability distribution o: high ﬂatness (large effective vocabulary size,
+Veﬀ ≫ 1) and low ﬂatness (highly peaked distribution, Veﬀ ≈ 1).
+The key is to understand how the squared Frobenius norm of the Jacobian, ∥JW(h)∥2
+F , behaves in
+these limits. We will use different but related expressions for the norm depending on the regime: the
+statistical approximation for the high- Veﬀ regime and the exact formula for the low- Veﬀ regime.
+Recap of Key Formulas:
+1. Exact Squared Norm (from Section I , Eq. (43)):
+∥JW(h)∥2
+F =
+VX
+i=1
+o2
+i ∥wi − µw∥2
+2 (49)
+where wi is the i-th embedding vector (row of W), o = ( o1, . . . , oV ) is the probability
+vector, and µw =PV
+j=1 ojwj is the probability-weighted mean embedding.
+2. Reﬁned Statistical Approximation (from Section F , Eq. (23)):
+∥JW(h)∥F ≈
+q
+dσ2(S2 − 2S3 + S2
+2 ) (50)
+where d is the hidden dimension, σ2 is the assumed variance of weight elements Wjk , and
+Sk =P
+i ok
+i is the k-th moment sum (Veﬀ = 1/S2). This approximation relies on modeling
+W statistically and approximating the norm by its RMS value.
+J.1 R EGIME 1: H IGH FLATNESS (L ARGE Veﬀ ≫ 1)
+Assumptions. In this regime, the probability distribution o is spread relatively evenly across many
+tokens.
+• Veﬀ = 1/S2 is large.
+• Consequently, the maximum probability pmax = max i oi must be small (pmaxl1). Roughly,
+if probabilities are spread over ∼ V eﬀ tokens, then oi ∼ 1/Veﬀ .
+• We use the reﬁned statistical approximation ( 50), which implicitly assumes the statistical
+model for W (i.i.d. elements, zero mean, variance σ2) is a reasonable proxy for average
+behavior.
+Approximating the Jacobian Norm. We analyze the term ∥M∥2
+F = S2 − 2S3 + S2
+2 within the
+statistical approximation (50). Since oil1 for all i, higher powers of oi are much smaller. Let’s assess
+the magnitude of the terms relative to S2:
+• S2 =P
+i o2
+i = 1/Veﬀ .
+• S3 =P
+i o3
+i ≤ (maxj oj)P
+i o2
+i = pmaxS2. If oi ∼ 1/Veﬀ , then S3 ∼ V eﬀ × (1/Veﬀ )3 =
+1/V 2
+eﬀ = S2/Veﬀ .
+• S2
+2 = (1/Veﬀ )2 = S2/Veﬀ .
+35
+Published as a conference paper at ICLR 2026
+Thus, both S3 and S2
+2 are smaller than S2 by a factor of approximately Veﬀ . Since we assume
+Veﬀ ≫ 1, the terms −2S3 and +S2
+2 become negligible compared to S2:
+∥M∥2
+F = S2 − 2S3 + S2
+2 ≈ S2 (for large Veﬀ ). (51)
+This simpliﬁcation corresponds to Approximation 3 discussed in Section F . Substituting this back
+into the statistical norm approximation ( 50):
+∥JW∥F ≈
+p
+dσ2(S2) (52)
+=
+s
+dσ2
+Veﬀ
+. (53)
+This expression predicts that the Jacobian norm decreases as Veﬀ increases.
+Behavior of δTCB. Using the deﬁnition δTCB = ϵ/∥JW∥F and the approximation ( 53):
+δTCB ≈ ϵp
+dσ2/Veﬀ
+= ϵ
+r
+Veﬀ
+dσ2 . (54)
+Conclusion (High Veﬀ ): In the high-ﬂatness regime, δTCB is predicted to be approximately propor-
+tional to the square root of the effective vocabulary size:
+δTCB ∝
+p
+Veﬀ (for Veﬀ ≫ 1)
+This provides a clear mathematical basis for the strong positive correlation rδ,Veff ≈ 0.95 observed
+empirically ( Table 1 ) in diverse datasets where distributions are often ﬂat.
+Negligible Inﬂuence of Margin zk − zj∗ . The margin zk − zj∗ = zk − zj∗ between the logits of
+two speciﬁc tokens k (usually the top prediction) and j∗ (usually the top competitor) directly affects
+ok and oj∗ . In the high- Veﬀ regime, however, both ok and oj∗ are typically small (e.g., ∼ 1/Veﬀ ).
+Changes in zk−zj∗ primarily redistribute a small amount of probability mass between these two (and
+possibly nearby) tokens. The impact on the overall sum S2 =P o2
+i , which aggregates contributions
+from many small probabilities, is minimal. Consequently, changes in zk − zj∗ have a very weak
+effect on ∥JW∥F via ( 53), and therefore also on δTCB. This explains the near-zero correlation
+rδ,zk−zj∗ observed in diverse datasets ( Table 1 ).
+J.2 R EGIME 2: L OW FLATNESS (S MALL Veﬀ ≈ 1)
+Assumptions. In this regime, the probability distribution o is sharply peaked on a single token.
+• Veﬀ ≈ 1. This occurs when one probability, say ok, is close to 1.
+• Let ok = 1 − ϵs, where ϵs =P
+j̸=k oj is a small positive quantity ( ϵsl1).
+• All other probabilities oj (j ̸= k) are very small, typically oj ∼ O(ϵs) or smaller.
+• We use the exact expression for the norm (49) as it directly captures the inﬂuence of the spe-
+ciﬁc dominant embedding wk and its relation to competitors. Statistical averaging inherent
+in (50) is less appropriate here.
+Approximating the Jacobian Norm. We analyze the exact sum ∥JW∥2
+F =PV
+i=1 o2
+i ∥wi − µw∥2
+2.
+First, approximate the mean embedding µw:
+µw =
+VX
+j=1
+ojwj = okwk +
+X
+j̸=k
+ojwj (55)
+= (1 − ϵs)wk +
+X
+j̸=k
+ojwj (56)
+= wk − ϵswk +
+X
+j̸=k
+ojwj (57)
+= wk +
+X
+j̸=k
+oj(wj − wk) ( using ϵs =
+X
+j̸=k
+oj) (58)
+This shows µw is close to wk, differing by terms of order O(ϵs).
+Now, consider the terms in the sum for ∥JW∥2
+F :
+36
+Published as a conference paper at ICLR 2026
+• Term for i = k: We need ∥wk − µw∥2
+2. From ( 58):
+wk − µw = −
+X
+j̸=k
+oj(wj − wk)
+The squared norm is ∥wk − µw∥2
+2 =
+
+
+
+P
+j̸=k oj(wj − wk)
+
+
+
+2
+2
+. Since each oj = O(ϵs) for
+j ̸= k, this squared norm is O(ϵ2
+s). The contribution to the total sum is o2
+k∥wk − µw∥2
+2 ≈
+(1 − ϵs)2O(ϵ2
+s) ≈ O(ϵ2
+s). This term is therefore negligible to the leading order.
+• Terms for i ̸= k: We need ∥wi − µw∥2
+2. Using ( 58):
+wi − µw = wi −
+0
+@wk +
+X
+j̸=k
+oj(wj − wk)
+1
+A
+= (wi − wk) −
+X
+j̸=k
+oj(wj − wk)
+The squared norm is:
+∥wi − µw∥2
+2 =
+
+
+
+
+
+
+(wi − wk) −
+X
+j̸=k
+oj(wj − wk)
+
+
+
+
+
+
+2
+2
+Expanding the square:
+∥wi −µw∥2
+2 = ∥wi −wk∥2
+2 −2(wi −wk)⊤
+0
+@X
+j̸=k
+oj(wj − wk)
+1
+A+
+
+
+
+
+
+
+X
+j̸=k
+oj(wj − wk)
+
+
+
+
+
+
+2
+2
+The middle term is O(ϵs), and the last term is O(ϵ2
+s). Thus, to leading order:
+∥wi − µw∥2
+2 ≈ ∥wi − wk∥2
+2 + O(ϵs) ( for i ̸= k)
+The contribution of the i-th term (i ̸= k) to the total sum ∥JW∥2
+F is o2
+i ∥wi − µw∥2
+2. Since
+o2
+i = O(ϵ2
+s), the contribution is:
+o2
+i ∥wi − µw∥2
+2 ≈ o2
+i (∥wi − wk∥2
+2 + O(ϵs)) = o2
+i ∥wi − wk∥2
+2 + O(ϵ3
+s)
+Summing the contributions for all i:
+∥JW∥2
+F = o2
+k∥wk − µw∥2
+2| {z }
+≈O(ϵ2s)
++
+X
+j̸=k
+o2
+j ∥wj − µw∥2
+2| {z }
+≈o2
+j ∥wj −wk∥2
+2+O(ϵ3s)
+≈
+X
+j̸=k
+o2
+j ∥wj − wk∥2
+2 (keeping leading order terms, O(ϵ2
+s)) (59)
+This approximation reveals that for highly peaked distributions, the squared Jacobian norm is domi-
+nated by the sum of squared distances between the dominant embedding wk and competitor embed-
+dings wj, weighted by the square of the competitors’ small probabilities o2
+j .
+Connecting to Margin zk − zj∗ . The logit margin between the winning token k and any other
+token j is zk − zj∗ = zk − zj. The probability oj for j ̸= k can be approximated using the softmax
+deﬁnition when zk is large compared to others:
+oj = ezj
+PV
+l=1 ezl
+= ezj
+ezk +P
+l̸=k ezl
+≈ ezj
+ezk (1 +P
+l̸=k ezl−zk ) ≈ ezj
+ezk
+= e−(zk−zj ) = e−zk−zj∗
+This approximation holds because P
+l̸=k ezl−zk =P
+l̸=k ol/ok ≈ ϵs/(1 − ϵs) ≈ ϵsl1. Substituting
+this into the norm approximation ( 59):
+∥JW∥2
+F ≈
+X
+j̸=k
+(e−zk−zj∗
+)2∥wj − wk∥2
+2 =
+X
+j̸=k
+e−2zk−zj∗
+∥wj − wk∥2
+2 (60)
+The speciﬁc margin deﬁned as zk − zj∗ = zk − zj∗ , where j∗ is the top competitor (highest logit
+zj among j ̸= k), corresponds to the term with the largest e−2zk−zj∗ (smallest zk − zj∗ ) in the sum,
+which often dominates the sum’s value.
+37
+Published as a conference paper at ICLR 2026
+Behavior of δTCB. As the margin zk − zj∗ increases, the corresponding zk − zj∗ for the closest
+competitors also increases. This leads to an exponential decrease in the terms e−2zk−zj∗ in ( 60).
+Consequently, ∥JW∥2
+F decreases strongly (exponentially) as zk − zj∗ increases. Since δTCB =
+ϵ/∥JW∥F , an increase in zk − zj∗ causes a decrease in the denominator, leading to an increase in
+δTCB. Conclusion (Low Veﬀ ): In the low-ﬂatness regime, TCB increases rapidly as the logit margin
+zk − zj∗ increases:
+δTCB ∝ 1qP
+j̸=k e−2(zk−zj )∥wj − wk∥2
+2
+≈ Increases strongly with zk − zj∗ (for Veﬀ ≈ 1)
+This derivation provides the theoretical underpinning for the strong positive correlation rδ,zk−zj∗ ≈
+0.62 observed empirically in the low- Veﬀ data subset ( Table 1 ).
+Negligible Inﬂuence of Residual Veﬀ Variation. In this regime, Veﬀ is already close to 1. Small
+changes in the probability distribution (e.g., caused by changing zk −zj∗ ) lead to minuscule changes
+in Veﬀ . Speciﬁcally, Veﬀ = 1 /S2 = 1 /(o2
+k +P
+j̸=k o2
+j ). As ok ≈ 1 and oj = O(ϵs), we have
+Veﬀ ≈ 1/(1 − 2ϵs + O(ϵ2
+s)). While changes in zk − zj∗ affect ϵs and thus cause small ﬂuctuations in
+Veﬀ , these variations are vastly outweighed by the direct exponential impact of zk − zj∗ on ∥JW∥2
+F
+via ( 60). This explains why the correlation rδ,Veff drops to nearly zero ( ≈ 0.08) in the low- Veﬀ
+regime.
+38

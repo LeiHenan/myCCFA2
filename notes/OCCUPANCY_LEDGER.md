@@ -185,3 +185,58 @@
 
 **同时固定一条仪器纪律（本目标第 5 处自我更正）**：**凡涉及前缀缓存的测量，必须先声明 drafter 类别** ——
 p21 已证明 dflash 系把命中率压到 **0**（#47930），若沿用旧习惯带投机测命中率，本实验会得到**假阳性崩塌**。
+
+---
+
+## 九、2026-09-15 续：**筛子本身过时**（系统性偏差）＋ p30 结题 ＋ 三条 S3b 判决
+
+### 9.1 系统性偏差：整池候选是在**一台已经不存在的机器**上过筛的
+
+`pipeline/tools/prescreen_map.py` §0 硬编码硬件档为 **"单卡 RTX PRO 6000 96GB sm120"**，
+这不是笔误 —— 它对应 2026-09-13 那台 AutoDL 机（`candidates/sglang-draft-corpus/00_intake.md:46`：
+`RTX PRO 6000 Blackwell Server Edition（sm120）`, driver 580.82.09, CUDA 13, `memory.total 97887 MiB`），**该机已关机**。
+现役是 `schoolserver`：**8× RTX 4090 24 GB, sm89, driver 550.67, CUDA 12.4**。
+
+⇒ `HARDWARE_PAT` 在两个方向上同时错：
+· 把一切 `multi-gpu|tensor-parallel|tp=[2-9]|nvlink|pcp|dcp|pipeline parallel` 判为"够不着"，
+  而现机**有 8 张卡** ⇒ **该桶整桶属于 FILTER §1a**（失败理由依赖已改变的约束）；
+· **不会**筛掉"需 96 GB 单卡"的条目，而那才是现在真正够不着的。
+**修正动作**：凡"够不着"的结论在复述前必须重判；本文件以下条目一律以现机为准。
+
+### 9.2 p30（思路 ⑥ Decode Dataflow 的**延迟侧**）：**杀掉**；第二次确认噪声地板规则
+
+**上界**（§0.6 零卡）：p27 的 0.0548 ms/次 × 72 次/token = 3.95 ms/token，占地板 **34–59%** ⇒ 表面是 2% 杀线的 17–29 倍。
+**实测**（真实依赖链 `x→gemm_i→all_reduce_i→gemm_{i+1}`）：`chain/no_comm` = **1.015**（p10 口径 1.045）
+⇒ 暴露代价只有 **~1.5–4.5%**，比上界小一个数量级，**且低于同格噪声**（基线自身极差 **132.6%**）。
+**根因**：p27 的 0.0548 ms 是"单发带同步"口径；背靠背 **0.0262–0.0270 ms**，链上暴露增量 **≈0.011 ms** ⇒ 上界高估 5–10×。
+**这同时使 C2 的两种算法（0.107 ms 与 0.0548 ms）都不成立。**
+
+**两条可用事实**：① decode 形状（5 KB）下本机集合通信有效带宽 **0.09 GB/s**，比同机 4 MB 时的 **12.4 GB/s** 低 **140×**；
+② 因此**分块重叠在本机是反效果的**（把 1 个延迟事件变成 C 个），实测 `chunk8` **1.459** > `chain` 1.015。
+**S3b 复核（`notes/S3B_PCIE_TP_OVERLAP_2026-09-15.md`）：`OCCUPIED`。** 决定性证据：
+· **PRESERVE**（arXiv 2501.08192）已发表该机制本身（"prefetches … **during the communication operations**"）；
+· **SiFAR**（2607.08973, MICRO 2026）做了匹配对照且**在小 batch 为负**："*there is not enough computation to overlap with communication*"；
+· **FlashInfer PR #4393 已 MERGED**：PCIe 无 NVLink 定制 all-reduce **12 KiB 5.3 µs vs NCCL 205.1 µs（38.8×）**，
+  且 **SGLang #34528（OPEN）** 在同一 fabric 上把 TPOT **21.14 → 13.62 ms**。
+⇒ **这条轴在真实 fabric 上已发货的答案是"消除延迟"，不是"重叠"**，与本机实测（NCCL 26–55 µs）自洽。轴关闭。
+**附带更正**：S3b 指出我的条件写反了 —— 税（2·L·t_ar）对模型规模**平**，而地板随模型规模**线性增长**，
+故占比随模型**变大而缩小**；正确条件是"**足够大**"，不是"足够小"。
+
+### 9.3 三条 S3b 判决（0 GPU·h，共 4 个子代理）
+
+| 方向 | 判决 | 决定性反证 |
+|---|---|---|
+| ⑤ Reasoning-aware KV/Attention | **OCCUPIED** | **Random Attention**（2609.03430）跑了匹配对照并否定："*the selection signal contributes almost nothing*"；**RaaS**（ACL 2025 Findings, 2502.11147）已占 milestone-token 生命周期 |
+| ⑥ Decode Dataflow | **PARTIALLY OCCUPIED** | **2605.30571**（"Memory-Bound but Not Bandwidth-Limited"）占 batch-1 decode 归因；**2512.01644** 占逐算子归因。存活切片仅剩"no-P2P host-staged 8×4090 双 NUMA"这一具体机型的字节-时间归因 |
+| ⑧ Agentic LLM Runtime | **OCCUPIED** | **SAGA**（2605.00528）已把整个 workflow 当一等调度单位，并实测"*38% of execution time regenerating KV cache between agent steps*"；**ThunderAgent**（2602.13692）把 recompute 写进目标函数 |
+| 数值漂移→决策翻转（p28 派生） | **PARTIALLY OCCUPIED** | "量级不预测翻转、margin+方向才预测"已被**两个互不相关的小组**发表（**MarginGate** 2605.30218；OpenReview QDOKyg7a5e, TMLR 在审） |
+
+### 9.4 对**我自己** p28 头条数字的质疑（正在测，p31）
+
+S3b 指出：p28 的"同 n 下 oracle vs random 差 3–31×"是**按 n 匹配而非按丢弃质量匹配**——
+n=256 时 oracle 丢 0.0258、random 丢 0.4097，**质量差 16 倍**。
+按质量横看 p28 自己的数据已**区间重叠**：oracle m=0.0880→TV 0.0880（比值 1.00）；
+randn m=0.4097→TV 0.8060（1.97）；randn m=0.6204→TV 0.1926（0.31）。
+⇒ **"440×/1323× 跨度"可能主要是质量效应而非结构效应。** `probes/p31-matched-mass/` 直接判它，
+并同时记录已发表工作认定的真判据（top-1/top-2 logit margin 及其扰动 `d_gap`）。
+**冻结判据**：匹配后 TV 比 <1.5× ⇒ 死；>3× 但 `d_gap` 分布重合（只有软指标差异）⇒ 也死。

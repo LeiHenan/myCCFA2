@@ -1,0 +1,454 @@
+ 
+ Numerical Instability and Chaos: Quantifying the Unpredictability of Large Language Models 
+ Report GitHub Issue 
+ × 
+ Title: 
+ Content selection saved. Describe the issue below: 
+ Description: 
+ Submit without GitHub 
+ Submit in GitHub 
+ arXiv is now an independent nonprofit! 
+ Learn more 
+ × 
+ Back to arXiv 
+ Why HTML? 
+ Report Issue 
+ Back to Abstract 
+ Download PDF 
+ Abstract 
+ I Introduction 
+ II Related Work 
+ II-A Numerical Stability in Deep Learning 
+ II-B Sensitivity and Chaos in Neural Networks 
+ II-C LLM Robustness and Multi-Agent Systems 
+ III Methodology 
+ IV Results and Analysis 
+ IV-A Directional sensitivity is largely epsilon-driven 
+ IV-B Layer-wise propagation shows spectrum collapse at small epsilon 
+ IV-C Microscopic instability and constant-like plateaus across prompts 
+ IV-D Chaotic decision boundaries and regions 
+ Angular Stability in the ( v 1 , v 2 ) (v_{1},v_{2}) Plane. 
+ Universal Instability Across All Singular Vectors. 
+ IV-E Effects of floating-point precision 
+ IV-F Mitigation via Noise Averaging 
+ V Discussion 
+ VI Conclusion 
+ References 
+ License: CC BY 4.0
+arXiv:2604.13206v1 [cs.AI] 14 Apr 2026 
+ Numerical Instability and Chaos: Quantifying the Unpredictability of Large Language Models 
+ Chashi Mahiul Islam 1 , Alan Villarreal 1 , Mao Nishino 2 , Shaeke Salman 1 , Xiuwen Liu 1 
+ Affiliation:  1 Department of Computer Science, Florida State University, Tallahassee, USA 
+ 2 Department of Mathematics, Florida State University, Tallahassee, USA 
+ ci20l@fsu.edu, adv23a@fsu.edu, mnishino@fsu.edu, salman@cs.fsu.edu, xliu@fsu.edu
+ Abstract 
+ As Large Language Models (LLMs) are increasingly integrated into agentic workflows, their unpredictability stemming from numerical instability has emerged as a critical reliability issue. While recent studies have demonstrated the significant downstream effects of these instabilities, the root causes and underlying mechanisms remain poorly understood. In this paper, we present a rigorous analysis of how unpredictability is rooted in the finite numerical precision of floating-point representations, tracking how rounding errors propagate, amplify, or dissipate through Transformer computation layers. Specifically, we identify a chaotic “avalanche effect” in the early layers, where minor perturbations trigger binary outcomes: either rapid amplification or complete attenuation. Beyond specific error instances, we demonstrate that LLMs exhibit universal, scale-dependent chaotic behaviors characterized by three distinct regimes: 1) a stable regime, where perturbations fall below an input-dependent threshold and vanish, resulting in constant outputs; 2) a chaotic regime, where rounding errors dominate and drive output divergence; and 3) a signal-dominated regime, where true input variations override numerical noise. We validate these findings extensively across multiple datasets and model architectures. 
+ Index Terms:  Large Language Models, Numerical Instability, Chaotic Dynamics, Floating-Point Precision, Rounding Errors, Robustness
+ I Introduction 
+ The deployment of Large Language Models (LLMs) has rapidly evolved from isolated inference systems to complex, distributed multi-agent architectures where multiple AI agents collaborate to solve sophisticated tasks  [ 1 , 2 ] . Multi-agent LLM systems improve performance through collaborative problem-solving  [ 3 , 4 ] , but they exhibit high failure rates that cannot be attributed solely to algorithmic limitations. Wu et al.  [ 4 ] report that AutoGen-based workflows fail to converge on 23% of collaborative tasks, with agents producing contradictory outputs despite identical prompts. Similarly, Hong et al.  [ 5 ] document non-reproducible outputs in 31% of MetaGPT planning tasks across identical hardware configurations. These failures share a common signature: unpredictability that persists even with fixed random seeds, manifesting most severely when agents exchange intermediate representations. 
+ We hypothesize that a significant fraction of these multi-agent failures stem from numerical instability induced by floating-point computation across heterogeneous infrastructure. In modern LLM deployments, floating-point arithmetic is neither associative nor deterministic across diverse hardware  [ 6 ] . When agents communicate by exchanging embeddings across cloud environments with diverse GPU architectures, numerical discrepancies arise from non-deterministic parallel reduction orders  [ 7 ] , hardware-specific implementations  [ 8 ] , and accumulation of rounding errors through deep network layers. The Oak Ridge National Laboratory documents that “the variability from non-deterministic reductions will produce unique and non-reproducible results with each run using identical inputs”  [ 9 ] . Zhuang et al.  [ 10 ] demonstrate that GPU-based training produces non-reproducible results in 100% of trials across different hardware. 
+ This impact is amplified by the extreme sensitivity of LLMs. Hahn  [ 11 ] proves that self-attention mechanisms have condition numbers that grow exponentially with sequence length. Kim et al.  [ 12 ] demonstrate empirically that LLMs are “extremely sensitive to assigned prompts,” with 13.78% of correct answers becoming incorrect solely due to minor prompt perturbations. This sensitivity extends to embeddings: Vijayaraj  [ 13 ] shows that perturbations of magnitude 10 − 3 10^{-3} in normalized embedding space cause diagnostic prediction flips in 12.4% of clinical cases. 
+ Prior work has documented numerical instability in deep learning, and multi-agent system fragility  [ 9 , 10 , 4 , 14 ] , but a gap remains: we lack a principled understanding of how floating-point rounding errors interact with LLM computation to produce unpredictable outputs . Existing work treats numerical instability as an engineering nuisance to be mitigated through deterministic execution modes  [ 15 ] or higher precision arithmetic, without characterizing the underlying dynamics. 
+ This paper addresses this gap through rigorous analysis of numerical stability in LLM inference. Our contributions are: 
+ 1. 
+ Identification of Chaotic Dynamics. We demonstrate that LLMs exhibit chaotic behavior where perturbations at the scale of floating-point epsilon ( ∼ 10 − 14 \sim 10^{-14} ) either amplify exponentially or attenuate completely within early Transformer layers, with directional absolute condition numbers exceeding 10 6 10^{6} . 
+ 2. 
+ Characterization of Three Stability Regimes. We identify three distinct operating regimes: Constant Regions where output is bitwise-constant; Chaotic Regions with extreme sensitivity; and Signal-Dominated Regions where input variations override numerical noise. 
+ 3. 
+ Empirical Validation. We validate findings across multiple combinations of settings, including architectures (Llama-3.1-8B, GPT-OSS-20B), datasets (TruthfulQA, AdvBench), and floating-point precision (BFloat16, FP32, and FP64), demonstrating universal phenomena rather than model-specific artifacts. 
+ As LLMs are integrated into safety-critical applications  [ 16 , 4 ] , understanding boundaries between reliable and chaotic operation becomes essential. Our characterization provides practitioners with principled guidance for building robust multi-agent systems. 
+ II Related Work 
+ II-A Numerical Stability in Deep Learning 
+ Goldberg  [ 6 ] established that floating-point operations are neither associative nor commutative, while Demmel and Nguyen  [ 7 ] proved parallel reductions are inherently non-deterministic. Recent work documented these issues in deep learning: Zhuang et al.  [ 10 ] showed non-reproducible results across identical seeds, Nagarajan et al.  [ 17 ] quantified 40%+ variance in deep RL, and Shanmugavelu et al.  [ 9 ] demonstrated non-deterministic weight evolution. Yuan et al.  [ 18 ] systematically characterized numerical sources of nondeterminism in LLM inference and proposed mitigation strategies. While quantization studies  [ 19 , 20 , 21 ] extensively analyzed reduced-precision arithmetic, we examine inherent instability at full Float32 precision . 
+ II-B Sensitivity and Chaos in Neural Networks 
+ Hahn  [ 11 ] proved Transformer condition numbers grow exponentially with sequence length. Recent work explored chaos in neural networks: Liu et al.  [ 22 ] deliberately exploited chaotic dynamics for improved performance, Terada and Toyoizumi  [ 23 ] showed chaos facilitates Bayesian sampling in RNNs, and Engelken et al.  [ 24 ] computed Lyapunov spectra for recurrent networks. However, these focus on beneficial chaos or RNN-specific dynamics, not unintended chaos from floating-point errors in Transformers. For adversarial robustness, Wallace et al.  [ 25 ] discovered universal triggers and Zou et al.  [ 26 ] achieved 80%+ jailbreak rates, but these involve semantic-level perturbations rather than numerical instabilities. 
+ II-C LLM Robustness and Multi-Agent Systems 
+ Kim et al.  [ 12 ] showed 13.78% of correct answers flip due to persona changes, while Vijayaraj  [ 13 ] found 10 − 3 10^{-3} magnitude perturbations cause 12.4% diagnostic flips. Tuck et al.  [ 27 ] measured embedding sensitivity for adversarial detection, but focused on semantic perturbations. In multi-agent systems, Wu et al.  [ 4 ] reported 23% AutoGen failure rates and Hong et al.  [ 5 ] documented 31% non-reproducible MetaGPT outputs. Guo et al.  [ 14 ] identified brittle communication behaviors but attributed failures to algorithmic factors rather than numerical instability. 
+ Unlike quantization studies that examine reduced precision  [ 19 , 20 ] or work deliberately exploiting chaos  [ 23 , 22 ] , we characterize unintended chaotic behaviors from floating-point rounding at Float32 . While prior sensitivity analyses  [ 11 , 27 ] focus on theoretical bounds or semantic perturbations, and Yuan et al.  [ 18 ] address determinism in inference pipelines, we provide the first systematic layer-wise analysis showing machine-epsilon perturbations ( ∼ 10 − 14 \sim 10^{-14} ) either amplify to around 10 − 6 × 10^{-6}\times or vanish, defining three operating regimes (Constant, Chaotic, Signal-Dominated) with empirical validation across multiple LLM architectures. 
+ III Methodology 
+ To quantify the stability of an LLM with respect to specific input perturbations, we adopt a directional approach  [ 28 ] . While the standard condition number typically denotes the worst-case sensitivity (the spectral norm of the Jacobian)  [ 29 ] , this metric is often overly pessimistic for high-dimensional neural networks, such as LLMs. 
+ Instead, we utilize the norm of the directional derivative, 1 1 
+ 1 
+ Mathematically, there are two types of directional derivative: Gâteaux derivative and Fréchet derivative. The differences do not change the final solution here. which we refer to as the absolute directional condition number . Following the foundational theory of conditioning by Rice [ 30 ] , the absolute condition number is the limit of the error magnification factor. By restricting this definition to a specific perturbation direction v v , we obtain a precise measure of local stability. 
+ Let f : ℝ n → ℝ m f:\mathbb{R}^{n}\to\mathbb{R}^{m} represent the LLM mapping from the embedding space to the output space. For an input x ∈ ℝ n x\in\mathbb{R}^{n} and a normalized perturbation direction v ∈ ℝ n v\in\mathbb{R}^{n} (where ‖ v ‖ 2 = 1 \|v\|_{2}=1 ), the absolute directional condition number κ a ​ b ​ s ​ ( f , x , v ) \kappa_{abs}(f,x,v) is defined as: 
+ κ a ​ b ​ s ​ ( f , x , v ) := ‖ L f ​ ( x , v ) ‖ 2 = ‖ J ⁡ ( x ) ​ v ‖ 2 \kappa_{abs}(f,x,v):=\|L_{f}(x;v)\|_{2}=\|J(x)v\|_{2} 
+ (1) 
+ where L f ​ ( x , v ) L_{f}(x;v) denotes the directional derivative of f f at x x in the direction v v [ 31 ] , and J ⁡ ( x ) J(x) is the Jacobian matrix. Numerically, this estimates the immediate absolute change in the output given a unit perturbation along v v : 
+ κ a ​ b ​ s ​ ( f , x , v ) ≈ ‖ f ⁡ ( x + ϵ ​ v ) − f ⁡ ( x ) ‖ 2 ϵ for  ​ ϵ → 0 . \kappa_{abs}(f,x,v)\approx\frac{\|f(x+\epsilon v)-f(x)\|_{2}}{\epsilon}\quad\text{for }\epsilon\to 0. 
+ (2) 
+ A value of κ a ​ b ​ s ≫ 1 \kappa_{abs}\gg 1 indicates that the model is numerically unstable in the direction v v , expanding small input noises into significant output deviations. 
+ A challenge applying κ a ​ b ​ s \kappa_{abs} to LLMs is that their final outputs are probabilistic in nature, which depend on the choice of hyperparameters (such as temperature) and the sampling algorithm to be used. To overcome the issue, we use the output before the last language modeling head layer.
+To define it unambiguously, we decompose the LLM computation into two parts, as given 
+ P ⁡ ( y ∣ x ) = softmax ​ ( W U ⋅ f ⁡ ( x ) ⏟ Logits  ​ z ) P(y\mid x)=\text{softmax}(\underbrace{W_{U}\cdot f(x)}_{\text{Logits }z}) 
+ (3) 
+ where: 
+ • 
+ f ⁡ ( x ) ∈ ℝ d m ​ o ​ d ​ e ​ l f(x)\in\mathbb{R}^{d_{model}} denotes the final hidden state from the Transformer backbone, which is named as the last pseudo token (LST) in this paper as it is a continuous vector, not limited to the ones in the model’s dictionary. 
+ • 
+ W U ∈ ℝ V × d m ​ o ​ d ​ e ​ l W_{U}\in\mathbb{R}^{V\times d_{model}} is the unembedding matrix (or output projection). 
+ • 
+ z = W U ​ ϕ ​ ( x ) z=W_{U}\phi(x) represents the unnormalized logits. 
+ As we show numerically, for LLMs, when estimated numerically, κ a ​ b ​ s \kappa_{abs} can be several orders of magnitude larger than the singular value of the Jacobian, especially for small ϵ \epsilon along the directions where the singular values are small, indicating that the stability of the LLMs is affected by numerical issues that have not been explored. Furthermore, we show that the numerical estimation of κ a ​ b ​ s \kappa_{abs} converges to a value independent of the singular value of the direction before it vanishes. While the phenomenon is very important and has directly related to the issues reported in earlier studies such as  [ 18 ] , it has not been studied. We show the phenomenon is universal to LLMs. 
+ Experimental Setting: 
+ To rigorously validate these regions, we conducted experiments across different model architectures and datasets. 
+ Models and Hardware: 
+ We evaluated Meta-Llama-3.1-8B-Instruct and OpenAI-GPT-OSS-20B . To capture precise floating-point behaviors, specific hardware configurations were required. Llama-3.1-8B experiments were conducted on dual NVIDIA RTX A5000 GPUs (24GB VRAM each). Due to memory constraints when enforcing Float32 precision on the larger model, GPT-OSS-20B experiments were executed on an Intel Core i9-10900X CPU. 
+ Datasets: 
+ We utilized TruthfulQA to evaluate stability on general knowledge and reasoning tasks. Additionally, we employed AdvBench (subset of harmful behaviors) to test stability on adversarial prompts, determining if safety guardrails introduce additional numerical instability. 
+ IV Results and Analysis 
+ IV-A Directional sensitivity is largely epsilon-driven 
+ We define the effective directional condition number D ⁡ ( ϵ , v ) := ‖ f ⁡ ( x + ϵ ​ v ) − f ⁡ ( x ) ‖ 2 / ϵ D(\epsilon,v):=\|f(x+\epsilon v)-f(x)\|_{2}/\epsilon as the finite- ϵ \epsilon approximation to κ a ​ b ​ s ​ ( f , x , v ) \kappa_{abs}(f,x,v) . 
+ To determine whether directional sensitivity is determined by the Jacobian spectrum (as in classical local conditioning) or whether it is governed mainly by the perturbation scale ϵ \epsilon in floating-point implementations, we analyze the effective directional number across multiple singular directions spanning the spectrum. 
+ Figure  1 plots the effective directional number D ⁡ ( ϵ , v ) D(\epsilon,v) at the last representative layer ( Llama-3.1-8B ) for five singular directions spanning the spectrum ( v 1 , v 50 , v 500 , v 2000 , v 4096 v_{1},v_{50},v_{500},v_{2000},v_{4096} ). The curves exhibit the same qualitative scale dependence: at sufficiently small ϵ \epsilon , the response becomes dominated by representational granularity and finite-precision effects rather than by the singular value ranking. This is the sense in which the implementation’s effective directional sensitivity can be largely ϵ \epsilon -driven, even though the underlying Jacobian spectrum is well-defined. 
+ This observation is not a claim about the ideal mathematical condition number (defined by a limit as ϵ → 0 \epsilon\to 0 for a real-valued function). Instead, it characterizes the behavior of the finite-precision program under finite perturbations, where the spacing between representable numbers (ULP) depends on magnitude and can create threshold effects as ϵ \epsilon changes. [ 6 ] [ 32 ] 
+ Fig. 1 : Overview of effective directional number D ⁡ ( ϵ , v ) D(\epsilon,v) at layer index 32 (Float32) for v 1 , v 50 , v 500 , v 2000 , v 4096 v_{1},v_{50},v_{500},v_{2000},v_{4096} . 
+ IV-B Layer-wise propagation shows spectrum collapse at small epsilon 
+ Sensitivity can either grow or vanish through network depth. If the model amplifies microscopic differences, layer-wise growth can overwhelm the initial directional structure. To separate these behaviors, we compare propagation at a large perturbation scale and a microscopic perturbation scale and identify when directional structure is preserved versus when it collapses. 
+ Figure  2 shows the layer-wise propagation behavior at a large perturbation ( ϵ = 0.1 \epsilon=0.1 ). In this regime, the ordering across directions broadly follows the singular spectrum: the top singular direction exhibits larger amplification while low- σ \sigma directions remain comparatively suppressed, consistent with a signal-dominated behavior. 
+ Fig. 2 : Layer-wise propagation profile at ϵ = 0.1 \epsilon=0.1 . Directional structure is visible: higher- σ \sigma directions yield larger amplification than low- σ \sigma directions, consistent with a signal-dominated regime. 
+ Figure  3 shows the same layer-wise plot for a much smaller perturbation ( ϵ = 10 − 10 \epsilon=10^{-10} ). Here the direction dependence largely collapses: singular directions with widely different σ k \sigma_{k} , coordinate directions, and a random direction follow similar amplification trajectories and reach very large gains in later layers. This indicates an instability-dominated regime in which finite-precision effects and depth-wise amplification can dominate the directionality implied by the Jacobian spectrum. 
+ Fig. 3 : Layer-wise propagation profile at ϵ = 10 − 10 \epsilon=10^{-10} . Directional structure collapses: multiple singular directions, coordinate directions, and a random direction exhibit similar growth. This supports an instability-dominated regime where effective sensitivity is governed by scale rather than singular value. 
+ Taken together, the overview and layer-wise results support an avalanche-like mechanism: once a perturbation survives rounding at the embedding interface, it can be amplified through depth in a way that becomes weakly dependent on the initial direction. 
+ IV-C Microscopic instability and constant-like plateaus across prompts 
+ We quantify how often microscopic perturbations cause noticeable representation changes and how this varies across datasets and models, revealing the prevalence of constant-like regions versus chaotic jumps. 
+ We quantify local instability along a one-dimensional sweep in the embedding space aligned with a locally sensitive direction. For an ordered sweep ϵ 1 < ⋯ < ϵ T \epsilon_{1}<\cdots<\epsilon_{T} and LPTs m i = M ⁡ ( x ϵ i , v ) m_{i}=M(x_{\epsilon_{i},v}) , we define a finite-difference instability statistic 
+ I i = ‖ m i − m i − 1 ‖ 2 ϵ i − ϵ i − 1 , i = 2 , … , T . I_{i}=\frac{\|m_{i}-m_{i-1}\|_{2}}{\epsilon_{i}-\epsilon_{i-1}},\quad i=2,\dots,T. 
+ (5) 
+ We report the mean and median of { I i } \{I_{i}\} , along with the maximum drift max i ⁡ ‖ m i − m 1 ‖ 2 \max_{i}\|m_{i}-m_{1}\|_{2} over the sweep. We also report the logit margin at the last prompt position, defined as the difference between the largest and second-largest logits; we summarize it by its mean and minimum over the sweep. 
+ Table  I shows a consistent spiky pattern under Float32 with a microscopic perturbation range: the median instability is 0.0 while the mean instability is orders of magnitude larger. This indicates that most consecutive perturbation steps produce no measurable change in the LPT (constant-like plateaus), but rare steps trigger discrete representation jumps whose finite-difference slopes become extremely large because the step size is tiny. 
+ TABLE I : AGGREGATE STABILITY METRICS. Llama-3.1-8B RESULTS USE 100 PROMPTS PER DATASET (GPU). GPT-OSS-20B RESULTS USE 10 PROMPTS PER DATASET (CPU). MEDIAN INSTABILITY OF 0.0 INDICATES PREVALENT CONSTANT-LIKE PLATEAUS, WHILE LARGE MEAN INSTABILITY INDICATES RARE BUT LARGE FINITE-DIFFERENCE SPIKES. 
+ Model 
+ Dataset 
+ Mean Inst. 
+ Median Inst. 
+ Max Drift 
+ Mean Margin 
+ Min Margin 
+ GPT-OSS 
+ AdvBench 
+ 6.76 × 10 5 \times 10^{5} 
+ 0.0 
+ 2.92 × 10 − 4 \times 10^{-4} 
+ 0.6196 
+ 0.6196 
+ GPT-OSS 
+ TruthfulQA 
+ 2.63 × 10 5 \times 10^{5} 
+ 0.0 
+ 3.43 × 10 − 4 \times 10^{-4} 
+ 0.9767 
+ 0.9767 
+ Llama-3.1 
+ AdvBench 
+ 3.78 × 10 6 \times 10^{6} 
+ 0.0 
+ 1.02 × 10 − 4 \times 10^{-4} 
+ 0.6175 
+ 0.6175 
+ Llama-3.1 
+ TruthfulQA 
+ 8.84 × 10 6 \times 10^{6} 
+ 0.0 
+ 1.46 × 10 − 2 \times 10^{-2} 
+ 0.5351 
+ 0.5035 
+ Micro-continuity at sub-ULP steps: 
+To make the plateau-and-jump mechanism explicit, we probe M ⁡ ( x ) M(x) using consecutive perturbations separated by a Δ \Delta that is far smaller than typical Float32 spacing at the embedding magnitude. Figure  4 shows long runs of consecutive differences indistinguishable from zero (stalls) punctuated by discrete jumps, producing a staircase cumulative change. This explains why median instability becomes exactly zero under tiny steps while the mean can remain very large: dividing a rare jump by a tiny Δ \Delta yields a huge finite-difference slope even when the absolute change in representation is small. 
+ Fig. 4 : Micro-continuity analysis: consecutive differences exhibit long constant-like stalls with rare discrete jumps, producing a staircase-like cumulative change in the output representation. 
+ IV-D Chaotic decision boundaries and regions 
+ We examine whether microscopic representation changes affect downstream outputs. They matter most when the model is near a tie between the top candidate tokens (i.e., when the logit margin is small). We construct near-tie scenarios and probe two-dimensional perturbation planes to visualize decision boundary geometry. 
+ Starting from an embedding x 0 x_{0} selected so that the top two logits are nearly equal ( L 1 ​ ( x 0 ) ≈ L 2 ​ ( x 0 ) L_{1}(x_{0})\approx L_{2}(x_{0}) ), we perturb in two-dimensional planes spanned by right singular vectors: x = x 0 + ϵ 1 ​ v i + ϵ 2 ​ v j x=x_{0}+\epsilon_{1}v_{i}+\epsilon_{2}v_{j} with ϵ 1 , ϵ 2 ∈ [ − 10 − 8 , 10 − 8 ] \epsilon_{1},\epsilon_{2}\in[-10^{-8},10^{-8}] and step size 10 − 10 10^{-10} . We test three planes: ( v 1 , v 2 ) (v_{1},v_{2}) , ( v 1 , v 10 ) (v_{1},v_{10}) , and ( v 1 , v 4096 ) (v_{1},v_{4096}) , and record which of the top two tokens wins at each grid point. 
+ We quantify boundary irregularity using: (1) Flip Frequency , the fraction of adjacent grid cells with different predictions; (2) Region Fragmentation , the number of disconnected prediction regions; and (3) Zero-Crossing Density , the number of boundary crossings per line scan normalized by grid dimensions. Table  II shows that all planes produce highly fragmented decision regions with dense boundary crossings. The same qualitative behavior persists even in the ( v 1 , v 4096 ) (v_{1},v_{4096}) plane, indicating that near-tie decision sensitivity is not confined to a small subspace of “high- σ \sigma ” directions. Figure  5 visualizes this fragmentation through binary decision maps showing which token wins at each point in the perturbation grid. The salt-and-pepper patterns with no smooth regions reveal that microscopic perturbations cause erratic decision flips across the entire plane, with vertical patterns indicating rounding avalanches where cascading bit-flips trigger sudden output jumps. The visualizations use the prompt ”The capital of France is” , chosen because its singular value spectrum ( σ 1 = 615.3 \sigma_{1}=615.3 , σ 2 = 386.9 \sigma_{2}=386.9 , σ 4096 ≈ 3 × 10 − 9 \sigma_{4096}\approx 3\times 10^{-9} ) represents typical input embeddings. Under normal conditions, the top token should have a clear lead over the second; however, after perturbation, the top two tokens exhibit nearly balanced logits ( L 1 ≈ L 2 L_{1}\approx L_{2} ), creating ideal conditions for observing decision boundary chaos. 
+ TABLE II : DECISION BOUNDARY IRREGULARITY METRICS ACROSS SINGULAR VECTOR PLANES NEAR A NEAR-TIE POINT x 0 x_{0} . 
+ Metric 
+ v 1 v_{1} - v 2 v_{2} 
+ v 1 v_{1} - v 10 v_{10} 
+ v 1 v_{1} - v 4096 v_{4096} 
+ Flip Frequency (%) 
+ 16.14 
+ 16.29 
+ 15.42 
+ Fragmentation 
+ 861 
+ 866 
+ 779 
+ Crossing Density 
+ 51.0 
+ 52.5 
+ 49.0 
+ (a) 
+ (b) 
+ Fig. 5 : Binary decision maps near a constructed near-tie point. White: L 1 ≥ L 2 L_{1}\geq L_{2} (Token 1 wins). Black: L 1 < L 2 L_{1}<L_{2} (Token 2 wins). The fragmented regions indicate that near-tie decisions can flip under microscopic perturbations, including along low- σ \sigma directions. 
+ Directional Stability Mapping: To systematically characterize instability across the embedding manifold, we measured maximum stable perturbation magnitudes using two complementary experiments: (1) angular sweeps in the ( v 1 , v 2 ) (v_{1},v_{2}) plane for representation-level bit-flips, and (2) perturbations along all 4096 singular vectors. 
+ Angular Stability in the ( v 1 , v 2 ) (v_{1},v_{2}) Plane. 
+ We parameterized perturbations as δ = s ⁡ ( cos ⁡ θ ⋅ v 1 + sin ⁡ θ ⋅ v 2 ) \delta=s(\cos\theta\cdot v_{1}+\sin\theta\cdot v_{2}) with θ ∈ [ 0 , 2 ​ π ) \theta\in[0,2\pi) sampled at 1000 angles. For each direction, we performed exponential search followed by binary search with ULP refinement to identify s max ​ ( θ ) s_{\max}(\theta) , the maximum perturbation magnitude before representation bit-flip. This ULP-precise approach ensures we find the exact floating-point boundary where M ⁡ ( x 0 ) = M ⁡ ( x 0 + s max ​ δ ) M(x_{0})=M(x_{0}+s_{\max}\delta) but M ⁡ ( x 0 + s next ​ δ ) ≠ M ⁡ ( x 0 ) M(x_{0}+s_{\text{next}}\delta)\neq M(x_{0}) , where s next = nextafter ​ ( s max ) s_{\text{next}}=\texttt{nextafter}(s_{\max}) in the float32 lattice. 
+ Figure  6 reveals extreme directional variability spanning four orders of magnitude. The angular profile shows s max s_{\max} ranges from 1.80 × 10 − 11 1.80\times 10^{-11} at θ ≈ 180 ∘ \theta\approx 180^{\circ} to 7.03 × 10 − 11 7.03\times 10^{-11} at θ ≈ 270 ∘ \theta\approx 270^{\circ} , with mean 3.39 × 10 − 11 3.39\times 10^{-11} . The Cartesian projection reveals an asymmetric polygonal boundary, not an ellipse as singular value theory would predict, but a distorted polygon with sharp vertices indicating catastrophic fragility in specific directions and extended lobes indicating Deep Constant Regions in others. 
+ (a) Angular stability profile 
+ (b) Boundary in ( v 1 , v 2 ) (v_{1},v_{2}) space 
+ Fig. 6 : Directional stability in the ( v 1 , v 2 ) (v_{1},v_{2}) plane. (a) Maximum stable perturbation s max ​ ( θ ) s_{\max}(\theta) varies by 4 × 4\times across angles. (b) Cartesian projection reveals asymmetric polygonal boundary. Geometric distortion demonstrates that stability is determined by input-dependent rounding dynamics, not by singular values. 
+ Universal Instability Across All Singular Vectors. 
+ To test whether instability is confined to high-sensitivity subspaces, we measured s max s_{\max} along all 4096 singular vectors v i v_{i} using identical binary search methodology. Figure  7 demonstrates that instability is universal : perturbations along v 1 v_{1} ( σ 1 = 615.3 \sigma_{1}=615.3 ), v 50 v_{50} ( σ 50 = 31.1 \sigma_{50}=31.1 ), and v 4096 v_{4096} ( σ 4096 ≈ 0 \sigma_{4096}\approx 0 ) all exhibit s max ∼ 10 − 10 s_{\max}\sim 10^{-10} , varying only by 3 × 3\times despite the singular values spanning from near-zero to over 600. The mean s max = 8.96 × 10 − 11 s_{\max}=8.96\times 10^{-11} with standard deviation 4.12 × 10 − 11 4.12\times 10^{-11} confirms that maximum stable perturbation is determined by floating-point quantization effects rather than spectral properties. Random spikes to s max ∼ 2.5 × 10 − 10 s_{\max}\sim 2.5\times 10^{-10} occur sporadically across the entire singular spectrum, indicating that certain directions accidentally align with rounding plateaus, these correspond to the extended lobes observed in Figure  6(b) . 
+ Fig. 7 : Maximum stable perturbation magnitude along all 4096 singular vectors. Despite singular values spanning σ 1 = 615.3 \sigma_{1}=615.3 to σ 4096 ≈ 0 \sigma_{4096}\approx 0 , the stability boundary remains nearly constant ( s max ∼ 10 − 10 s_{\max}\sim 10^{-10} ) across the entire spectrum. This universality proves instability pervades the entire embedding manifold. 
+ These experiments establish a critical finding: the chaotic decision boundaries are not artifacts of analyzing specific high-sensitivity planes, but reflect fundamental instability that pervades the entire 4096-dimensional embedding space . The fact that s max s_{\max} varies by only 3 × 3\times across six orders of magnitude in singular values demonstrates that stability boundaries are determined by input-dependent rounding dynamics, not by the Jacobian’s spectral structure. 
+ IV-E Effects of floating-point precision 
+ Assessing whether the three-regime picture is specific to Float32 or persists under other numeric formats shows how representational granularity affects the onset and location of instability-dominated behavior. We repeat directional sensitivity analysis under BFloat16 and Float64 precision. 
+ Figure  8 repeats the directional-number sweep at the same layer index using BFloat16 and Float64. The qualitative structure remains: there is a regime where the curves partially collapse across directions and a regime where directionality becomes more visible at larger perturbations. What changes with precision is the location of the transition scales. In BFloat16, the onset of plateau behavior and the transition to large effective directional numbers occurs at coarser ϵ \epsilon because representational spacing is larger. In Float64, the same effects are shifted toward much smaller ϵ \epsilon , consistent with a finer representational grid and a wider range of distinguishable perturbations before stalling dominates. 
+ These results support the claim that the regimes are not tied to a single floating-point type. Precision changes how quickly perturbations are rounded away and where the instability-dominated behavior becomes visible, but it does not remove the scale dependence of effective sensitivity when probing finite- ϵ \epsilon behavior [ 6 ] [ 32 ] . 
+ (a) 
+ (b) 
+ Fig. 8 : Directional number vs. ϵ \epsilon at layer index 32 under different floating-point precisions. Precision shifts the ϵ \epsilon ranges where plateau behavior and rapid growth appear, while preserving the overall scale dependence. 
+ IV-F Mitigation via Noise Averaging 
+ Since the root cause of instability is the propagation of floating-point
+rounding errors through deep networks, we propose a simple but effective mitigation strategy: averaging multiple forward passes with injected noise. For a perturbation x 0 + ϵ ⋅ s i x_{0}+\epsilon\cdot s_{i} along singular vector s i s_{i} ,
+instead of computing a single absolute directional condition number estimate κ a ​ b ​ s = ‖ f ⁡ ( x 0 + ϵ ​ s i ) − f ⁡ ( x 0 ) ‖ / ϵ \kappa_{abs}=\|f(x_{0}+\epsilon s_{i})-f(x_{0})\|/\epsilon , we compute a smoothed estimate by averaging n n noisy evaluations: κ smooth = ‖ 1 n ​ ∑ j = 1 n f ⁡ ( x 0 + ϵ ​ s i + v j ) − 1 n ​ ∑ j = 1 n f ⁡ ( x 0 + v j ) ‖ / ϵ \kappa_{\text{smooth}}=\|\frac{1}{n}\sum_{j=1}^{n}f(x_{0}+\epsilon s_{i}+v_{j})-\frac{1}{n}\sum_{j=1}^{n}f(x_{0}+v_{j})\|/\epsilon , where v j v_{j} are small random perturbations along s i s_{i} with magnitude 10 − 9 10^{-9} . The key insight is that rounding errors are non-deterministic and vary across different computational paths, while the true model sensitivity remains constant. By the law of large numbers, averaging over multiple samples cancels out the stochastic rounding noise, revealing the underlying algorithmic sensitivity. 
+ Figure  9 demonstrates the effectiveness of this approach. Without averaging ( n = 1 n=1 ), the empirical absolute directional condition number
+is above 900, exceeding the theoretical maximum singular value of 615.31 due to rounding error amplification. With just n = 10 n=10 samples, the estimate drops sharply to ∼ \sim 600, and by n = 100 n=100 , it stabilizes close to 600, converging to the true singular value. Further increases to n = 4000 n=4000 provide minimal additional benefit, confirming convergence. This mitigation transforms the chaotic, unreliable single-sample estimate into a stable, reproducible measurement that accurately reflects genuine model sensitivity rather than numerical artifacts. The method’s practicality is demonstrated by its rapid convergence, even modest averaging ( n = 10 n=10 - 100 100 ) suffices to recover reliable estimates at negligible computational cost. 
+ Fig. 9 : Absolute directional condition number convergence via noise averaging.
+The dashed red line shows the unaveraged baseline, while the blue curve shows
+the averaged estimate stabilizing at ∼ \sim 600 by n = 100 n=100 samples, converging
+to the theoretical singular value (dotted line, 615.31). Averaging eliminates
+rounding-error artifacts and recovers true model sensitivity. 
+ V Discussion 
+ Our findings show that LLMs operate at the boundary of numerical chaos, where perturbations exhibit binary outcomes: complete attenuation in Constant Regions or explosive amplification in Chaotic Regions. Directional sensitivity is scale-driven rather than spectrum-driven, and perturbations across all singular directions (spanning five orders of magnitude in singular values) exhibit nearly identical stability thresholds, contradicting classical conditioning theory. Instability originates from early-layer avalanche effects where microscopic errors cascade through depth, producing median instability of zero but extreme mean values, confirming discrete jumps rather than smooth divergence. 
+ Near decision boundaries, microscopic perturbations fragment output space into hundreds of disconnected regions with crossing densities exceeding smooth expectations by 50×. This fractal geometry pervades the entire 4096-dimensional embedding space. For multi-agent systems, non-deterministic floating-point operations cause identical inputs to traverse different computational paths, explaining 23-31% failure rates. Architectural differences affect stability: GPT-OSS-20B maintains larger Constant Regions and higher logit margins than Llama-3.1, suggesting normalization schemes significantly impact vulnerability. Increasing precision merely shifts regime boundaries without eliminating chaos, distributed systems cannot guarantee reproducibility due to non-associative reductions. 
+ Limitations and Future Work. Our analysis focuses on inference-time instability. Future work should investigate: (1) whether training implicitly navigates toward stable regions; (2) architectural modifications to expand Constant Regions; (3) runtime boundary detection for adaptive precision; (4) connections between numerical chaos and adversarial vulnerability; and (5) extension to multimodal models. 
+ VI Conclusion 
+ We demonstrate that LLMs exhibit universal scale-dependent chaotic behaviors arising from floating-point rounding errors amplified through transformer depth. We identify three operating regimes: Constant (bitwise-frozen outputs), Chaotic (rounding-error dominated), and Signal-Dominated (input variations override noise). Directional sensitivity is determined by perturbation scale ϵ \epsilon rather than Jacobian spectrum, all singular directions exhibit s max ∼ 10 − 10 s_{\max}\sim 10^{-10} despite five orders of magnitude variation in singular values. Instability originates from early-layer avalanche effects, and near decision boundaries fragments output space into hundreds of chaotic regions. These findings establish numerical stability as a fundamental constraint on LLM reproducibility across heterogeneous deployments, providing practitioners with a stability framework for safety-critical applications. 
+ References 
+ [1] 
+ L. Wang, C. Ma, X. Feng, Z. Zhang, H. Yang, J. Zhang, Z. Chen, J. Tang, X. Chen, Y. Lin, et al. (2024) 
+ A survey on large language model based autonomous agents .
+ Frontiers of Computer Science 18 ( 6 ), pp. 186345 .
+ Cited by: §I .
+ [2] 
+ Z. Xi, W. Chen, X. Guo, W. He, Y. Ding, B. Hong, M. Zhang, J. Wang, S. Jin, E. Zhou, et al. (2025) 
+ The rise and potential of large language model based agents: a survey. arxiv 2023 .
+ arXiv preprint arXiv:2309.07864 10 .
+ Cited by: §I .
+ [3] 
+ W. Chen, Y. Su, J. Zuo, C. Yang, C. Yuan, C. Chan, H. Yu, Y. Lu, Y. Hung, C. Qian, et al. (2023) 
+ Agentverse: facilitating multi-agent collaboration and exploring emergent behaviors .
+ In The Twelfth International Conference on Learning Representations ,
+ Cited by: §I .
+ [4] 
+ Q. Wu, G. Bansal, J. Zhang, Y. Wu, B. Li, E. Zhu, L. Jiang, X. Zhang, S. Zhang, J. Liu, A. H. Awadallah, R. W. White, D. Burger, and C. Wang (2023) 
+ AutoGen: enabling next-gen llm applications via multi-agent conversation .
+ External Links: 2308.08155 ,
+ Link 
+ Cited by: §I ,
+ §I ,
+ §I ,
+ §II-C .
+ [5] 
+ S. Hong, M. Zheng, J. Chen, X. Cheng, C. Zhang, Z. Wang, S. K. S. Yau, Z. Lin, L. Zhou, C. Ran, et al. (2024) 
+ MetaGPT: meta programming for a multi-agent collaborative framework .
+ In The Twelfth International Conference on Learning Representations ,
+ Cited by: §I ,
+ §II-C .
+ [6] 
+ D. Goldberg (1991) 
+ What every computer scientist should know about floating-point arithmetic .
+ ACM computing surveys (CSUR) 23 ( 1 ), pp. 5–48 .
+ Cited by: §I ,
+ §II-A ,
+ §IV-A ,
+ §IV-E .
+ [7] 
+ J. Demmel and H. D. Nguyen (2014) 
+ Parallel reproducible summation .
+ IEEE Transactions on Computers 64 ( 7 ), pp. 2060–2070 .
+ Cited by: §I ,
+ §II-A .
+ [8] 
+ NVIDIA Corporation (2024) 
+ cuDNN developer guide .
+ Note: https://docs.nvidia.com/deeplearning/cudnn/ 
+ Cited by: §I .
+ [9] 
+ S. Shanmugavelu, M. Taillefumier, C. Culver, O. Hernandez, M. Coletti, and A. Sedova (2024) 
+ Impacts of floating-point non-associativity on reproducibility for hpc and deep learning applications .
+ In SC24-W: Workshops of the International Conference for High Performance Computing, Networking, Storage and Analysis ,
+ pp. 170–179 .
+ Cited by: §I ,
+ §I ,
+ §II-A .
+ [10] 
+ D. Zhuang, X. Zhang, S. Song, and S. Hooker (2022) 
+ Randomness in neural network training: characterizing the impact of tooling .
+ In Proceedings of Machine Learning and Systems , D. Marculescu, Y. Chi, and C. Wu (Eds.) ,
+ Vol. 4 , pp. 316–336 .
+ External Links: Link 
+ Cited by: §I ,
+ §I ,
+ §II-A .
+ [11] 
+ M. Hahn (2020) 
+ Theoretical limitations of self-attention in neural sequence models .
+ Transactions of the Association for Computational Linguistics 8 , pp. 156–171 .
+ Cited by: §I ,
+ §II-B ,
+ §II-C .
+ [12] 
+ J. Kim, N. Yang, and K. Jung (2024) 
+ Persona is a double-edged sword: mitigating the negative impact of role-playing prompts in zero-shot reasoning tasks .
+ External Links: 2408.08631 ,
+ Link 
+ Cited by: §I ,
+ §II-C .
+ [13] 
+ R. K. Vijayaraj (2025) 
+ Embeddings to diagnosis: latent fragility under agentic perturbations in clinical llms .
+ External Links: 2507.21188 ,
+ Link 
+ Cited by: §I ,
+ §II-C .
+ [14] 
+ T. Guo, X. Chen, Y. Wang, R. Chang, S. Pei, N. V. Chawla, O. Wiest, and X. Zhang (2024) 
+ Large language model based multi-agents: a survey of progress and challenges .
+ arXiv preprint arXiv:2402.01680 .
+ Cited by: §I ,
+ §II-C .
+ [15] 
+ PyTorch Contributors (2024) 
+ Reproducibility in PyTorch .
+ Note: https://pytorch.org/docs/stable/notes/randomness.html 
+ Cited by: §I .
+ [16] 
+ K. Singhal, S. Azizi, T. Tu, S. S. Mahdavi, J. Wei, H. W. Chung, N. Scales, A. Tanwani, H. Cole-Lewis, S. Pfohl, et al. (2023) 
+ Large language models encode clinical knowledge .
+ Nature 620 ( 7972 ), pp. 172–180 .
+ Cited by: §I .
+ [17] 
+ P. Nagarajan, G. Warnell, and P. Stone (2019) 
+ Deterministic implementations for reproducibility in deep reinforcement learning .
+ External Links: 1809.05676 ,
+ Link 
+ Cited by: §II-A .
+ [18] 
+ J. Yuan, H. Li, X. Ding, W. Xie, Y. Li, W. Zhao, K. Wan, J. Shi, X. Hu, and Z. Liu (2025) 
+ Understanding and mitigating numerical sources of nondeterminism in LLM inference .
+ In The Thirty-ninth Annual Conference on Neural Information Processing Systems ,
+ Cited by: §II-A ,
+ §II-C ,
+ §III .
+ [19] 
+ T. Dettmers, A. Pagnoni, A. Holtzman, and L. Zettlemoyer (2023) 
+ Qlora: efficient finetuning of quantized llms .
+ Advances in neural information processing systems 36 , pp. 10088–10115 .
+ Cited by: §II-A ,
+ §II-C .
+ [20] 
+ E. Frantar, S. Ashkboos, T. Hoefler, and D. Alistarh (2022) 
+ Gptq: accurate post-training quantization for generative pre-trained transformers .
+ arXiv preprint arXiv:2210.17323 .
+ Cited by: §II-A ,
+ §II-C .
+ [21] 
+ G. Xiao, J. Lin, M. Seznec, H. Wu, J. Demouth, and S. Han (2023) 
+ Smoothquant: accurate and efficient post-training quantization for large language models .
+ In International conference on machine learning ,
+ pp. 38087–38099 .
+ Cited by: §II-A .
+ [22] 
+ S. Liu, N. Akashi, Q. Huang, Y. Kuniyoshi, and K. Nakajima (2025) 
+ Exploiting chaotic dynamics as deep neural networks .
+ Physical Review Research 7 ( 3 ), pp. 033031 .
+ Cited by: §II-B ,
+ §II-C .
+ [23] 
+ Y. Terada and T. Toyoizumi (2024) 
+ Chaotic neural dynamics facilitate probabilistic computations through sampling .
+ Proceedings of the National Academy of Sciences 121 ( 18 ), pp. e2312992121 .
+ Cited by: §II-B ,
+ §II-C .
+ [24] 
+ R. Engelken, F. Wolf, and L. F. Abbott (2023) 
+ Lyapunov spectra of chaotic recurrent neural networks .
+ Physical Review Research 5 ( 4 ), pp. 043044 .
+ Cited by: §II-B .
+ [25] 
+ E. Wallace, S. Feng, N. Kandpal, M. Gardner, and S. Singh (2019) 
+ Universal adversarial triggers for attacking and analyzing nlp .
+ In Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing and the 9th International Joint Conference on Natural Language Processing (EMNLP-IJCNLP) ,
+ pp. 2153–2162 .
+ Cited by: §II-B .
+ [26] 
+ A. Zou, Z. Wang, J. Z. Kolter, and M. Fredrikson (2023) 
+ Universal and transferable adversarial attacks on aligned language models .
+ arXiv preprint arXiv:2307.15043 .
+ Cited by: §II-B .
+ [27] 
+ B. E. Tuck and R. M. Verma (2025) 
+ Assessing representation stability for transformer models .
+ arXiv preprint arXiv:2508.11667 .
+ Cited by: §II-C ,
+ §II-C .
+ [28] 
+ Yu. Nesterov (2012) 
+ Efficiency of coordinate descent methods on huge-scale optimization problems .
+ SIAM Journal on Optimization 22 ( 2 ), pp. 341–362 .
+ Cited by: §III .
+ [29] 
+ N. J. Higham (2002) 
+ Accuracy and stability of numerical algorithms .
+ 2nd edition , SIAM , Philadelphia, PA .
+ Cited by: §III .
+ [30] 
+ J. R. Rice (1966) 
+ A theory of condition .
+ SIAM Journal on Numerical Analysis 3 ( 2 ), pp. 287–310 .
+ Cited by: §III .
+ [31] 
+ N. J. Higham (2008) 
+ Functions of matrices: theory and computation .
+ SIAM , Philadelphia, PA .
+ Note: See Chapter 3 for Fréchet derivatives 
+ Cited by: §III .
+ [32] 
+ IEEE (2019) 
+ IEEE standard for floating-point arithmetic .
+ IEEE Std 754-2019 (Revision of IEEE 754-2008) ( ), pp. 1–84 .
+ External Links: Document 
+ Cited by: §IV-A ,
+ §IV-E .
+ Experimental support, please
+ view the build logs 
+ for errors. Generated by
+ L
+ A 
+ T
+ E 
+ xml 
+ .
+ Instructions for reporting errors 
+ We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility and mobile
+ support. To report errors in the HTML that will help us improve conversion and rendering, choose any of the
+ methods listed below: 
+ Click the "Report Issue" ( 
+ ) button, located in the page header. 
+ Tip: You can select the relevant text first, to include it in your report. 
+ Our team has already identified the following issues . We appreciate your time reviewing and reporting rendering errors we
+ may not have found yet. Your efforts will help us improve the HTML versions for all readers, because disability
+ should not be a barrier to accessing research. Thank you for your continued support in championing open access for
+ all. 
+ Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML maintain a list of packages that need conversion , and welcome developer contributions . 
+ We gratefully acknowledge support from
+ our major funders ,
+ member institutions , ,
+ and all contributors.
+ About 
+ · 
+ Help 
+ · 
+ Contact 
+ · 
+ Subscribe 
+ · 
+ Copyright 
+ · 
+ Privacy 
+ · 
+ Accessibility 
+ · 
+ Operational Status (opens in new tab) 
+ Major funding support from 

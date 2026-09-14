@@ -1,0 +1,733 @@
+<!doctype html>
+<!--
+  Minimal Mistakes Jekyll Theme 4.19.3 by Michael Rose
+  Copyright 2013-2019 Michael Rose - mademistakes.com | @mmistakes
+  Free for personal and commercial use under the MIT license
+  https://github.com/mmistakes/minimal-mistakes/blob/master/LICENSE
+-->
+<html lang="en" class="no-js">
+  <head>
+    <meta charset="utf-8">
+
+<!-- begin _includes/seo.html --><title>Beyond NCCL: Faster Inter-Node All-Reduce for Decode-Heavy LLM Inference - Parallel Software and Systems Group</title>
+<meta name="description" content="Introduction">
+
+
+  <meta name="author" content="UMD HPC Group">
+
+
+<meta property="og:type" content="article">
+<meta property="og:locale" content="en_US">
+<meta property="og:site_name" content="Parallel Software and Systems Group">
+<meta property="og:title" content="Beyond NCCL: Faster Inter-Node All-Reduce for Decode-Heavy LLM Inference">
+<meta property="og:url" content="https://hpcgroup.github.io/blog/2025/beyond-nccl/">
+
+
+  <meta property="og:description" content="Introduction">
+
+
+
+
+
+  <meta name="twitter:site" content="@hpc_group">
+  <meta name="twitter:title" content="Beyond NCCL: Faster Inter-Node All-Reduce for Decode-Heavy LLM Inference">
+  <meta name="twitter:description" content="Introduction">
+  <meta name="twitter:url" content="https://hpcgroup.github.io/blog/2025/beyond-nccl/">
+
+  
+    <meta name="twitter:card" content="summary">
+    
+  
+
+  
+
+
+
+  <meta property="article:published_time" content="2025-09-16T00:00:00+00:00">
+
+
+
+
+
+  
+
+  
+
+
+<link rel="canonical" href="https://hpcgroup.github.io/blog/2025/beyond-nccl/">
+
+
+
+
+<script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    
+      "@type": "Person",
+      "name": "PSSG at the University of Maryland",
+      "url": "https://hpcgroup.github.io/"
+    
+  }
+</script>
+
+
+
+
+
+
+<!-- end _includes/seo.html -->
+
+
+<link href="/feed.xml" type="application/atom+xml" rel="alternate" title="Parallel Software and Systems Group Feed">
+
+<!-- https://t.co/dKP3o1e -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<script>
+  document.documentElement.className = document.documentElement.className.replace(/\bno-js\b/g, '') + ' js ';
+</script>
+
+<!-- For all browsers -->
+<link rel="stylesheet" href="/assets/css/main.css">
+<link rel="stylesheet" href="https://use.fontawesome.com/releases/v6.7.2/css/all.css">
+
+<!--[if IE]>
+  <style>
+    /* old IE unsupported flexbox fixes */
+    .greedy-nav .site-title {
+      padding-right: 3em;
+    }
+    .greedy-nav button {
+      position: absolute;
+      top: 0;
+      right: 0;
+      height: 100%;
+    }
+  </style>
+<![endif]-->
+
+
+  
+    <script src="https://code.jquery.com/jquery-3.3.1.min.js"></script>
+  
+    <script src="/assets/js/news.js"></script>
+  
+    <script src="/assets/js/tabs.js"></script>
+  
+    <script src="/assets/js/publications.js"></script>
+  
+    <script src="/assets/js/software.js"></script>
+  
+
+
+    <!-- start custom head snippets -->
+<link href="https://cdnjs.cloudflare.com/ajax/libs/chosen/1.8.7/chosen.min.css" rel="stylesheet">
+
+<!-- insert favicons. use https://realfavicongenerator.net/ -->
+
+<!-- end custom head snippets -->
+
+  </head>
+
+  <body class="layout--single">
+    <nav class="skip-links">
+  <h2 class="screen-reader-text">Skip links</h2>
+  <ul>
+    <li><a href="#site-nav" class="screen-reader-shortcut">Skip to primary navigation</a></li>
+    <li><a href="#main" class="screen-reader-shortcut">Skip to content</a></li>
+    <li><a href="#footer" class="screen-reader-shortcut">Skip to footer</a></li>
+  </ul>
+</nav>
+
+    <!--[if lt IE 9]>
+<div class="notice--danger align-center" style="margin: 0;">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience.</div>
+<![endif]-->
+
+    
+
+<div class="masthead">
+  <div class="masthead__inner-wrap">
+    <div class="masthead__menu">
+      <nav id="site-nav" class="greedy-nav">
+        
+          <a class="site-logo" href="/"><img src="/assets/images/pssg-logo-full.png" alt=""></a>
+        
+        <a class="site-title" href="/">
+           
+          
+        </a>
+        <ul class="visible-links"><li class="masthead__menu-item">
+              <a href="/">About</a>
+            </li><li class="masthead__menu-item">
+              <a href="/research/">Research</a>
+            </li><li class="masthead__menu-item">
+              <a href="/publications/">Publications</a>
+            </li><li class="masthead__menu-item">
+              <a href="/software/">Software</a>
+            </li><li class="masthead__menu-item">
+              <a href="/blog/">Blog</a>
+            </li><li class="masthead__menu-item">
+              <a href="/team/">Team</a>
+            </li></ul>
+        
+        <button class="greedy-nav__toggle hidden" type="button">
+          <span class="visually-hidden">Toggle menu</span>
+          <div class="navicon"></div>
+        </button>
+        <ul class="hidden-links hidden"></ul>
+      </nav>
+    </div>
+  </div>
+</div>
+
+
+    <div class="initial-content">
+      
+
+
+
+<div id="main" role="main">
+  
+  <div class="sidebar sticky">
+  
+
+
+<div itemscope itemtype="https://schema.org/Person">
+
+  
+
+  <div class="author__content">
+    
+      <h3 class="author__name" itemprop="name">UMD HPC Group</h3>
+    
+    
+      <div class="author__bio" itemprop="description">
+        <p>Parallel Software and Systems Laboratory</p>
+
+      </div>
+    
+  </div>
+
+  <div class="author__urls-wrapper">
+    <button class="btn btn--inverse">Follow</button>
+    <ul class="author__urls social-icons">
+      
+        <li itemprop="homeLocation" itemscope itemtype="https://schema.org/Place">
+          <i class="fas fa-fw fa-map-marker-alt" aria-hidden="true"></i> <span itemprop="name">College Park, MD</span>
+        </li>
+      
+
+      
+        
+          
+        
+          
+        
+          
+        
+          
+        
+          
+        
+          
+        
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      
+
+      <!--
+  <li>
+    <a href="http://link-to-whatever-social-network.com/user/" itemprop="sameAs" rel="nofollow noopener noreferrer">
+      <i class="fas fa-fw" aria-hidden="true"></i> Custom Social Profile Link
+    </a>
+  </li>
+-->
+    </ul>
+  </div>
+</div>
+
+  
+  </div>
+
+
+
+  <article class="page" itemscope itemtype="https://schema.org/CreativeWork">
+    <meta itemprop="headline" content="Beyond NCCL: Faster Inter-Node All-Reduce for Decode-Heavy LLM Inference">
+    <meta itemprop="description" content="Introduction">
+    <meta itemprop="datePublished" content="2025-09-16T00:00:00+00:00">
+    
+
+    <div class="page__inner-wrap">
+      
+      
+
+        <header >
+          
+
+          <h1 id="page-title" class="page__title"  itemprop="headline">Beyond NCCL: Faster Inter-Node All-Reduce for Decode-Heavy LLM Inference
+</h1>
+          
+            <p class="page__meta"><i class="far fa-clock" aria-hidden="true"></i> 
+
+
+
+
+  4 minute read
+
+</p>
+          
+        </header>
+      
+
+      <section class="page__content" itemprop="text">
+        
+        <h2 id="introduction">Introduction</h2>
+
+<p>As large language models grow in size, a single node —
+typically 4-8 NVLink-connected GPUs — is no longer sufficent to hold the
+model and run inference.
+Models like
+Llama-405B or Nemotron-Ultra-253B can require 16–32 GPUs even for modest batch
+sizes. On most HPC systems, that means stepping outside the comfort of NVLink
+into the slower world of inter-node networking, where communication costs
+dominate.</p>
+
+<p>So what’s the best way to run inference in this multi-node world?</p>
+
+<p>For moderate context lengths (a few thousand tokens), there are two main
+distributed inference strategies:</p>
+
+<p><strong>Tensor Parallelism (TP)</strong> splits each layer’s weights across
+  GPUs and requires an All-Reduce collective after each matrix multiply.</p>
+
+<p><strong>Pipeline Parallelism (PP)</strong> splits the model into contiguous subsets of layers.
+	It requires only point-to-point communication but introduces sequential dependencies and pipeline “bubbles.”</p>
+
+<p>Conventional wisdom says that TP within a node and PP across nodes is the best strategy,
+as it reduces the inter-node message volume. But on HPC systems, with advanced
+interconnect fabrics like Slingshot or InfiniBand, the trade-off isn’t that simple:</p>
+
+<ul>
+  <li>PP reduces inter-node message volume, but also introduces sequential
+dependencies and pipeline bubbles. This shows up in single-batch offline
+inference scenarios where pipeline latency scales with number of nodes.</li>
+  <li>TP has a high message volume, but also parallelizes all the matrix multiplications.</li>
+</ul>
+
+<h2 id="llm-inference-beyond-a-single-node">LLM Inference Beyond a Single Node</h2>
+<p>To understand how LLM frameworks scale beyond a single node in <strong><em>offline single-batch inference scenarios</em></strong>, 
+we built <a href="https://github.com/axonn-ai/yalis">YALIS</a> (Yet Another LLM Inference System), a light-weight and performant
+inference engine prototype that gives us full instrumentation flexibility. We
+validate its performance against vLLM and run strong scaling experiments for
+both frameworks on the Perlmutter supercomputer (4X NVIDIA 80GB A100s per node
+connected via NVLink; Slingshot-11 interconnect between nodes). Our experiment 
+here uses the Llama-3.1-70B-Instruct model with a batch size of 16, prefill
+length of 2480, and decode length of 2048.</p>
+
+<figure>
+  <a href="/assets/images/posts/yalis_vllm_scaling_pm.png">
+    <img src="/assets/images/posts/yalis_vllm_scaling_pm.png" alt="Strong scaling results for YALIS and vLLM" width="800" />
+  </a>
+  <figcaption>End-to-end latency when strong scaling Llama3.1-70B from 1 to 8 nodes (4 to 32 GPUs).</figcaption>
+</figure>
+
+<p><em>Findings</em>: Using the common wisdom TP+PP approach, end-to-end latency increases
+with increasing GPU/node count. Remember that under ideal strong scaling (fixed total
+problem size with increasing GPU count), latency should decrease with
+increasing resources. None of the parallelism strategies achieve that, with
+TP+PP being the worst. We believe this is due to the fact that PP is suited more
+to online high throughput scenarios where a constant influx of batches can hide
+pipeline bubbles and hide the sequential dependencies.</p>
+
+<h2 id="a-deeper-look-with-yalis">A Deeper Look with YALIS</h2>
+<p>Noting that YALIS performs similar to vLLM, we instrument YALIS to get detailed
+breakdowns and understand what is going on.
+We study separately the two phases of LLM inference: <em>prefill</em> and <em>decode</em>. 
+We subcategorize the time spent in each of these phases into: Matmul (Time spent in matrix multiplications),
+Communication, FlashAttn (Time spent in FlashAttention), Other (Time spent in
+all other GPU operations), Idle (GPU Idle Time).</p>
+
+<figure>
+  <a href="/assets/images/posts/breakdown_all_pm.png">
+    <img src="/assets/images/posts/breakdown_all_pm.png" alt="YALIS Inference Time Breakdown" width="800" />
+  </a>
+  <figcaption>Prefill and decode (×10 steps) time breakdown for Llama-3.1-70B Instruct when scaling YALIS with TP within and across nodes.</figcaption>
+</figure>
+
+<p><em>Findings</em>: The compute time (Matmul + FlashAttn + Other) decreases as expected, demonstrating ideal strong scaling with increasing GPU count. However, the communication
+time blows up substantially going from single to multi-node. At 32 GPUs, it is
+&gt;50% of the time for both prefill and decode.</p>
+
+<p>This shows that communication is a big bottleneck for both prefill and decode.
+While both phases do All-Reduce communication among the GPUs, there is a
+key difference in the two phases with respect to the 
+<strong><em>All-Reduce message sizes</em></strong>. In this particular example, the prefill All-Reduce 
+message size is 620 MiB (very large message regime), whereas the decode
+All-Reduce message size is 256 KiB (small message regime).</p>
+
+<h2 id="beyond-nccl--tailoring-all-reduce-for-decode">Beyond NCCL — Tailoring All-Reduce for Decode</h2>
+<p>Next, we turned our focus to communication in the decode phase. Although prefill
+also suffers from communication overhead, decode is the bigger concern for
+generation-heavy workloads: its auto-regressive token-by-token nature — issuing
+many small, latency-sensitive messages — dominates end-to-end latency.</p>
+
+<p>Most inference frameworks rely on NCCL (on NVIDIA systems) for collective
+communication. While NCCL excels within a node for small messages, its
+performance drops once communication crosses nodes. On non-NVLink interconnects
+(without NVSwitch), NCCL typically uses either Ring All-Reduce or Tree +
+Broadcast All-Reduce. But are these algorithms optimal for the small-message,
+low-latency regime of decode? Other collective libraries, such as MPI, offer a
+broader range of algorithms — including recursive approaches that are
+theoretically better here — but lack features important for inference, like CUDA
+graph friendliness and low kernel launch overhead.</p>
+
+<p>Seeing this gap, we set out to design something better. Our answer - 
+<strong><a href="https://github.com/pssg-int/nvshmem-allreduce/">NVRAR</a></strong>: <em>a GPU-initiated <u>NV</u>SHMEM <u>R</u>ecursive <u>A</u>ll-<u>R</u>educe implementation</em> , 
+tuned for decode’s small message sizes beyond a single node, and built to
+integrate cleanly with CUDA graphs and low-overhead inference. NVRAR uses a
+heirarchical approach, leveraging NCCL for intra-node Reduce-Scatter and
+All-Gather and a custom inter-node Recursive All-Reduce implementation with low
+synchronization overhead.</p>
+
+<p>Early experiments with NVRAR show consistent speedups over NCCL in the decode message size regime.</p>
+
+<figure>
+  <a href="/assets/images/posts/heatmap_nccl_nvrar_pm.png">
+    <img src="/assets/images/posts/heatmap_nccl_nvrar_pm.png" alt="Speedup of NVRAR over NCCL" width="800" />
+  </a>
+  <figcaption>Speedup of NVRAR over NCCL (no CUDA Graphs, 200 warmup iterations + 1000 timed iterations).</figcaption>
+</figure>
+
+<figure>
+  <a href="/assets/images/posts/breakdown_Decode_nvshmem_vs_nccl.png">
+    <img src="/assets/images/posts/breakdown_Decode_nvshmem_vs_nccl.png" alt="Decode Latency Breakdown NCCL vs NVRAR" width="800" />
+  </a>
+  <figcaption>Comparing the breakdown of 10 Decode steps with NCCL and NVRAR for Llama-3.1-70B and 405B Instruct 
+   models at different GPU counts.</figcaption>
+</figure>
+
+<p><em>Findings</em>: NVRAR achieves modest speedups compared to NCCL in the 256 KiB to
+2 MiB message size range. Further, when plugged into YALIS, we see a reduction in
+decode latencies (TBT times) by up to <strong>15%</strong> for Llama-3.1-70B Instruct on 16 GPUs,
+and <strong>38.8%</strong> for Llama-3.1-405B-Instruct on 64 GPUs.</p>
+
+<p>We’re also making both <a href="https://github.com/axonn-ai/yalis">YALIS</a> and <a href="https://github.com/hpcgroup/nvrar">NVRAR</a> open-source so that others can
+experiment, benchmark, and provide feedback. The full design details and extended evaluation can found in our <a href="https://arxiv.org/abs/2511.09557">paper</a>.</p>
+
+<h2 id="references-and-links">References and Links</h2>
+
+<ul>
+  <li>YALIS: <a href="https://github.com/axonn-ai/yalis">https://github.com/axonn-ai/yalis</a></li>
+  <li>vLLM: <a href="https://github.com/vllm-project/vllm">https://github.com/vllm-project/vllm</a></li>
+  <li>NCCL: <a href="https://developer.nvidia.com/nccl">https://developer.nvidia.com/nccl</a></li>
+  <li>NVSHMEM: <a href="https://developer.nvidia.com/nvshmem">https://developer.nvidia.com/nvshmem</a></li>
+  <li>NVRAR: <a href="https://github.com/hpcgroup/nvrar">https://github.com/hpcgroup/nvrar</a></li>
+</ul>
+
+        
+      </section>
+
+      <footer class="page__meta" >
+        
+        
+  
+
+
+  
+  
+  
+
+  <p class="page__taxonomy">
+    <strong><i class="fas fa-fw fa-tags" aria-hidden="true"></i> Tags: </strong>
+    <span itemprop="keywords">
+    
+      
+      
+      <a href="/tags/#collectives" class="page__taxonomy-item" rel="tag">collectives</a><span class="sep">, </span>
+    
+      
+      
+      <a href="/tags/#llm" class="page__taxonomy-item" rel="tag">LLM</a>
+    
+    </span>
+  </p>
+
+
+
+
+  
+
+
+  
+  
+  
+
+  <p class="page__taxonomy">
+    <strong><i class="fas fa-fw fa-folder-open" aria-hidden="true"></i> Categories: </strong>
+    <span itemprop="keywords">
+    
+      
+      
+      <a href="/categories/#hpc-for-ml" class="page__taxonomy-item" rel="tag">HPC for ML</a>
+    
+    </span>
+  </p>
+
+
+        
+  <p class="page__date"><strong><i class="fas fa-fw fa-calendar-alt" aria-hidden="true"></i> Updated:</strong> <time datetime="2025-09-16T00:00:00+00:00">September 16, 2025</time></p>
+
+
+
+        
+      </footer>
+
+      <section class="page__share">
+  
+    <h4 class="page__share-title">Share on</h4>
+  
+
+  <a href="https://twitter.com/intent/tweet?via=hpc_group&text=Beyond+NCCL%3A+Faster+Inter-Node+All-Reduce+for+Decode-Heavy+LLM+Inference%20https%3A%2F%2Fhpcgroup.github.io%2Fblog%2F2025%2Fbeyond-nccl%2F" class="btn btn--twitter" onclick="window.open(this.href, 'window', 'left=20,top=20,width=500,height=500,toolbar=1,resizable=0'); return false;" title="Share on Twitter"><i class="fab fa-fw fa-twitter" aria-hidden="true"></i><span> Twitter</span></a>
+
+  <a href="https://www.facebook.com/sharer/sharer.php?u=https%3A%2F%2Fhpcgroup.github.io%2Fblog%2F2025%2Fbeyond-nccl%2F" class="btn btn--facebook" onclick="window.open(this.href, 'window', 'left=20,top=20,width=500,height=500,toolbar=1,resizable=0'); return false;" title="Share on Facebook"><i class="fab fa-fw fa-facebook" aria-hidden="true"></i><span> Facebook</span></a>
+
+  <a href="https://www.linkedin.com/shareArticle?mini=true&url=https%3A%2F%2Fhpcgroup.github.io%2Fblog%2F2025%2Fbeyond-nccl%2F" class="btn btn--linkedin" onclick="window.open(this.href, 'window', 'left=20,top=20,width=500,height=500,toolbar=1,resizable=0'); return false;" title="Share on LinkedIn"><i class="fab fa-fw fa-linkedin" aria-hidden="true"></i><span> LinkedIn</span></a>
+</section>
+
+
+      
+        
+  <nav class="pagination">
+    
+      <a href="/blog/2024/sc24/" class="pagination--pager" title="PSSG at ACM/IEEE Supercomputing 2024
+">Previous</a>
+    
+    
+      <a href="/blog/2025/sc25/" class="pagination--pager" title="PSSG at ACM/IEEE Supercomputing 2025
+">Next</a>
+    
+  </nav>
+
+      
+    </div>
+
+    
+  </article>
+
+  
+  
+    <div class="page__related">
+      <h4 class="page__related-title">You may also enjoy</h4>
+      <div class="grid__wrapper">
+        
+          
+
+
+
+<div class="grid__item">
+  <article class="archive__item" itemscope itemtype="https://schema.org/CreativeWork">
+    
+    <h2 class="archive__item-title" itemprop="headline">
+      
+        <a href="/blog/2025/sc25/" rel="permalink">PSSG at ACM/IEEE Supercomputing 2025
+</a>
+      
+    </h2>
+    
+      <p class="page__meta"><i class="far fa-clock" aria-hidden="true"></i> 
+
+
+
+
+  2 minute read
+
+</p>
+    
+    <p class="archive__item-excerpt" itemprop="description">PSSG will have a strong presence at SC ‘25, the premier international conference for high-performance computing, networking, storage, and analysis. We are ex...</p>
+  </article>
+</div>
+
+        
+          
+
+
+
+<div class="grid__item">
+  <article class="archive__item" itemscope itemtype="https://schema.org/CreativeWork">
+    
+    <h2 class="archive__item-title" itemprop="headline">
+      
+        <a href="/blog/2024/sc24/" rel="permalink">PSSG at ACM/IEEE Supercomputing 2024
+</a>
+      
+    </h2>
+    
+      <p class="page__meta"><i class="far fa-clock" aria-hidden="true"></i> 
+
+
+
+
+  3 minute read
+
+</p>
+    
+    <p class="archive__item-excerpt" itemprop="description">PSSG will have a strong presence at SC ‘24, the premier international conference for high-performance computing, networking, storage, and analysis. We are ex...</p>
+  </article>
+</div>
+
+        
+          
+
+
+
+<div class="grid__item">
+  <article class="archive__item" itemscope itemtype="https://schema.org/CreativeWork">
+    
+    <h2 class="archive__item-title" itemprop="headline">
+      
+        <a href="/blog/2024/pareval/" rel="permalink">ParEval Leaderboard: Evaluating the Ability of Large Language Models to Generate Parallel Code
+</a>
+      
+    </h2>
+    
+      <p class="page__meta"><i class="far fa-clock" aria-hidden="true"></i> 
+
+
+
+
+  1 minute read
+
+</p>
+    
+    <p class="archive__item-excerpt" itemprop="description">We introduced the ParEval benchmark in “Can Large Language Models Write
+Parallel Code?” to evaluate the capability of
+LLMs at parallel code generation. We fo...</p>
+  </article>
+</div>
+
+        
+      </div>
+    </div>
+  
+  
+</div>
+
+    </div>
+
+    
+
+    <div id="footer" class="page__footer">
+      <footer>
+        <!-- start custom footer snippets -->
+<div class="footer__address">
+    <i class="fas fa-map-marker-alt fa-2x"></i>
+    Brendan Iribe Center for Computer Science and Engineering <br />
+    &nbsp;&nbsp;&nbsp; 8125 Paint Branch Drive, College Park, MD 20742<br />
+    <a href="https://www.umd.edu/web-accessibility">Web Accessibility</a>
+</div>
+<!-- end custom footer snippets -->
+
+
+        <div class="page__footer-follow">
+  <ul class="social-icons">
+    
+      <li><strong></strong></li>
+    
+
+    
+      
+        
+          <li><a href="mailto:hpcgroup@listserv.umd.edu" rel="nofollow noopener noreferrer"><i class="fas fa-paper-plane fa-2x" aria-hidden="true"></i> Email</a></li>
+        
+      
+        
+          <li><a href="http://twitter.com/hpc_group" rel="nofollow noopener noreferrer"><i class="fab fa-twitter fa-2x" aria-hidden="true"></i> hpc_group</a></li>
+        
+      
+        
+      
+        
+          <li><a href="http://github.com/hpcgroup" rel="nofollow noopener noreferrer"><i class="fab fa-github fa-2x" aria-hidden="true"></i> hpcgroup</a></li>
+        
+      
+        
+      
+        
+      
+        
+      
+    
+
+    <li><a href="/feed.xml"><i class="fas fa-fw fa-rss-square fa-2x" aria-hidden="true"></i> Feed</a></li>
+  </ul>
+</div>
+
+<div class="page__footer-copyright">&copy; 2026 PSSG at the University of Maryland. <br />Powered by <a href="https://jekyllrb.com" rel="nofollow">Jekyll</a> &amp; <a href="https://mademistakes.com/work/minimal-mistakes-jekyll-theme/" rel="nofollow">Minimal Mistakes</a>.</div>
+
+      </footer>
+    </div>
+
+    
+  <script src="/assets/js/main.min.js"></script>
+
+
+
+
+
+
+
+
+  
+    <script src="https://cdn.rawgit.com/harvesthq/chosen/gh-pages/chosen.jquery.min.js"></script>
+  
+
+
+
+  </body>
+</html>
