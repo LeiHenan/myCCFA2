@@ -97,3 +97,34 @@ VLLM_USE_FLASHINFER_SAMPLER=0 VLLM_ATTENTION_BACKEND=FLASH_ATTN \
     --out /root/autodl-tmp/c1b.json
 ```
 原始数据：`results/C1b-hybrid-spec/2026-09-14/c1b.json`、`c1_hybrid.json`
+
+
+---
+
+## 7. 跨运行可复现性（补做，2026-09-14 晚）
+
+同一效应在 **3 次独立运行**中复现：
+
+| 运行 | hybrid K=0 | hybrid K=3 | **K0/K3** | dense K0 | dense K3 | **K0/K3** |
+|---|---|---|---|---|---|---|
+| run2（K 扫描） | 628.7 | 222.6 | **2.82×** | 1468.2 | 1192.5 | 1.23× |
+| run3 | 559.4 | 231.8 | **2.41×** | 1201.5 | 1198.1 | 1.00× |
+
+**⇒ hybrid 上投机代价稳定在 2.4–2.8×；dense 上稳定在 1.0–1.2×。**
+两族差异**大于任何一次运行内部的波动**，且方向一致 ⇒ **不是单次运行的产物**。
+
+（这正是上一轮 `quantile-speedup` 缺的那一步：那条只做了一次就立项。
+本次**先做跨运行复现**再考虑立项。）
+
+## 8. 仪器缺口（诚实记录）
+
+- **接受率/接受长度始终没拿到**。已试过四种方式，全部失败：
+  1. 在本进程挂 `logging.Handler` → 引擎核心在**独立进程**，收不到；
+  2. `disable_log_stats=False` → 必须在 `LLM(...)` 显式传入，且**仍无输出**；
+  3. `VLLM_LOG_STATS_INTERVAL=0.5` → 无输出；
+  4. `VLLM_CONFIGURE_LOGGING=1` + 抓 stderr → `grep -c "SpecDecoding metrics"` = **0**。
+- 根因（已定位一处）：`vllm/entrypoints/llm.py:228-229` **默认把 `disable_log_stats` 设为 True**。
+  覆盖它仍无输出 ⇒ 还有第二处闸门未找到。
+- **⇒ 要用更硬的机制证据，必须改用 OpenAI server + `/metrics`**
+  （`vllm:spec_decode_*` 计数器）或 `--per-request-spec-decode-metrics`。
+  这是下一步的第一优先，**不是可选项**：没有接受率，"代价来自草稿路径"就仍是推测。
