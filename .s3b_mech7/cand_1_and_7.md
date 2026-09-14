@@ -2,20 +2,26 @@
 
 Agent: delegated S3b subagent (`70db0ba3-0c65-4fd9-8d30-55861c44dc78` is parent).
 Workspace: `/Users/leihenan/Desktop/myProject`. All raw HTML saved under `.s3b_mech7/raw/`.
-Every arXiv ID cited below had its title read back from `arxiv.org/abs/<id>` **in this session** (see §Verification ledger).
+Every arXiv ID I cite had its title read back from `arxiv.org/abs/<id>` or from a saved abs page **in this session**;
+three IDs (2410.21266, 2606.16824, 2607.19214) arrived on **abs pages the lead had already fetched**, and I read their titles back
+from those saved files rather than re-fetching (see §Verification ledger).
 `api.github.com` was never used. `export.arxiv.org` and `arxiv.org/search` were never used.
 
-**Note on the raw directory:** `.s3b_mech7/raw/` already contained ~130 files from other subagents when I started.
-Files I fetched in this session are listed in the Verification ledger at the bottom; quotes below point only at files I fetched.
+**Note on the raw directory:** `.s3b_mech7/raw/` already contained ~130 files from other subagents (and the lead) when I started.
+Files I fetched in this session are listed in the Verification ledger at the bottom; quotes point only at files I fetched,
+**except** for the three lead-supplied abs pages named in the ledger, which are marked as such.
 
-**HOW TO RE-VERIFY EVERY QUOTE (I ran this myself; 39/39 pass):**
-All quotes are `grep -F`-verifiable against the named raw file. For the `.txt` derivatives and the plain-text source files,
-`grep -F '<quote>' <file>` works directly. For the HTML/XML-ish files (`*.html`), a few quotes straddle a newline, so use:
+**HOW TO RE-VERIFY EVERY QUOTE (I ran this myself; 44/44 pass in the current file):**
+All quotes are `grep -F`-verifiable against the named raw file. For the `.txt` derivatives, the `.py`/`.md`/`.json` sources and the
+plain-text files, `grep -F '<quote>' <file>` works directly. For the HTML/XML-ish files (`*.html`), a few quotes straddle a
+newline, so use:
 
 ```sh
 tr '\n' ' ' < raw/<file>.html | grep -F '<quote>'
 ```
 
+For the two KVLearn quotes the named files are `raw/ss_systor_api.json` (the abstract record — it is one long JSON line, so plain
+`grep -F` works) and `raw/kvlearn_readme.md` (a fenced code block — plain `grep -F` works).
 Two quotes are stored with HTML entities and must be grepped in entity form (I say so inline):
 `a job&#39;s memory footprint grows linearly...` (arXiv 2601.22996 abs page) and
 `driven by the scheduler&#39;s one-step-ahead view...` (arXiv 2608.23658 abs page).
@@ -31,17 +37,101 @@ rather than a static/offline estimate.
 
 ## 1. VERDICT
 
-### `PARTIALLY OCCUPIED`
+### `PARTIALLY OCCUPIED` — **borderline; treat as effectively OCCUPIED unless a measurable delta is demonstrated**
 
-The **inequality form itself is classical and is already instantiated for prefix/KV caches**. What I did *not* find is any
-artifact that re-reads the recompute price from the **live scheduler load state** (current batch size / phase mix / queue depth)
-at eviction time. Every occupant I found prices recomputation with a **static per-object cost** (FLOPs, bytes, `size^alpha`, download latency).
+The **inequality form is classical and is already instantiated for KV/prefix caches**, and — as of the KVLearn finding below — a
+**peer-reviewed, open-source, experimentally-evaluated** system already ships `P(reuse) × (recompute cost) − residency cost > θ`
+with **online-learned P(reuse)**, a **regime-aware recompute price that has the same bandwidth-bound → compute-bound crossover that
+motivates this candidate**, and a **closed-loop controller on live pool pressure**. The candidate's stated distinguishing feature —
+*the recompute price is read from the scheduler's current load state rather than a static/offline estimate* — is strictly **still not
+done**: KVLearn's `R(b)` is a calibrated function of prefix length, and its live signal enters the *residency* term and the
+*threshold*, not the recompute price. But that residual is now razor-thin and must be defended empirically, not rhetorically.
 
 ### Single strongest occupying artifact
 
-**Marconi: Prefix Caching for the Era of Hybrid LLMs** — https://arxiv.org/abs/2411.19379
-(also fetched as full HTML: https://arxiv.org/html/2411.19379v3)
+**KVLearn — "To Keep or Not to Keep: Learning KV Cache Retention in Disaggregated LLM Serving Systems"**, SYSTOR 2026 (ACM),
+DOI [10.1145/3793230.3837769](https://doi.org/10.1145/3793230.3837769).
 
+- **State verified by me — retrieved via a NON-ACM route, because `dl.acm.org` returns HTTP 403 from this box.** I obtained:
+  (a) **full abstract + metadata** via the Semantic Scholar Graph API,
+  `https://www.semanticscholar.org/api/1/paper/6db782df823d9da204a59180305aba81d47b3997` → saved `raw/ss_systor_api.json`
+  (HTTP 200, 50 KB; the abstract lives in the JSON field `paper.paperAbstract`; `openAccessInfo.status = "GOLD"`, `license = "CCBY"`,
+  `pubDate = "2026-09-02"`, venue `Proceedings of the 19th ACM International Systems and Storage Conference`);
+  (b) the **authors' own published cost model** via their artifact repo —
+  `https://raw.githubusercontent.com/FastLM/KVLearn/main/README.md` → saved `raw/kvlearn_readme.md` (HTTP 200), and the repo landing
+  page `https://github.com/FastLM/KVLearn` → saved `raw/kvlearn_github.html` whose `<title>` reads
+  `[SYSTOR 2026] To Keep or Not to Keep: Learning KV Cache Retention in Disaggregated LLM Serving Systems` (independent title confirmation).
+  **Peer-reviewed venue paper, GOLD open access, with a public code artifact.**
+  **I did NOT obtain the paper's full text** (see §4) — the quotes below are from the abstract record and the authors' code repo.
+
+- **Verbatim quote 1** — the mechanism, from `raw/ss_systor_api.json` (grep `translates reuse probability into a keep/admit signal`):
+
+  > `(ii) a Cost-Aware Retention Score (CARS) that translates reuse probability into a keep/admit signal by accounting for per-block recompute, transfer, and storage costs; and (iii) an Adaptive Threshold Controller (ATC) that adjusts the admission threshold online using closed-loop feedback from observed hit rates and memory pressure.`
+
+  Corroborating, same JSON (grep `invalidates a core assumption of classical cache policies`):
+
+  > `This architectural shift invalidates a core assumption of classical cache policies: that the cost of a miss is simply recomputation on the same device.`
+
+- **Verbatim quote 2 — the exact cost model, from the authors' README** `raw/kvlearn_readme.md` (grep `CARS(b) = `). This is what makes
+  it the decisive occupant:
+
+  > `CARS(b) = P̂(b)·(R(b)−T(b)) − U(b,Δt)`
+
+  with, in the same file's "Cost model" block:
+
+  > `R(b)  ≈ α_bw·L          if L < L×   (bandwidth-bound)`
+  > `      ≈ α_flop·L²       if L ≥ L×   (compute-bound)`
+  > `U(b)  = γ · |b| · Δt    γ = R̄·λ / M_S`
+  > `KEEP  ⇔  CARS > θ       (θ from ATC)`
+
+  and, in the same file's defaults block:
+
+  > `A100 + LLaMA-3-8B calib: `α_bw≈0.026 ms/tok`, `α_flop≈8e−6 ms/tok²`, `L×=512``
+
+  and, in the same file, the per-length policy consequence:
+
+  > `For super-linear prefill (`q>1`), the optimal reuse threshold `P*_H` **decreases** with prefix length — longer visual blocks admit at lower predicted reuse.`
+
+  and the ATC component row (line 7 of `raw/kvlearn_readme.md`):
+
+  > `| **ATC** | Adaptive Threshold Controller — adapts `θ` from pool pressure and hit rate |`
+
+- **How close — and why this is the decisive artifact.** KVLearn's eviction/admission rule *is* the candidate's inequality,
+  `P(reuse) × (cost of a miss) − residency cost`, with an online-learned reuse probability (`P̂(b) = f_θ(x(b))`, "updated online from
+  delayed reuse labels") and a **regime-aware recompute price `R(b)` that switches from `α_bw·L` to `α_flop·L²` at a crossover
+  `L× = 512` tokens**. That is **structurally the same bandwidth-bound → compute-bound crossover that motivates this candidate's box**
+  (measured crossover at batch ≈ 28). Its **residency term is explicitly load-dependent** — `γ = R̄·λ / M_S` carries the arrival rate λ
+  and the pool size `M_S` — and its threshold is driven by **closed-loop feedback from live pool pressure and hit rate**.
+  **The one thing it does not do:** its recompute price `R(b)` is a **calibrated structural function of prefix length**
+  (`α_bw`, `α_flop` are fixed per-device calibration constants), **not a read of the instantaneous (batch, prefill/decode-phase-mix)
+  schedule state**. The candidate's live signal and KVLearn's live signal differ in *where they enter the decision* — KVLearn puts
+  liveness in the residency term and the threshold; the candidate puts it in the recompute price itself.
+
+- **Why I demoted the previous strongest occupant (Marconi) to a table row:** MARCONI prices recomputation with a *static* FLOP-per-byte
+  ratio and fits its balance weight offline; KVLearn is closer on the distinguishing feature (regime-aware price + online loop +
+  live-pressure feedback), peer-reviewed at SYSTOR 2026, and open-sourced. Marconi remains a relevant row (see the table) but is no
+  longer the strongest occupant.
+
+## 1b. THE CRUX, ADJUDICATED: live shadow price vs. learned/sampled scalar
+
+The adjudication the lead asked for, stated as a three-way contrast over the *recompute-price* term specifically:
+
+| Artifact | What its price term actually is | Live? |
+|---|---|---|
+| **GreedyDual-Size** (USITS'97) | `c(p)` = a **static per-object fetch cost** (download latency / network cost / 1) | **No** — fixed per object |
+| **Online Weighted Paging with Unknown Weights** (NeurIPS 2024, [2410.21266](https://arxiv.org/abs/2410.21266)) | a **per-page scalar weight learned by repeatedly sampling the fetch cost** | **Learned, not contemporaneous** |
+| **KVLearn** (SYSTOR 2026) | `R(b) = α_bw·L` or `α_flop·L²` — **calibrated constants × prefix length**, with a bandwidth→compute crossover | **Price: no. Residency + threshold: yes** (`γ = R̄·λ/M_S`; ATC tracks pool pressure) |
+| **Candidate 1** | the price itself is read from the **current scheduler load state** (batch size / prefill-decode mix) | **Yes — this is the whole claim** |
+
+**Verdict on the crux:** the candidate is *not* the same as "learned weights" (2410.21266 learns a scalar; the candidate reads a
+contemporaneous system state) and it is *not* the same as "static cost" (GreedyDual-Size/MARCONI). But **KVLearn already has a
+live load term and a live control loop in the same decision**, which means the candidate can no longer claim liveness *per se* —
+only liveness **of the recompute price specifically**, and it must show that this changes decisions beyond what
+`γ = R̄·λ/M_S` plus a pressure-tracking threshold already achieves.
+
+- **Second-strongest / still-relevant occupant — Marconi: Prefix Caching for the Era of Hybrid LLMs** —
+  https://arxiv.org/abs/2411.19379 (also fetched as full HTML: https://arxiv.org/html/2411.19379v3).
+  I keep its detail here because it is the artifact the lead is most likely to be challenged on after KVLearn.
 - **State verified by me:** preprint, abs page fetched by me → `raw/arxiv_2411.19379_abs.html`; title read back ✓
   (`citation_title" content="Marconi: Prefix Caching for the Era of Hybrid LLMs"`, authors Pan/Wang et al., MLSys-lineage system paper with
   artifact appendix). Full HTML body fetched by me → `raw/arxiv_2411.19379_html.html`, tag-stripped to `raw/_2411_19379.txt`.
@@ -86,7 +176,16 @@ at eviction time. Every occupant I found prices recomputation with a **static pe
 | 7 | **vLLM RFC #37003 "Context-Aware KV-Cache Retention API (Prioritized Evictions)"** — https://github.com/vllm-project/vllm/issues/37003 | GitHub issue fetched by me → `raw/vllm_issue_37003.html` | `The orchestrator defines policy; vLLM executes it.` … `Every system that exploits reuse structure, recomputation cost, or workflow topology beats LRU substantially.` | Shows the community is aware of "recomputation cost is invisible to LRU", but the proposed mechanism is an **external priority/TTL directive API** (orchestrator-supplied), not a load-priced eviction rule. It cites MARCONI, Continuum, KVFlow, and the Alibaba trace study as the cost-aware prior art — useful as *their* occupancy map. |
 | 8 | **Optimizing LLM Inference: Fluid-Guided Online Scheduling with Memory Constraints** — https://arxiv.org/abs/2504.11320 | Preprint v4 (2026/06/13), abs page fetched by me → `raw/arxiv_2504.11320_abs.html`, title read back ✓; full HTML fetched → `raw/arxiv_2504.11320_html.html` | `raw/_2504_11320.txt`: `the scheduler must control the composition of the GPU-resident workload across prefill and decode stages when iteration time is memory dependent and overflow causes eviction and restart` | **The "live batch/phase mix determines prefill cost" modelling half already exists** — their iteration-time model (Eq. 1) is an explicit function of the *mixed prefill/decode batch composition*, with a worked example of prefill-only / mixed / decode-only batches. But they use this price for **admission and batch composition**, never for eviction victim selection; their eviction is treated as an overflow event ("overflow can evict in-progress requests"), not a priced decision. |
 | 9 | **TokenFlow: Responsive LLM Text Streaming Serving under Request Burst via Preemptive Scheduling** — https://arxiv.org/abs/2510.02758 | Preprint, abs page fetched by me → `raw/arxiv_2510.02758_abs.html`, title read back ✓ | (search snippet, not used as a quote) the paper's I/O cost model is `t_IO = t_evict_queueing + t_evict + t_load_queueing + t_load` | Neighbour: it *does* model **queueing-dependent** evict/load times, but for GPU↔CPU KV **transfer scheduling under preemption**, not for choosing an eviction victim on recompute economics. |
-| 10 | **Hyperbolic Caching (Blankstein et al., USENIX ATC'17)** — https://www.usenix.net/system/files/conference/atc17/atc17-blankstein.pdf | Peer-reviewed paper PDF fetched by me → `raw/hyperbolic_caching_atc17.pdf`; text extracted → `raw/_hyperbolic.txt`. **Caveat: this PDF's text layer is ligature-split and control-character-laden, so no clean prose quote exists.** The greppable fragment is given verbatim below. | `(it) (attempts) (to) (incorporate) (cost) (into) (LR) (U,)` — which reads, in the paper's prose, "…it attempts to incorporate cost into LRU, requiring a re-design." | Classical cost-aware caching lineage generalising GreedyDual/LRU/Frequency; confirms the cost-aware-caching family. Its utility mapping is **not load-dependent**, but I flag it here as **quote-verified only at fragment level** — treat this row as weaker evidence than rows 1–9. |
+| 10 | **Online Weighted Paging with Unknown Weights** (NeurIPS 2024) — https://arxiv.org/abs/2410.21266 | **Preprint abs page fetched by the LEAD** (not by me) → `raw/abs_2410.21266.html`; I read the title back from that saved file: `citation_title" content="Online Weighted Paging with Unknown Weights"` ✓, date 2024/10/28; NeurIPS 2024 poster page also fetched by me → `raw/nips24_weighted_paging.html` | `we present the first algorithm for online weighted paging that does not know page weights in advance, but rather learns from weight samples` — and the sentence that fixes the gap: `in multi-level caching architectures, the expected cost of fetching a memory block is a function of its probability of being in a mid-level cache rather than the main memory. This complex property cannot be predicted in advance; over time, however, one may glean information about page weights through sampling their fetching cost multiple times.` | **The nearest CLASSICAL neighbour, and the sharpest statement of the gap.** Weighted paging = `P(reuse) × fetch-cost < residency` with provable `O(log k)` competitiveness (Bansal–Buchbinder–Naor FOCS'07). Here the page **weight IS the recompute/fetch price**, and the 2024 advance is to **learn it from repeated fetch-cost samples**. That is a *per-page scalar learned over time* — **not** a contemporaneous system-state shadow price. Candidate 1 must be stated as the latter, not the former. Peer-reviewed (NeurIPS 2024), theory-only (no systems experiments). |
+| 11 | **CacheWise: Understanding Workloads and Optimizing KVCache Management for Efficiently Serving LLM Coding Agents** — https://arxiv.org/abs/2606.16824 | **Preprint abs page fetched by the LEAD** → `raw/abs_2606.16824.html`; I read the title back ✓ (`citation_title" content="CacheWise: Understanding Workloads and Optimizing KVCache Management for Efficiently Serving LLM Coding Agents"`, arXiv:2606.16824v1 [cs.DC], 2026/06/15); I additionally fetched the **full HTML body** → `raw/arxiv_2606.16824_html.html`, tag-stripped to `raw/_2606_16824.txt`; implemented in vLLM (~2,500 LOC), evaluated on real CATraces coding-agent traces | `raw/_2606_16824.txt`: `An ideal eviction policy therefore selects j^{*}=\operatorname*{arg\,max}_{j\,\in\,\mathcal{S}_{t},\;j\neq i}\tau_{j}` and `reuse-aware KVCache eviction choosing the block with the highest predicted reuse probability, rather than purely recency-based heuristics like LRU` (also: `CacheWise replaces the default LRU eviction policy`) | **Occupies the `P(reuse)` half only — and it is NOT cost-priced at all.** Its victim rule is pure reuse-*timing* ordering (`argmax τ_j`, a Belady approximation), with `E[τ_i(t)]` refreshed every `N_rebuild = 3` engine iterations. The word "cost" appears only as motivation (`not all evictions are equally costly`), then is *resolved into time* (`evicting from a session with large τ_i is comparatively cheap`) rather than into a price. So: live-refreshed reuse prediction, **zero** recompute-price term. Shipped in vLLM. |
+| 12 | **Keeping the Cache Warm Pays: Keepalive Economics for Agentic Workloads** — https://arxiv.org/abs/2607.19214 | **Preprint abs page fetched by the LEAD** → `raw/abs_2607.19214.html`; I read the title back ✓ (`citation_title" content="Keeping the Cache Warm Pays: Keepalive Economics for Agentic Workloads"`, 2026/07/21); I additionally fetched the **full HTML body** → `raw/arxiv_2607.19214_html.html`, tag-stripped to `raw/_2607_19214.txt` | abstract: `the strategy breaks even against a re-prefill at idle ~tau(w/r - 1)` and `since cache residency is priced per read rather than per token-hour, a keepalive-saturated tier gives LRU eviction nothing to rank`; body (`raw/_2607_19214.txt`): `Parameters driving keepalive economics (list prices, July 2026): cached-read ratio r r and re-prefill ratio w w relative to input price` | **A priced eviction-vs-re-prefill break-even analysis — but with a CONSTANT price.** `w` (the re-prefill price) is a **provider list-price ratio** taken from a table (Anthropic w=1.25, w=2.00, etc.), and the horizon `I_max ≈ τ(w/r − 1)` uses constant `w, r`. It is also a **client-side keepalive** strategy, not a server eviction policy. So it prices recomputation but never makes the price load-dependent. Preprint, with a measurement harness across four providers. |
+
+**Also checked but weak evidence (not used as an occupant):** *Hyperbolic Caching* (Blankstein et al., USENIX ATC'17),
+`raw/hyperbolic_caching_atc17.pdf` + `raw/_hyperbolic.txt`. Peer-reviewed cost-aware caching lineage generalising
+GreedyDual/LRU/Frequency, but I flag it because **this PDF's text layer is ligature-split and control-character-laden, so no clean
+prose quote exists** — the only greppable fragment I can offer is `(it) (attempts) (to) (incorporate) (cost) (into) (LR) (U,)`
+(reads "…it attempts to incorporate cost into LRU, requiring a re-design."). Its utility mapping is not load-dependent.
+**Treat this as weaker evidence than rows 1–12.**
 
 **Families I checked that are NOT occupants** (different mechanism): H2O / SnapKV / Scissorhands / TOVA / "heavy hitter" are
 **token-level, attention-score** KV pruning policies chosen for *accuracy under a budget*, not block-level victim selection under
@@ -96,22 +195,32 @@ memory pressure, and none price recomputation. I did not find a load-priced evic
 
 > **Nearest neighbour X does A; under condition C it misses B; we do B, therefore when C holds the conclusion differs.**
 
-Nearest neighbour **Marconi (arXiv 2411.19379) does A = evict by `recency-decayed reuse-likelihood × (compute savings per byte)`,
-and GreedyDual-Size (USITS'97) does A = evict by `recency-decayed (retrieval cost / size)`; under condition C = the marginal cost
-of recomputing a block depends on the current (batch, phase-mix) state — which the target box exhibits, since its non-bandwidth
-component climbs 2.79 ms → 12.72 ms from n=1 to n=64 (slope ≈ 0.158 ms/sequence/step) and the box crosses from bandwidth-bound to
-compute-bound at batch ≈ 28 — they miss B = a recompute price that is a **function of live scheduler load** rather than a static
-per-object FLOP/size constant; we do B (read the recompute price from the scheduler's current load state), therefore when C holds
-the victim ranking differs, and the difference is observable exactly in the regime where the box is near or above crossover.**
+Nearest neighbour **KVLearn (SYSTOR 2026) does A = make keep/evict a first-class cost-optimization decision via
+`CARS(b) = P̂(b)·(R(b)−T(b)) − U(b,Δt) > θ`, with `P̂` learned online, a **regime-aware recompute price that switches
+`α_bw·L → α_flop·L²` at a bandwidth/compute crossover (`L× = 512`)**, a residency term that already carries load
+(`γ = R̄·λ/M_S`), and a threshold controller closing the loop on **live pool pressure**; under condition C = the marginal cost of
+recomputing a block depends on the current (batch, phase-mix) state rather than only on the block's own length and the pool's
+aggregate pressure — which the target box exhibits, since its non-bandwidth component climbs 2.79 ms → 12.72 ms from n=1 to n=64
+(slope ≈ 0.158 ms/sequence/step) and the box crosses from bandwidth-bound to compute-bound at batch ≈ 28 — it misses B = a recompute
+price that is a **function of the live scheduler phase mix at the decision instant** rather than a calibrated structural constant;
+we do B, therefore when C holds the victim ranking differs, and the difference is observable exactly in the regime where the box is
+near or above crossover.**
+
+> **Adversarial caveat the lead should carry into any write-up:** this sentence is now doing real work, because KVLearn already
+> supplies liveness (λ-loaded residency + pressure-tracking θ) and already supplies a bandwidth↔compute-crossover price. The claim
+> therefore narrows to *where* liveness enters. If a reviewer replies "KVLearn's ATC already tracks the load you are describing,"
+> the candidate has no answer short of the experiment in kill-condition 3 below.
 
 **What would kill it (concrete falsification conditions):**
-1. Any prefix/KV-cache eviction policy whose eviction score consumes a **runtime-measured, load-dependent** prefill cost —
-   e.g. current running-batch size, queue depth, measured step time, or prefill/decode ratio — rather than a static FLOP/byte/size formula.
-   (MARCONI and RFC #23641 are static; PEEK is live but unpriced. A paper combining them kills this.)
+1. Any prefix/KV-cache eviction policy whose **recompute-price** term itself consumes a **runtime-measured, load-dependent** prefill
+   cost — e.g. current running-batch size, queue depth, measured step time, or prefill/decode ratio — rather than a calibrated
+   `length → FLOPs` or `length → bytes` formula. **KVLearn already occupies the residency/threshold half of this; only the price half is open.**
 2. A classical caching paper in which the retrieval cost `c(p, t)` is explicitly a function of the **server's current load or queue state**
-   (a "load-priced GreedyDual"). GreedyDual-Size's `c(p)` is per-object; if a variant exists with `c` state-dependent, this is occupied classically.
-3. An experiment showing the victim ranking under live pricing is **identical** to MARCONI/GreedyDual-Size ranking on the target box —
-   i.e. that the load dependence never changes which block is evicted, making the mechanism behaviourally vacuous.
+   (a "load-priced GreedyDual"). GreedyDual-Size's `c(p)` is per-object; weighted paging's weight is *learned*; if a variant exists
+   with `c` state-dependent, this is occupied classically.
+3. **The decisive experiment the lead must run:** show that re-pricing at the live phase mix changes the **victim ranking** versus
+   (a) KVLearn's `CARS` with a fixed calibrated `R(b)` and only its `γ = R̄·λ/M_S` load term, and (b) MARCONI/GreedyDual-Size ranking.
+   If the rankings coincide on the target box, the mechanism is behaviourally vacuous and the candidate should be abandoned.
 4. Note as a live risk: **arXiv 2608.23658** ("Elastic KV Cache for LLM Serving: A Working Reclamation Mechanism, and Why Chunked
    Prefill Already Closes the Gap", 2026/08/24, abs page fetched by me → `raw/arxiv_2608.23658_abs.html`) reports a measured
    **negative result** that "the prefill chunk-size penalty is small (median TTFT differs by about 1% between chunk sizes of 8192
@@ -121,12 +230,20 @@ the victim ranking differs, and the difference is observable exactly in the regi
 
 ## 4. What I could NOT verify (Candidate 1)
 
-- **ACM SYSTOR, "To Keep or Not to Keep: Learning KV Cache Retention in Disaggregated LLM Serving Systems"** —
-  `https://dl.acm.org/doi/10.1145/3793230.3837769` returned **HTTP 403** on three attempts (`/doi/`, `/doi/full/`, `/doi/pdf/`;
-  saved 403 bodies at `raw/acm_systor.html`, `raw/acm_systor_kv_retention.html`, `raw/acm_systor_full.html`, `raw/acm_systor_pdf.html`).
-  I have **only the search-result title**, no abstract, no body, no quote. **This is the single most likely unexamined occupant of
-  Candidate 1** (a *learned* retention policy in a disaggregated serving system could plausibly consume live load features).
-  It must be retrieved via a non-ACM route before Candidate 1 is treated as clear.
+- **ACM SYSTOR / KVLearn full text — PARTIALLY RESOLVED.** `dl.acm.org` returned **HTTP 403** on **four** attempts
+  (`/doi/`, `/doi/full/`, `/doi/pdf/`, `/doi/proceedings/10.1145/3793230`; saved 403 bodies at `raw/acm_systor.html`,
+  `raw/acm_systor_kv_retention.html`, `raw/acm_systor_full.html`, `raw/acm_systor_pdf.html`, `raw/acm_systor_proceedings.html`), and
+  `scilit.com` also returned **403** (`raw/scilit_cachewise.html`). **However I retrieved the abstract and the full cost model by
+  non-ACM routes** — the Semantic Scholar Graph API (`raw/ss_systor_api.json`) and the authors' own repo
+  (`raw/kvlearn_readme.md`, `raw/kvlearn_github.html`). **What is still NOT verified:** the paper's *body* — its experimental setup,
+  whether `R(b)` is ever re-evaluated from live scheduler state inside the paper (vs. the README's calibrated constants), and the
+  precise definition of `R̄` in `γ = R̄·λ/M_S`. The README is the **authors' own artifact** but is **not** the peer-reviewed text;
+  a claim that turns on `R(b)` being static should be re-checked against the paper body before it is relied on. The GOLD CC-BY
+  status and DOI mean a library or an unblocked network should resolve it.
+- **KVLearn `R̄` semantics** — I could not determine from the README whether `R̄` in `γ = R̄·λ/M_S` is a global mean recompute cost
+  (making `γ` essentially static) or a running mean (making the residency term genuinely live). This matters for the crux: if it is a
+  running mean over current arrivals, KVLearn's liveness is even stronger than I have credited.
+- **Whether a KVLearn arXiv preprint exists** — two searches found none; the artifact appears to be SYSTOR-only. I did not guess an arXiv ID.
 - **Google Research blog, "Optimizing cloud economics with linear elastic caching"** —
   `https://research.google/blog/optimizing-cloud-economics-with-linear-elastic-caching/` fetched (`raw/google_linear_elastic_caching.html`),
   but the article body is client-side rendered; the fetched HTML contains only site chrome. No text verified. Candidate relevance: cache
@@ -278,14 +395,30 @@ only surviving sliver, and the lead should treat it as fragile.**
 | 2506.02634 | `KVCache Cache in the Wild: Characterizing and Optimizing KVCache Cache at a Large Cloud Provider` | `raw/arxiv_2506.02634_abs.html` | ✓ (not used as occupant) |
 | 2507.07400 | `KVFlow: Efficient Prefix Caching for Accelerating LLM-Based Multi-Agent Workflows` | `raw/arxiv_2507.07400_abs.html` | ✓ (not used as occupant) |
 
+**Added after the lead's follow-up (titles read back from the lead's saved abs pages — I did not re-fetch them):**
+
+| arXiv ID | `citation_title` read back | Saved abs file (fetched by the LEAD) | Match? |
+|---|---|---|---|
+| 2410.21266 | `Online Weighted Paging with Unknown Weights` | `raw/abs_2410.21266.html` | ✓ (2024/10/28 — nearest classical neighbour) |
+| 2606.16824 | `CacheWise: Understanding Workloads and Optimizing KVCache Management for Efficiently Serving LLM Coding Agents` | `raw/abs_2606.16824.html` | ✓ (I additionally fetched the full body myself) |
+| 2607.19214 | `Keeping the Cache Warm Pays: Keepalive Economics for Agentic Workloads` | `raw/abs_2607.19214.html` | ✓ (I additionally fetched the full body myself) |
+
+**Non-arXiv occupant verified this session (the decisive one):**
+
+| Artifact | Title read back from | Saved files | Match? |
+|---|---|---|---|
+| SYSTOR 2026, DOI 10.1145/3793230.3837769 | `To Keep or Not to Keep: Learning KV Cache Retention in Disaggregated LLM Serving Systems` — read back from `raw/ss_systor_api.json` (`paper.title.text`) **and** independently from `raw/kvlearn_github.html` `<title>` | `raw/ss_systor_api.json`, `raw/kvlearn_readme.md`, `raw/kvlearn_github.html` | ✓ |
+
 **Defect log (search-engine output I refused to cite):**
 - `web_search` returned **`browse-export.arxiv.org/pdf/2607.16892`** and **`arxiv-org.ezproxy.obspm.fr/html/...`** as result URLs.
   I ignored both and fetched `arxiv.org/abs/...` / `arxiv.org/html/...` directly. No fabricated-ID incident occurred this session,
   but the ezproxy/browse-export surfaces are unreliable proxies and were not used as evidence.
 - I did **not** encounter or cite any `thaki-AI/daily-paper-*` artifact.
-- Searches surfaced **`www.emergentmind.com/papers/...`**, **`ar5iv.labs.arxiv.org`**, and **`alphaxiv.org`** mirrors. I used none of
-  them as the source of a quote; every quote above comes from a primary URL I fetched (`arxiv.org`, `usenix.org`, `docs.sglang.io`,
-  `github.com`, `raw.githubusercontent.com`).
+- Searches surfaced **`www.emergentmind.com/papers/...`**, **`ar5iv.labs.arxiv.org`**, **`alphaxiv.org`**, and **`scilit.com`** mirrors.
+  I used none of them as the source of a quote; every quote above comes from a primary URL I fetched (`arxiv.org`, `usenix.org`,
+  `docs.sglang.io`, `github.com`, `raw.githubusercontent.com`) or from the Semantic Scholar Graph API record for the one DOI that is
+  403-walled here. I did fetch `ar5iv.labs.arxiv.org/html/2606.16824` (`raw/ar5iv_cachewise.html`, HTTP 200) but used it only as a
+  cross-check, not as the source of any quote.
 
 ---
 
@@ -349,7 +482,32 @@ only surviving sliver, and the lead should treat it as fragile.**
 (One `web_search` call mid-session returned a transport error — `DeepSeek returned an unprocessable response body: TypeError: terminated`
 — for the batch containing queries 48–50; it was re-issued as queries 51–52.)
 
+## Follow-up queries issued after the lead's leads (verbatim, in order)
+
+53. `"To Keep or Not to Keep" learning KV cache retention disaggregated serving arxiv`
+54. `Online Weighted Paging with Unknown Weights NeurIPS 2024 learned page weights`
+55. `CacheWise KVCache management coding agents reuse-aware eviction tool call metadata`
+56. `KVLearn learning-based retention framework keep evict cost-optimization disaggregated LLM serving abstract`
+57. `"To Keep or Not to Keep" Liu Yu Jiang Wang SYSTOR 2026 KV cache retention abstract`
+58. `KVLearn prefix reuse predictor cost-aware retention score CARS adaptive threshold controller`
+59. `KVLearn arxiv preprint FastLM disaggregated KV cache retention`
+
 ## Exact URLs I fetched (all via `curl -sL --retry 4 --retry-delay 2 --retry-all-errors -A "<Chrome UA>"`)
+
+### Follow-up fetches (after the lead's leads)
+
+33. `https://arxiv.org/html/2607.19214` → `raw/arxiv_2607.19214_html.html` (body; proves the re-prefill price is a constant list price)
+34. `https://arxiv.org/html/2606.16824` → `raw/arxiv_2606.16824_html.html` (body; proves CacheWise's victim rule is `argmax τ_j`, unpriced)
+35. `https://papers.nips.cc/paper_files/paper/2024/hash/8f9d459c19b59b5400ce396e0f8c23e0-Abstract-Conference.html` → `raw/nips24_weighted_paging.html`
+36. `https://www.semanticscholar.org/api/1/paper/6db782df823d9da204a59180305aba81d47b3997` → `raw/ss_systor_api.json` — **the non-ACM route that recovered the SYSTOR/KVLearn abstract and metadata**
+37. `https://raw.githubusercontent.com/FastLM/KVLearn/main/README.md` → `raw/kvlearn_readme.md` — **the authors' own CARS/R/U/ATC cost model**
+38. `https://github.com/FastLM/KVLearn` → `raw/kvlearn_github.html` — independent `<title>` confirmation of the SYSTOR 2026 paper
+39. `https://ar5iv.labs.arxiv.org/html/2606.16824` → `raw/ar5iv_cachewise.html` (cross-check only; **not** a quote source)
+40. `https://www.semanticscholar.org/paper/6db782df823d9da204a59180305aba81d47b3997` → `raw/ss_systor_retention.html` (**HTTP 202, 0 bytes — empty**)
+41. `https://www.scilit.com/publications/e478c3369d83c15a3c88197997a9a95a` → `raw/scilit_cachewise.html` (**HTTP 403**)
+42. `https://dl.acm.org/doi/proceedings/10.1145/3793230` → `raw/acm_systor_proceedings.html` (**HTTP 403**)
+
+### Main-round fetches
 
 **HTTP 200 and quoted above**
 1. `https://github.com/vllm-project/vllm/issues/23641` → `raw/vllm_issue_23641.html`
@@ -389,9 +547,24 @@ only surviving sliver, and the lead should treat it as fragile.**
 33. `https://dl.acm.org/doi/10.1145/3793230.3837769` → **403** → `raw/acm_systor_kv_retention.html`
 34. `https://dl.acm.org/doi/full/10.1145/3793230.3837769` → **403** → `raw/acm_systor_full.html`
 35. `https://dl.acm.org/doi/pdf/10.1145/3793230.3837769` → **403** → `raw/acm_systor_pdf.html`
+36. `https://dl.acm.org/doi/proceedings/10.1145/3793230` → **403** → `raw/acm_systor_proceedings.html` (follow-up)
+37. `https://www.scilit.com/publications/e478c3369d83c15a3c88197997a9a95a` → **403** → `raw/scilit_cachewise.html` (follow-up)
+38. `https://www.semanticscholar.org/paper/6db782df823d9da204a59180305aba81d47b3997` → **202 with 0 bytes** → `raw/ss_systor_retention.html`
+    (the HTML paper page is empty; the **API** endpoint #36 above is the one that works)
+
+**Not a quote source (listed for completeness):** `https://ar5iv.labs.arxiv.org/html/2606.16824` → `raw/ar5iv_cachewise.html`, HTTP 200,
+used only as a cross-check of the CacheWise body I had already fetched from `arxiv.org`. No quote in this document comes from it.
 
 ## Derived (tag-stripped) text files I created for grep-ability
 
 `raw/_2504_11320.txt`, `raw/_2607_16892.txt`, `raw/_2607_02525.txt`, `raw/_2607_09248.txt`,
-`raw/_2411_19379.txt`, `raw/_hyperbolic.txt`. Each is a mechanical strip of tags/entities from the corresponding saved raw HTML;
+`raw/_2411_19379.txt`, `raw/_hyperbolic.txt`, `raw/_2607_19214.txt`, `raw/_2606_16824.txt`.
+Each is a mechanical strip of tags/entities from the corresponding saved raw HTML;
 every quote attributed to one of these was additionally confirmed to be present in the saved raw HTML itself.
+
+## Files saved but NOT fetched by me (supplied by the lead; I only grepped them)
+
+`raw/abs_2410.21266.html`, `raw/abs_2606.16824.html`, `raw/abs_2607.19214.html`, `raw/gds_usenix.html`.
+For these four I verified the `citation_title` / page content **inside the saved file** and did not re-fetch the URL.
+Note `raw/gds_usenix.html` (lead's copy) and `raw/gds_usenix_node8.html` (my copy) are two separate fetches of the same USITS'97 page
+(different md5); the quotes in this document cite **my** copy `raw/gds_usenix_node8.html`, and the lead's copy carries the same text.
