@@ -53,7 +53,17 @@
      **只有该分支**调用 `set_params_splitkv`（同文件 `:756-761`）；
      非交换的 paged 分支是 `STD_TORCH_CHECK(num_splits <= 1, …)`（同文件 `:763`）。
    - Qwen3-4B 恰好满足：`num_attention_heads 32 > num_key_value_heads 8`，decode `seqlen_q == 1`。
-   ⇒ **C99 一族"sm120 缺 split-KV"在本机不成立**（详见 §2 的 C99 行）。
+   ⇒ 本节原结论写作 **C99 一族「sm120 缺 split-KV」在本机不成立**（详见 §2 的 C99 行）。
+
+   > **⚠️ 2026-09-15 更正（`notes/KILLREASON_AUDIT_2026-09-15.md`，我已采纳并回读源码确认）**：
+   > 上面这条**只有二进制那一半成立**。**符号存在 ≠ 可达** —— 已装封装在
+   > `<V>/vllm_flash_attn/flash_attn_interface.py:311-312` 用 **Python** 把它闸掉了：
+   > `if num_splits > 1: raise NotImplementedError(...)`。上游 `flash_api.cpp` 的 GQA-swap 分支
+   > 在 Python 传入 `>1` 时**根本没机会执行**。
+   > ⇒ **本节应记为 `UNRESOLVED`，不是 established。** 最便宜的收口：一次短运行打印 decode batch
+   > 在 `cudagraph_mode=FULL` 下的 `attn_metadata.max_num_splits`。
+   > **方法学教训**：本工作区已把「断言配置真的生效，而不是断言意图」写进纪律，
+   > 却没有把同一条纪律用在**源码路径判定**上 —— `nm -D` 看到的符号，与 Python 层实际会不会走到，是两件事。
 4. **`enable_qk_norm_rope_fusion` 在 CUDA 上被硬关**：`<V>/config/vllm.py:252,275,298,321` 在 **O0/O1/O2/O3 四档全为 `False`**；
    注册点 `<V>/compilation/passes/pass_manager.py:225`。融合核仅支持 head_dim ∈ (64,128,256)
    （`<V>/compilation/passes/fusion/qk_norm_rope_fusion.py:32`），Qwen3-4B 的 `head_dim=128` **在集合内**。
