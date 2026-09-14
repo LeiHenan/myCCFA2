@@ -1,0 +1,2392 @@
+Hardware Co-Design Scaling Laws via Roofline
+Modelling for On-Device LLMs
+Luoyang Sun1,2,3,4, Jiwen Jiang1,2,4, Yifeng Ding4, Fengfa Li4, Yan Song5, Haifeng Zhang2,3, Jian Ying1, Lei
+Ren4,†, Kun Zhan4, Wei Chen4,†, Yan Xie4 and Cheng Deng6,‡
+1AI Lab, The Yangtze River Delta,2Institution of Automation, Chinese Academy of Sciences,3University of Chinese Academy of
+Sciences, 4Li Auto,5University College London,6The University of Edinburgh
+Vision-Language-Action Models (VLAs) have emerged as a key paradigm of Physical AI and are in-
+creasingly deployed in autonomous vehicles, robots, and smart spaces. In these resource-constrained
+on-device settings, selecting an appropriate large language model (LLM) backbone is a critical challenge:
+models must balance accuracy with strict inference latency and hardware efficiency constraints. This
+makeshardware-softwareco-designagame-changingrequirementforon-deviceLLMdeployment, where
+each hardware platform demands a tailored architectural solution. We propose a hardware co-design
+law that jointly captures model accuracy and inference performance. Specifically, we model training loss
+as an explicit function of architectural hyperparameters and characterise inference latency via roofline
+modelling. We empirically evaluate 1,942 candidate architectures on NVIDIA Jetson Orin, training 170
+selected models for 10B tokens each to fit a scaling law relating architecture to training loss. By coupling
+this scaling law with latency modelling, we establish a direct accuracy-latency correspondence and
+identify the Pareto frontier for hardware co-designed LLMs. We further formulate architecture search as
+a joint optimisation over precision and performance, deriving feasible design regions under industrial
+hardware and application budgets. Our approach reduces architecture selection from months to days.
+At the same latency as Qwen2.5-0.5B on the target hardware, our co-designed architecture achieves
+19.42% lower perplexity on WikiText-2. To our knowledge, this is the first principled and operational
+framework for hardware co-design scaling laws in on-device LLM deployment. We will make the code
+and related checkpoints publicly available.
+Figure 1| Hardware co-design scaling law for on-device LLMs. Architectural choices and hardware
+platforms jointly shape the loss-latency Pareto frontier, revealing Pareto-optimal configurations under
+system constraints.
+∗Version: v1 (major update on Feb 10, 2026).
+†Project Leader.
+‡Correspondence to Cheng Deng.
+arXiv:2602.10377v1  [cs.LG]  10 Feb 2026
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Contents
+1 Introduction 4
+2 Related Work 6
+2.1 Efficient LLM Architectures . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 6
+2.2 On-Device LLM Deployment . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 6
+2.3 Hardware-Aware Architecture Optimization . . . . . . . . . . . . . . . . . . . . . . . 6
+3 Formulating Hardware Co-Design Law for on-Device LLM 6
+3.1 Implicit Optimization Objective of Hardware Co-Design Law . . . . . . . . . . . . . . 6
+3.2 Precision Modeling via Loss . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 7
+3.3 Performance Modeling via Latency . . . . . . . . . . . . . . . . . . . . . . . . . . . . 8
+3.4 Pareto-optimal architectures . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 8
+4 Pareto-Optimal Architecture Search 8
+4.1 Loss Prediction via Scaling Laws . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 9
+4.2 Latency Modeling . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 11
+4.3 Pareto Frontier Analysis . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 11
+5 Theoretical Framework for Hardware-Aware Architecture Optimization 16
+5.1 From Empirical Search to Principled Optimization . . . . . . . . . . . . . . . . . . . . 16
+5.2 Problem Formulation and Constraint Types . . . . . . . . . . . . . . . . . . . . . . . . 16
+5.3 Optimal Activation Rate Across Constraint Regimes . . . . . . . . . . . . . . . . . . . 16
+5.4 Optimal Depth, FFN Ratio, and GQA . . . . . . . . . . . . . . . . . . . . . . . . . . . 18
+5.5 Design Principles and Practical Guidelines . . . . . . . . . . . . . . . . . . . . . . . . 19
+5.6 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21
+6 Conclusion 21
+A Architecture Search Space 26
+B Pre-training Details 26
+C Scaling Law Coefficients 26
+D Latency Modeling Details 27
+2
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+E Problem Formulation and Roofline Analysis 28
+F Case D1: Decode, Latency-Constrained 36
+G Case D2: Decode, Memory-Constrained 39
+H Case D3: Decode, Dual-Constrained 41
+I Case P1: Prefill, Latency-Constrained 44
+J Case P2: Prefill, Memory-Constrained 46
+K Case P3: Prefill, Dual-Constrained 47
+L Summary 49
+3
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+1. Introduction
+Large language models are increasingly deployed in embodied AI systems such as autonomous
+vehicles and mobile robots, where they serve as high-level planners within Vision–Language-Action
+frameworks [1, 2, 3]. However, on-device platforms face strict constraints on memory, bandwidth,
+power, and latency that fundamentally reshape model design [4, 5]. Architectures optimized for
+cloud GPUs often become infeasible on the edge: high-accuracy models may violate latency budgets,
+while latency-optimized pipelines can degrade accuracy. This tension motivates hardware–software
+co-design, where architectural choices are explicitly guided by hardware capabilities and deployment
+constraints [6].
+The fundamental challenge stems from the irregular compute–memory profile of transformers [7,
+8]: attention is bandwidth-bound, feedforward layers are compute-bound, and KV-cache stresses
+on-chip memory. Despite high theoretical throughput from AI-SoCs, LLM inference rarely reaches peak
+utilization. Instead, performance is dictated by arithmetic intensity, on-chip locality, and workload
+patterns like KV-cache footprint and MoE routing. Architectural modification can shift operations
+acrossregimesinthehardwareRooflinemodel[ 9,10], showninFigure2(a). Arepresentativeexample
+is scaling model depth and width in Transformer-based LLMs. Increasing depth results in linear
+growth in both computation and memory traffic, as each additional layer introduces a fixed amount
+of parameter reads and arithmetic operations. In contrast, increasing model width leads to quadratic
+growth in parameter size and memory I/O, since both attention and feed-forward layers scale with
+the square of the hidden dimension. Under batch-1 inference on edge devices, where weight reuse
+across tokens is limited and on-chip cache capacity is insufficient to hold model parameters, inference
+latency is dominated by repeated weight loads from off-chip memory. As a consequence, arithmetic
+intensity remains low and does not scale proportionally with model width, pushing execution into a
+memory bandwidth–limited regime in the roofline model [11, 12]. This mismatch between scaling
+behavior and hardware characteristics motivates hardware-aware architectural design beyond naive
+depth and width scaling.
+(a) Roofline Model
+ (b) Neural Architecture Search
+ (c) Pareto Frontier
+Figure 2| Hardware co-design strategy preliminaries. (a) Roofline model [9] comparing achieved
+performance against theoretical hardware limits. (b) One-shot NAS [13] framework jointly optimizing
+architecture and weights. (c) Pareto frontier visualizing accuracy-efficiency trade-offs [14].
+In order to find an optimal model, Neural architecture search (NAS) [15] usually is an appropriate
+way, shown in Figure 2(b). NAS has traditionally focused on optimizing a single objective, such as
+validation loss or accuracy, often under loosely defined computational budgets [13]. While effective
+in unconstrained settings, these approaches are ill-suited to edge and on-device platforms, where
+latency–accuracy trade-offs are unavoidable. As shown in Table 1, LLM inference system design
+involves several fundamental trade-offs [16, 17, 18, 19, 20, 21, 8]. This paper focuses on the interplay
+between model loss and inference latency in hardware co-designed LLMs (bold in Table 1), which is
+commonly observed in practice but has not been systematically characterized. This trade-off motivates
+4
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+a Pareto-based approach to architecture search [14], visualized as Figure 2(c). Instead of a single
+optimal model, Pareto optimization identifies a frontier of non-dominated architectures balancing
+accuracy and latency. This allows designers to directly select models fitting specific deployment
+constraints, avoiding exhaustive enumeration [7, 22].
+Table 1|Trade-off Analysis for LLM Inference System Design
+Scenario Trade-off Targets Pareto Trade-off Factors
+Memory allocation optimization Throughput vs. Single-Query
+Latency
+Batch size selection and KV-cache re-
+use strategies
+Quantization strategy selection Memory Cost vs. Model Precision INT8 / INT4 quantization levels and
+accuracy verification methods
+Distributed inference system Network Communication Cost vs.
+Compute Parallelism
+Model parallelism granularity and
+pipeline depth
+Hardware co-designed LLM Model Loss vs. Inference
+Latency
+Equivalent parameter count and
+inference time over hardwares
+We propose a hardware-aware modeling framework (shown in Figure 1) for on-device LLMs that
+jointly captures accuracy and inference performance. We model loss via architectural hyperparameters
+and predict latency using roofline analysis, providing a unified view of the accuracy–latency trade-
+off. We validate the framework on NVIDIA Jetson Orin by benchmarking thousands of candidate
+architectures and training a subset to fit a parameter–loss scaling law. Combining this law with
+hardware-level latency modeling yields the Pareto frontier for the target system. We extend this into
+a theoretical joint optimization formulation over precision and performance, deriving feasible design
+regions under practical constraints.
+Our main contribution can be listed as follows:
+• We develop a hardware co-design law that combines loss scaling laws with roofline-based latency
+modeling, enabling an explicit Pareto characterization of accuracy–latency trade-offs under fixed
+hardware constraints for on-device LLMs. To the best of our knowledge, this is the first practical
+and operational hardware co-design scaling law for on-device LLMs.
+• We benchmark approximately 1,942 LLM architectures on NVIDIA Jetson Orin to identify hardware-
+aligned architectural patterns, select 170 representative models, and train each for 10B tokens to
+empirically fit the loss scaling law and validate the resulting accuracy–latency Pareto structure.
+• We extend the empirical framework into a principled theoretical formulation that casts architecture
+search as a joint optimization problem over precision and performance, deriving feasible design
+regions under industrial hardware and application budgets.
+• Since this approach reduces architecture selection time from months to only few days, we will
+release the full methodology, codebase, trained models, and detailed evaluation protocols to
+support reproducibility and support the development of hardware co-design community.
+The paper is organized as follows. Section 2 reviews related works. In Section 3, we formulate
+the hardware co-design law under on-device constraints. In Section 4, we present Pareto-optimal
+architecture discovery via roofline modeling, detailing how optimal model architectures are identified
+for a given hardware platform. As for Section 5, we extend the empirical framework to a theoretical
+formulation, casting architecture search as a joint optimization problem over precision and perform-
+ance. Finally, we discuss practical usage and application scenarios of the proposed hardware co-design
+law.
+5
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+2. Related Work
+2.1. Efficient LLM Architectures
+Recent LLM designs prioritize inference efficiency beyond parameter scaling. Key directions include:
+(1)sparse activationvia MoE routing [23, 24], (2)KV-cache reductionthrough multi-head latent
+attention (MLA) [8] or sliding-window attention [25], (3)sub-quadratic attentionusing linear-
+complexity mechanisms [26, 27], and (4)hybrid architecturescombining SSM with attention [28].
+Gated attention variants [29, 30] further enable token-dependent compute modulation. These
+innovations fundamentally shift inference bottlenecks from compute-bound to memory- or routing-
+sensitive regimes.
+2.2. On-Device LLM Deployment
+Deploying LLMs on edge devices requires co-optimization across model, compression, and system
+layers. SLMs such as Qwen [31], MiniCPM [32], and SmolLM [33] achieve strong performance
+through data-efficient training. Quantization methods (AWQ [34], GPTQ [35]) and inference engines
+(vLLM [36], MLC-LLM [37], PowerInfer [38]) enable efficient execution on heterogeneous hardware.
+Architecturally, deeper designs with shared embeddings [7] and sparsity-aware mechanisms [8]
+demonstrate favorable accuracy–efficiency trade-offs for resource-constrained deployment.
+2.3. Hardware-Aware Architecture Optimization
+Neural Architecture Search (NAS) [39, 40] automates architecture design but faces challenges in LLM
+contexts: prohibitive search costs, difficulty incorporating latency/memory constraints, and limited
+interpretability. Profiling tools like LLM-Viewer [10] and LLMCompass [41] provide hardware-aware
+analysis but lack integration with architecture search. Studies on depth–width trade-offs [42, 11]
+yield inconsistent conclusions, often neglecting deployment constraints.
+Positioning.This work bridges LLM architecture design with hardware-aware performance model-
+ing. We extend roofline analysis to explicitly model how architectural choices, MoE sparsity, attention
+variants, KV-cache strategies, map to compute- or bandwidth-limited regimes on edge devices, en-
+abling architecture search guided by hardware co-design law rather than post-hoc benchmarking.
+3. Formulating Hardware Co-Design Law for on-Device LLM
+Classical scaling laws [43, 44] characterize the relationship between model size, data size, and
+training compute under fixed training budgets. In contrast, this work focuses on the deployment
+regime, where the objective is to identify the optimal architecture𝜽∗ under a fixed inference latency
+budget𝑇lat and precision constraints. In this section, we formalize this problem and introduce a
+hardware co-design formulation for on-device LLMs.
+3.1. Implicit Optimization Objective of Hardware Co-Design Law
+Optimization Objective.We seek to minimize validation loss subject to latency and memory con-
+straints:
+min
+𝜽∈Θ
+L(𝜽)s.t.𝑇(𝜽;𝐻,𝑊)⩽𝑇 lat, 𝑀(𝜽;𝑊)⩽𝑀 budget (1)
+where 𝜽=(𝑙,𝑑,𝑑 𝑚,𝑟,𝜌) denotes the model architecture. Specifically,𝑙 is the number of transformer
+layers (depth),𝑑 is the model width (hidden dimension), and𝑑𝑚 =𝑑 ℎ×𝑛 𝑘𝑣 is the key–value cache
+6
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+dimension, determined by the per-head dimension𝑑ℎ and the number of key–value heads𝑛𝑘𝑣 in
+grouped-query attention (GQA), which directly governs KV-cache memory footprint and bandwidth
+consumption during autoregressive decoding. The FFN expansion ratio𝑟 controls the size of the
+intermediate feed-forward layer, with intermediate dimension𝑟·𝑑 , and therefore dominates per-token
+compute. For mixture-of-experts (MoE) models,𝜌=𝐾/𝐸∈( 0, 1] denotes the expert activation rate,
+where 𝐾 experts are selected from a pool of𝐸 experts per token. In this setting,𝑟 represents the
+total expansion ratio across all activated experts: if each expert has per-expert expansion𝑟single, then
+𝑟=𝐾·𝑟 single, ensuring that FFN compute remains comparable across different sparsity levels.
+The latency surrogate𝑇(𝜽 ;𝐻,𝑊) models the end-to-end latency under context encoding and
+autoregressive generation, depending on both architectural and hardware characteristics. Hardware
+parameters 𝐻=(𝜋 𝐻,𝛽 𝐻) include the peak compute throughput𝜋𝐻 (FLOPS) and sustained memory
+bandwidth 𝛽𝐻 (Bytes/s). Under roofline analysis,𝜋𝐻 and 𝛽𝐻 jointly determine whether inference
+is compute- or bandwidth-bound. The workload configuration𝑊=(𝐵,𝑆 in,𝑆out) specifies the batch
+size 𝐵, input sequence length𝑆in, and output sequence length𝑆out, which collectively affect attention
+complexity and KV-cache access patterns during decoding. The memory surrogate𝑀(𝜽 ;𝑊) estimates
+memory consumption based on model architecture and workload configuration.
+Problem Tractability.Due to the high dimensionality of architectural hyperparameters in modern
+LLMs, the search space induced by Equation 1 is prohibitively large to enumerate. As a result, directly
+solving this constrained optimization problem is computationally infeasible in realistic deployment
+settings. Rather than performing brute-force search, we approximate the optimization landscape
+through explicit surrogate models that capture stable trends in both learning dynamics and system
+behavior. Specifically, in the following two subsections, we model validation loss using a parametric
+polynomial approximation fitted from empirical training runs, and characterize inference latency
+via a roofline-based hardware performance model. This approach enables principled and scalable
+identification of Pareto-optimal architectures under fixed hardware constraints.
+3.2. Precision Modeling via Loss
+Beyondreducingthecostofhyperparametersearch, ourgoalistocapturesystematicandgeneralizable
+relationships between architectural design choices and model quality. We therefore construct an
+explicit analytical surrogate for validation loss, approximating the true objective in Equation 1 using
+empirical scaling behavior observed during training.
+As described in Section 4, we train 170 architectures covering both dense and MoE models and
+fit an empirical scaling law based on Equation 2. This polynomial approximation enables direct
+prediction of validation loss from architectural parameters, facilitating efficient exploration of the
+design space.
+Consistent with prior unified scaling analyses [45, 46], we model loss as a separable function of
+architecture components. Our empirical results reveal that sparsity-driven and base-capacity terms
+follow different width scaling exponents,
+ˆL(𝜽)= 𝜅𝑙
+𝑙𝛼𝑙
++
+𝜅𝜌·𝜌 𝛼𝜌
+𝑟𝛼𝑟𝑑𝛽1
++ 𝜅𝑑
+𝑟𝛼𝑟𝑑𝛽2
++ 𝜅𝑚
+𝑑𝛼𝑚
+𝑚
++L∞,(2)
+where 𝜑={𝜅 𝑙,𝜅𝜌,𝜅𝑑,𝜅𝑚,𝛼𝑙,𝛼𝜌,𝛼𝑟,𝛼𝑚,𝛽 1,𝛽 2,L∞} are fitted parameters. Note that the KV-cache
+dimension satisfies𝑑𝑚 =𝑑/gqa , wheregqa=𝑛 ℎ/𝑛𝑘𝑣 is the GQA group ratio; this reparameterization
+is used in the theoretical analysis of Section 5.
+7
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+3.3. Performance Modeling via Latency
+For the latency term, we derive an approximate mathematical expression grounded in roofline analysis,
+as latency is determined by the interaction between model compute, memory access patterns, and
+hardware characteristics. The hardware parameters required for this modeling include peak compute
+throughput and sustained memory bandwidth. While our current formulation targets conventional
+memory-centric accelerator architectures, it naturally generalizes to other hardware systems, which
+we leave for future work.
+In this paper, we derive a first-principles latency model grounded in the roofline framework [47].
+The roofline model characterizes computational kernels by arithmetic intensityI=F/M (FLOPs per
+byte). Given hardware with peak compute𝜋𝐻 (FLOPS) and memory bandwidth𝛽𝐻 (Bytes/s), ideal
+latency under the theoretical roofline modelTsatisfies:
+T=max
+F
+𝜋𝐻
+,M
+𝛽𝐻
+
+.(3)
+Here we directly give out the total inference latency under the roofline modeling. For a model
+with 𝑙 layers, 𝑆in input tokens, and𝑆out generated tokens, the end-to-end latency𝑇total, including
+prefill and decode, is formulated as follows.
+ˆ𝑇𝜽 =𝑇total(𝑆in,𝑆out)=𝑙·𝑇 pre
+layer(𝑆in)+
+𝑆out∑︁
+𝑆=1
+𝑙·𝑇 dec
+layer(𝑆+𝑆 𝑖𝑛),(4)
+All FLOP counts and memory-traffic analysis are derived in Appendix E.
+3.4. Pareto-optimal architectures
+During the empirical experiments, we search for optimal LLM architectures via Pareto frontier analysis.
+An architecture𝜽★ is said to be Pareto-optimal if
+𝜽≠𝜽 ★ s.t.L(𝜽)≤L(𝜽 ★) ∧𝑇(𝜽;𝐻,𝑊)≤𝑇(𝜽 ★;𝐻,𝑊),(5)
+with at least one inequality strict. The set of all such𝜽★ defines the Pareto frontier in the loss–latency
+plane. In the following section, we present empirical experiments for Pareto-optimal architecture
+discovery under fixed hardware and context constraints.
+Bycombiningtheempiricallossmodel(Section3.2)withtheanalyticallatencymodel(Section3.3),
+we obtain two jointly optimizable objective functions that capture accuracy and inference efficiency,
+respectively. Within the Pareto optimality framework, we perform both empirical evaluation and
+analytical reasoning to identify architectures that optimally trade off validation loss and end-to-end
+inference latency on a given hardware platform.
+We refer to the resulting architecture selection principle, together with its associated parameter
+scaling behavior under hardware constraints, as the hardware co-design scaling law. This law serves
+as a practical guideline for selecting and deploying on-device large language models under strict
+latency and resource budgets.
+4. Pareto-Optimal Architecture Search
+This section presentsPLAS(Pareto-optimalLLMArchitectureSearch), a framework that jointly
+models training loss and inference latency to enable hardware-aware architecture selection. We first
+8
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Figure 3| Overview of Pareto-optimal LLM Architecture Search framework (PLAS). The framework
+integrates (1) empirical loss modeling via scaling law fitting, (2) roofline-based latency estimation,
+and (3) Pareto frontier construction to enable hardware-aware architecture selection.
+construct an empirical loss model by fitting results from 170 trained architectures to approximate
+validation loss without exhaustive search. We then characterize inference latency through roofline-
+based analytical modeling and practical measurements on edge platforms. Finally, we integrate
+both models to derive Pareto frontiers and demonstrate how they guide architecture selection under
+different application-specific latency budgets. Figure 3 illustrates the overall workflow.
+4.1. Loss Prediction via Scaling Laws
+Obtaining a high-fidelity parametric scaling law is non-trivial. Our fitting is grounded in 170 trained
+Transformer configurations spanning both sparse (MoE) and dense architectures, each trained for
+a fixed 10B-token budget under tightly controlled settings. The architectural configurations are
+carefully selected to span the full design space, jointly varying depth, width, MoE sparsity, FFN
+expansion ratio, and KV-cache dimensions (detailed search space in Appendix A), while avoiding
+degenerate or ill-conditioned regimes.
+4.1.1. Pre-training Protocol
+All models share the following training setup to ensure fair comparison:
+• Training Data.Each configuration is trained on 10B tokens comprising a mixture of general corpus,
+mathematical reasoning, and code data, sufficient to observe scaling behavior while remaining
+computationally tractable. The training corpus will be released upon publication.
+9
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+• Optimization.All models are trained using the AdamW optimizer with𝛽1 = 0.90, 𝛽2 = 0.95, and
+weight decay of0.01. The learning rate follows a cosine decay schedule from1× 10−4 to1× 10−6,
+with linear warmup over the first0.2%of training steps. QK-Norm is employed to enhance training
+stability, particularly for MoE configurations. All experiments use a global batch size of 256.
+• Evaluation.Model performance is evaluated using upstream validation loss on a held-out subset
+of approximately 1B tokens, averaged over the final 10 optimization steps to mitigate variance. We
+further assess generalization by reporting perplexity on the WikiText-2 test set.
+Further details on the pre-training protocol are provided in Appendix B.
+4.1.2. Scaling Law Fitting
+Figure 4| Scaling law fit quality. Training𝑅2 = 0.975(138 configurations); validation𝑅2 = 0.952(32
+held-out configurations).
+We fit a parametric scaling law of the form in Equation 2 using nonlinear least squares on 120
+training configurations, with 17 held-out configurations reserved for validation. This extensive and
+structured exploration enables a stable fit with strong generalization: as shown in Figure 4, the
+resulting model achieves a training𝑅2 of0.975and a validation 𝑅2 of0.952. Such predictive
+accuracy is difficult to obtain in practice, as loss landscapes across architectural dimensions are highly
+non-convex and often confounded by parameter coupling effects.
+Despite operating over a substantially more heterogeneous architectural space that includes both
+dense and sparse models, the fitted scaling law exhibits stable and consistent exponents across depth,
+width, sparsity, and FFN expansion. This level of consistency is comparable to prior empirical scaling
+analyses [48, 46], while achieving stronger generalization performance on held-out configurations,
+suggesting improved robustness beyond architecture-specific fitting. The fitted coefficients and
+complete functional form are provided in Appendix C.
+Crucially, the quality of the fit validates our central premise: architecture-level loss can be modeled
+explicitly and predictably when training compute, data budget, and optimization protocol are fixed,
+thereby enabling principled extrapolation and Pareto-optimal architecture selection under hardware
+constraints.
+10
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+4.2. Latency Modeling
+To enable efficient architecture search, we require fast and accurate latency estimation that can eval-
+uate tens of thousands of configurations without exhaustive measurement. Our framework employs
+roofline-based analytical modeling as the primary evaluation backend, with empirical validation for
+top candidates.
+4.2.1. Roofline-Based Prediction
+We estimate inference latency by classifying each operator as compute-bound or memory-bound
+based on its arithmetic intensity relative to hardware capabilities. For each operator, latency is
+estimated from FLOPs, memory access volume, and hardware peak throughput (compute capacity
+and memory bandwidth). This analytical approach enables evaluation of50,000+ configurations in
+approximately 20 minutes, making it ideal for large-scale exploration.
+To ensure prediction fidelity, we validate top Pareto candidates via empirical measurement using
+the vLLM inference engine with subprocess isolation for accurate GPU memory accounting. The
+roofline predictions exhibit strong correlation with measured latencies (details in Appendix D),
+confirming the reliability of our analytical approach for architecture ranking.
+4.2.2. Workload Configuration
+For on-device deployment targeting VLA workloads in autonomous driving, we focus on batch size
+𝐵=1with 1,024 input tokens and 16 output tokens. Under these settings:
+• Prefill Latencyscales with input sequence length due to attention computation (𝑂(𝑆 2) complexity),
+and is primarily compute-bound at moderate sequence lengths.
+• Decode Latencyis dominated by weight loading from memory, as each token generation requires
+accessing the full model weights while performing minimal computation per byte loaded.
+The appropriate optimization target depends on workload characteristics: decode latency for inter-
+active or streaming applications where per-token throughput is critical, prefill latency for long-context
+processing with short outputs, and total end-to-end latency for balanced tasks. As we demonstrate in
+Section 4.3, different optimization targets yield markedly different optimal architectures, motivating
+our multi-objective Pareto analysis. Further details on latency scaling behavior across sequence
+lengths and batch sizes are provided in Appendix D.
+4.3. Pareto Frontier Analysis
+Given explicit loss and latency models, we cast architecture selection as a bi-objective optimization
+problem and identify Pareto-optimal designs that jointly minimize validation loss and inference
+latency. This formulation enables systematic exploration of the accuracy–efficiency trade-off and
+supports principled, scenario-aware architecture selection under hardware constraints.
+4.3.1. Frontier Construction
+Given loss predictions{ ˆL(𝜽𝑖)} and latency estimates{ˆ𝑇(𝜽𝑖)} for a set of architectural configurations,
+we identify the practical Pareto frontier as:
+P={𝜽 𝑖 :𝜽 𝑗 s.t. ˆL(𝜽𝑗)< ˆL(𝜽𝑖)∧ ˆ𝑇(𝜽 𝑗)< ˆ𝑇(𝜽𝑖)}(6)
+11
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+We construct the Pareto frontier using an adaptive search strategy. Starting from an initial set of
+architectures generated via Latin hypercube sampling to ensure broad coverage of the design space,
+we identify the current Pareto-optimal set based on predicted loss and latency. We then iteratively
+refine the search by sampling new configurations in sparsely covered regions of the frontier and in
+local neighborhoods of Pareto-optimal points. This process repeats until the frontier stabilizes and no
+further improvements are observed.
+4.3.2. Precision–Performance Trade-off
+Figure 5 presents Pareto frontiers under three latency objectives (prefill, decode, and total), each
+comparing FP16 and INT8 precision. Across all scenarios, INT8 quantization consistently shifts the
+frontier toward lower latency at equivalent loss, demonstrating clear efficiency gains from reduced-
+precision inference.
+Figure 5| Pareto frontiers under prefill (1,024 tokens), decode (16 tokens), and total latency
+optimization on NVIDIA Jetson Orin, comparing FP16 and INT8 precision.
+However, the observed speedup is notably less than the theoretical2× improvement. This sub-
+linear scaling arises from two primary factors: (1) INT8 acceleration applies only to linear operations
+(matrix multiplications), while non-linear components—attention softmax, layer normalization, and
+activationfunctions—remaininhigherprecision; and(2)quantizationanddequantizationoverheadat
+layer boundaries partially offsets the computational savings from reduced-precision arithmetic. These
+observations suggest that realizing the full potential of quantized inference requires co-designed archi-
+tectures that minimize non-linear operation overhead and reduce precision-conversion frequency—a
+promising direction for future work.
+4.3.3. Architecture Selection Guidelines
+The Pareto frontier provides a menu of optimal configurations for different latency budgets. We
+map representative latency targets to application domains in Table 2, providing practitioners with
+actionable guidance for architecture selection.
+Table 2|Latency requirements for representative edge deployment scenarios.
+Application Latency Target Rationale
+Embodied AI<20 ms (decode) Real-time interaction
+Smart Home<500 ms (total) Conversational response
+Autonomous Driving<100 ms (total) Safety-critical decisions
+Private Serving<2 s (total) Quality-focused, on-device
+To select an architecture for a target application, practitioners first identify the latency budget
+dictated by system requirements, then determine the relevant optimization objective based on
+12
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+workload characteristics. The appropriate Pareto frontier is consulted to locate the configuration
+operating at the target latency, which by construction achieves the lowest attainable loss within that
+budget. The corresponding architectural parameters can then be directly read off and deployed, just
+like the different region in Figure 6.
+Figure 6|Different applications live in completely different regions of the Pareto frontier.
+4.3.4. Architecture Parameter Evolution
+Figure7traceshowPareto-optimalarchitecturesevolveasthelatencybudgetincreasesacrossdifferent
+optimization objectives. Several key patterns emerge from this analysis.
+MoE Dominance.Sparse MoE architectures constitute 100% of Pareto-optimal configurations
+across all latency regimes. Under the batch-one constraint typical of on-device deployment, MoE
+models achieve superior efficiency over dense counterparts: they provide greater model capacity
+(total parameters) while maintaining comparable activated parameters per token, yielding better
+loss-per-FLOP trade-offs. This finding strongly motivates the adoption of sparse architectures for edge
+deployment scenarios.
+Wide-and-Shallow Preference.In contrast to conventional LLM designs that favor deep, narrow
+architectures, the Pareto-optimal configurations exhibit a distinctive “wide-and-shallow” pattern:
+depth remains relatively constrained (generally below 20 layers) while width is substantially larger
+than comparably-sized models. Both dimensions increase with the latency budget, but width saturates
+earlier at the search space upper bound, after which additional capacity is allocated to depth. This
+pattern suggests that under strict latency constraints, width provides more efficient loss reduction per
+unit latency than depth—a finding with important implications for on-device model design.
+Phase-Dependent Expert Configuration.The optimal MoE configuration differs markedly between
+prefill and decode phases, driven by their distinct computational characteristics:
+• Prefill phase: With relatively few input tokens per expert in on-device scenarios, increasing the
+number of experts requires loading more parameters without proportional compute utilization,
+shifting the bottleneck from compute-bound to memory-bound operation and degrading hardware
+13
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Figure 7| Architecture parameter evolution along Pareto frontiers under prefill-optimized (top),
+decode-optimized (middle), and total latency-optimized (bottom) objectives, comparing FP16 and
+INT8 precision. As the latency budget increases, optimal configurations exhibit systematic shifts in
+depth, width, expert count, and FFN expansion ratio.
+efficiency. Consequently, prefill-optimized configurations favor fewer experts, with the expert count
+increasing gradually only as the latency budget relaxes.
+• Decode phase: At batch size one, each token activates a fixed subset of experts, so increasing the
+total number of experts incurs negligible additional latency while substantially expanding model
+capacity. Decode-optimized configurations therefore favor maximizing the expert count within the
+search space.
+• Routing strategy: Both phases consistently prefer Top-𝐾=1 routing, as activating multiple experts
+per token substantially increases memory bandwidth consumption during the memory-bound
+decode phase.
+Balanced Configuration under Total Latency.When optimizing for total end-to-end latency, the
+optimal expert count reflects a trade-off between prefill and decode contributions. Prefill-dominated
+workloads (long input, short output) favor fewer experts; decode-dominated workloads (short input,
+long generation) favor more experts. Under balanced input–output ratios typical of many practical
+applications, the optimal configuration converges to a moderate expert count (typically around 8),
+consistent with the design choices observed in recent production models [23, 49].
+Compact FFN Expansion.Notably, the optimal FFN expansion ratio under on-device constraints
+is substantially smaller than the conventional4× used in standard Transformer designs. In many
+Pareto-optimal configurations, ratios below1× emerge as viable design choices, suggesting that
+reallocating parameters from FFN width to other dimensions (e.g., more experts or increased model
+width) yields better efficiency under memory-constrained inference.
+4.3.5. Empirical Validation
+To validate the practical benefits of hardware-aware architecture selection, we conduct an empirical
+comparison against an existing production model. Using vLLM, we first measure the inference latency
+14
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+(a) Pareto frontier
+ (b) Training dynamics
+Figure 8| Empirical validation on NVIDIA Jetson Orin. (a) Pareto frontier with the co-designed model
+and Qwen2.5-0.5B marked. (b) Training loss curves showing faster convergence for the Pareto-optimal
+architecture.
+of Qwen2.5-0.5B on the target hardware (NVIDIA Jetson Orin), then identify a Pareto-optimal
+architecture from our framework that matches this measured latency, as shown in Figure 8(a).
+Both models are trained using an identical data mixture and optimization protocol to ensure fair
+comparison.
+Figure 8(b) shows that the co-designed architecture achieves consistently lower training loss
+throughoutoptimization, indicatingbetterutilizationofmodelcapacityunderthesamecomputational
+budget. For downstream evaluation, we measure perplexity on WikiText-2 after training: the co-
+designed architecture achieves19.42%lower perplexity compared to Qwen2.5-0.5B (50.88 vs. 63.14).
+This substantial improvement at equivalent inference latency demonstrates that hardware-aware
+architecture selection yields measurable quality gains without sacrificing deployment efficiency,
+validating the practical utility of thePLASframework.
+4.3.6. Summary of Findings
+We summarize the key findings from our Pareto analysis:
+• Sparse architectures dominate.MoE configurations constitute 100% of Pareto-optimal designs
+under on-device batch-one inference, providing superior capacity-efficiency trade-offs.
+• Wide-and-shallow designs are preferred.Optimal architectures are wider and shallower than
+conventional designs at equivalent latency, with width providing more efficient loss reduction under
+tight constraints.
+• Phase-specific expert configuration.Prefill and decode phases demand opposing expert configur-
+ations; total-latency optimization requires balancing both contributions.
+• Compact FFN expansion.The optimal FFN expansion ratio is substantially smaller than the
+conventional4×, with ratios below1×emerging as viable choices.
+• Quantization helps but sub-linearly.INT8 quantization consistently improves the Pareto frontier,
+though gains are sub-linear due to non-linear operation and precision-conversion overhead.
+15
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+• No universal optimal architecture.Optimal designs are hardware- and workload-specific; archi-
+tectures do not transfer across platforms or deployment scenarios.
+These observations provide actionable guidance for practitioners designing on-device LLMs, while
+the complete Pareto frontier enables precise architecture selection for specific deployment constraints.
+ThePLASframework and trained model checkpoints will be released to facilitate further research in
+hardware-aware neural architecture design.
+5. Theoretical Framework for Hardware-Aware Architecture Optimization
+5.1. From Empirical Search to Principled Optimization
+Section 4.3 empirically discovered Pareto frontiers through large-scale search over 1,942 architectures.
+While effective, this approach raises fundamental questions: Can we predict optimal architectures
+without exhaustive search? What structural principles govern the Pareto frontier? How do solutions
+generalize to new hardware platforms?
+This section addresses these questions by developing a theoretical framework that derives closed-
+form solutions for optimal architectures under different hardware constraint regimes. Rather than
+treating Pareto-optimal designs as empirical outcomes, we formalize architecture selection as an
+explicit constrained optimization problem.
+Key Insight.Different hardware constraint regimes induce qualitatively distinct optimal solutions,
+particularly in how sparsity (MoE activation rate𝜌) should be allocated. This explains why certain
+architectural patterns consistently emerge on the empirical Pareto frontier.
+5.2. Problem Formulation and Constraint Types
+We formalize the hardware co-design problem as:
+min
+𝜽
+ˆ𝐿(𝜽)
+subject to ˆ𝑇(𝜽;𝐻,𝑊)⩽𝑇 lat, ˆ𝑀(𝜽)⩽𝑀 budget
+(7)
+where𝜽=(𝑙,𝑑,𝑟,𝜌,gqa)denotes depth, width, FFN ratio, activation rate, and GQA ratio.
+Building on roofline analysis (Appendix E), we identify three constraint types. Theprefill
+constraint(compute-bound) takes the form𝑙·𝜉 𝐹·𝑑 2 ⩽ ¯𝐹𝑝 where𝜉𝐹 = 4+ 4/gqa+ 6𝑟. Thedecode
+constraint(bandwidth-bound) includes both weight loading and KV-cache access:𝑙·(𝜉 dec
+𝑊 𝑑2𝑏𝑤+
+2¯𝑆𝑑𝑏𝑘𝑣/gqa)⩽ ¯𝑀𝑑 where𝜉dec
+𝑊 = 2+ 2/gqa+ 3𝑟. Thememory constraint(storage-bound) accounts for
+all model parameters:𝑙·𝜉 all
+𝑊·𝑑 2·𝑏𝑤 ⩽𝑀 budget where𝜉all
+𝑊 = 2+ 2/gqa+ 3𝑟/𝜌. Here ¯𝑆=𝑆 in+(𝑆 out+ 1)/2
+denotes the average context length during decoding.
+Key Observation.The activation rate𝜌 appears only in𝜉all
+𝑊 , reflecting that sparsity affects storage
+but not per-token computation. This asymmetry drives our main theoretical results.
+5.3. Optimal Activation Rate Across Constraint Regimes
+We characterize optimal activation rates𝜌∗ for three canonical regimes: latency-only (inference
+speed-limited with ample memory), memory-only (storage-limited with sufficient compute), and dual-
+constrained (tightly coupled hardware limits). These regimes naturally arise in different deployment
+scenarios: edge devices are often memory-constrained, automotive platforms are typically latency-
+constrained, and embedded systems are frequently dual-constrained.
+16
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Theorem 5.1(Latency-Constrained Regime).When only latency constraints are active (memory
+unconstrained):
+𝜌∗ =𝜌 min (8)
+Proof Sketch. Since𝜕𝜉𝐹/𝜕𝜌=𝜕𝜉 dec
+𝑊 /𝜕𝜌= 0, the Lagrangian gradient𝜕L/𝜕𝜌=𝜕 ˆ𝐿/𝜕𝜌 >0everywhere.
+Thus𝜌∗ occurs at the boundary. Full proof in Appendix F and Appendix I.□
+Interpretation.Under latency constraints, MoE sparsity provides a “free lunch”: reducing𝜌
+(activating fewer experts) decreases loss without increasing per-token latency, since only𝐾 experts
+are computed regardless of total pool size𝐸. The optimal strategy is therefore to maximize sparsity
+(minimize 𝜌) within the fixed latency budget. For latency-critical applications such as autonomous
+driving with sub-50ms requirements, this suggests preferring top-1 routing and increasing the total
+expert count as much as memory permits.
+Theorem 5.2(Memory-Constrained Regime).When only memory constraint is active (latency uncon-
+strained):
+𝜌∗ =
+ 𝛼𝑟𝜅𝑑
+(𝛼𝜌−𝛼 𝑟)𝜅𝜌
+ 1/𝛼𝜌
+·𝑑(𝛽 1−𝛽 2)/𝛼𝜌 (9)
+valid when𝛼𝜌 > 𝛼𝑟.
+Proof Sketch. Eliminating the Lagrange multiplier from KKT conditions for𝜌 and𝑟 yields an algeb-
+raic relation. Substituting the loss function and solving gives Equation 9. Complete derivation
+in Appendix G and Appendix J .□
+Corollary 1(Width-Sparsity Scaling Law).Under memory constraints:𝜌∗∝𝑑 (𝛽 1−𝛽 2)/𝛼𝜌. With fitted
+exponents (𝛽1≈−0.33,𝛽 2≈0.97,𝛼 𝜌≈1.09), this implieswider models shoulduse sparser MoE.
+Interpretation.Memory-constrained systems face a fundamental trade-off: storing all𝐸 experts
+costs proportional to1/𝜌, but increased sparsity provides capacity gains that benefit wider models
+more than narrower ones. Equation 9 characterizes the optimal balance point. The width-sparsity
+coupling arises because the sparsity capacity term in the loss has negative width exponent𝛽1 < 0
+(making sparsity more valuable for wider models), while the base capacity term has positive exponent
+𝛽2 >0(meaning dense capacity scales favorably with width). For practical deployment on memory-
+limited devices with 4–8 GB DRAM, a 2B-parameter model with𝑑≈ 2048should use 𝜌≈ 0.15(e.g.,
+𝐾=2,𝐸=16), while a 500M-parameter model with𝑑≈1024should use denser MoE at𝜌≈0.25.
+Theorem 5.3(Dual-Constrained Regimes).When both latency and memory constraints are active, the
+optimal activation rate depends on which latency phase is limiting.
+(a) Prefill + Memory:
+𝜌∗ = 3𝜂𝑝𝑏𝑤𝑟
+𝛼attn(2−𝜂 𝑝𝑏𝑤)+6𝑟 , 𝜂 𝑝 = ¯𝐹𝑝/𝑀budget, 𝜂 𝑝𝑏𝑤 <2(10)
+(b) Decode + Memory:
+𝜌∗ = 3𝑟
+𝜉∗
+𝑀−𝛼 attn
+, 𝜉 ∗
+𝑀 =(𝛼attn+3𝑟)+
+√︁
+(𝛼attn+3𝑟) 2+4𝜂𝛿
+2𝜂 (11)
+where𝜂= ¯𝑀𝑑/𝑀budget,𝛼attn = 2+ 2/gqa, and𝛿= 2¯𝑆𝑏𝑘𝑣/(gqa·𝑑·𝑏 𝑤) is the KV-cache correction. Here
+𝜉∗
+𝑀 ≜𝜉 all
+𝑊
+
+𝜌=𝜌∗ denotes the equilibrium value of the storage coefficient (defined in Appendix E) under the
+dual constraint, obtained by solving a quadratic system.
+17
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Proof Sketch. Constraint compatibility requires𝜉𝐹/(𝑏𝑤𝜉all
+𝑊)=𝜂 𝑝 (prefill case) or the decode analog.
+Solving these algebraic equations yields the stated forms. The decode case involves a quadratic due
+to the KV-cache term. □
+Comparison.The prefill+memory case admits a simple closed form, while decode+memory
+requires solving a quadratic due to KV-cache coupling. The key difference is that the decode constraint
+includes a term proportional to¯𝑆/gqa absent in the prefill case, creating stronger coupling between
+gqa and the latency budget. For systems with tight coupling between latency and memory such as
+automotiveSoCs, practitionersshouldcomputetheconstraintratio 𝜂or𝜂𝑝 andapplythecorresponding
+formula, verifying that𝜌min ⩽𝜌∗ ⩽1.
+Table 3 provides a cross-reference between the theoretical results presented in this section and
+their complete derivations in the appendices.
+Table 3|Cross-reference of theoretical results and detailed proofs.
+Result Main Result Detailed Proof
+Theorem 5.1𝜌 ∗ =𝜌 min Appendix F (D1), Appendix I (P1)
+Theorem 5.2, Corollary 1𝜌 ∗∝𝑑 (𝛽 1−𝛽 2)/𝛼𝜌 Appendix G (D2), Appendix J (P2)
+Equation 10 in Theorem 5.3𝜌 ∗ prefill+memory Appendix K (P3)
+Equation 11 in Theorem 5.3𝜌 ∗ decode+memory Appendix H (D3)
+Equation 12–Equation 13𝑟 ∗,gqa ∗ closed forms Appendix L
+5.4. Optimal Depth, FFN Ratio, and GQA
+The optimal depth always saturates the active constraint, taking the form𝑙∗ = ¯𝐹𝑝/(𝜉𝐹𝑑2) for prefill,
+𝑙∗ = ¯𝑀𝑑/(𝜉eff
+𝑊 𝑑2𝑏𝑤) for decode, or𝑙∗ =𝑀 budget/(𝜉all
+𝑊𝑑2𝑏𝑤) for memory constraints. This implies a
+fundamental depth-width trade-off:𝑙∗∝𝑑−2 at fixed budget, explaining the inverse scaling behavior
+observed along empirical Pareto frontiers.
+The optimal FFN ratio and GQA ratio follow structured closed forms. We define the aggregate loss
+gradient ˜𝐷≜𝜅 𝜌𝜌𝛼𝜌𝑑𝛽2−𝛽 1+𝜅 𝑑, which combines the sparsity and base capacity contributions. Under
+prefill latency constraints, the solutions are:
+𝑟∗ =
+"
+𝛼𝑟 ˜𝐷
+6𝛼𝑙𝜅𝑙
+·
+¯𝐹𝛼𝑙
+𝑝
+𝜉𝛼𝑙−1
+𝐹 𝑑2𝛼𝑙+𝛽2
+# 1/(𝛼𝑟+1)
+(12)
+gqa∗ =
+"
+4𝛼𝑙𝜅𝑙
+𝛼𝑚𝜅𝑚
+·
+𝜉𝛼𝑙−1
+𝐹 𝑑2𝛼𝑙+𝛼𝑚
+¯𝐹𝛼𝑙
+𝑝
+# 1/(𝛼𝑚+1)
+(13)
+Other constraint regimes share the same structural form with modified coefficients and budget
+terms. Under decode latency constraints, the per-layer constraint coefficient generalizes toΓ≜
+𝜉dec
+𝑊 𝑑2𝑏𝑤+ 2¯𝑆𝑑𝑏𝑘𝑣/gqa, which accounts for KV-cache bandwidth; the𝑟∗ coefficient changes from1/6
+to1/3(since 𝜕𝜉dec
+𝑊 /𝜕𝑟= 3vs. 𝜕𝜉𝐹/𝜕𝑟= 6), and thegqa∗ formula acquires an additional KV-cache
+coupling factor(𝑑 2𝑏𝑤+ ¯𝑆𝑑𝑏𝑘𝑣). Under memory constraints, an extra𝜌∗ factor enters the𝑟∗ numerator.
+Table 4 summarizes the key differences; complete formulas for all regimes are provided in Appendix L.
+The 2× difference in coefficients between prefill and decode (e.g.,𝐶𝑟 = 6vs.3) arises from the
+fundamental relation𝜉𝐹 = 2𝜉dec
+𝑊 , which reflects the FLOPs-to-memory-access ratio: each multiply-
+accumulate operation counts as 2 FLOPs but requires loading each weight parameter only once.
+Note that the decode𝐶𝑔 = 2in Table 4 reflects only the weight-loading contribution; the full decode
+18
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Table 4| Coefficient comparison across constraint regimes.𝐶𝑟 and𝐶𝑔 denote the constraint-derivative
+coefficients for𝑟∗ andgqa∗, respectively.
+Regime𝜌 ∗ 𝐶𝑟 𝐶𝑔 Budget Constraint Coeff.
+Prefill Latency𝜌 min 6 4 ¯𝐹𝑝 𝜉𝐹
+Decode Latency𝜌 min 3 2 ¯𝑀𝑑 Γ
+Memory Equation 93/𝜌2𝑀 budget 𝜉all
+𝑊𝑑2𝑏𝑤
+Prefill + Mem Equation 10 see Appendix L
+Decode + Mem Equation 11 see Appendix L
+GQA derivative additionally includes a KV-cache correction term2¯𝑆𝑏𝑘𝑣/(𝑑·𝑏 𝑤) (see Appendix F for
+the complete expression). This structural asymmetry has important practical implications: prefill-
+optimized models should use smaller FFN ratios and larger GQA values compared to decode-optimized
+models at equivalent performance levels.
+5.5. Design Principles and Practical Guidelines
+5.5.1. Key Structural Insights
+Four structural results emerge from the theoretical analysis. First, memory-constrained solutions
+exhibit scenario independence: the optimal parameters(𝜌∗,𝑙∗,𝑟∗,gqa∗) are identical for prefill and
+decode phases, since memory constraints concern model storage rather than inference dynamics.
+Second, prefill versus decode constraints induce a coefficient asymmetry, with 2× differences in
+FFN and GQA coefficients stemming from𝜉𝐹 = 2𝜉dec
+𝑊 . Third, decode constraints exhibit KV-cache
+coupling through a term proportional to¯𝑆/gqa that creates sequence-length dependence absent in
+prefill constraints. Fourth, the width-sparsity scaling law𝜌∗∝𝑑 −1.19 implies that doubling model
+width should reduce activation rate by approximately2.3×, providing a principled basis for allocating
+sparsity in memory-limited deployments.
+5.5.2. Actionable Design Guidelines
+Sparsity Allocation Strategy.The optimal sparsity allocation depends critically on the active
+constraint regime. For latency-bound systems, practitioners should maximize sparsity by setting
+𝜌=𝜌 min (typically top-1 routing with𝐾= 1). For memory-bound systems, the width-sparsity scaling
+law (Equation 9) provides the principled allocation: wider models require sparser MoE configurations
+to balance capacity gains against storage costs. For dual-constrained systems, the regime-specific
+formulas (Equation 10 or Equation 11) should be applied after computing the constraint ratio𝜂 or𝜂𝑝
+to determine which formula is appropriate.
+Depth-First Budget Allocation.The 𝑙∗∝𝑑−2 relationship suggests a systematic allocation strategy.
+Practitioners should first select a target width𝑑 based on the parameter budget and width-sparsity
+law, then compute optimal depth𝑙∗ to saturate the active constraint using the appropriate formula
+from Section 5.4. If the computed𝑙∗ exceeds the architectural search space upper bound (e.g.,𝑙 >48
+layers), the width𝑑 should be reduced iteratively until a feasible depth is obtained. This depth-first
+strategy aligns with the empirical observation that depth grows monotonically along Pareto frontiers
+until reaching architectural limits.
+19
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Phase-Aware Parameter Tuning.The coefficient asymmetries in Table 4 translate directly into
+optimization strategies. For prefill-dominant workloads such as long-context question answering,
+models should employ smaller FFN ratios (exploiting the1/6coefficient versus1/3in decode) and
+larger GQA values (more KV heads) to amortize projection costs, while ignoring KV-cache overhead in
+the optimization. Conversely, for decode-dominant workloads such as chatbots and code generation,
+models should use larger FFN ratios and carefully balance GQA against KV-cache bandwidth, as the
+decode gqa∗ formula includes a sequence-length-dependent KV-cache correction (see Appendix L).
+For balanced workloads with mixed prefill and decode phases, practitioners should optimize for total
+end-to-end latency or defer to memory-constrained formulas if storage is the primary limitation.
+Generalization to New Hardware Platforms.One primary motivation for this theoretical frame-
+work is enabling efficient architecture search on new hardware platforms without repeating exhaustive
+empirical evaluation. For a new platform with specifications(𝜋𝐻,𝛽 𝐻,𝑀 budget), the deployment work-
+flow proceeds as follows. First, measure the hardware parameters: peak compute𝜋𝐻, sustained
+memory bandwidth𝛽𝐻, and available memory𝑀budget. Second, define application requirements
+including target latency budgets𝑇pre
+lat ,𝑇 dec
+lat and workload configuration(𝐵,𝑆 in,𝑆out). Third, compute
+normalized budgets ¯𝐹𝑝 =𝑇 pre
+lat ·𝜋 𝐻/(𝐵𝑆in) and ¯𝑀𝑑 =𝑇 dec
+lat ·𝛽 𝐻/𝑆out. Fourth, determine the active
+constraint regime by computing ratios𝜂𝑝 = ¯𝐹𝑝/𝑀budget and𝜂= ¯𝑀𝑑/𝑀budget: if either ratio is much less
+than 1, the system is memory-constrained; if much greater than 1, it is latency-constrained; otherwise,
+it is dual-constrained. Fifth, apply the corresponding theorem to predict optimal parameters𝜽∗ and
+round to feasible discrete values. Finally, validate predictions with 3–5 small-scale training runs (1–2B
+tokens each) to measure actual latency and refine if systematic bias is observed.
+This workflow reduces architecture selection time from months (full empirical search) to under
+one week (theoretical prediction plus small-scale validation), as demonstrated in our deployment
+case study. As a concrete example, consider deploying on a new edge device with 10 TOPS compute,
+50 GB/s bandwidth, 4 GB memory, and a target decode latency below 100ms for single-token
+generation. Computing ¯𝑀𝑑 = 0.1× 50/10 = 0.5GB and the ratio𝜂= 0.5/4 = 0.125 < 1identifies
+this as a memory-constrained regime. Applying Theorem 5.2 for width𝑑= 1024predicts 𝜌∗≈ 0.20.
+Training a targeted 20-layer, 1024-width MoE model with𝐾= 2,𝐸= 10validates these predictions
+without evaluating thousands of candidate architectures.
+5.5.3. Limitations and Future Extensions
+The theoretical framework rests on three key assumptions that bound its applicability. First, the fitted
+loss scaling law (Equation 2) is based on 170 architectures trained for 10B tokens; extrapolation to
+significantlydifferenttrainingbudgetsordatadistributionsmayreducepredictionaccuracyandshould
+be validated empirically. Second, the latency model assumes idealized roofline behavior (Equation 3),
+whereas real systems exhibit kernel launch overhead, cache effects, and operator fusion that may
+cause deviations of 10–20% from theoretical predictions. Third, the framework assumes standard
+transformer components including attention, FFN, and MoE; extensions to hybrid architectures such
+as SSM-Transformer blends or linear attention mechanisms would require re-deriving constraint forms
+and may exhibit qualitatively different scaling behaviors.
+Future work could address these limitations by incorporating training dynamics (learning rate
+schedules, optimizer state) into the loss model, developing more refined latency models that account
+foroperatorfusionandsystem-leveleffects, extendingthetheorytohybridarchitecturesandemerging
+attention mechanisms, and validating the framework across a broader range of hardware platforms
+including TPUs and specialized AI accelerators. Nonetheless, the current framework represents a
+significant advance toward principled, hardware-aware LLM architecture design grounded in explicit
+20
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+optimization theory rather than pure empirical search.
+5.6. Summary
+This section developed a comprehensive theoretical framework for hardware-aware architecture
+optimization. Theorem 5.1 through Theorem 5.3 characterize optimal activation rates𝜌∗ across
+latency-only, memory-only, and dual-constrained regimes, revealing that different hardware con-
+straints induce qualitatively different optimal solutions. The width-sparsity scaling law (Corollary 1)
+establishes that𝜌∗∝𝑑−1.19, providing a principled basis for allocating sparsity in memory-constrained
+settings. Optimal depth, FFN ratio, and GQA configurations expose structural asymmetries between
+prefill-optimized and decode-optimized architectures, with 2× coefficient differences arising from the
+fundamental FLOPs-to-memory-access ratio. The derived design principles enable rapid architecture
+selection on new hardware platforms, reducing deployment time from months to under one week.
+The theoretical predictions align closely with empirical Pareto frontiers discovered in Section 4.3,
+validating the framework while providing deeper insight into why certain architectural patterns
+emerge as optimal. Complete proofs and detailed parameter formulas are provided in Appendix E
+through Appendix L.
+6. Conclusion
+We present a hardware-aligned framework that connects transformer architecture to model quality
+and end-to-end inference efficiency via equivalent-parameter scaling and hardware-aware latency
+modeling. Evaluating 1,942 architectures, we identify clear structural principles and Pareto-optimal
+regimes that govern the trade-off between loss, latency, and roofline efficiency. Our results show
+that effective LLM deployment on edge and embedded accelerators requires explicit hardware-model
+co-design. Beyond heuristic selection, the proposed hardware co-design scaling law reveals a stable
+and predictable relationship between architecture and hardware constraints, enabling principled
+extrapolation of optimal designs across deployment regimes.
+21
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+References
+[1] Moo Jin Kim, Karl Pertsch, Siddharth Karamcheti, Ted Xiao, Ashwin Balakrishna, Suraj Nair,
+Rafael Rafailov, Ethan Foster, Grace Lam, Pannag Sanketi, et al. Openvla: An open-source
+vision-language-action model.arXiv preprint arXiv:2406.09246, 2024.
+[2] Brianna Zitkovich, Tianhe Yu, Sichun Xu, Peng Xu, Ted Xiao, Fei Xia, Jialin Wu, Paul Wohlhart,
+StefanWelker, AyzaanWahid, etal. Rt-2: Vision-language-actionmodelstransferwebknowledge
+to robotic control. InConference on Robot Learning, pages 2165–2183. PMLR, 2023.
+[3] Ranjan Sapkota, Yang Cao, Konstantinos I Roumeliotis, and Manoj Karkee. Vision-
+language-action models: Concepts, progress, applications and challenges. arXiv preprint
+arXiv:2505.04769, 2025.
+[4] Yupeng Zhou, Can Cui, Juntong Peng, Zichong Yang, Juanwu Lu, Jitesh Panchal, Bin Yao, and
+Ziran Wang. A hierarchical test platform for vision language model (vlm)-integrated real-world
+autonomous driving.ACM Transactionson Internet of Things, 2025.
+[5] Zhenjie Yang, Xiaosong Jia, Hongyang Li, and Junchi Yan. Llm4drive: A survey of large language
+models for autonomous driving.arXiv preprint arXiv:2311.01043, 2023.
+[6] Cong Guo, Feng Cheng, Zhixu Du, James Kiessling, Jonathan Ku, Shiyu Li, Ziru Li, Mingyuan
+Ma, Tergel Molom-Ochir, Benjamin Morris, et al. A survey: Collaborative hardware and software
+design in the era of large language models.IEEE Circuits and Systems Magazine, 25(1):35–57,
+2025.
+[7] Zechun Liu, Barlas Oguz, Changsheng Zhao, Ernie Chang, Pierre Stock, Yashar Mehdad, Yangy-
+ang Shi, Raghuraman Krishnamoorthi, and Vikas Chandra. Mobilellm: Optimizing sub-billion
+parameter language models for on-device use cases.arXiv preprint arXiv:2402.14905, 2024.
+[8] Cheng Deng, Luoyang Sun, Jiwen Jiang, Yongcheng Zeng, Xinjian Wu, Wenxin Zhao, Qingfa
+Xiao, Jiachuan Wang, Haoyang Li, Lei Chen, et al. Plm: Efficient peripheral language models
+hardware-co-designed for ubiquitous computing.arXiv preprint arXiv:2503.12167, 2025.
+[9] Samuel Webb Williams, Andrew Waterman, and David A Patterson. Roofline: An insightful
+visual performance model for floating-point programs and multicore architectures. Technical
+report, Technical Report UCB/EECS-2008-134, EECS Department, University of ..., 2008.
+[10] Hahnyuan. Llm-viewer: Large language model visualization toolkit.https://github.com/
+hahnyuan/LLM-Viewer, 2024.
+[11] Song Bian, Minghao Yan, and Shivaram Venkataraman. Scaling inference-efficient language
+models. arXiv preprint arXiv:2501.18107, 2025.
+[12] Song Bian, Tao Yu, Shivaram Venkataraman, and Youngsuk Park. Scaling laws meet model
+architecture: Toward inference-efficient llms.arXiv preprint arXiv:2510.18245, 2025.
+[13] Thomas Elsken, Jan Hendrik Metzen, and Frank Hutter. Neural architecture search: A survey.
+Journal of Machine Learning Research, 20(55):1–21, 2019.
+[14] An-Chieh Cheng, Jin-Dong Dong, Chi-Hung Hsu, Shu-Huan Chang, Min Sun, Shih-Chieh Chang,
+Jia-YuPan, Yu-TingChen, WeiWei, andDa-ChengJuan. Searchingtowardpareto-optimaldevice-
+aware neural architectures. InProceedings of the international conference on computer-aided
+design, pages 1–7, 2018.
+22
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+[15] Barret Zoph and Quoc V Le. Neural architecture search with reinforcement learning.arXiv
+preprint arXiv:1611.01578, 2016.
+[16] Yihua Cheng, Yuhan Liu, Jiayi Yao, Yuwei An, Xiaokun Chen, Shaoting Feng, Yuyang Huang,
+Samuel Shen, Kuntai Du, and Junchen Jiang. Lmcache: An efficient kv cache layer for enterprise-
+scale llm inference.arXiv preprint arXiv:2510.09665, 2025.
+[17] Jingbo Yang, Bairu Hou, Wei Wei, Yujia Bao, and Shiyu Chang. Kvlink: Accelerating large
+language models via efficient kv cache reuse.arXiv preprint arXiv:2502.16002, 2025.
+[18] Eldar Kurtic, Alexandre Noll Marques, Shubhra Pandit, Mark Kurtz, and Dan Alistarh. “give me
+bf16 or give me death”? accuracy-performance trade-offs in llm quantization. InProceedings
+of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume1: Long
+Papers), pages 26872–26886, 2025.
+[19] Vage Egiazarian, Roberto L Castro, Denis Kuznedelev, Andrei Panferov, Eldar Kurtic, Shubhra
+Pandit, Alexandre Marques, Mark Kurtz, Saleh Ashkboos, Torsten Hoefler, et al. Bridging
+the gap between promise and performance for microscaling fp4 quantization.arXiv preprint
+arXiv:2509.23202, 2025.
+[20] Haofei Yin, Mengbai Xiao, Tinghong Li, Xiao Zhang, Dongxiao Yu, and Guanghui Zhang.
+Specpipe: Accelerating pipeline parallelism-based llm inference with speculative decoding,
+2025.
+[21] Lang Xu, Kaushik Kandadi Suresh, Quentin Anthony, Nawras Alnaasan, and Dhabaleswar K
+Panda. Characterizing communication patterns in distributed large language model inference.
+In 2025 IEEE Symposiumon High-PerformanceInterconnects(HOTI), pages 1–11. IEEE, 2025.
+[22] Yehui Tang, Kai Han, Fangcheng Liu, Yunsheng Ni, Yuchuan Tian, Zheyuan Bai, Yi-Qi Hu,
+Sichao Liu, Shangling Jui, and Yunhe Wang. Rethinking optimization and architecture for tiny
+language models. InForty-first International Conference on Machine Learning, 2024.
+[23] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu,
+Shirong Ma, Peiyi Wang, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms
+via reinforcement learning.arXiv preprint arXiv:2501.12948, 2025.
+[24] SandhiniAgarwal, LamaAhmad, JasonAi, SamAltman, AndyApplebaum, Edwin Arbus, RahulK
+Arora, Yu Bai, Bowen Baker, Haiming Bao, et al. gpt-oss-120b and gpt-oss-20b model card.
+arXiv preprint arXiv:2508.10925, 2025.
+[25] Gemma Team, Aishwarya Kamath, Johan Ferret, Shreya Pathak, Nino Vieillard, Ramona Merhej,
+Sarah Perrin, Tatiana Matejovicova, Alexandre Ramé, Morgane Rivière, et al. Gemma 3 technical
+report. arXiv preprint arXiv:2503.19786, 2025.
+[26] Kimi Team, Yu Zhang, Zongyu Lin, Xingcheng Yao, Jiaxi Hu, Fanqing Meng, Chengyin Liu, Xin
+Men, Songlin Yang, Zhiyuan Li, et al. Kimi linear: An expressive, efficient attention architecture.
+arXiv preprint arXiv:2510.26692, 2025.
+[27] MiniMax-AI. MiniMax-M2, a model built for Max coding and agentic workflows.https:
+//github.com/MiniMax-AI/MiniMax-M2, 2025.
+[28] Aaron Blakeman, Aaron Grattafiori, Aarti Basant, Abhibha Gupta, Abhinav Khattar, Adi Ren-
+duchintala, Aditya Vavre, Akanksha Shukla, Akhiad Bercovich, Aleksander Ficek, et al. Nvidia
+nemotron 3: Efficient and open intelligence.arXiv preprint arXiv:2512.20856, 2025.
+23
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+[29] Zihan Qiu, Zekun Wang, Bo Zheng, Zeyu Huang, Kaiyue Wen, Songlin Yang, Rui Men, Le Yu, Fei
+Huang, Suozhi Huang, et al. Gated attention for large language models: Non-linearity, sparsity,
+and attention-sink-free.arXiv preprint arXiv:2505.06708, 2025.
+[30] Luoyang Sun, Cheng Deng, Jiwen Jiang, Xinjian Wu, Haifeng Zhang, Lei Chen, Lionel Ni, and
+Jun Wang. Gta: Grouped-head latent attention.arXiv preprint arXiv:2506.17286, 2025.
+[31] An Yang, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan
+Li, Dayiheng Liu, Fei Huang, Haoran Wei, et al. Qwen2.5 technical report.arXiv preprint
+arXiv:2412.15115, 2024.
+[32] Shengding Hu, Yuge Tu, Xu Han, Chaoqun He, Ganqu Cui, Xiang Long, Zhi Zheng, Yewei Fang,
+Yuxiang Huang, Weilin Zhao, et al. Minicpm: Unveiling the potential of small language models
+with scalable training strategies.arXiv preprint arXiv:2404.06395, 2024.
+[33] Elie Bakouch, Loubna Ben Allal, Anton Lozhkov, Nouamane Tazi, Lewis Tunstall, Carlos Miguel
+Patiño, Edward Beeching, Aymeric Roucher, Aksel Joonas Reedi, Quentin Gallouédec, Kashif
+Rasul, Nathan Habib, Clémentine Fourrier, Hynek Kydlicek, Guilherme Penedo, Hugo Larcher,
+Mathieu Morlon, Vaibhav Srivastav, Joshua Lochner, Xuan-Son Nguyen, Colin Raffel, Leandro
+von Werra, and Thomas Wolf. SmolLM3: smol, multilingual, long-context reasoner.https:
+//huggingface.co/blog/smollm3, 2025.
+[34] Ji Lin, Jiaming Tang, Haotian Tang, Shang Yang, Wei-Ming Chen, Wei-Chen Wang, Guangxuan
+Xiao, Xingyu Dang, Chuang Gan, and Song Han. Awq: Activation-aware weight quantization for
+on-device llm compression and acceleration.Proceedings of Machine Learning and Systems,
+6:87–100, 2024.
+[35] Elias Frantar, Saleh Ashkboos, Torsten Hoefler, and Dan Alistarh. Gptq: Accurate post-training
+quantization for generative pre-trained transformers.arXiv preprint arXiv:2210.17323, 2022.
+[36] Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph
+Gonzalez, Hao Zhang, and Ion Stoica. Efficient memory management for large language model
+serving with pagedattention. In Proceedings of the 29th Symposium on Operating Systems
+Principles, pages 611–626, 2023.
+[37] MLC team. MLC-LLM, 2023-2025.
+[38] Yixin Song, Zeyu Mi, Haotong Xie, and Haibo Chen. Powerinfer: Fast large language model
+serving with a consumer-grade gpu. InProceedings of the ACM SIGOPS 30th Symposium on
+Operating Systems Principles, pages 590–606, 2024.
+[39] Barret Zoph, Vijay Vasudevan, Jonathon Shlens, and Quoc V Le. Learning transferable archi-
+tectures for scalable image recognition. InProceedings of the IEEE Conference on Computer
+Vision and Pattern Recognition, pages 8697–8710, 2018.
+[40] Hanxiao Liu, Karen Simonyan, and Yiming Yang. Darts: Differentiable architecture search. In
+International Conference on Learning Representations, 2019.
+[41] Princeton University. Llmcompass: Large language model performance profiling. https:
+//github.com/PrincetonUniversity/LLMCompass, 2024.
+[42] YiTay, MostafaDehghani, JinfengRao, WilliamFedus, SamiraAbnar, HyungWonChung, Sharan
+Narang, DaniYogatama, AshishVaswani, andDonaldMetzler. Scaleefficiently: Insightsfrompre-
+trainingandfine-tuningtransformers. In InternationalConferenceonLearningRepresentations,
+2022.
+24
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+[43] Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B Brown, Benjamin Chess, Rewon Child,
+Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. Scaling laws for neural language
+models. arXiv preprint arXiv:2001.08361, 2020.
+[44] Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya, Trevor Cai, Eliza
+Rutherford, Diego de Las Casas, Lisa Anne Hendricks, Johannes Welbl, Aidan Clark, et al.
+Training compute-optimal large language models.arXiv preprint arXiv:2203.15556, 2022.
+[45] Aidan Clark, Diego de Las Casas, Aurelia Guy, Arthur Mensch, Michela Paganini, Jordan Hoff-
+mann, Bogdan Damoc, Blake Hechtman, Trevor Cai, Sebastian Borgeaud, et al. Unified scaling
+laws for routed language models. In International conference on machine learning, pages
+4057–4086. PMLR, 2022.
+[46] Jakub Krajewski, Jan Ludziejewski, Kamil Adamczewski, Maciej Pióro, Michał Krutul, Szymon
+Antoniak, Kamil Ciebiera, Krystian Król, Tomasz Odrzygóźdź, Piotr Sankowski, et al. Scaling
+laws for fine-grained mixture of experts.arXiv preprint arXiv:2402.07871, 2024.
+[47] Samuel Williams, Andrew Waterman, and David Patterson. Roofline: An insightful visual
+performance model for multicore architectures.Communications of the ACM, 52(4):65–76,
+2009.
+[48] Samira Abnar, Harshay Shah, Dan Busbridge, Alaaeldin Mohamed Elnouby Ali, Josh Susskind,
+and Vimal Thilak. Parameters vs flops: Scaling laws for optimal sparsity for mixture-of-experts
+language models.arXiv preprint arXiv:2501.12370, 2025.
+[49] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu,
+Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint
+arXiv:2505.09388, 2025.
+[50] Joshua Ainslie, James Lee-Thorp, Michiel de Jong, Yury Zemlyanskiy, Federico Lebrón, and
+Sumit Sanghai. Gqa: Training generalized multi-query transformer models from multi-head
+checkpoints. arXiv preprint arXiv:2305.13245, 2023.
+[51] Noam Shazeer. Glu variants improve transformer.arXiv preprint arXiv:2002.05202, 2020.
+[52] Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le, Geoffrey Hinton,
+and Jeff Dean. Outrageously large neural networks: The sparsely-gated mixture-of-experts
+layer. arXiv preprint arXiv:1701.06538, 2017.
+[53] William Fedus, Barret Zoph, and Noam Shazeer. Switch transformers: Scaling to trillion
+parameter models with simple and efficient sparsity.Journal of Machine Learning Research,
+23(120):1–39, 2022.
+25
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+A. Architecture Search Space
+Table 5 specifies the architectural hyperparameters explored in our scaling law study.
+Table 5|Architecture search space for scaling law fitting.
+Parameter Values
+Depth𝑙{4,8,12,16,20,24,28,32}
+Width𝑑{768,1024,1280,1536,1792,2048,2304,2560,3072}
+MoE(𝐸,𝐾) {(1,1),(8,1),(8,2),(16,1),(16,2)}
+GQA𝑛 𝑘𝑣 {1,2,4,8,𝑛 ℎ}
+The search space jointly covers depth (4–32 layers), width (768–3072 hidden dimensions), MoE
+configurations (dense to 16 experts with Top-1/Top-2 routing), and grouped-query attention settings.
+This design ensures coverage of both dense and sparse architectures while avoiding degenerate or
+ill-conditioned regimes.
+B. Pre-training Details
+All 170 model configurations are trained under identical conditions to ensure fair comparison:
+Training Data.Each model is trained on 10B tokens from a mixture of general corpus, mathematics,
+and code data. This budget is sufficient to observe scaling behavior while remaining computationally
+tractable. The training corpus will be released upon publication.
+Optimization.We use the AdamW optimizer with 𝛽1 = 0.9, 𝛽2 = 0.95, and weight decay0.01. The
+learning rate follows a cosine decay schedule from1× 10−4 to1× 10−6, with linear warmup over the
+first 0.2% of training steps. QK-Norm is applied to stabilize MoE pre-training. All experiments use a
+global batch size of 256.
+Evaluation.Model performance is measured by validation loss on a held-out set of approximately
+1B tokens, averaged over the final 1,000 optimization steps to reduce variance. We additionally report
+perplexity on WikiText-2 for downstream evaluation.
+Computational Cost.Each configuration is trained on 8 NVIDIA H200 GPUs for approximately 10
+hours, totaling170×8×10=13,600GPU-hours for the full study.
+C. Scaling Law Coefficients
+The fitted parametric loss model takes the following form:
+ˆL(𝜽)= 𝜅𝑙
+𝑙𝛼𝑙
+|{z}
+depth
++
+𝜅𝜌𝜌𝛼𝜌
+𝑟𝛼𝑟𝑑𝛽1
+| {z }
+sparsity-width
++ 𝜅𝑑
+𝑟𝛼𝑟𝑑𝛽2
+| {z }
+capacity
++ 𝜅𝑚
+𝑑𝛼𝑚
+𝑚
+|{z}
+KV-cache
++L∞ (14)
+Table 6 reports the fitted coefficients. The resulting concrete form is:
+26
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+ˆL(𝜽)= 9.96
+𝑙1.63+ 0.031𝜌 1.09
+𝑟0.17𝑑−0.33+ 500
+𝑟0.17𝑑0.97+ 0.20
+𝑑0.05
+𝑚
++2.53(15)
+Table 6|Fitted scaling law coefficients.
+Term Coefficient Exponent Interpretation
+Depth𝜅 𝑙 =9.96𝛼 𝑙 =1.63Strong depth dependence
+Sparsity𝜅 𝜌 =0.031𝛼 𝜌 =1.09,𝛽 1 =−0.33Width-sparsity coupling
+Capacity𝜅 𝑑 =500𝛽 2 =0.97Base capacity scaling
+FFN ratio –𝛼 𝑟 =0.17Unified FFN scaling
+KV-cache𝜅 𝑚 =0.20𝛼 𝑚 =0.05Cache efficiency
+IrreducibleL ∞ =2.53
+The exponents reveal several insights: (1) depth exhibits the strongest scaling (𝛼𝑙 = 1.63),
+indicating high sensitivity to layer count; (2) width and sparsity are coupled (𝛽1 =− 0.33): the
+sparsity-related loss penalty grows with width, implying that wider models require greater sparsity
+(lower𝜌) to remain competitive; (3) FFN expansion ratio contributes modestly (𝛼𝑟 = 0.17); and (4)
+KV-cache configuration has minimal impact on loss (𝛼𝑚 = 0.05) but significantly affects inference
+efficiency.
+D. Latency Modeling Details
+Roofline-Based Prediction.We analytically model latency using hardware roofline analysis. Each
+operator is classified as compute-bound or memory-bound based on its arithmetic intensity𝐼=
+FLOPs/Bytes relative to the hardware’s compute-to-bandwidth ratio. Latency is estimated as:
+𝑇op =max
+ FLOPs
+Peak Compute, Memory Access
+Peak Bandwidth
+
+(16)
+This approach enables rapid evaluation of over 50,000 configurations in minutes, making it suitable
+for large-scale architecture exploration.
+Empirical Validation.We validate roofline predictions using vLLM with subprocess isolation to
+ensure accurate GPU memory accounting. Top Pareto candidates identified by analytical modeling
+are measured empirically to confirm their optimality.
+Latency Scaling Behavior.Inference latency varies with workload parameters:
+• Sequence length:Prefill latency scales quadratically with input length due to attention (𝑂(𝑆 2));
+decode latency scales linearly due to KV-cache access (𝑂(𝑆)).
+• Output length:Total latency is dominated by decode for long generations, making decode
+optimization critical for conversational applications.
+• Batch size:Both phases benefit from batching with diminishing returns. Prefill becomes compute-
+bound at larger batches; decode remains memory-bound due to weight loading. For on-vehicle
+deployment, we focus on batch size 1.
+27
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Scenario-Specific Targets.The appropriate latency optimization target depends on deployment
+scenario:
+•Interactive/streaming applications(chatbots, speculative decoding): optimize decode latency.
+•Long-context processing(document QA): optimize prefill latency.
+•Balanced workloads(summarization): optimize total latency.
+E. Problem Formulation and Roofline Analysis
+This section presents a comprehensive roofline analysis for decoder-only Transformers, deriving
+FLOPs, memory traffic, and latency models for both prefill and decode phases.
+E.1. Notation
+Table 7|Symbol definitions for roofline analysis.
+Symbol Definition Symbol Definition
+𝐵Batch size 𝑆Sequence length
+𝑙Number of layers 𝑑Hidden dimension
+𝑑ℎ Head dimension 𝑛ℎ Number of query heads
+𝑛𝑘𝑣 Number of KV heads gqaGQA ratio=𝑛 ℎ/𝑛𝑘𝑣
+𝑑𝑚 KV dimension=𝑑/gqa 𝑟FFN expansion ratio
+𝐸Total experts 𝐾Active experts per token
+𝜌Activation rate=𝐾/𝐸 𝑏𝑤 Bytes per weight
+𝑏𝑎 Bytes per activation 𝑏𝑘𝑣 Bytes per KV element
+𝜋𝐻 Peak compute (FLOP/s) 𝛽𝐻 Memory bandwidth (Bytes/s)
+𝑆in Input sequence length 𝑆out Output sequence length
+E.2. Transformer Architecture
+We consider a decoder-only Transformer with the following components per layer:
+Multi-Head Attention.The attention mechanism uses 𝑛ℎ query heads and𝑛𝑘𝑣 key-value heads
+(Grouped Query Attention). The hidden dimension is𝑑, and the GQA ratio isgqa=𝑛 ℎ/𝑛𝑘𝑣. The
+projection matrices are:
+•Query projection𝑊 𝑄∈ℝ 𝑑×𝑑
+•Key projection𝑊 𝐾∈ℝ 𝑑×𝑑/gqa
+•Value projection𝑊 𝑉∈ℝ 𝑑×𝑑/gqa
+•Output projection𝑊 𝑂∈ℝ 𝑑×𝑑
+Feed-Forward Network.We consider a gated FFN (SwiGLU) with expansion ratio𝑟=𝑑ffn/𝑑:
+•Up projection𝑊 up∈ℝ 𝑑×𝑟𝑑
+•Gate projection𝑊 gate∈ℝ 𝑑×𝑟𝑑
+•Down projection𝑊 down∈ℝ 𝑟𝑑×𝑑
+28
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Mixture of Experts.In an MoE layer, the FFN is replicated into𝐸 experts, of which𝐾 are activated
+per token. The activation rate is𝜌=𝐾/𝐸.
+E.3. Per-Operator Analysis
+E.3.1. Attention Projection Layers
+Multi-head attention uses four linear projections: Query (Q), Key (K), Value (V), and Output (O).
+Modern architectures employ Grouped-Query Attention (GQA) [50] to reduce K/V dimensions by a
+factor ofgqa.
+Q Projection.Transform input𝑋∈ℝ 𝐵×𝑆×𝑑 to queries𝑄∈ℝ 𝐵×𝑆×𝑑 via weight𝑊𝑄∈ℝ 𝑑×𝑑.
+Table 8|Q projection costs in prefill and decode phases.
+Metric Prefill Decode(𝑆 𝑞 =1)
+FLOPs2𝐵𝑆𝑑 2 2𝐵𝑑 2
+Weight Load𝑑 2·𝑏 𝑤 𝑑2·𝑏 𝑤
+Activation Load𝐵𝑆𝑑·𝑏 𝑎 𝐵𝑑·𝑏 𝑎
+Activation Store𝐵𝑆𝑑·𝑏 𝑎 𝐵𝑑·𝑏 𝑎
+Arithmetic Intensity.From Table 8:
+•Prefill:I≈ 2𝐵𝑆
+𝑏𝑤
+, typically compute-bound for large𝐵𝑆.
+•Decode:I≈ 2𝐵
+𝑏𝑤
+, typically memory-bound for small𝐵.
+K and V Projections (GQA).Project to reduced dimension𝑑𝑚 =𝑑/gqa : 𝑋∈ℝ 𝐵×𝑆×𝑑 →𝐾,𝑉∈
+ℝ𝐵×𝑆×𝑑𝑚 via𝑊 𝐾,𝑊𝑉∈ℝ 𝑑×𝑑𝑚.
+Table 9|K and V projection costs with GQA. Each operates on dimension𝑑𝑚 =𝑑/gqa.
+Metric (each) Prefill Decode
+FLOPs2𝐵𝑆𝑑 2/gqa2𝐵𝑑 2/gqa
+Weight Load𝑑 2𝑏𝑤/gqa𝑑 2𝑏𝑤/gqa
+KV Cache Store𝐵𝑆𝑑·𝑏 𝑘𝑣/gqa𝐵𝑑·𝑏 𝑘𝑣/gqa
+GQA reduces K/V computation, weight memory, and critically KV-cache storage by factorgqa
+compared to Q/O projections.
+O Projection.Identical to Q projection (see Table 8).
+Summary.Total costs for Q, K, V, O projections:
+FLOPs=2𝐵𝑆𝑑 2
+
+2+ 2
+gqa
+
+(17)
+Weight Memory=𝑑 2𝑏𝑤
+
+2+ 2
+gqa
+
+(18)
+29
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+For gqa=1(standard MHA):8𝐵𝑆𝑑 2 FLOPs,4𝑑 2𝑏𝑤 memory. For gqa=8:∼44% reduction.
+E.3.2. Attention Score Computation
+The attention mechanism computes scores through three main operations: query-key multiplication,
+softmax normalization, and score-value multiplication. We analyze each operation separately.
+QK Matmul (Query-Key Attention Scores).For each attention head, compute attention scores by
+multiplying query𝑄ℎ∈ℝ 𝑆𝑞×𝑑ℎ with key transpose𝐾𝑇
+ℎ∈ℝ 𝑑ℎ×𝑆𝑘𝑣, producing scores∈ℝ𝑆𝑞×𝑆𝑘𝑣.
+Table 10| Query-key attention score computation costs. Note𝑑𝑚 =𝑑/gqa is the reduced dimension
+for K cache with grouped-query attention.
+Metric Prefill(𝑆 𝑞 =𝑆 𝑘𝑣 =𝑆)Decode(𝑆 𝑞 =1)
+FLOPs2𝐵𝑆 2𝑑2𝐵𝑆𝑑
+Load Q𝐵𝑆𝑑·𝑏 𝑎 𝐵𝑑·𝑏 𝑎
+Load K Cache𝐵𝑆𝑑 𝑚·𝑏 𝑘𝑣 𝐵𝑆𝑑𝑚·𝑏 𝑘𝑣
+Store Scores𝐵𝑛 ℎ𝑆2·𝑏 𝑎 𝐵𝑛ℎ𝑆·𝑏 𝑎
+Prefill computes a full𝑆×𝑆 attention matrix per head (𝑂(𝑆 2) complexity), while decode only
+computes scores for one new token against𝑆cached keys (𝑂(𝑆)complexity).
+Softmax Normalization.Attention scores are normalized using softmax, requiring approximately
+5 operations per element: finding maximum (for numerical stability), subtraction, exponentiation,
+summation, and division.
+Table 11|Softmax normalization costs over𝐵batches,𝑛 ℎ heads, each processing𝑆𝑞×𝑆 𝑘𝑣 scores.
+Metric Prefill(𝑆 𝑞 =𝑆)Decode(𝑆 𝑞 =1)
+FLOPs≈5𝐵𝑛 ℎ𝑆2 ≈5𝐵𝑛 ℎ𝑆
+Memory Load𝐵𝑛 ℎ𝑆2·𝑏 𝑎 𝐵𝑛ℎ𝑆·𝑏 𝑎
+Memory Store𝐵𝑛 ℎ𝑆2·𝑏 𝑎 𝐵𝑛ℎ𝑆·𝑏 𝑎
+Softmax FLOPs are typically negligible compared to matrix multiplications, contributing𝑂(𝑛ℎ𝑆2)
+versus𝑂(𝑆𝑑 2)for QK matmul when𝑑≫𝑛 ℎ.
+Score-Value Matmul (Weighted Aggregation).Normalized attention scores∈ℝ 𝑆𝑞×𝑆𝑘𝑣 multiply
+value matrix𝑉ℎ∈ℝ 𝑆𝑘𝑣×𝑑ℎ to produce attention output∈ℝ𝑆𝑞×𝑑ℎ per head.
+Table 12|Score-value multiplication costs for weighted value aggregation.
+Metric Prefill(𝑆 𝑞 =𝑆)Decode(𝑆 𝑞 =1)
+FLOPs2𝐵𝑆 2𝑑2𝐵𝑆𝑑
+Load Scores𝐵𝑛 ℎ𝑆2·𝑏 𝑎 𝐵𝑛ℎ𝑆·𝑏 𝑎
+Load V Cache𝐵𝑆𝑑 𝑚·𝑏 𝑘𝑣 𝐵𝑆𝑑𝑚·𝑏 𝑘𝑣
+Store Output𝐵𝑆𝑑·𝑏 𝑎 𝐵𝑑·𝑏 𝑎
+Like QK matmul, score-value multiplication exhibits𝑂(𝑆 2) complexity in prefill and𝑂(𝑆) in decode.
+30
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Summary.Combining all three operations (QK matmul, softmax, score-value matmul):
+Table 13|Total computational and memory costs for attention score computation.
+Metric Prefill(𝑆 𝑞 =𝑆)Decode(𝑆 𝑞 =1)
+Total FLOPs4𝐵𝑆 2𝑑+𝑂(𝐵𝑛 ℎ𝑆2)4𝐵𝑆𝑑+𝑂(𝐵𝑛 ℎ𝑆)
+KV Cache Access2𝐵𝑆𝑑 𝑚·𝑏 𝑘𝑣 2𝐵𝑆𝑑𝑚·𝑏 𝑘𝑣
+Key Observations.From Table 13:
+• Quadratic vs. Linear Scaling:Prefill attention scales as𝑂(𝑆 2) due to full𝑆×𝑆 attention matrix,
+while decode scales linearly as𝑂(𝑆)since only one new token attends to all previous tokens.
+• Projection Dominance:For typical configurations where𝑑≫𝑆 (e.g.,𝑑= 4096, 𝑆= 2048),
+projection FLOPs (𝑂(𝐵𝑑 2)) dominate over attention score FLOPs (𝑂(𝐵𝑆𝑑) ), especially in decode
+phase.
+• KV Cache Bottleneck:KV cache access remains𝑂(𝐵𝑆𝑑𝑚) in both phases, becoming a critical
+bottleneck in decode when sequence length𝑆is large.
+E.3.3. FFN Layers
+Modern transformers use either dense FFN layers or sparse Mixture-of-Experts (MoE) FFN layers.
+Dense FFN with SwiGLU Activation.SwiGLU [51] uses three linear projections with gated activa-
+tion:
+1.Gate projection:𝑋∈ℝ 𝐵×𝑆×𝑑 𝑊𝑔
+−−→𝐺∈ℝ𝐵×𝑆×𝑟𝑑
+2.Up projection:𝑋∈ℝ 𝐵×𝑆×𝑑 𝑊𝑢
+−−→𝑈∈ℝ𝐵×𝑆×𝑟𝑑
+3.Gated activation:𝐻=SiLU(𝐺)⊙𝑈(element-wise)
+4.Down projection:𝐻∈ℝ 𝐵×𝑆×𝑟𝑑 𝑊𝑑
+−−→𝑌∈ℝ𝐵×𝑆×𝑑
+where𝑟is the expansion ratio (typically𝑟= 8
+3 or𝑟=4).
+Table 14| SwiGLU FFN costs. Element-wise ops contribute negligible𝑂(𝐵𝑆𝑟𝑑) FLOPs vs𝑂(𝐵𝑆𝑟𝑑 2) for
+projections.
+Component FLOPs (Prefill/Decode) Weight Memory
+Gate (𝑊𝑔∈ℝ 𝑑×𝑟𝑑)2𝐵𝑆𝑟𝑑 2 /2𝐵𝑟𝑑 2 𝑟𝑑 2·𝑏 𝑤
+Up (𝑊𝑢∈ℝ 𝑑×𝑟𝑑)2𝐵𝑆𝑟𝑑 2 /2𝐵𝑟𝑑 2 𝑟𝑑 2·𝑏 𝑤
+Down (𝑊𝑑∈ℝ 𝑟𝑑×𝑑)2𝐵𝑆𝑟𝑑 2 /2𝐵𝑟𝑑 2 𝑟𝑑 2·𝑏 𝑤
+Total (3 projections)6𝐵𝑆𝑟𝑑 2 /6𝐵𝑟𝑑 2 3𝑟𝑑 2·𝑏 𝑤
+Mixture-of-Experts(MoE)FFN.MoE [ 52,53] replaces dense FFN with𝐸 parallel experts, activating
+only top-𝐾per token via learned routing, decoupling computation from capacity.
+Key parameters: 𝐸 = total experts;𝐾 = active experts/token (typically𝐾= 2); 𝜌=𝐾/𝐸 =
+activation rate;𝑟single = per-expert expansion;𝑟=𝐾·𝑟 single = effective expansion.
+31
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Costs:FLOPs match dense FFN with same effective𝑟, but all𝐸experts must be stored:
+MoE FLOPs=6𝐵𝑆𝑟𝑑 2 (prefill),6𝐵𝑟𝑑 2 (decode) (19)
+MoE Weight Memory= 3𝑟𝑑 2𝑏𝑤
+𝜌 =𝐸·3𝑟 single𝑑2𝑏𝑤 (20)
+Table 15|Dense vs MoE FFN comparison. MoE achieves1/𝜌more capacity at same FLOPs.
+FLOPs Weight Memory
+Architecture Prefill Decode Total
+Dense FFN 6𝐵𝑆𝑟𝑑 2 6𝐵𝑟𝑑 2 3𝑟𝑑 2𝑏𝑤
+MoE FFN 6𝐵𝑆𝑟𝑑 2 6𝐵𝑟𝑑 2 3𝑟𝑑 2𝑏𝑤
+𝜌
+Ratio (MoE/Dense) 1×1× 𝐸/𝐾
+Key Observations.
+• Capacity-Computation Decoupling:MoE scales parameters without increasing FLOPs. Ex-
+ample:𝐸=8,𝐾=2(𝜌=0.25) yields4×more parameters at same compute.
+• Memory-Bound Regime:In decode with small𝐵, MoE’s1/𝜌 larger weight memory exacerbates
+bottlenecks, requiring quantization.
+• FFN Dominance:FFN accounts for∼60-70% of total FLOPs when𝑟≈ 4(vs attention projection
+costs in Equation 17 and Equation 18).
+E.4. Per-Layer Coefficient Summary
+Combining attention projections and FFN, the per-layer costs are:
+FLOPs per layer=2𝐵𝑆𝑑 2
+
+2+ 2
+gqa
+
+|                {z                }
+Attention Proj.
++6𝐵𝑆𝑟𝑑 2
+|  {z  }
+FFN
++𝑂(𝐵𝑆 2𝑑)|    {z    }
+Attn Score
+(21)
+Weight (compute)=𝑑 2𝑏𝑤
+
+2+ 2
+gqa
+
+|              {z              }
+Attention Proj.
++3𝑟𝑑 2𝑏𝑤
+|  {z  }
+FFN (active)
+(22)
+Weight (storage)=𝑑 2𝑏𝑤
+
+2+ 2
+gqa
+
+|              {z              }
+Attention Proj.
++ 3𝑟𝑑 2𝑏𝑤
+𝜌
+|   {z   }
+FFN (all experts)
+(23)
+For large𝑑where projection FLOPs dominate, we define the normalized coefficients:
+𝜉𝐹 =4+ 4
+gqa+6𝑟(FLOPs coefficient) (24)
+𝜉dec
+𝑊 =2+ 2
+gqa+3𝑟(Decode weight coefficient) (25)
+𝜉all
+𝑊 =2+ 2
+gqa+ 3𝑟
+𝜌 (Storage coefficient) (26)
+32
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Key Relations:
+1.𝜉 𝐹 = 2·𝜉 dec
+𝑊 for any(𝑟,gqa) . This factor of 2 arises because each multiply-accumulate operation
+counts as 2 FLOPs but requires loading each weight only once.
+2.𝜌 appears only in𝜉all
+𝑊 , not in𝜉𝐹 or𝜉dec
+𝑊 . This reflects that sparsity affects storage but not per-token
+computation.
+3. For dense models (𝜌=1):𝜉 all
+𝑊 =𝜉 dec
+𝑊 .
+E.5. Inference Phases and Roofline Model
+Autoregressive generation consists of two phases:
+Prefill Phase.The model processes 𝑆in input tokens in parallel. This phase is typicallycompute-
+bound.
+Decode Phase.The model generates 𝑆out tokens autoregressively. At step𝑡, the KV-cache contains
+𝑆in+𝑡entries. This phase is typicallymemory-bandwidth-bound.
+Roofline Model.The roofline model [47] characterizes kernel latency as:
+𝑇=max
+F
+𝜋𝐻
+,W
+𝛽𝐻
+
+(27)
+whereFis FLOPs,Wis memory traffic,𝜋 𝐻 is peak compute, and𝛽𝐻 is memory bandwidth.
+E.6. Latency Modeling
+E.6.1. Prefill Latency
+For batch size𝐵and input sequence length𝑆in, the total FLOPs per layer is:
+Flayer =𝐵𝑆 in𝑑2·𝜉 𝐹 (28)
+With large batch-sequence product𝐵𝑆in, prefill is typically compute-bound:
+𝑇pre = 𝑙·𝐵𝑆 in𝑑2·𝜉 𝐹
+𝜋𝐻
+(29)
+E.6.2. Decode Latency: Single Step Analysis
+At decode step𝑡, processing𝐵tokens with context length𝑆 in+𝑡:
+Memory Traffic per Step. (1) Weight loading:
+Wweight =𝜉 dec
+𝑊 ·𝑑 2·𝑏 𝑤 (30)
+(2) KV-cache loading:
+WKV(𝑡)= 2(𝑆 in+𝑡)·𝑑·𝑏 𝑘𝑣
+gqa (31)
+33
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Total per layer:
+Wlayer(𝑡)=𝜉 dec
+𝑊 ·𝑑 2·𝑏 𝑤+ 2(𝑆 in+𝑡)·𝑑·𝑏 𝑘𝑣
+gqa (32)
+Single Step Latency.With small batch𝐵(often𝐵=1), decode is typically memory-bound:
+𝑇step(𝑡)= 𝑙
+𝛽𝐻
+
+𝜉dec
+𝑊 𝑑2𝑏𝑤+ 2(𝑆 in+𝑡)𝑑𝑏 𝑘𝑣
+gqa
+
+(33)
+E.6.3. Decode Latency: Total Latency
+Summing over𝑡=1,...,𝑆 out:
+𝑇decode = 𝑙
+𝛽𝐻
+"
+𝑆out·𝜉 dec
+𝑊 𝑑2𝑏𝑤+ 2𝑑𝑏𝑘𝑣
+gqa
+𝑆out∑︁
+𝑡=1
+(𝑆in+𝑡)
+#
+(34)
+Evaluating the sum:
+𝑆out∑︁
+𝑡=1
+(𝑆in+𝑡)=𝑆 out·𝑆 in+ 𝑆out(𝑆out+1)
+2 =𝑆 out· ¯𝑆(35)
+where theaverage context lengthis:
+¯𝑆=𝑆 in+ 𝑆out+1
+2 (36)
+Complete Decode Latency.
+𝑇decode = 𝑙·𝑆 out
+𝛽𝐻
+
+𝜉dec
+𝑊 ·𝑑 2·𝑏 𝑤+ 2¯𝑆·𝑑·𝑏 𝑘𝑣
+gqa
+
+(37)
+E.6.4. Decode Latency: Unified Form
+Define theeffective decode coefficient:
+𝜉eff
+𝑊(𝑑,gqa)=𝜉 dec
+𝑊 + 2¯𝑆·𝑏 𝑘𝑣
+gqa·𝑑·𝑏 𝑤
+(38)
+Then:
+𝑇decode =
+𝑙·𝑆 out·𝜉 eff
+𝑊 ·𝑑 2·𝑏 𝑤
+𝛽𝐻
+(39)
+Expanding𝜉 eff
+𝑊 :
+𝜉eff
+𝑊 =2+ 2
+gqa+3𝑟+ 2¯𝑆·𝑏 𝑘𝑣
+gqa·𝑑·𝑏 𝑤
+(40)
+Note: 𝜉eff
+𝑊 depends on𝑑 and gqa, which introduces additional coupling in optimization problems.
+34
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+E.7. Memory Footprint
+Per-layer storage (all𝐸experts):
+𝑀layer =𝜉 all
+𝑊·𝑑 2·𝑏 𝑤 (41)
+Total model memory:
+𝑀=𝑙·𝜉 all
+𝑊·𝑑 2·𝑏 𝑤 (42)
+E.8. Constraint Formulations
+E.8.1. Prefill Constraint
+Given target latency𝑇pre
+lat , define ¯𝐹𝑝 =𝑇 pre
+lat ·𝜋 𝐻/(𝐵𝑆 in):
+𝑙·𝜉 𝐹·𝑑 2 ⩽ ¯𝐹𝑝 (43)
+E.8.2. Decode Constraint
+Given target latency𝑇dec
+lat , define ¯𝑀𝑑 =𝑇 dec
+lat ·𝛽 𝐻/𝑆out:
+𝑙·𝜉 eff
+𝑊 ·𝑑 2·𝑏 𝑤 ⩽ ¯𝑀𝑑 (44)
+Expanding with the full KV-cache term:
+𝑙·𝜉 dec
+𝑊 ·𝑑 2·𝑏 𝑤+ 2𝑙· ¯𝑆·𝑑·𝑏 𝑘𝑣
+gqa ⩽ ¯𝑀𝑑 (45)
+E.8.3. Memory Constraint
+𝑙·𝜉 all
+𝑊·𝑑 2·𝑏 𝑤 ⩽𝑀 budget (46)
+E.9. Summary
+Table 16|Roofline coefficients and their usage.
+Coefficient Formula Usage
+𝜉𝐹 4+ 4
+gqa+6𝑟 Prefill FLOPs:F=𝑙·𝜉 𝐹·𝐵𝑆·𝑑 2
+𝜉dec
+𝑊 2+ 2
+gqa+3𝑟 Decode weight traffic
+𝜉eff
+𝑊 𝜉dec
+𝑊 + 2¯𝑆𝑏𝑘𝑣
+gqa·𝑑·𝑏 𝑤
+Decode total traffic (weight + KV)
+𝜉all
+𝑊 2+ 2
+gqa+ 3𝑟
+𝜌 Storage:𝑀=𝑙·𝜉 all
+𝑊·𝑑 2·𝑏 𝑤
+Note: 𝜉eff
+𝑊 depends on𝑑, which introduces additional coupling in the optimization. For dense
+models (𝜌=1), we have𝜉 all
+𝑊 =𝜉 dec
+𝑊 .
+Additionally, we define theaggregate loss gradient˜𝐷≜𝜅 𝜌𝜌𝛼𝜌𝑑𝛽2−𝛽 1+𝜅 𝑑, which combines the
+sparsity and base capacity contributions from the loss function. This shorthand appears throughout
+the following case derivations (Cases D1–D3, P1–P3) in the stationarity conditions for𝑟.
+35
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Table 17|Partial derivatives of coefficients.
+𝜕/𝜕𝑟 𝜕/𝜕gqa𝜕/𝜕𝜌 𝜕/𝜕𝑑
+𝜉𝐹 6− 4
+gqa2 0 0
+𝜉dec
+𝑊 3− 2
+gqa2 0 0
+𝜉eff
+𝑊 3− 2
+gqa2− 2¯𝑆𝑏𝑘𝑣
+gqa2𝑑𝑏𝑤
+0− 2¯𝑆𝑏𝑘𝑣
+gqa𝑑2𝑏𝑤
+𝜉all
+𝑊
+3
+𝜌 − 2
+gqa2 − 3𝑟
+𝜌2 0
+F. Case D1: Decode, Latency-Constrained
+F.1. Problem Statement
+min
+𝑙,𝑑,𝑟,gqa,𝜌
+ˆL(𝜃)= 𝜅𝑙
+𝑙𝛼𝑙
++
+𝜅𝜌𝜌𝛼𝜌
+𝑟𝛼𝑟𝑑𝛽1
++ 𝜅𝑑
+𝑟𝛼𝑟𝑑𝛽2
++ 𝜅𝑚·gqa 𝛼𝑚
+𝑑𝛼𝑚
++ ˆL∞
+s.t. 𝑙·𝜉 dec
+𝑊 ·𝑑 2·𝑏 𝑤+ 2𝑙· ¯𝑆·𝑑·𝑏 𝑘𝑣
+gqa = ¯𝑀𝑑
+𝜌⩾𝜌 min
+(47)
+where𝜉 dec
+𝑊 =2+2/gqa+3𝑟.
+Define the constraint function:
+𝑔𝑇(𝜃)=𝑙·𝜉 dec
+𝑊 ·𝑑 2·𝑏 𝑤+ 2𝑙· ¯𝑆·𝑑·𝑏 𝑘𝑣
+gqa − ¯𝑀𝑑 (48)
+F.2. Lagrangian
+ℒ= ˆL(𝜃)+𝜇 𝑇·𝑔 𝑇(𝜃)(49)
+F.3. Constraint Partial Derivatives
+𝜕𝑔𝑇
+𝜕𝑙 =𝜉 dec
+𝑊 ·𝑑 2·𝑏 𝑤+ 2¯𝑆·𝑑·𝑏 𝑘𝑣
+gqa (50)
+𝜕𝑔𝑇
+𝜕𝑑 =2𝑙·𝜉 dec
+𝑊 ·𝑑·𝑏 𝑤+ 2𝑙· ¯𝑆·𝑏 𝑘𝑣
+gqa (51)
+𝜕𝑔𝑇
+𝜕𝑟 =3𝑙·𝑑 2·𝑏 𝑤 (52)
+𝜕𝑔𝑇
+𝜕gqa =− 2𝑙·𝑑 2·𝑏 𝑤
+gqa2 − 2𝑙· ¯𝑆·𝑑·𝑏 𝑘𝑣
+gqa2 (53)
+𝜕𝑔𝑇
+𝜕𝜌 =0(54)
+Note:𝜕𝑔 𝑇/𝜕𝜌=0still holds because the KV-cache term is also independent of𝜌.
+36
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+F.4. KKT Conditions
+Stationarity for𝑙:
+−𝛼𝑙𝜅𝑙
+𝑙𝛼𝑙+1+𝜇 𝑇
+
+𝜉dec
+𝑊 𝑑2𝑏𝑤+ 2¯𝑆𝑑𝑏𝑘𝑣
+gqa
+
+=0(55)
+Solving for𝜇𝑇:
+𝜇𝑇 = 𝛼𝑙𝜅𝑙
+𝑙𝛼𝑙+1
+
+𝜉dec
+𝑊 𝑑2𝑏𝑤+ 2¯𝑆𝑑𝑏𝑘𝑣
+gqa
+ (56)
+Stationarity for𝜌:
+𝜕ℒ
+𝜕𝜌 =
+𝛼𝜌𝜅𝜌𝜌𝛼𝜌−1
+𝑟𝛼𝑟𝑑𝛽1
++𝜇 𝑇·0=
+𝛼𝜌𝜅𝜌𝜌𝛼𝜌−1
+𝑟𝛼𝑟𝑑𝛽1
+>0(57)
+Since𝜕ℒ/𝜕𝜌 >0for all𝜌 >0:
+𝜌∗ =𝜌 min (58)
+Physical interpretation.The activation rate𝜌 does not appear in the decode latency constraint
+(𝜕𝑔𝑇/𝜕𝜌= 0), because only𝐾 experts are activated per token regardless of the total pool size𝐸—thus
+per-token computation and bandwidth cost are invariant to𝜌. Meanwhile, the loss is monotonically
+increasing in𝜌: fewer activated experts relative to total experts means greater total model capacity at
+no additional per-token cost. Therefore, the optimal strategy under latency constraints is to maximize
+sparsity (minimize𝜌), i.e., increase the expert pool𝐸 as far as memory permits while keeping𝐾 fixed.
+Stationarity for𝑟:
+− 𝛼𝑟 ˜𝐷
+𝑟𝛼𝑟+1𝑑𝛽2
++3𝜇 𝑇𝑙𝑑 2𝑏𝑤 =0(59)
+Stationarity forgqa:
+𝛼𝑚𝜅𝑚·gqa 𝛼𝑚−1
+𝑑𝛼𝑚
+−𝜇 𝑇
+ 2𝑙𝑑 2𝑏𝑤
+gqa2 + 2𝑙 ¯𝑆𝑑𝑏𝑘𝑣
+gqa2
+
+=0(60)
+Simplifying:
+𝛼𝑚𝜅𝑚·gqa 𝛼𝑚−1
+𝑑𝛼𝑚
+= 2𝜇𝑇𝑙
+gqa2
+
+𝑑2𝑏𝑤+ ¯𝑆𝑑𝑏𝑘𝑣
+
+(61)
+Stationarity for𝑑:
+−
+𝛽1𝜅𝜌𝜌𝛼𝜌
+𝑟𝛼𝑟𝑑𝛽1+1− 𝛽2𝜅𝑑
+𝑟𝛼𝑟𝑑𝛽2+1− 𝛼𝑚𝜅𝑚gqa𝛼𝑚
+𝑑𝛼𝑚+1 +𝜇 𝑇
+
+2𝑙𝜉dec
+𝑊 𝑑𝑏𝑤+ 2𝑙 ¯𝑆𝑏𝑘𝑣
+gqa
+
+=0(62)
+F.5. Solution Derivation
+Step 1: Depth.From the active constraint:
+𝑙∗ =
+¯𝑀𝑑
+𝜉dec
+𝑊 𝑑2𝑏𝑤+ 2¯𝑆𝑑𝑏𝑘𝑣
+gqa
+(63)
+37
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Or equivalently using𝜉eff
+𝑊 :
+𝑙∗ =
+¯𝑀𝑑
+𝜉eff
+𝑊 ·𝑑 2·𝑏 𝑤
+(64)
+Step 2: Multiplier.Define the effective constraint coefficient:
+Γ≜𝜉 dec
+𝑊 𝑑2𝑏𝑤+ 2¯𝑆𝑑𝑏𝑘𝑣
+gqa =𝜉 eff
+𝑊 ·𝑑 2·𝑏 𝑤 (65)
+Then:
+𝜇𝑇𝑙= 𝛼𝑙𝜅𝑙
+𝑙𝛼𝑙 Γ = 𝛼𝑙𝜅𝑙Γ𝛼𝑙−1
+¯𝑀𝛼𝑙
+𝑑
+(66)
+Step 3: FFN Ratio.From stationarity for𝑟:
+𝛼𝑟 ˜𝐷
+𝑟𝛼𝑟+1𝑑𝛽2
+=3𝜇 𝑇𝑙𝑑 2𝑏𝑤 (67)
+𝑟∗ =
+"
+𝛼𝑟 ˜𝐷
+3𝛼𝑙𝜅𝑙
+·
+¯𝑀𝛼𝑙
+𝑑
+Γ𝛼𝑙−1𝑑2+𝛽2𝑏𝑤
+# 1
+𝛼𝑟+1
+(68)
+Step 4: GQA Ratio.From stationarity forgqa:
+gqa𝛼𝑚+1 = 2𝜇𝑇𝑙𝑑𝛼𝑚
+𝛼𝑚𝜅𝑚
+
+𝑑2𝑏𝑤+ ¯𝑆𝑑𝑏𝑘𝑣
+
+(69)
+gqa∗ =
+"
+2𝛼𝑙𝜅𝑙
+𝛼𝑚𝜅𝑚
+· Γ𝛼𝑙−1𝑑𝛼𝑚
+¯𝑀𝛼𝑙
+𝑑
+
+𝑑2𝑏𝑤+ ¯𝑆𝑑𝑏𝑘𝑣
+# 1
+𝛼𝑚+1
+(70)
+F.6. Solution Summary
+𝜌∗ =𝜌 min (71)
+𝑙∗ =
+¯𝑀𝑑
+𝜉dec
+𝑊 𝑑2𝑏𝑤+ 2¯𝑆𝑑𝑏𝑘𝑣
+gqa
+(72)
+𝑟∗ =
+"
+𝛼𝑟 ˜𝐷
+3𝛼𝑙𝜅𝑙
+·
+¯𝑀𝛼𝑙
+𝑑
+Γ𝛼𝑙−1𝑑2+𝛽2𝑏𝑤
+# 1
+𝛼𝑟+1
+(73)
+gqa∗ =
+"
+2𝛼𝑙𝜅𝑙
+𝛼𝑚𝜅𝑚
+· Γ𝛼𝑙−1𝑑𝛼𝑚
+¯𝑀𝛼𝑙
+𝑑
+
+𝑑2𝑏𝑤+ ¯𝑆𝑑𝑏𝑘𝑣
+# 1
+𝛼𝑚+1
+(74)
+where Γ=𝜉 dec
+𝑊 𝑑2𝑏𝑤+ 2¯𝑆𝑑𝑏𝑘𝑣/gqa and𝜉dec
+𝑊 = 2+ 2/gqa∗+ 3𝑟∗ (implicit). The activation rate result
+corresponds to Theorem 5.1 in the main text.
+38
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+G. Case D2: Decode, Memory-Constrained
+G.1. Problem Statement
+min
+𝑙,𝑑,𝑟,gqa,𝜌
+ˆL(𝜃)
+s.t. 𝑙·𝜉 all
+𝑊·𝑑 2·𝑏 𝑤 =𝑀 budget
+(75)
+where𝜉 all
+𝑊 =2+2/gqa+3𝑟/𝜌.
+Note: The memory constraint concerns model storage, which is independent of the KV-cache
+runtime overhead.
+G.2. Lagrangian
+ℒ= ˆL(𝜃)+𝜇 𝑀
+
+𝑙·𝜉 all
+𝑊·𝑑 2·𝑏 𝑤−𝑀 budget
+
+(76)
+G.3. Constraint Partial Derivatives
+𝜕𝑔𝑀
+𝜕𝑙 =𝜉 all
+𝑊𝑑2𝑏𝑤 (77)
+𝜕𝑔𝑀
+𝜕𝑑 =2𝑙𝜉 all
+𝑊𝑑𝑏𝑤 (78)
+𝜕𝑔𝑀
+𝜕𝑟 = 3𝑙𝑑 2𝑏𝑤
+𝜌 (79)
+𝜕𝑔𝑀
+𝜕gqa =− 2𝑙𝑑 2𝑏𝑤
+gqa2 (80)
+𝜕𝑔𝑀
+𝜕𝜌 =− 3𝑙𝑟𝑑 2𝑏𝑤
+𝜌2 (81)
+G.4. KKT Conditions
+Stationarity for𝑙:
+−𝛼𝑙𝜅𝑙
+𝑙𝛼𝑙+1+𝜇 𝑀𝜉all
+𝑊𝑑2𝑏𝑤 =0⇒𝜇 𝑀 = 𝛼𝑙𝜅𝑙
+𝑙𝛼𝑙+1𝜉all
+𝑊𝑑2𝑏𝑤
+(82)
+Stationarity for𝜌:
+𝛼𝜌𝜅𝜌𝜌𝛼𝜌−1
+𝑟𝛼𝑟𝑑𝛽1
+− 3𝜇𝑀𝑙𝑟𝑑 2𝑏𝑤
+𝜌2 =0(83)
+Rearranging:
+𝜇𝑀𝑙=
+𝛼𝜌𝜅𝜌𝜌𝛼𝜌+1
+3𝑟𝛼𝑟+1𝑑𝛽1+2𝑏𝑤
+(84)
+39
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Stationarity for𝑟:
+− 𝛼𝑟 ˜𝐷
+𝑟𝛼𝑟+1𝑑𝛽2
++ 3𝜇𝑀𝑙𝑑 2𝑏𝑤
+𝜌 =0(85)
+Rearranging:
+𝜇𝑀𝑙= 𝛼𝑟 ˜𝐷𝜌
+3𝑟𝛼𝑟+1𝑑𝛽2+2𝑏𝑤
+(86)
+Stationarity forgqa:
+𝛼𝑚𝜅𝑚·gqa 𝛼𝑚−1
+𝑑𝛼𝑚
+− 2𝜇𝑀𝑙𝑑 2𝑏𝑤
+gqa2 =0(87)
+G.5. Key Derivation: Activation Rate
+Equation 84 and Equation 86:
+𝛼𝜌𝜅𝜌𝜌𝛼𝜌+1
+3𝑟𝛼𝑟+1𝑑𝛽1+2𝑏𝑤
+= 𝛼𝑟 ˜𝐷𝜌
+3𝑟𝛼𝑟+1𝑑𝛽2+2𝑏𝑤
+(88)
+Canceling common factors:
+𝛼𝜌𝜅𝜌𝜌𝛼𝜌
+𝑑𝛽1
+= 𝛼𝑟 ˜𝐷
+𝑑𝛽2
+(89)
+Substituting ˜𝐷=𝜅 𝜌𝜌𝛼𝜌𝑑𝛽2−𝛽 1+𝜅 𝑑:
+𝛼𝜌𝜅𝜌𝜌𝛼𝜌𝑑𝛽2−𝛽 1 =𝛼 𝑟𝜅𝜌𝜌𝛼𝜌𝑑𝛽2−𝛽 1+𝛼 𝑟𝜅𝑑 (90)
+Collecting terms:
+(𝛼𝜌−𝛼 𝑟)𝜅𝜌𝜌𝛼𝜌𝑑𝛽2−𝛽 1 =𝛼 𝑟𝜅𝑑 (91)
+Solving:
+𝜌∗ =
+ 𝛼𝑟𝜅𝑑
+(𝛼𝜌−𝛼 𝑟)𝜅𝜌
+ 1/𝛼𝜌
+𝑑(𝛽 1−𝛽 2)/𝛼𝜌 (92)
+Validity requires𝛼𝜌 > 𝛼𝑟.
+G.6. Remaining Solutions
+Depth.
+𝑙∗ =
+𝑀budget
+𝜉all
+𝑊𝑑2𝑏𝑤
+(93)
+Multiplier.
+𝜇𝑀𝑙=
+𝛼𝑙𝜅𝑙(𝜉all
+𝑊)𝛼𝑙−1𝑑2(𝛼𝑙−1)𝑏𝛼𝑙−1
+𝑤
+𝑀𝛼𝑙
+budget
+(94)
+FFN Ratio.
+𝑟∗ =
+"
+𝛼𝑟 ˜𝐷𝜌∗
+3𝛼𝑙𝜅𝑙
+·
+𝑀𝛼𝑙
+budget
+(𝜉all
+𝑊)𝛼𝑙−1𝑑2𝛼𝑙+𝛽2𝑏𝛼𝑙
+𝑤
+# 1
+𝛼𝑟+1
+(95)
+40
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+GQA Ratio.
+gqa∗ =
+"
+2𝛼𝑙𝜅𝑙
+𝛼𝑚𝜅𝑚
+·(𝜉all
+𝑊)𝛼𝑙−1𝑑2𝛼𝑙+𝛼𝑚𝑏𝛼𝑙
+𝑤
+𝑀𝛼𝑙
+budget
+# 1
+𝛼𝑚+1
+(96)
+G.7. Solution Summary
+𝜌∗ =
+ 𝛼𝑟𝜅𝑑
+(𝛼𝜌−𝛼 𝑟)𝜅𝜌
+ 1/𝛼𝜌
+𝑑(𝛽 1−𝛽 2)/𝛼𝜌 (97)
+𝑙∗ =
+𝑀budget
+𝜉all
+𝑊𝑑2𝑏𝑤
+(98)
+𝑟∗ =
+"
+𝛼𝑟 ˜𝐷𝜌∗
+3𝛼𝑙𝜅𝑙
+·
+𝑀𝛼𝑙
+budget
+(𝜉all
+𝑊)𝛼𝑙−1𝑑2𝛼𝑙+𝛽2𝑏𝛼𝑙
+𝑤
+# 1
+𝛼𝑟+1
+(99)
+gqa∗ =
+"
+2𝛼𝑙𝜅𝑙
+𝛼𝑚𝜅𝑚
+·(𝜉all
+𝑊)𝛼𝑙−1𝑑2𝛼𝑙+𝛼𝑚𝑏𝛼𝑙
+𝑤
+𝑀𝛼𝑙
+budget
+# 1
+𝛼𝑚+1
+(100)
+where𝜉all
+𝑊 = 2+ 2/gqa∗+ 3𝑟∗/𝜌∗ (implicit). The activation rate result corresponds to Theorem 5.2
+in the main text.
+H. Case D3: Decode, Dual-Constrained
+H.1. Problem Statement
+min
+𝑙,𝑑,𝑟,gqa,𝜌
+ˆL(𝜃)
+s.t. 𝑙·𝜉 dec
+𝑊 ·𝑑 2·𝑏 𝑤+ 2𝑙· ¯𝑆·𝑑·𝑏 𝑘𝑣
+gqa = ¯𝑀𝑑
+𝑙·𝜉 all
+𝑊·𝑑 2·𝑏 𝑤 =𝑀 budget
+(101)
+H.2. Constraint Compatibility
+Define:
+Γ≜𝜉 dec
+𝑊 ·𝑑 2·𝑏 𝑤+ 2¯𝑆·𝑑·𝑏 𝑘𝑣
+gqa (102)
+From the two constraints:
+𝑙·Γ= ¯𝑀𝑑, 𝑙·𝜉 all
+𝑊·𝑑 2·𝑏 𝑤 =𝑀 budget (103)
+Dividing:
+Γ
+𝜉all
+𝑊·𝑑 2·𝑏 𝑤
+=
+¯𝑀𝑑
+𝑀budget
+≜𝜂(104)
+Expanding:
+𝜉dec
+𝑊 ·𝑑 2·𝑏 𝑤+ 2¯𝑆·𝑑·𝑏 𝑘𝑣
+gqa
+𝜉all
+𝑊·𝑑 2·𝑏 𝑤
+=𝜂(105)
+41
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+𝜉dec
+𝑊
+𝜉all
+𝑊
++ 2¯𝑆·𝑏 𝑘𝑣
+𝜉all
+𝑊·gqa·𝑑·𝑏 𝑤
+=𝜂(106)
+H.3. Derivation of Activation Rate
+Substituting𝜉 dec
+𝑊 =𝛼 attn+3𝑟and𝜉 all
+𝑊 =𝛼 attn+3𝑟/𝜌where𝛼 attn =2+2/gqa:
+𝛼attn+3𝑟
+𝛼attn+ 3𝑟
+𝜌
++ 2¯𝑆·𝑏 𝑘𝑣
+𝛼attn+ 3𝑟
+𝜌
+
+gqa·𝑑·𝑏 𝑤
+=𝜂(107)
+Define the KV-cache correction term:
+𝛿≜ 2¯𝑆·𝑏 𝑘𝑣
+gqa·𝑑·𝑏 𝑤
+(108)
+Then:
+𝛼attn+3𝑟+ 𝛿
+𝜉all
+𝑊
+𝜉all
+𝑊
+=𝜂(109)
+This gives:
+𝛼attn+3𝑟+ 𝛿
+𝜉all
+𝑊
+=𝜂𝜉 all
+𝑊 =𝜂
+
+𝛼attn+ 3𝑟
+𝜌
+
+(110)
+Rearranging:
+𝛼attn(1−𝜂)+3𝑟+ 𝛿
+𝛼attn+ 3𝑟
+𝜌
+= 3𝜂𝑟
+𝜌 (111)
+This is an implicit equation for𝜌due to the presence of𝜌in the𝛿term’s denominator.
+Simplified Form.Multiplying through by𝜉 all
+𝑊 =𝛼 attn+3𝑟/𝜌:
+(𝛼attn+3𝑟)𝜉 all
+𝑊+𝛿=𝜂(𝜉 all
+𝑊)2 (112)
+Let𝑥=𝜉 all
+𝑊 :
+(𝛼attn+3𝑟)𝑥+𝛿=𝜂𝑥 2 (113)
+𝜂𝑥 2−(𝛼 attn+3𝑟)𝑥−𝛿=0(114)
+Solving the quadratic:
+𝜉all
+𝑊 =(𝛼attn+3𝑟)+
+√︁
+(𝛼attn+3𝑟) 2+4𝜂𝛿
+2𝜂 (115)
+From𝜉 all
+𝑊 =𝛼 attn+3𝑟/𝜌:
+3𝑟
+𝜌 =𝜉 all
+𝑊−𝛼 attn (116)
+42
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+𝜌∗ = 3𝑟
+𝜉all
+𝑊−𝛼 attn
+= 6𝜂𝑟
+(𝛼attn+3𝑟)−2𝜂𝛼 attn+
+√︁
+(𝛼attn+3𝑟) 2+4𝜂𝛿
+(117)
+where𝛿=2 ¯𝑆𝑏𝑘𝑣/(gqa·𝑑·𝑏 𝑤)and𝛼 attn =2+2/gqa.
+H.4. Special Case:𝛿→0
+When the KV-cache term is negligible (𝛿→0):
+𝜉all
+𝑊→ 𝛼attn+3𝑟
+𝜂 (118)
+𝜌∗→ 3𝜂𝑟
+𝛼attn+3𝑟−𝜂𝛼 attn
+= 3𝜂𝑟
+𝛼attn(1−𝜂)+3𝑟 (119)
+This recovers the simplified formula from the weight-dominated approximation.
+H.5. Remaining Solutions
+Depth.
+𝑙∗ =
+𝑀budget
+𝜉all
+𝑊𝑑2𝑏𝑤
+(120)
+Other Variables.Unlike the single-constraint cases (D1, D2, P1), where a single Lagrange multiplier
+allowssequentialelimination,thedual-constrainedcaseinvolvestwoactiveconstraintswithmultipliers
+𝜇𝑇 and 𝜇𝑀. The stationarity conditions for𝑟 and gqa each depend on both multipliers, and the KV-
+cache term in the decode constraint further couplesgqa to the latency budget. As a result,𝑟∗, gqa∗,
+and 𝑑∗ do not admit independent closed-form expressions and must be obtained by numerically
+solving the coupled KKT system. In practice,𝜌∗ and 𝑙∗ from the equations above are substituted first,
+reducing the system to three unknowns.
+H.6. Solution Summary
+𝜂= ¯𝑀𝑑/𝑀budget (121)
+𝛿= 2¯𝑆𝑏𝑘𝑣
+gqa·𝑑·𝑏 𝑤
+(122)
+𝜉all
+𝑊 =(𝛼attn+3𝑟)+
+√︁
+(𝛼attn+3𝑟) 2+4𝜂𝛿
+2𝜂 (123)
+𝜌∗ = 3𝑟
+𝜉all
+𝑊−𝛼 attn
+(124)
+𝑙∗ =
+𝑀budget
+𝜉all
+𝑊𝑑2𝑏𝑤
+(125)
+where𝛼attn = 2+ 2/gqa∗, and𝑟∗, gqa∗ are coupled solutions. The activation rate result corresponds
+to Theorem 5.3(b) in the main text.
+43
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+I. Case P1: Prefill, Latency-Constrained
+I.1. Problem Statement
+min
+𝑙,𝑑,𝑟,gqa,𝜌
+ˆL(𝜃)
+s.t. 𝑙·𝜉 𝐹·𝑑 2 = ¯𝐹𝑝
+𝜌⩾𝜌 min
+(126)
+where𝜉 𝐹 =4+4/gqa+6𝑟.
+Note: The prefill constraint is compute-bound and does not involve KV-cache traffic.
+I.2. Lagrangian
+ℒ= ˆL(𝜃)+𝜇 𝑇
+
+𝑙·𝜉 𝐹·𝑑 2− ¯𝐹𝑝
+
+(127)
+I.3. Constraint Partial Derivatives
+𝜕𝑔𝑇
+𝜕𝑙 =𝜉 𝐹𝑑2 (128)
+𝜕𝑔𝑇
+𝜕𝑑 =2𝑙𝜉 𝐹𝑑(129)
+𝜕𝑔𝑇
+𝜕𝑟 =6𝑙𝑑 2 (130)
+𝜕𝑔𝑇
+𝜕gqa =− 4𝑙𝑑 2
+gqa2 (131)
+𝜕𝑔𝑇
+𝜕𝜌 =0(132)
+I.4. KKT Conditions
+Stationarity for𝑙:
+−𝛼𝑙𝜅𝑙
+𝑙𝛼𝑙+1+𝜇 𝑇𝜉𝐹𝑑2 =0⇒𝜇 𝑇 = 𝛼𝑙𝜅𝑙
+𝑙𝛼𝑙+1𝜉𝐹𝑑2 (133)
+Stationarity for𝜌:
+𝜕ℒ
+𝜕𝜌 =
+𝛼𝜌𝜅𝜌𝜌𝛼𝜌−1
+𝑟𝛼𝑟𝑑𝛽1
+>0(134)
+Since𝜕𝑔 𝑇/𝜕𝜌=0and𝜕 ˆL/𝜕𝜌 >0:
+𝜌∗ =𝜌 min (135)
+Stationarity for𝑟:
+− 𝛼𝑟 ˜𝐷
+𝑟𝛼𝑟+1𝑑𝛽2
++6𝜇 𝑇𝑙𝑑 2 =0(136)
+44
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Note: coefficient is6(vs3in D1) from 𝜕𝜉𝐹/𝜕𝑟= 6. The𝑏𝑤 factor is absent because the prefill
+constraint operates in FLOPs rather than bytes, yielding𝜕𝑔𝑇/𝜕𝑟= 6𝑙𝑑 2 without the byte-width scaling
+present in the decode case (𝜕𝑔𝑇/𝜕𝑟=3𝑙𝑑 2𝑏𝑤).
+Stationarity forgqa:
+𝛼𝑚𝜅𝑚·gqa 𝛼𝑚−1
+𝑑𝛼𝑚
+− 4𝜇𝑇𝑙𝑑 2
+gqa2 =0(137)
+Note: coefficient is4(vs2in D1) from|𝜕𝜉 𝐹/𝜕gqa|=4/gqa 2.
+I.5. Solution Derivation
+Depth.
+𝑙∗ =
+¯𝐹𝑝
+𝜉𝐹𝑑2 (138)
+Multiplier.
+𝜇𝑇𝑙=
+𝛼𝑙𝜅𝑙𝜉𝛼𝑙−1
+𝐹 𝑑2(𝛼𝑙−1)
+¯𝐹𝛼𝑙
+𝑝
+(139)
+FFN Ratio.
+𝑟∗ =
+"
+𝛼𝑟 ˜𝐷
+6𝛼𝑙𝜅𝑙
+·
+¯𝐹𝛼𝑙
+𝑝
+𝜉𝛼𝑙−1
+𝐹 𝑑2𝛼𝑙+𝛽2
+# 1
+𝛼𝑟+1
+(140)
+GQA Ratio.
+gqa∗ =
+"
+4𝛼𝑙𝜅𝑙
+𝛼𝑚𝜅𝑚
+·
+𝜉𝛼𝑙−1
+𝐹 𝑑2𝛼𝑙+𝛼𝑚
+¯𝐹𝛼𝑙
+𝑝
+# 1
+𝛼𝑚+1
+(141)
+I.6. Comparison with Case D1
+Table 18| Comparison of prefill (P1) and decode (D1) phase optimal hyperparameters. Decode phase
+requires larger expansion ratio (𝑟∗ coefficient doubles) and smaller GQA groups (gqa∗ coefficient
+halves) due to memory-bound constraints.
+P1 (Prefill) D1 (Decode)
+𝑟∗ coefficient1/6 1/3
+gqa∗ coefficient4 2
+Constraint𝜉 𝐹 𝜉dec
+𝑊 +KV term
+Table 18 reveals how optimal architectural choices differ between prefill and decode phases. In
+prefill (P1), the compute-bound regime (𝜉𝐹 constraint) favors smaller expansion ratios and larger
+GQA groups. In decode (D1), memory bandwidth constraints (𝜉dec
+𝑊 plus KV-cache access) necessitate
+doubling the expansion ratio coefficient (from1/6to1 /3) while halving the GQA coefficient (from4
+to2), reflecting the need to balance computation against memory access costs.
+45
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+I.7. Solution Summary
+𝜌∗ =𝜌 min (142)
+𝑙∗ =
+¯𝐹𝑝
+𝜉𝐹𝑑2 (143)
+𝑟∗ =
+"
+𝛼𝑟 ˜𝐷
+6𝛼𝑙𝜅𝑙
+·
+¯𝐹𝛼𝑙
+𝑝
+𝜉𝛼𝑙−1
+𝐹 𝑑2𝛼𝑙+𝛽2
+# 1
+𝛼𝑟+1
+(144)
+gqa∗ =
+"
+4𝛼𝑙𝜅𝑙
+𝛼𝑚𝜅𝑚
+·
+𝜉𝛼𝑙−1
+𝐹 𝑑2𝛼𝑙+𝛼𝑚
+¯𝐹𝛼𝑙
+𝑝
+# 1
+𝛼𝑚+1
+(145)
+where𝜉𝐹 = 4+ 4/gqa∗+ 6𝑟∗ (implicit). The activation rate result corresponds to Theorem 5.1 in
+the main text.
+J. Case P2: Prefill, Memory-Constrained
+J.1. Problem Statement
+min
+𝑙,𝑑,𝑟,gqa,𝜌
+ˆL(𝜃)
+s.t. 𝑙·𝜉 all
+𝑊·𝑑 2·𝑏 𝑤 =𝑀 budget
+(146)
+where𝜉 all
+𝑊 =2+2/gqa+3𝑟/𝜌.
+J.2. Equivalence to Case D2
+The Lagrangian is:
+ℒ= ˆL(𝜃)+𝜇 𝑀
+
+𝑙·𝜉 all
+𝑊·𝑑 2·𝑏 𝑤−𝑀 budget
+
+(147)
+This is identical to Case D2 because:
+1. The loss function ˆL(𝜃)is independent of scenario
+2. The memory constraint concerns model storage, not runtime behavior
+3.𝜌appears only in𝜉 all
+𝑊
+All KKT conditions and solutions are identical to Case D2.
+46
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+J.3. Solution Summary
+𝜌∗ =
+ 𝛼𝑟𝜅𝑑
+(𝛼𝜌−𝛼 𝑟)𝜅𝜌
+ 1/𝛼𝜌
+𝑑(𝛽 1−𝛽 2)/𝛼𝜌 (148)
+𝑙∗ =
+𝑀budget
+𝜉all
+𝑊𝑑2𝑏𝑤
+(149)
+𝑟∗ =
+"
+𝛼𝑟 ˜𝐷𝜌∗
+3𝛼𝑙𝜅𝑙
+·
+𝑀𝛼𝑙
+budget
+(𝜉all
+𝑊)𝛼𝑙−1𝑑2𝛼𝑙+𝛽2𝑏𝛼𝑙
+𝑤
+# 1
+𝛼𝑟+1
+(150)
+gqa∗ =
+"
+2𝛼𝑙𝜅𝑙
+𝛼𝑚𝜅𝑚
+·(𝜉all
+𝑊)𝛼𝑙−1𝑑2𝛼𝑙+𝛼𝑚𝑏𝛼𝑙
+𝑤
+𝑀𝛼𝑙
+budget
+# 1
+𝛼𝑚+1
+(151)
+All solutions identical to Case D2. The activation rate result corresponds to Theorem 5.2 in the
+main text.
+K. Case P3: Prefill, Dual-Constrained
+K.1. Problem Statement
+min
+𝑙,𝑑,𝑟,gqa,𝜌
+ˆL(𝜃)
+s.t. 𝑙·𝜉 𝐹·𝑑 2 = ¯𝐹𝑝
+𝑙·𝜉 all
+𝑊·𝑑 2·𝑏 𝑤 =𝑀 budget
+(152)
+Note: The prefill constraint is compute-bound and does not involve KV-cache.
+K.2. Constraint Compatibility
+Dividing the two constraints:
+𝜉𝐹
+𝑏𝑤·𝜉 all
+𝑊
+=
+¯𝐹𝑝
+𝑀budget
+≜𝜂 𝑝 (153)
+K.3. Derivation of Activation Rate
+Using𝜉 𝐹 =2(𝛼 attn+3𝑟)and𝜉 all
+𝑊 =𝛼 attn+3𝑟/𝜌:
+2(𝛼 attn+3𝑟)
+𝑏𝑤(𝛼attn+ 3𝑟
+𝜌)
+=𝜂 𝑝 (154)
+Cross-multiplying:
+2𝛼attn+6𝑟=𝜂 𝑝𝑏𝑤𝛼attn+ 3𝜂𝑝𝑏𝑤𝑟
+𝜌 (155)
+Rearranging:
+𝛼attn(2−𝜂 𝑝𝑏𝑤)+6𝑟= 3𝜂𝑝𝑏𝑤𝑟
+𝜌 (156)
+47
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+Solving:
+𝜌∗ = 3𝜂𝑝𝑏𝑤𝑟
+𝛼attn(2−𝜂 𝑝𝑏𝑤)+6𝑟 (157)
+where𝜂 𝑝 = ¯𝐹𝑝/𝑀budget and𝛼 attn =2+2/gqa.
+Validity requires𝜂𝑝𝑏𝑤 <2. This result corresponds to Theorem 5.3(a) in the main text.
+K.4. Comparison with Case D3
+Table 19| Comparison of prefill (P3) and decode (D3) phase characteristics. Decode includes KV-cache
+memory access costs and requires solving a quadratic equation for optimal depth-width ratio𝜌∗.
+P3 (Prefill) D3 (Decode)
+𝜂definition ¯𝐹𝑝/𝑀budget ¯𝑀𝑑/𝑀budget
+Latency constraint 𝑙𝜉𝐹𝑑2 𝑙(𝜉 dec
+𝑊 𝑑2𝑏𝑤+ 2¯𝑆𝑑𝑏𝑘𝑣
+gqa )
+KV-cache term absent present
+𝜌∗ formula closed-form involves quadratic
+As shown in Table 19, the key difference between prefill and decode phases lies in the memory
+access patterns and their impact on the optimal architecture. In prefill (P3), the latency constraint
+depends only on compute (𝜉𝐹𝑑2) and admits a closed-form solution for𝜌∗. In decode (D3), the latency
+constraint includes both weight loading and KV-cache access, with the KV-cache term2𝑆𝑑𝑏𝑘𝑣
+gqa becoming
+dominant for large sequence lengths. This additional complexity requires solving a quadratic equation
+to find the optimal depth-width ratio.
+K.5. Remaining Solutions
+Depth.
+𝑙∗ =
+¯𝐹𝑝
+𝜉𝐹𝑑2 (158)
+Other Variables.The solutions for𝑟 ∗,gqa∗,𝑑∗ require solving the coupled KKT system.
+K.6. Solution Summary
+𝜂𝑝 = ¯𝐹𝑝/𝑀budget, 𝜂 𝑝𝑏𝑤 <2(159)
+𝜌∗ = 3𝜂𝑝𝑏𝑤𝑟∗
+𝛼attn(2−𝜂 𝑝𝑏𝑤)+6𝑟 ∗ (160)
+𝑙∗ =
+¯𝐹𝑝
+𝜉𝐹𝑑2 (161)
+where𝛼attn = 2+ 2/gqa∗, and𝑟∗, gqa∗ are coupled solutions. The activation rate result corresponds
+to Theorem 5.3(a) in the main text.
+48
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+L. Summary
+L.1. Constraint Forms
+The constraint forms are shown in Table 20.
+Table 20|Constraint formulations.
+Constraint Formula
+Prefill latency 𝑙·𝜉 𝐹·𝑑 2 ⩽ ¯𝐹𝑝
+Decode latency 𝑙·𝜉 dec
+𝑊 ·𝑑 2·𝑏 𝑤+ 2𝑙· ¯𝑆·𝑑·𝑏 𝑘𝑣
+gqa ⩽ ¯𝑀𝑑
+Memory 𝑙·𝜉 all
+𝑊·𝑑 2·𝑏 𝑤 ⩽𝑀 budget
+L.2. Solution Matrix: Activation Rate𝜌∗
+Table 21|Solution Matrix: Activation Rate𝜌∗.
+Latency Memory Dual
+Decode 𝜌min
+h
+𝛼𝑟𝜅𝑑
+(𝛼𝜌−𝛼𝑟)𝜅𝜌
+i 1/𝛼𝜌
+𝑑
+𝛽1−𝛽 2
+𝛼𝜌 quadratic form
+Prefill 𝜌min same as Decode 3𝜂𝑝𝑏𝑤𝑟
+𝛼attn(2−𝜂𝑝𝑏𝑤)+6𝑟
+The activation rate𝜌∗ in solution matrix are shown in Table 21.
+L.3. Solution Matrix: Depth𝑙∗
+The Depth𝑙∗ in solution matrix are shown in Table 22.
+Table 22|Solution Matrix: Depth𝑙∗.
+Latency / Dual Memory
+Decode ¯𝑀𝑑
+𝜉dec
+𝑊 𝑑2𝑏𝑤+ 2¯𝑆𝑑𝑏𝑘𝑣
+gqa
+𝑀budget
+𝜉all
+𝑊𝑑2𝑏𝑤
+Prefill
+¯𝐹𝑝
+𝜉𝐹𝑑2
+𝑀budget
+𝜉all
+𝑊𝑑2𝑏𝑤
+L.4. Coefficient Comparison
+The coefficient comparison are shown in Table 23.
+Table 23|Coefficient Comparison.
+𝑟∗ coefficient gqa∗ coefficient
+Prefill Decode Prefill Decode
+Latency 1/6 1/3 4 2
+Memory 1/3 1/3 2 2
+49
+Hardware Co-Design Scaling Laws via Roofline Modelling for On-Device LLMs
+L.5. Key Results
+1. Width-Sparsity Scaling.Under memory constraint:
+𝜌∗ =
+ 𝛼𝑟𝜅𝑑
+(𝛼𝜌−𝛼 𝑟)𝜅𝜌
+ 1/𝛼𝜌
+𝑑(𝛽 1−𝛽 2)/𝛼𝜌 (162)
+2. Scenario Independence.Memory-constrained𝜌 ∗ is identical for Prefill and Decode.
+3. Prefill-Decode Asymmetry.Latency-constrained coefficients differ since𝜕𝜉𝐹/𝜕𝑟= 6, comparing
+to𝜕𝜉 dec
+𝑊 /𝜕𝑟=3.
+4. KV-Cache Effect.The decode latency constraint includes the KV-cache term2𝑙¯𝑆𝑑𝑏𝑘𝑣/gqa, which:
+•Increases effective constraint tightness
+•Couplesgqamore strongly to the constraint
+•Leads to quadratic form in D3 dual-constrained case
+L.6. Notation
+Table 24|Notation Extension for Appendices.
+𝜉𝐹 4+4/gqa+6𝑟 𝜉dec
+𝑊 2+2/gqa+3𝑟
+𝜉all
+𝑊 2+2/gqa+3𝑟/𝜌 ˜𝐷 𝜅 𝜌𝜌𝛼𝜌𝑑𝛽2−𝛽 1+𝜅 𝑑
+𝛼attn 2+2/gqa ¯𝑆average context length
+¯𝐹𝑝 𝑇lat𝜋𝐻/(𝐵𝑆 in) ¯𝑀𝑑 𝑇lat𝛽𝐻/𝑆out
+𝜂 ¯𝑀𝑑/𝑀budget 𝜂𝑝 ¯𝐹𝑝/𝑀budget
+Γ𝜉 dec
+𝑊 𝑑2𝑏𝑤+2 ¯𝑆𝑑𝑏𝑘𝑣/gqa
+Here we present the notation Table 24 used in the Appendices, as an extension to Table 7.
+50

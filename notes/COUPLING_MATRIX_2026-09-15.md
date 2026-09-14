@@ -44,3 +44,33 @@
 5. **量化 × agent** — agent 的超长会话 + 量化 KV ⇒ 精度损失在长程上累积，而 agent 评测不看这个。
 
 **注意**：上面 5 条我**都还没查占位**。按纪律，下一轮先零卡核这 5 格，再谈别的。
+
+---
+
+## §2 五个空白格的核查结果（2026-09-15，第 5 轮）：**全部被占**
+
+分析先行——有两格在花检索之前就已被逻辑否掉：
+- **量化 × prefill**：**写不成条件性差异轴**。权重是共享的，无法按 prefill/decode 相位给不同精度；KV 精度也不按相位分。**逻辑不成立即杀。**
+- **量化 × agent**：是**质量/正确性**主张，不是加速 ⇒ **出范围**。
+
+其余三格检索结果（每条都是**一次检索即命中**）：
+
+| 空格 | 占位者 | 状态 |
+|---|---|---|
+| **spec × 能量** | [Online Scheduling of Battery-Aware Speculative Decoding for Energy-Efficient Cloud-Edge Collaborative LLM Inference](https://dl.acm.org/doi/10.1145/3832810.3832825) | 已发表（ACM） |
+| **调度 × 量化/精度** | [FineServe: Precision-Aware KV Slab and Two-Level Scheduling for Heterogeneous Precision LLM Serving](https://arxiv.org/abs/2509.06261) | 已发表 |
+| **稀疏 × 调度** | [HiSparse: Scaling Sparse-Attention Decoding with Hierarchical KV Cache Management](https://arxiv-org.ezproxy.obspm.fr/html/2608.07009v1)、[Stochastic Sparse Attention for **Memory-Bound** Inference](https://github.com/zhaoyang97/Paper-Notes-en/blob/main/docs/ICML2026/llm_efficiency/stochastic_sparse_attention_for_memory_bound_inference.md)（ICML 2026）、TileSparse（ICML 2026） | 已发表，多篇 |
+| （用户清单 #10 在线自适应） | [Autopoiesis: A Self-Evolving System Paradigm for LLM Serving Under Runtime Dynamics](https://ar5iv.labs.arxiv.org/html/2604.07144)：*"Continuous adaptation to shifting runtime trade-offs is necessary"* | 已发表 |
+
+**⇒ 结论：矩阵里"有意义"的耦合格已全部被占；空格之所以空，是因为耦合本身不成立。**
+
+### 结构性结论（本会话累计证据）
+- 8 个给定方向：全占
+- 3 个候选池（①失败理由过期 ②从未讨论 ③因果裂缝）：全耗尽
+- 我自建机制：**14 条，0 幸存**（其中 5 条是我自己算错/测错后被自己否证）
+- 组件两两耦合矩阵：有意义格全占
+- 用户清单 10 条：#1 最拥挤、#2 被我实测否证、#9 能量被占、#10 自适应被 Autopoiesis 占
+
+**⇒ "从第一性原理推导机制 → 查占位"这条路在当前时点的产出率 = 0/14。**
+失败**不是**因为不够努力或测得不够，而是因为**可推导的机制都已被 2025–2026 的出版物拿走**。
+要改变产出率，必须换**分母**——引入一个"别人没有的不可推导要素"（真实负载轨迹 / 他人没有的硬件或模型族 / 合作方数据）。这一点必须交回用户裁决。

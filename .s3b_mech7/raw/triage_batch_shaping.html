@@ -1,0 +1,296 @@
+
+<!DOCTYPE>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<title>Triage: optimizing LLM serving goodput in unified scheduling via feedback-driven batch shaping</title>
+<meta http-equiv="Content-Language" content="zh-en">
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<meta name="keywords" content=""/>
+<meta name="HW.ad-path" content="http://www.hitech863.com/gjstxen/ch/reader/view_abstract.aspx?file_no=202602004"/>
+<meta name="HW.identifier" content="http://www.hitech863.com/gjstxen/ch/reader/view_abstract.aspx?file_no=202602004"/>
+<meta name="DC.Format" content="text/html"/>
+<meta name="DC.Language" content="en"/>
+<meta name="DC.Title" content=""/>
+<meta name="DC.Identifier" content="10. 3772 / j. issn. 1006-6748. 2026. 02. 002"/>
+<meta name="DC.Contributor" content="Lyu Cunchi (吕存驰)* **"/>
+<meta name="DC.Contributor" content="Shi Xiao* ****"/>
+<meta name="DC.Contributor" content="Lei Zhengyu* **"/>
+<meta name="DC.Contributor" content="Li Qingwen* **"/>
+<meta name="DC.Contributor" content="Zhao Xiaofang* ** *** *****"/>
+<meta name="DC.Date" content=""/>
+<meta name="DC.Keywords" content=""/>
+<meta name="DC.Keywords" content="large language model serving, iteration-level scheduling, goodput-driven scheduling"/>
+<meta name="Description" content="Existing iteration-level schedulers for large language model (LLM) serving rely on static, single-mode policies (e. g. , prefill-first or chunked-prefill) and fixed batching hyperparameters, which fail to adapt to the dynamic resource demands of production workloads. Consequently, these systems often struggle to balance the competing pressures of prefill and decode phases, leading to significant degradation in goodput, the rate of requests satisfied within strict service level objectives ( SLOs).To address these limitations, we propose Triage, a unified scheduling framework that optimizes goodput via feedback-driven batch shaping. Unlike prior state-aware schedulers that operate in abstract design spaces, Triage leverages a hierarchical feedback control loop to directly manipulate concrete engine-level knobs, enabling dynamic switching between decode-only, chunked-prefill, and prefillonly regimes. By continuously monitoring workload composition and key value (KV) cache pressure, Triage dynamically steers batch composition and execution regimes without requiring manual hyperparameter tuning. We implement Triage on top of the vLLM, open-source LLM serving engine,and experimental results demonstrate that it achieves up to 10. 50 × higher goodput compared to state-of-the-art baselines while maintaining robust performance across diverse workload distributions and distributed serving configurations."/>
+<meta name="Keywords" content="large language model serving, iteration-level scheduling, goodput-driven scheduling"/>
+<meta name="citation_title" content="Triage: optimizing LLM serving goodput in unified scheduling via feedback-driven batch shaping"/>
+<meta name="citation_journal_title" content="HIGH TECHNOLOGY LETTERS"/>
+<meta name="citation_author" content="Lyu Cunchi (吕存驰)* **"/>
+<meta name="citation_author" content="Shi Xiao* ****"/>
+<meta name="citation_author" content="Lei Zhengyu* **"/>
+<meta name="citation_author" content="Li Qingwen* **"/>
+<meta name="citation_author" content="Zhao Xiaofang* ** *** *****"/>
+<meta name="citation_volume" content="32"/>
+<meta name="citation_issue" content="2"/>
+<meta name="citation_date" content="20260622"/>
+<meta name="citation_firstpage" content="121"/>
+<meta name="citation_lastpage" content="132"/>
+
+
+<LINK href="../css/Erji_style.css" type="text/css" rel="stylesheet">
+<link href="../css/front_table_css.css" rel="stylesheet" type="text/css">
+<!--<SCRIPT type="text/javascript" src="../extjs/jquery-1.3.2.min.js"></SCRIPT>-->
+<link href="../css/index_css.css" rel="stylesheet" />
+<link href="../css/module_css.css" rel="stylesheet" />
+<link rel="stylesheet" type="text/css" href="../css/front_table_css.css">
+<script type="text/javascript" src="../js/checkform.js"></script>
+</head>
+<script type="text/javascript" src="../js/jquery.js"></script>
+<script type="text/javascript">
+    // Executes the function when DOM will be loaded fully
+    $(document).ready(function() {
+        // hover property will help us set the events for mouse enter and mouse leave
+        $('.navigation li').hover(
+        // When mouse enters the .navigation element
+		function() {
+		    //Fade in the navigation submenu
+		    $('dl', this).fadeIn(); 	// fadeIn will show the sub cat menu
+		},
+        // When mouse leaves the .navigation element
+		function() {
+		    //Fade out the navigation submenu
+		    $('dl', this).fadeOut();  // fadeOut will hide the sub cat menu		
+		}
+	);
+    });
+	</script>
+
+<body>
+<div class="et_header">
+      <div class="header">
+            <div class="logo"><img src="../ext_images/banter.jpg" /></div>
+            <div class="Nav"> 
+                        <ul class="navigation">
+                           <li class="active back"><A href="../index.aspx">Home</A><div class="clear"></div></li> <li><A href="../first_menu.aspx?parent_id=20121115054810001">About Journal</A><div class="clear"></div></li> <li><A href="../first_menu.aspx?parent_id=20121115054827001">Editorial Board</A><div class="clear"></div></li> <li><A href="../first_menu.aspx?parent_id=20121115054839001">Executive Office</A><div class="clear"></div></li> <li><A href="../first_menu.aspx?parent_id=20200519110350001">Instructions for Authors</A><div class="clear"></div></li> <li><A href="../first_menu.aspx?parent_id=20200519104331001">Journal Subscription</A><div class="clear"></div></li> <li><A href="../first_menu.aspx?parent_id=20121115054904001">Contact us</A><div class="clear"></div></li> <li><A href="http://www.hitech863.com/gjstxcn/ch/index.aspx">Chinese</A><div class="clear"></div></li>
+                        </ul>
+            
+            </div>
+      </div>
+</div>
+<div class="et_content">
+<span id="ErrorMessage"></span>
+
+
+<div class="erji">
+<div class="Erji-box">
+
+<div id="zhong" class="Erji-right">
+    <div class="Erji-right-tit">
+	            <span class="tit"> 文章摘要 
+				</span></div>
+    <div class="Erji-right-box" id="content_width">
+    <table cellspacing="1" cellpadding="4" align="center" id="QueryUI" class="front_table">
+  <tr> 
+    <td height="420" valign="top" align="center">
+      <table width="100%" border="0"  cellpadding="0" cellspacing="0">
+      <tr> 
+      <td align=left vAlign=top > 
+	   <table border="0" cellpadding="0" cellspacing="0" width="100%">
+         <tr>
+          <td width="100%">
+            <table border="0" cellpadding="4" cellspacing="4" width="100%">
+			<tr>
+                <td width="100%" height="20" ><span id="ReferenceText">Lyu Cunchi (吕存驰)* **,Shi Xiao* ****,Lei Zhengyu* **,Li Qingwen* **,Zhao Xiaofang* ** *** *****.[J].高技术通讯(英文),2026,32(2):121~132</span></td>
+              </tr>
+			<tr>
+				<td width="100%" height="20" align="center"><font size="3"><b><span id="FileTitle" style="font-size:14px"></span></b></font></td>
+			</tr>
+	       <tr>
+                <td width="100%" align="center"><font size="3"><b><span id="EnTitle">Triage: optimizing LLM serving goodput in unified scheduling via feedback-driven batch shaping</span></b></font></td>
+           </tr>
+	       <tr>
+                <td width="100%" align="center"><span id="SendTime"></span>&nbsp;&nbsp;<span id="LastModifyTime"></span></b></td>
+              </tr>
+	       <tr>
+                <td width="100%" height="20" ><b>DOI：</b><span id="DOI"><a href='http://dx.doi.org/10. 3772 / j. issn. 1006-6748. 2026. 02. 002'>10. 3772 / j. issn. 1006-6748. 2026. 02. 002</a></span></td>
+              </tr>
+	       <tr>
+				<td width="100%" height="20" ><b><span id="KeyWordLabel">中文关键词</span>:</b>&nbsp;<span id="KeyWord"></span></td>
+	       </tr>
+	       <tr>
+                <td width="100%" height="20" ><b><span id="EnKeyWordLabel">英文关键词</span>:</b>&nbsp;<span id="EnKeyWord">large language model serving, iteration-level scheduling, goodput-driven scheduling</span></td>
+           </tr>
+	       <tr>
+                <td width="100%" height="20" ><b><span id="FundProjectLabel">基金项目</span>:</b><span id="FundProject"></span></td>
+           </tr>
+		   
+	       <tr>
+                <td width="100%" height="20" ><span id="Author"><table border="0px"  cellpadding="4" cellspacing="2" width="100%" align="center"  border-style="Ridge" 	GridLines="None" BorderWidth="0px" BorderColor="White" BackColor="White"  CellPadding="3"	CellSpacing="1"><tr><td nowrap><b>Author Name</b></td><td><b>Affiliation</b></td></tr><tr><td nowrap>Lyu Cunchi (吕存驰)* **&nbsp;</td><td>(* University of Chinese Academy of Sciences, Beijing 100049, P. R. China)
+(** Institute of Computing Technology, Chinese Academy of Sciences, Beijing 100190, P. R. China)
+(*** University of Chinese Academy of Sciences Nanjing, Nanjing 211135, P. R. China)
+(**** Nanjing Institute of InforSuperBahn, Nanjing 211135, P. R. China)
+(***** Institute of Intelligent Computing Technology, Suzhou, Chinese Academy of Sciences,Suzhou 215028, P. R. China)&nbsp;</td></tr><tr><td nowrap>Shi Xiao* ****&nbsp;</td><td>&nbsp;</td></tr><tr><td nowrap>Lei Zhengyu* **&nbsp;</td><td>&nbsp;</td></tr><tr><td nowrap>Li Qingwen* **&nbsp;</td><td>&nbsp;</td></tr><tr><td nowrap>Zhao Xiaofang* ** *** *****&nbsp;</td><td>&nbsp;</td></tr></table></span></td>
+           </tr>
+		   
+		   <tr>
+                <td width="100%" height="20" ><b><span id="ClickNumLabel">Hits</span>:</b><b><span id="ClickNum">&nbsp;315</span></b></td>
+           </tr>
+		   <tr>
+                <td width="100%" height="20" ><b><span id="PDFClickNumLabel">Download times</span>:</b><b><span id="PDFClickNum">&nbsp;415</span></b></td>
+           </tr>
+	       <tr>
+		<td width="100%" class="unnamed3"><b><span id="AbstractLabel">中文摘要</span>:</b></td>
+	      </tr>
+	      <tr>
+		<td width="100%" style="word-break:break-all;Width:fixed" class="unnamed3">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span id="Abstract"></span></td>
+	      </tr>
+	     <tr>
+                <td width="100%" class="unnamed3"><b><span id="EnAbstractLabel">英文摘要</span>:</b></td>
+              </tr>
+
+	        <tr>
+                <td width="100%" class="unnamed3">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span id="EnAbstract">Existing iteration-level schedulers for large language model (LLM) serving rely on static, single-mode policies (e. g. , prefill-first or chunked-prefill) and fixed batching hyperparameters, which fail to adapt to the dynamic resource demands of production workloads. Consequently, these systems often struggle to balance the competing pressures of prefill and decode phases, leading to significant degradation in goodput, the rate of requests satisfied within strict service level objectives ( SLOs).To address these limitations, we propose Triage, a unified scheduling framework that optimizes goodput via feedback-driven batch shaping. Unlike prior state-aware schedulers that operate in abstract design spaces, Triage leverages a hierarchical feedback control loop to directly manipulate concrete engine-level knobs, enabling dynamic switching between decode-only, chunked-prefill, and prefillonly regimes. By continuously monitoring workload composition and key value (KV) cache pressure, Triage dynamically steers batch composition and execution regimes without requiring manual hyperparameter tuning. We implement Triage on top of the vLLM, open-source LLM serving engine,and experimental results demonstrate that it achieves up to 10. 50 × higher goodput compared to state-of-the-art baselines while maintaining robust performance across diverse workload distributions and distributed serving configurations.</span></td>
+            </tr>
+		    <tr>
+                <td width="100%" align="center">
+				<span id="URL" class="myspan"><a href='create_pdf.aspx?file_no=202602004&flag=1&journal_id=gjstxen&year_id=2026' target='_blank'><u>View Full Text</u></a></span>
+				
+				
+				&nbsp;&nbsp;<a href="appraise.aspx?file_no=202602004&journal_id=gjstxen"><u><span id="ViewAppraiseLabel">View/Add Comment</span></u></a>&nbsp;&nbsp;<a href="http://ardownload.adobe.com/pub/adobe/reader/win/6.x/6.0/chs/AdbeRdr60_chs_full.exe"><u><span id="DownloadReaderLabel">Download reader</span></u></a> </td>
+           </tr>
+	         <!--<tr>
+                <td width="100%" height="20" align="left"><span id="AttacheList"></span></td>
+              </tr>  
+			  -->
+	      <tr>
+                <td width="100%" height="20" align="center"><a href="#" onclick="return window.close();"><span id="CloseLabel"> Close </span></a> </td>
+              </tr>  
+            </table>
+          </td>
+        
+        </tr>
+      </table>
+	  <table width="100%" align="center">
+<tr><td  align="left">
+<div id="ReferenceList">
+</div>
+</td></tr>
+<tr><td  align="left">
+<div id="WasReferencedList">
+</div>
+</td></tr>
+
+<tr><td align="left">
+<div id="RelateArticleList">
+</div>
+</td></tr>
+
+</table>
+  </td>    
+</table> 
+</td>    
+</tr>
+ <tr><td align="center"></td></tr>
+</table> 
+	
+	
+    </div>
+</div>
+</div>
+</div>
+
+
+
+ 
+
+     <p style="clear:both;"></p>
+</div>
+<div class="et_footer">
+      <div class="box">
+			You are the <font color="#f00"><b>5335147th</b></font> visitor.<br />
+            Copyright: High Technology Letters&nbsp;&nbsp;&nbsp;&nbsp;<a href="http://beian.miit.gov.cn/" style="color:#000000;">京ICP备10027328号-10</a><br />
+           Sponsored by: Institute of Scientific and Technical Information of China Add: No. 15, Fuxing Road, Beijing 100038, P.R.China<br />
+            Tel: 86-10-58882918,58882910 E-mail: hitech@istic.ac.cn<br />
+            Support: Beijing E-Tiller Co., Ltd.
+      </div>
+</div>
+
+
+
+</div>
+
+<!--<script type="text/javascript">
+//此段代码是漂浮窗口的代码
+var xPos = 20;//from 55zm.com
+var yPos = document.body.clientHeight;
+var step = 1;
+var delay = 30;                     
+var height = 0;                     
+var Hoffset = 0;                    
+var Woffset = 0;                     
+var yon = 0;                    
+var xon = 0;                     
+var pause = true;                    
+var interval;                    
+img.style.top = yPos;                    
+function changePos() {                   
+width = document.body.clientWidth;                    
+height = document.body.clientHeight;                    
+Hoffset = img.offsetHeight;                    
+Woffset = img.offsetWidth;                   
+img.style.left = xPos + document.body.scrollLeft;                    
+img.style.top = yPos + document.body.scrollTop;                    
+if (yon) {                  
+yPos = yPos + step;                    
+}               
+else {             
+yPos = yPos - step;                    
+}            
+if (yPos < 0) {                  
+yon = 1;                    
+yPos = 0;                    
+}                  
+if (yPos >= (height - Hoffset)) {                    
+yon = 0;                    
+yPos = (height - Hoffset);                     
+}                  
+if (xon) {                    
+xPos = xPos + step;                    
+}                 
+else {                 
+xPos = xPos - step;                   
+}                  
+if (xPos < 0) {                    
+xon = 1;                   
+xPos = 0;                   
+}         
+if (xPos >= (width - Woffset)) {                    
+xon = 0;           
+xPos = (width - Woffset);                    
+}                    
+}
+function start() {                    
+img.style.visibility = "visible";                  
+interval = setInterval('changePos()', delay);                    
+}              
+start();  
+</script>-->
+</body>
+</html>
+
+
+
+
+<script language=javascript>
+function PdfOpen(url){
+      var win="toolbar=no,location=no,directories=no,status=yes,menubar=yes,scrollbars=yes,resizable=yes";  
+      window.open(url,"",win);
+ }
+</script>
+<script language="javascript">
+ function openWin(url,w,h){ 
+   var win="toolbar=no,location=no,directories=no,status=no,menubar=no,scrollbars=yes,resizable=no,width=" + w + ",height=" + h;  
+   controlWindow=window.open(url,"",win);
+}
+</script>
+<script language="javascript" src="../js/jquery.js"></script>
