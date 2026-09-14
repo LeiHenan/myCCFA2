@@ -119,3 +119,17 @@ URLs I fetched myself for candidate 5: `arxiv.org/abs/{2402.02057, 2305.10427, 2
 **Fetched raw artifacts (this revision).** 18 arXiv abs pages for candidate 5 + `2410.21266` + `2607.19214` + `2606.16824` + `2601.23278`; `la_v1.html`; `html_2603.17942.html`; `icml_esp.html`; `gh_jacobiforcing.html`; `jf_main.md`; `gds_usenix.html`. All under `.s3b_mech7/raw/`.
 
 **Absences observed (phrased as observations).** I did **not find** a draft-free parallel-decoding artifact whose per-step token budget is chosen from a measured bandwidth→compute crossover. I did **not find** a live-load-priced KV eviction policy (one whose recompute price is a shadow price read from the scheduler's current prefill/decode mix). I did **not** retrieve the SYSTOR KV-retention paper or the cost-aware-eviction blog (403).
+
+---
+
+## 补充裁决（子代理回收，2026-09-15 第 5 轮）
+
+| 候选 | 判决 | 决定性证据 |
+|---|---|---|
+| **#5 不靠草稿减步数** | **OCCUPIED** | **Lookahead Decoding (arXiv 2402.02057)** 摘要逐字：*"an exact, parallel decoding algorithm that accelerates LLM decoding **without needing auxiliary models or data stores**. It allows trading per-step log(FLOPs) to **reduce the number of total decoding steps**"*；§3.3 标题即 *"Decode, Predict, and Verify in The Same Step"*。旁证：ESP (2603.17942, ICML'26)、Jacobi (2305.10427)、Blockwise Parallel Decoding (1811.03115)、Medusa (2401.10774) |
+| **#4 收割低批空闲算力（含跨翻转点的残留）** | **OCCUPIED** | **vLLM 自己发货了**：Adaptive Verification 文档逐字 *"The crossover moves with load and with workload-dependent acceptance rates, so no static num_speculative_tokens is right across concurrency"*；Dynamic Speculative Decoding 暴露字面的 batch 区间→K 表 `[[1,64,3],[65,128,1],[129,512,0]]`，末档 **K=0 = 退出投机** |
+| **#6 输出长度作为控制变量** | **OCCUPIED** | **LASER (2606.31580)** 逐字：*"LASER treats reasoning depth itself as a controllable serving variable and adapts it to system load"* |
+| #2 / #3 / #7 | 仍在核 | — |
+
+**元观察（子代理）**：*"两个最常被当作「开放问题」的框架，是被 2026 年的**生产特性**关掉的，不是被论文关掉的"* —— adaptive-K 与 reasoning-budget cap 均已 ship。
+**第 5 次检索伪造（已拦下未引用）**：`web_search` 把 `arxiv.org/pdf/2505.24584` 配到因果解码片段上，该 abs 页实为化学制造论文。
