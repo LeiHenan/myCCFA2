@@ -97,3 +97,32 @@ T4 分歧步的 top1−top2 margin 是否偏小（⇒ 与已发表 margin 判据
 **纪律提醒（本机已验证的一条）**：`enforce_eager=True` 时 `speculative_config` 与 `num_spec_tokens`
 必须**读回断言**（`llm.llm_engine.vllm_config.speculative_config`），不能只断言构造参数——
 本工作区已两次因"两组配置实际相同"报废实验。`probes/p36-spec-gate/spec_gate.py` 里已内置该回读断言。
+
+---
+
+## 5. 对目标文本「schoolserver 已有环境」的实测否定（2026-09-15）
+
+目标文本称：*"`/home/user/envs/tools` 是**已装好并验证过**的 conda env —— vLLM 0.29.0 + torch 2.13.0+cu130 +
+transformers 5.17.0 + triton 3.7.1 + flashinfer 0.6.18 + xgrammar 0.2.6；其 `verify.log` 记录 `available True`"*。
+
+**逐条实测（`ssh schoolserver`）**：
+
+| 断言 | 实测 |
+|---|---|
+| `/home/user/envs/tools` 里有 python | **无**。该目录是 conda env 骨架，`bin/` 下只有 `c_rehash/captoinfo/clear/infocmp/infotocap/ncurses6-config/ncursesw6-config/openssl` ⇒ `/home/user/envs/tools/bin/python: No such file or directory` |
+| 有 `verify.log` | **空/不存在** |
+| 有 vLLM 0.29.0 | **无** |
+
+**其余 env 全查（`ml` / `model` / `quant` / `torch` / `venv_v21`）**：
+
+| env | torch | vLLM |
+|---|---|---|
+| `/home/user/.conda/envs/ml` | 2.9.0+cu128, `avail=True` | **none** |
+| `/home/user/.conda/envs/model` | 2.9.0+cu128, `avail=True` | **none** |
+| `/home/user/.conda/envs/quant` | 2.9.0+cu128, `avail=True` | **none** |
+| `/opt/anaconda3/envs/torch` | 2.9.0+cu128, `avail=True` | **none** |
+| `/home/user/venv_v21` | **import 失败** | none |
+
+⇒ **schoolserver 上不存在可用的 vLLM**（此前结论再次成立，且现在连目标文本点名的那个 env 也排除了）。
+叠加 §9.9（AutoDL 机一直有可用 vLLM 0.29.0）⇒ **本目标内唯一可用的引擎在新机（AutoDL）上。**
+**且 schoolserver 没有 C++ 编译器**（`cc1plus` 缺失、`sudo` 需密码、`/opt/anaconda3` 不可写）⇒ **无法从内部补齐**。
