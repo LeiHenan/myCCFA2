@@ -126,3 +126,26 @@ transformers 5.17.0 + triton 3.7.1 + flashinfer 0.6.18 + xgrammar 0.2.6；其 `v
 ⇒ **schoolserver 上不存在可用的 vLLM**（此前结论再次成立，且现在连目标文本点名的那个 env 也排除了）。
 叠加 §9.9（AutoDL 机一直有可用 vLLM 0.29.0）⇒ **本目标内唯一可用的引擎在新机（AutoDL）上。**
 **且 schoolserver 没有 C++ 编译器**（`cc1plus` 缺失、`sudo` 需密码、`/opt/anaconda3` 不可写）⇒ **无法从内部补齐**。
+
+---
+
+## 6. 投机路径验证的**最终状态**（诚实记录，含我自己的 harness 缺陷）
+
+| 步骤 | 结果 |
+|---|---|
+| 投机器 `mgoin/Qwen3-4B-speculator.dflash2` 下载 | **完成并通过完整性校验**：`model.safetensors` **2,820,554,168 B**，`sha256 = 459f75b6da6a70b7d5630408196e2203798af0ca33db23bb1d628d8c9212e805`，与该仓 `SHA256SUMS` **逐字符相同** |
+| （过程）HF snapshot 下载**停滞**在 1.2 GB | 改为从 `.cache/**/*.incomplete` 播种 + `curl -C -` 续传解决；`.incomplete` 的文件名前缀正是期望哈希，佐证播种起点正确 |
+| OFF 臂（无投机） | **通过**（`OFF_OK`，引擎 init 3.77 s，KV 474,288 tokens） |
+| **ON 臂（dflash2, K=3）** | **未验证** —— 引擎进程**卡住**：占 **81,291 MiB** 显存、**GPU 利用率 0%**、父进程 `do_wait` 40 分钟无进展 ⇒ 已终止并释放显存（0 MiB） |
+
+**根因（我的 harness 缺陷，不是引擎缺陷）**：`probes/p36-spec-gate/spec_gate.py` 在**同一个进程里顺序加载两个引擎**
+（先 OFF 再 ON），每个都设 `gpu_memory_utilization=0.90`。第一个引擎的显存未被可靠回收，第二个 init 因此陷入停滞。
+**正确做法**：两个臂必须在**独立进程**里跑（各自 `LLM(...)` 一次）。
+**这条不影响本目标**：唯一需要投机路径的候选 **S-B 已被其零卡可分离性闸门杀掉**（`notes/SB_SEPARABILITY_2026-09-15.md`）。
+**复活时先做这件事**：把 `spec_gate.py` 拆成 `--arm off|on` 的两个进程调用，再判 ON 臂。
+
+**已确立、与 ON 臂无关的部分**：vLLM 0.29.0 在本机**原生支持 DFlash/DSpark**
+（`vllm/config/speculative.py` 的 `DFlashModelTypes`/`DSparkModelTypes`；`models/qwen3_dflash2.py` 等）；
+且**上一个目标已在本机成功跑通**同配置（`/root/ccfa_results/2026-09-12/S1_4k/bs1/d3_g3_ctx4096_r1.bench.json` 的启动日志
+`Resolved architecture: DFlash2DraftModel`，含 `acceptance_rate 24.19%`、`per_position_acceptance_rates [0.484, 0.182, 0.060]`）。
+⇒ **"本机不能跑投机解码"是错的**；只是**我这次的 ON 臂 harness 写错了**。
