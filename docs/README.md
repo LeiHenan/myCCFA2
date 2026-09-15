@@ -57,3 +57,15 @@
 | `archive/subfield_scan/constrained_decoding.md` | 副本 → `docs/evidence/constrained_decoding.md`（原件仍在 `archive/`） |
 
 > ⚠️ `archive/` 内的历史文档大量以**旧相对路径**引用上述文件（例如 `V41.md`、`data/syfi_coding_trace.duckdb`）。`archive/` 是审计痕迹，**不追改**；需要引用时以本表换算。
+
+## C1 重做（2026-09-15，A800 / vLLM 0.29.0）
+
+与上面 5 份"选题论证"不同类：这一组是**一次实测重做的产物**，不是方案。
+
+| 文档 | 是什么 |
+|---|---|
+| [`C1重做_最终报告_2026-09-15.md`](C1重做_最终报告_2026-09-15.md) | 在 A800 上重做原 C-1（dense + hybrid 两架构 × 4 drafter × PC 开/关），逐条判定 P1'/P2'/P3'；含 4 起装置事故记录与对上游主张的重判 |
+| [`C1重做_方案审计_2026-09-15.md`](C1重做_方案审计_2026-09-15.md) | 对**原**预登记与 C1→C1m 判定链的逐条审计（10 条缺陷，每条附 file:line 或 JSON 复算），含 2 次"我自己撤销的指控" |
+| [`PRACTICE_TO_TOPIC_CASESTUDY2_2026-09-15.md`](PRACTICE_TO_TOPIC_CASESTUDY2_2026-09-15.md) | 方法论 v2 的第二份实证附录（第一份是 `PRACTICE_TO_TOPIC_CASESTUDY_2026-09-15.md`）：4 候选 1 存活，并查出作者本人的 4 条 §7 违规 |
+
+产物与可复算数据：[`results/C1-redo/2026-09-15/`](../results/C1-redo/2026-09-15/summary.md)｜采数前冻结的预登记：[`notes/prereg/C1-redo.md`](../notes/prereg/C1-redo.md)
